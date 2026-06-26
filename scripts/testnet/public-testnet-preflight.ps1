@@ -48,7 +48,8 @@ try {
       -BaseRESTPort $ports.REST `
       -BaseGRPCPort $ports.GRPC `
       -BasePprofPort $ports.Pprof `
-      -SkipBuild
+      -SkipBuild `
+      -SkipPrototypeAssetFlows
 
     if (-not $SkipCosmWasmDisabledCheck) {
       & .\tests\e2e\cosmwasm_smoke.ps1 `

@@ -25,7 +25,14 @@ $exportArgs = @("snapshots", "export", "--home", $nodeHome)
 if ($Height -gt 0) {
   $exportArgs += @("--height", "$Height")
 }
-Invoke-ExternalChecked -FilePath $Binary -Arguments $exportArgs -FailureMessage "snapshot export failed" | Out-Null
+try {
+  Invoke-ExternalChecked -FilePath $Binary -Arguments $exportArgs -FailureMessage "snapshot export failed" | Out-Null
+} catch {
+  if ($_.Exception.Message -notmatch "more recent snapshot already exists at height $Height") {
+    throw
+  }
+  Write-Host "Snapshot already exists at height $Height; reusing existing export"
+}
 
 $listOutput = Invoke-ExternalChecked -FilePath $Binary -Arguments @("snapshots", "list", "--home", $nodeHome) -FailureMessage "snapshot list failed"
 $listOutput | ForEach-Object { Write-Host $_ }
@@ -33,6 +40,16 @@ $listOutput | ForEach-Object { Write-Host $_ }
 if (![string]::IsNullOrWhiteSpace($ArchivePath) -and $Height -gt 0) {
   $ArchivePath = ConvertTo-AbsolutePath -Path $ArchivePath
   New-Item -ItemType Directory -Force -Path (Split-Path -Parent $ArchivePath) | Out-Null
-  Invoke-ExternalChecked -FilePath $Binary -Arguments @("snapshots", "dump", "$Height", "1", "--home", $nodeHome, "--output", $ArchivePath) -FailureMessage "snapshot dump failed" | Out-Null
+  $format = $null
+  foreach ($line in @($listOutput)) {
+    if ($line -match "height:\s*$Height\s+format:\s*(\d+)") {
+      $format = $Matches[1]
+      break
+    }
+  }
+  if ([string]::IsNullOrWhiteSpace($format)) {
+    throw "could not determine snapshot format for height $Height"
+  }
+  Invoke-ExternalChecked -FilePath $Binary -Arguments @("snapshots", "dump", "$Height", "$format", "--home", $nodeHome, "--output", $ArchivePath) -FailureMessage "snapshot dump failed" | Out-Null
   Write-Host "Snapshot archive written to $ArchivePath"
 }

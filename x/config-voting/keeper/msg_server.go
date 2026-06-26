@@ -2,21 +2,24 @@ package keeper
 
 import (
 	"context"
+	"errors"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
 
 	v1 "github.com/sovereign-l1/l1/api/l1/configvoting/v1"
 	"github.com/sovereign-l1/l1/x/config-voting/types"
+	configkeeper "github.com/sovereign-l1/l1/x/config/keeper"
 )
 
 var _ v1.MsgServer = msgServer{}
 
 type msgServer struct {
 	*Keeper
+	configKeeper *configkeeper.Keeper
 }
 
-func NewMsgServerImpl(k *Keeper) v1.MsgServer {
-	return msgServer{Keeper: k}
+func NewMsgServerImpl(k *Keeper, configKeeper *configkeeper.Keeper) v1.MsgServer {
+	return msgServer{Keeper: k, configKeeper: configKeeper}
 }
 
 func (m msgServer) SubmitConfigProposal(ctx context.Context, msg *v1.MsgSubmitConfigProposal) (*v1.MsgSubmitConfigProposalResponse, error) {
@@ -70,10 +73,19 @@ func (m msgServer) ExecuteConfigProposal(ctx context.Context, msg *v1.MsgExecute
 	if msg == nil {
 		return nil, errEmptyRequest("ExecuteConfigProposal")
 	}
+	if m.configKeeper == nil {
+		return nil, errors.New("config keeper is not configured")
+	}
+	configGenesis, err := m.configKeeper.ExportGenesisState(ctx)
+	if err != nil {
+		return nil, err
+	}
 	nativeMsg := types.MsgExecuteConfigProposal{
-		Authority: msg.Authority,
-		ProposalID: msg.ProposalId,
-		Height:     msg.Height,
+		Authority:    msg.Authority,
+		ProposalID:   msg.ProposalId,
+		Height:       msg.Height,
+		ConfigState:  configGenesis.State,
+		ConfigParams: configGenesis.Params,
 	}
 	proposal, err := m.Keeper.ExecuteConfigProposal(nativeMsg)
 	if err != nil {
@@ -94,7 +106,7 @@ func (m msgServer) VetoConfigProposal(ctx context.Context, msg *v1.MsgVetoConfig
 		return nil, errEmptyRequest("VetoConfigProposal")
 	}
 	nativeMsg := types.MsgVetoConfigProposal{
-		Authority: msg.Authority,
+		Authority:  msg.Authority,
 		ProposalID: msg.ProposalId,
 		Reason:     msg.Reason,
 		Height:     msg.Height,
@@ -135,7 +147,7 @@ func configProposalProtoToNative(p v1.ConfigProposal) types.ConfigProposal {
 		VotingPowerSnapshot:              votingPowerSnapshotSliceProtoToNative(p.VotingPowerSnapshot),
 		ExpectedPreviousVersion:          p.ExpectedPreviousVersion,
 		AllowMissingExpectedPrevious:     p.AllowMissingExpectedPrevious,
-		ExecutionConstitutionValidatedAt:  p.ExecutionConstitutionValidatedAt,
+		ExecutionConstitutionValidatedAt: p.ExecutionConstitutionValidatedAt,
 	}
 }
 
@@ -161,7 +173,7 @@ func configProposalNativeToProto(n types.ConfigProposal) v1.ConfigProposal {
 		VotingPowerSnapshot:              votingPowerSnapshotSliceNativeToProto(n.VotingPowerSnapshot),
 		ExpectedPreviousVersion:          n.ExpectedPreviousVersion,
 		AllowMissingExpectedPrevious:     n.AllowMissingExpectedPrevious,
-		ExecutionConstitutionValidatedAt:  n.ExecutionConstitutionValidatedAt,
+		ExecutionConstitutionValidatedAt: n.ExecutionConstitutionValidatedAt,
 	}
 }
 
@@ -207,18 +219,18 @@ func configVoteNativeToProto(n types.ConfigVote) v1.ConfigVote {
 
 func configVotingParamsNativeToProto(n types.ConfigVotingParams) v1.ConfigVotingParams {
 	return v1.ConfigVotingParams{
-		MaxProposals:       n.MaxProposals,
-		MaxVotes:           n.MaxVotes,
-		MaxSnapshotEntries: n.MaxSnapshotEntries,
-		QuorumBps:          n.QuorumBps,
-		ThresholdBps:       n.ThresholdBps,
-		VetoThresholdBps:   n.VetoThresholdBps,
-		VotingPeriod:        n.VotingPeriod,
-		ExecutionDelay:      n.ExecutionDelay,
-		EmergencyDelay:      n.EmergencyDelay,
-		MaxMetadataBytes:    n.MaxMetadataBytes,
+		MaxProposals:         n.MaxProposals,
+		MaxVotes:             n.MaxVotes,
+		MaxSnapshotEntries:   n.MaxSnapshotEntries,
+		QuorumBps:            n.QuorumBps,
+		ThresholdBps:         n.ThresholdBps,
+		VetoThresholdBps:     n.VetoThresholdBps,
+		VotingPeriod:         n.VotingPeriod,
+		ExecutionDelay:       n.ExecutionDelay,
+		EmergencyDelay:       n.EmergencyDelay,
+		MaxMetadataBytes:     n.MaxMetadataBytes,
 		MaxConstitutionBytes: n.MaxConstitutionBytes,
-		BpsScale:            n.BpsScale,
+		BpsScale:             n.BpsScale,
 		VetoAuthorities:      n.VetoAuthorities,
 	}
 }

@@ -6,8 +6,8 @@ import (
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
 
-	aetraaddress "github.com/sovereign-l1/l1/app/addressing"
 	v1 "github.com/sovereign-l1/l1/api/l1/singlenominatorpool/v1"
+	aetraaddress "github.com/sovereign-l1/l1/app/addressing"
 	"github.com/sovereign-l1/l1/x/single-nominator-pool/types"
 )
 
@@ -28,6 +28,7 @@ func (m msgServer) CreateSingleNominatorPool(ctx context.Context, msg *v1.MsgCre
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
 	}
+	m.Keeper.runtimeCtx = ctx
 	nativeMsg := types.MsgCreateSingleNominatorPool{
 		Authority:       msg.Authority,
 		PoolAddress:     msg.PoolAddress,
@@ -58,6 +59,7 @@ func (m msgServer) DepositSingleNominator(ctx context.Context, msg *v1.MsgDeposi
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
 	}
+	m.Keeper.runtimeCtx = ctx
 	nativeMsg := types.MsgDepositSingleNominator{
 		Authority:   msg.Authority,
 		PoolAddress: msg.PoolAddress,
@@ -87,6 +89,7 @@ func (m msgServer) WithdrawSingleNominator(ctx context.Context, msg *v1.MsgWithd
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
 	}
+	m.Keeper.runtimeCtx = ctx
 	nativeMsg := types.MsgWithdrawSingleNominator{
 		Authority:   msg.Authority,
 		PoolAddress: msg.PoolAddress,
@@ -116,6 +119,7 @@ func (m msgServer) ClaimSingleNominatorRewards(ctx context.Context, msg *v1.MsgC
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
 	}
+	m.Keeper.runtimeCtx = ctx
 	nativeMsg := types.MsgClaimSingleNominatorRewards{
 		Authority:   msg.Authority,
 		PoolAddress: msg.PoolAddress,
@@ -144,6 +148,7 @@ func (m msgServer) EmergencyLockSingleNominator(ctx context.Context, msg *v1.Msg
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
 	}
+	m.Keeper.runtimeCtx = ctx
 	nativeMsg := types.MsgEmergencyLockSingleNominator{
 		Authority:   msg.Authority,
 		PoolAddress: msg.PoolAddress,
@@ -173,6 +178,7 @@ func (m msgServer) ChangeSingleNominatorValidator(ctx context.Context, msg *v1.M
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
 	}
+	m.Keeper.runtimeCtx = ctx
 	nativeMsg := types.MsgChangeSingleNominatorValidator{
 		Authority:       msg.Authority,
 		PoolAddress:     msg.PoolAddress,

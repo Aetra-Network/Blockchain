@@ -27,6 +27,15 @@ function Resolve-LocalnetPath {
   return [System.IO.Path]::GetFullPath($Path)
 }
 
+function ConvertTo-AbsolutePath {
+  param([string]$Path)
+
+  if ([System.IO.Path]::IsPathRooted($Path)) {
+    return [System.IO.Path]::GetFullPath($Path)
+  }
+  return [System.IO.Path]::GetFullPath((Join-Path (Get-Location) $Path))
+}
+
 function Assert-LocalnetWorkspacePath {
   param(
     [string]$Path,
@@ -59,11 +68,13 @@ function Read-LocalnetManifest {
   param([string]$OutputDir)
 
   $resolved = Resolve-LocalnetPath -Path $OutputDir -DefaultRelativePath ".localnet"
-  $manifestPath = Join-Path $resolved "manifest.json"
-  if (-not (Test-Path -LiteralPath $manifestPath)) {
-    return $null
+  foreach ($manifestName in @("manifest.json", "profile.json")) {
+    $manifestPath = Join-Path $resolved $manifestName
+    if (Test-Path -LiteralPath $manifestPath) {
+      return Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
+    }
   }
-  return Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
+  return $null
 }
 
 function Get-NodeHome {

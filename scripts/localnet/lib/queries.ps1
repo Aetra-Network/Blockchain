@@ -207,6 +207,30 @@ function Set-LocalnetBankSendMessageAddresses {
   return $UnsignedTx
 }
 
+function New-LocalnetBankSendUnsignedTx {
+  param(
+    [string]$Binary,
+    [string]$FromHome,
+    [string]$FromKey = "node0",
+    [string]$ToAddress,
+    [string]$Amount = "1000naet",
+    [string]$Fees = "300000naet",
+    [string]$ChainId = "aetra-local-1"
+  )
+
+  $fromAddress = Get-LocalnetKeyAddress -Binary $Binary -NodeHome $FromHome -KeyName $FromKey
+  $unsigned = Invoke-LocalnetCliJson -Binary $Binary -Arguments @(
+    "tx", "bank", "send", $FromKey, $ToAddress, $Amount,
+    "--home", $FromHome,
+    "--chain-id", $ChainId,
+    "--keyring-backend", "test",
+    "--fees", $Fees,
+    "--generate-only",
+    "--output", "json"
+  )
+  return Set-LocalnetBankSendMessageAddresses -UnsignedTx $unsigned -FromAddress $fromAddress -ToAddress $ToAddress
+}
+
 function Send-LocalnetDelegateTx {
   param(
     [string]$Binary,
@@ -283,23 +307,15 @@ function Send-LocalnetBankTx {
     [string]$Fees = "300000naet",
     [string]$ChainId = "aetra-local-1",
     [int]$RPCPort = 26657,
-    [int]$TimeoutSeconds = 60
+    [int]$TimeoutSeconds = 60,
+    [switch]$ExpectFailure,
+    [string]$ExpectedLog = ""
   )
 
   $node = "tcp://127.0.0.1:$RPCPort"
   $coin = Convert-LocalnetCoinParts -Coin $Amount
   $balanceBefore = Get-LocalnetBankBalance -Binary $Binary -Address $ToAddress -Denom $coin.Denom -RPCPort $RPCPort
-  $fromAddress = Get-LocalnetKeyAddress -Binary $Binary -NodeHome $FromHome -KeyName $FromKey
-  $unsigned = Invoke-LocalnetCliJson -Binary $Binary -Arguments @(
-    "tx", "bank", "send", $FromKey, $ToAddress, $Amount,
-    "--home", $FromHome,
-    "--chain-id", $ChainId,
-    "--keyring-backend", "test",
-    "--fees", $Fees,
-    "--generate-only",
-    "--output", "json"
-  )
-  $unsigned = Set-LocalnetBankSendMessageAddresses -UnsignedTx $unsigned -FromAddress $fromAddress -ToAddress $ToAddress
+  $unsigned = New-LocalnetBankSendUnsignedTx -Binary $Binary -FromHome $FromHome -FromKey $FromKey -ToAddress $ToAddress -Amount $Amount -Fees $Fees -ChainId $ChainId
 
   $workDir = Join-Path $FromHome "tmp-localnet-tx"
   New-Item -ItemType Directory -Force -Path $workDir | Out-Null
@@ -330,6 +346,16 @@ function Send-LocalnetBankTx {
     "--output", "json"
   )
   $broadcastCode = Get-LocalnetTxCode -Tx $tx
+  if ($ExpectFailure -and $broadcastCode -ne 0) {
+    $log = Get-LocalnetTxLog -Tx $tx
+    return [pscustomobject]@{
+      Phase  = "CheckTx"
+      Code   = $broadcastCode
+      Log    = $log
+      TxHash = (Get-LocalnetTxHash -Tx $tx)
+      Tx     = $tx
+    }
+  }
   if ($broadcastCode -ne 0) {
     throw "bank send broadcast failed with code $broadcastCode`: $(Get-LocalnetTxLog -Tx $tx)"
   }
@@ -340,6 +366,23 @@ function Send-LocalnetBankTx {
   }
   if (-not $txHash) {
     throw "bank send did not return txhash"
+  }
+
+  if ($ExpectFailure) {
+    $failed = Wait-LocalnetTx `
+      -Binary $Binary `
+      -TxHash $txHash `
+      -RPCPort $RPCPort `
+      -TimeoutSeconds $TimeoutSeconds `
+      -ExpectFailure `
+      -ExpectedLog $ExpectedLog
+    return [pscustomobject]@{
+      Phase  = "DeliverTx"
+      Code   = (Get-LocalnetTxCode -Tx $failed)
+      Log    = Get-LocalnetTxLog -Tx $failed
+      TxHash = $txHash
+      Tx     = $failed
+    }
   }
 
   Wait-LocalnetBankBalanceIncrease `

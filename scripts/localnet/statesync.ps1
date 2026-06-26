@@ -60,9 +60,23 @@ if ($ResetData) {
   if (-not $fullDataDir.StartsWith($fullNodeHome, [System.StringComparison]::OrdinalIgnoreCase)) {
     throw "refusing to remove unexpected data path: $fullDataDir"
   }
+  $validatorStatePath = Join-Path $dataDir "priv_validator_state.json"
   if (Test-Path -LiteralPath $dataDir) {
-    Remove-Item -LiteralPath $dataDir -Recurse -Force
-    Write-Host "Removed target data directory $dataDir"
+    Get-ChildItem -LiteralPath $dataDir -Force | Where-Object { $_.Name -ne "priv_validator_state.json" } | Remove-Item -Recurse -Force
+    Write-Host "Reset target data directory $dataDir except priv_validator_state.json"
+  } else {
+    New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
+    Write-Host "Created target data directory $dataDir"
+  }
+  if (-not (Test-Path -LiteralPath $validatorStatePath)) {
+    @{
+      height    = "0"
+      round     = 0
+      step      = 0
+      signature = ""
+      signbytes = ""
+    } | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $validatorStatePath
+    Write-Host "Initialized missing priv_validator_state.json at $validatorStatePath"
   }
 }
 

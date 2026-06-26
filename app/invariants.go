@@ -500,10 +500,18 @@ func (app *L1App) assertValidatorSetInvariant(ctx sdk.Context) error {
 	if err != nil {
 		return err
 	}
-	if uint32(len(bonded)) > params.MaxValidators {
+	bondedCount, err := safeUint32FromInt(len(bonded), "bonded validator set size")
+	if err != nil {
+		return err
+	}
+	if bondedCount > params.MaxValidators {
 		return fmt.Errorf("bonded validator set size %d exceeds max %d", len(bonded), params.MaxValidators)
 	}
-	if len(lastValidators) > len(bonded) && uint32(len(lastValidators)) > params.MaxValidators {
+	lastValidatorCount, err := safeUint32FromInt(len(lastValidators), "last validator set size")
+	if err != nil {
+		return err
+	}
+	if len(lastValidators) > len(bonded) && lastValidatorCount > params.MaxValidators {
 		return fmt.Errorf("last validator set size %d exceeds max %d", len(lastValidators), params.MaxValidators)
 	}
 	seen := make(map[string]struct{}, len(bonded))

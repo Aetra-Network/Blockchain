@@ -195,14 +195,49 @@ function Write-LocalnetProfileManifest {
     "mesh-prototype" { @("load", "routing", "zones", "mesh") }
     "identity-prototype" { @("load", "routing", "zones", "identity-spec") }
   }
-  $manifest = [ordered]@{
-    profile          = $Profile
-    chain_id         = $ChainId
-    validator_count  = $ValidatorCount
-    enabled_modules  = $enabled
-    production_live  = $false
-    note             = "Feature-gated prototype profile. No mnemonics, private validator keys, node keys, or keyring material are stored in this manifest."
-    created_at_utc   = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+  $nodes = @()
+  for ($i = 0; $i -lt $ValidatorCount; $i++) {
+    $ports = Get-LocalnetPortProfile `
+      -Index $i `
+      -BaseP2PPort 26656 `
+      -BaseRPCPort 26657 `
+      -BaseRESTPort 1317 `
+      -BaseGRPCPort 9090 `
+      -BasePprofPort 6060 `
+      -PortStride 100
+    $nodes += [pscustomobject]@{
+      index    = $i
+      name     = "node$i"
+      home     = "node$i\aetrad"
+      p2p_port = $ports.P2P
+      rpc_port = $ports.RPC
+      rest_port = $ports.REST
+      grpc_port = $ports.GRPC
+      rpc_url  = "tcp://127.0.0.1:$($ports.RPC)"
+      rest_url = "http://127.0.0.1:$($ports.REST)"
+      grpc_addr = "127.0.0.1:$($ports.GRPC)"
+    }
   }
-  $manifest | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $resolved "profile.json")
+
+  $profileManifest = [ordered]@{
+    profile         = $Profile
+    chain_id        = $ChainId
+    validator_count = $ValidatorCount
+    enabled_modules = $enabled
+    production_live = $false
+    note            = "Feature-gated prototype profile. No mnemonics, private validator keys, node keys, or keyring material are stored in this manifest."
+    created_at_utc  = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+  }
+  $manifest = [ordered]@{
+    profile         = $Profile
+    chain_id        = $ChainId
+    validator_count = $ValidatorCount
+    enabled_modules = $enabled
+    production_live = $false
+    note            = "Feature-gated prototype profile. No mnemonics, private validator keys, node keys, or keyring material are stored in this manifest."
+    created_at_utc  = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+    nodes           = $nodes
+  }
+  $profileManifest | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $resolved "profile.json")
+  $manifest | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $resolved "manifest.json")
 }

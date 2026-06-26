@@ -133,6 +133,10 @@ State sync configuration on a joining node:
 .\scripts\localnet\statesync.ps1 -OutputDir .localnet -TargetNodeIndex 2 -TrustHeight <height> -TrustHash <hash> -ResetData
 ```
 
+`-ResetData` clears synced application and consensus data for the target node
+but preserves `priv_validator_state.json` so validator restart safety is not
+lost.
+
 Public testnet publishing requirements:
 
 - publish snapshot height, hash, archive checksum, and source validator identity,

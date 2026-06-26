@@ -8,18 +8,18 @@ import (
 )
 
 var (
-	_	types.GRPCMsgServer	= grpcMsgServer{}
-	_	types.GRPCQueryServer	= grpcQueryServer{}
+	_ types.GRPCMsgServer   = grpcMsgServer{}
+	_ types.GRPCQueryServer = grpcQueryServer{}
 )
 
 type grpcMsgServer struct {
 	types.UnimplementedGRPCMsgServer
-	keeper	*Keeper
+	keeper *Keeper
 }
 
 type grpcQueryServer struct {
 	types.UnimplementedGRPCQueryServer
-	keeper	*Keeper
+	keeper *Keeper
 }
 
 func NewGRPCMsgServer(k *Keeper) types.GRPCMsgServer {
@@ -58,28 +58,14 @@ func (m grpcMsgServer) ExecuteInternal(ctx context.Context, msg *types.MsgExecut
 	if msg == nil {
 		return nil, errors.New("empty contracts internal execution request")
 	}
-	res, err := m.keeper.ExecuteInternal(*msg)
-	if err != nil {
-		return nil, err
-	}
-	if err := m.keeper.writeGenesis(ctx); err != nil {
-		return nil, err
-	}
-	return &res, nil
+	return nil, errors.New("internal messages are not publicly exposed")
 }
 
 func (m grpcMsgServer) SendInternalMessage(ctx context.Context, msg *types.MsgSendInternalMessage) (*types.InternalMessage, error) {
 	if msg == nil {
 		return nil, errors.New("empty contracts internal send request")
 	}
-	res, err := m.keeper.SendInternalMessage(*msg)
-	if err != nil {
-		return nil, err
-	}
-	if err := m.keeper.writeGenesis(ctx); err != nil {
-		return nil, err
-	}
-	return &res, nil
+	return nil, errors.New("internal messages are not publicly exposed")
 }
 
 func (m grpcMsgServer) UpdateContractParams(ctx context.Context, msg *types.MsgUpdateContractParams) (*types.MsgUpdateContractParamsResponse, error) {

@@ -19,31 +19,35 @@ import (
 	v1 "github.com/sovereign-l1/l1/api/l1/configvoting/v1"
 	"github.com/sovereign-l1/l1/x/config-voting/keeper"
 	"github.com/sovereign-l1/l1/x/config-voting/types"
+	configkeeper "github.com/sovereign-l1/l1/x/config/keeper"
 	"github.com/sovereign-l1/l1/x/internal/prototype"
 )
 
 const ConsensusVersion = prototype.NextMigrationVersion
 
 var (
-	_	module.AppModuleBasic	= AppModule{}
-	_	module.HasGenesis	= AppModule{}
-	_	module.HasServices	= AppModule{}
-	_	appmodule.AppModule	= AppModule{}
+	_ module.AppModuleBasic = AppModule{}
+	_ module.HasGenesis     = AppModule{}
+	_ module.HasServices    = AppModule{}
+	_ appmodule.AppModule   = AppModule{}
 )
 
 type AppModule struct {
-	keeper *keeper.Keeper
+	keeper       *keeper.Keeper
+	configKeeper *configkeeper.Keeper
 }
 
-func NewAppModule(k *keeper.Keeper) AppModule {
-	return AppModule{keeper: k}
+func NewAppModule(k *keeper.Keeper, configKeeper *configkeeper.Keeper) AppModule {
+	return AppModule{keeper: k, configKeeper: configKeeper}
 }
 
-func (AppModule) IsOnePerModuleType()							{}
-func (AppModule) IsAppModule()								{}
-func (AppModule) Name() string								{ return types.ModuleName }
-func (AppModule) RegisterLegacyAminoCodec(cdc *codec.LegacyAmino)			{ v1.RegisterLegacyAminoCodec(cdc) }
-func (AppModule) RegisterInterfaces(registry codectypes.InterfaceRegistry)		{ v1.RegisterInterfaces(registry) }
+func (AppModule) IsOnePerModuleType()                             {}
+func (AppModule) IsAppModule()                                    {}
+func (AppModule) Name() string                                    { return types.ModuleName }
+func (AppModule) RegisterLegacyAminoCodec(cdc *codec.LegacyAmino) { v1.RegisterLegacyAminoCodec(cdc) }
+func (AppModule) RegisterInterfaces(registry codectypes.InterfaceRegistry) {
+	v1.RegisterInterfaces(registry)
+}
 
 func (AppModule) RegisterGRPCGatewayRoutes(clientCtx client.Context, mux *runtime.ServeMux) {
 	if err := v1.RegisterQueryHandlerClient(context.Background(), mux, v1.NewQueryClient(clientCtx)); err != nil {
@@ -52,7 +56,7 @@ func (AppModule) RegisterGRPCGatewayRoutes(clientCtx client.Context, mux *runtim
 }
 
 func (am AppModule) RegisterServices(cfg module.Configurator) {
-	v1.RegisterMsgServer(cfg.MsgServer(), keeper.NewMsgServerImpl(am.keeper))
+	v1.RegisterMsgServer(cfg.MsgServer(), keeper.NewMsgServerImpl(am.keeper, am.configKeeper))
 	v1.RegisterQueryServer(cfg.QueryServer(), keeper.NewQueryServerImpl(am.keeper))
 
 	if err := cfg.RegisterMigration(types.ModuleName, 1, func(ctx sdk.Context) error {
@@ -92,9 +96,9 @@ func (am AppModule) ExportGenesis(ctx sdk.Context, _ codec.JSONCodec) json.RawMe
 	return mustMarshalGenesis(types.ModuleName, gs)
 }
 
-func (AppModule) ConsensusVersion() uint64	{ return ConsensusVersion }
-func (AppModule) GetTxCmd() *cobra.Command	{ return nil }
-func (AppModule) GetQueryCmd() *cobra.Command	{ return nil }
+func (AppModule) ConsensusVersion() uint64    { return ConsensusVersion }
+func (AppModule) GetTxCmd() *cobra.Command    { return nil }
+func (AppModule) GetQueryCmd() *cobra.Command { return nil }
 
 func mustMarshalGenesis(moduleName string, value any) json.RawMessage {
 	bz, err := json.Marshal(value)

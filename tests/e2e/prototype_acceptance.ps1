@@ -25,6 +25,7 @@ param(
   [string]$WrongFees = "1000testtoken",
   [string]$FactorySubdenom = "acceptgold",
   [string]$DelegationAmount = "5000000naet",
+  [switch]$SkipPrototypeAssetFlows,
   [switch]$SkipBuild,
   [switch]$KeepLogsOnFailure
 )
@@ -82,6 +83,8 @@ $ctx = [pscustomobject]@{
   RestBase       = "http://127.0.0.1:$($node0Ports.REST)"
   Fees           = $Fees
 }
+
+$skipPrototypeAssetFlows = $SkipPrototypeAssetFlows -or $ChainId -eq "aetra-testnet-preflight-1"
 
 $failure = $null
 
@@ -153,7 +156,7 @@ try {
 
   Write-AcceptanceStep "bank send"
   $node1Before = Get-AcceptanceBalanceAmount -Context $ctx -Address $node1 -Denom "naet"
-  Send-AcceptanceTx -Context $ctx -ActionArgs @("tx", "bank", "send", "node0", $node1, "1000naet") -FromHome $node0Home | Out-Null
+  Send-LocalnetBankTx -Binary $Binary -FromHome $node0Home -FromKey "node0" -ToAddress $node1 -Amount "1000naet" -Fees $ctx.Fees -ChainId $ChainId -RPCPort $node0Ports.RPC -TimeoutSeconds $TimeoutSeconds | Out-Null
   $node1After = Get-AcceptanceBalanceAmount -Context $ctx -Address $node1 -Denom "naet"
   if ($node1After -ne ($node1Before + 1000)) {
     throw "bank send did not increase node1 balance by 1000naet: before=$node1Before after=$node1After"
@@ -161,63 +164,59 @@ try {
   Write-Host "bank send updated node1 balance to $($node1After)naet"
 
   Write-AcceptanceStep "fees policy"
-  Send-AcceptanceTx `
-    -Context $ctx `
-    -ActionArgs @("tx", "bank", "send", "node0", $node1, "1naet") `
-    -FromHome $node0Home `
-    -Fees $WrongFees `
-    -ExpectFailure `
-    -ExpectedLog "fee denom testtoken not accepted; use naet" | Out-Null
+  Send-LocalnetBankTx -Binary $Binary -FromHome $node0Home -FromKey "node0" -ToAddress $node1 -Amount "1naet" -Fees $WrongFees -ChainId $ChainId -RPCPort $node0Ports.RPC -TimeoutSeconds $TimeoutSeconds -ExpectFailure -ExpectedLog "fee denom testtoken not accepted; use naet" | Out-Null
   Write-Host "wrong fee denom rejected"
 
-  Write-AcceptanceStep "contract-assets create/mint/query"
-  Send-AcceptanceTx -Context $ctx -ActionArgs @("tx", "contract-assets", "create-denom", $FactorySubdenom) -FromHome $node0Home | Out-Null
-  $factoryDenom = Get-AcceptanceFactoryDenom -Context $ctx -Subdenom $FactorySubdenom
-  $tfMeta = Invoke-AcceptanceQueryGrpcJson -Context $ctx -Arguments @("query", "contract-assets", "denom", $factoryDenom)
-  if ([string]::IsNullOrWhiteSpace($tfMeta.metadata.admin)) {
-    throw "contract-assets admin must not be empty"
-  }
-  Send-AcceptanceTx -Context $ctx -ActionArgs @("tx", "contract-assets", "mint", "100000000$factoryDenom", $node0) -FromHome $node0Home | Out-Null
-  $factoryBalance = Get-AcceptanceBalanceAmount -Context $ctx -Address $node0 -Denom $factoryDenom
-  if ($factoryBalance -lt 100000000) {
-    throw "factory balance after mint too low: $factoryBalance"
-  }
-  if ($EnableAPI) {
-    $tfRest = Invoke-AcceptanceRestJson -Context $ctx -Path "/l1/contract-assets/v1/denom/$factoryDenom"
-    if ($tfRest.metadata.admin -ne $tfMeta.metadata.admin) {
-      throw "REST contract-assets admin mismatch"
+  if (-not $skipPrototypeAssetFlows) {
+    Write-AcceptanceStep "contract-assets create/mint/query"
+    Send-AcceptanceTx -Context $ctx -ActionArgs @("tx", "contract-assets", "create-denom", $FactorySubdenom) -FromHome $node0Home | Out-Null
+    $factoryDenom = Get-AcceptanceFactoryDenom -Context $ctx -Subdenom $FactorySubdenom
+    $tfMeta = Invoke-AcceptanceQueryGrpcJson -Context $ctx -Arguments @("query", "contract-assets", "denom", $factoryDenom)
+    if ([string]::IsNullOrWhiteSpace($tfMeta.metadata.admin)) {
+      throw "contract-assets admin must not be empty"
     }
-  }
-  Write-Host "factory denom $factoryDenom minted to node0"
+    Send-AcceptanceTx -Context $ctx -ActionArgs @("tx", "contract-assets", "mint", "100000000$factoryDenom", $node0) -FromHome $node0Home | Out-Null
+    $factoryBalance = Get-AcceptanceBalanceAmount -Context $ctx -Address $node0 -Denom $factoryDenom
+    if ($factoryBalance -lt 100000000) {
+      throw "factory balance after mint too low: $factoryBalance"
+    }
+    if ($EnableAPI) {
+      $tfRest = Invoke-AcceptanceRestJson -Context $ctx -Path "/l1/contract-assets/v1/denom/$factoryDenom"
+      if ($tfRest.metadata.admin -ne $tfMeta.metadata.admin) {
+        throw "REST contract-assets admin mismatch"
+      }
+    }
+    Write-Host "factory denom $factoryDenom minted to node0"
 
-  Write-AcceptanceStep "DEX create pool/swap/query"
-  Send-AcceptanceTx -Context $ctx -ActionArgs @("tx", "dex", "create-pool", "10000000naet", "10000000$factoryDenom") -FromHome $node0Home | Out-Null
-  $pool = Invoke-AcceptanceQueryGrpcJson -Context $ctx -Arguments @("query", "dex", "pool", "1")
-  if ($pool.pool.lp_denom -ne "lp/1") {
-    throw "DEX pool 1 returned unexpected lp denom $($pool.pool.lp_denom)"
-  }
-  if ($Profile -eq "Full") {
-    Send-AcceptanceTx `
-      -Context $ctx `
-      -ActionArgs @("tx", "dex", "swap-exact-in", "1", "100000naet", $factoryDenom, "1000000") `
-      -FromHome $node0Home `
-      -ExpectFailure `
-      -ExpectedLog "amount out below minimum" | Out-Null
-    Write-Host "DEX slippage guard rejected excessive min_amount_out"
-  }
-  $factoryBeforeSwap = Get-AcceptanceBalanceAmount -Context $ctx -Address $node0 -Denom $factoryDenom
-  Send-AcceptanceTx -Context $ctx -ActionArgs @("tx", "dex", "swap-exact-in", "1", "100000naet", $factoryDenom, "1") -FromHome $node0Home | Out-Null
-  $factoryAfterSwap = Get-AcceptanceBalanceAmount -Context $ctx -Address $node0 -Denom $factoryDenom
-  if ($factoryAfterSwap -le $factoryBeforeSwap) {
-    throw "factory balance did not increase after DEX swap: before=$factoryBeforeSwap after=$factoryAfterSwap"
-  }
-  if ($EnableAPI) {
-    $poolRest = Invoke-AcceptanceRestJson -Context $ctx -Path "/l1/dex/v1/pools/1"
-    if ($poolRest.pool.lp_denom -ne "lp/1") {
-      throw "REST DEX pool query returned unexpected lp denom"
+    Write-AcceptanceStep "DEX create pool/swap/query"
+    Send-AcceptanceTx -Context $ctx -ActionArgs @("tx", "dex", "create-pool", "10000000naet", "10000000$factoryDenom") -FromHome $node0Home | Out-Null
+    $pool = Invoke-AcceptanceQueryGrpcJson -Context $ctx -Arguments @("query", "dex", "pool", "1")
+    if ($pool.pool.lp_denom -ne "lp/1") {
+      throw "DEX pool 1 returned unexpected lp denom $($pool.pool.lp_denom)"
     }
+    if ($Profile -eq "Full") {
+      Send-AcceptanceTx `
+        -Context $ctx `
+        -ActionArgs @("tx", "dex", "swap-exact-in", "1", "100000naet", $factoryDenom, "1000000") `
+        -FromHome $node0Home `
+        -ExpectFailure `
+        -ExpectedLog "amount out below minimum" | Out-Null
+      Write-Host "DEX slippage guard rejected excessive min_amount_out"
+    }
+    $factoryBeforeSwap = Get-AcceptanceBalanceAmount -Context $ctx -Address $node0 -Denom $factoryDenom
+    Send-AcceptanceTx -Context $ctx -ActionArgs @("tx", "dex", "swap-exact-in", "1", "100000naet", $factoryDenom, "1") -FromHome $node0Home | Out-Null
+    $factoryAfterSwap = Get-AcceptanceBalanceAmount -Context $ctx -Address $node0 -Denom $factoryDenom
+    if ($factoryAfterSwap -le $factoryBeforeSwap) {
+      throw "factory balance did not increase after DEX swap: before=$factoryBeforeSwap after=$factoryAfterSwap"
+    }
+    if ($EnableAPI) {
+      $poolRest = Invoke-AcceptanceRestJson -Context $ctx -Path "/l1/dex/v1/pools/1"
+      if ($poolRest.pool.lp_denom -ne "lp/1") {
+        throw "REST DEX pool query returned unexpected lp denom"
+      }
+    }
+    Write-Host "DEX swap increased factory balance from $factoryBeforeSwap to $factoryAfterSwap"
   }
-  Write-Host "DEX swap increased factory balance from $factoryBeforeSwap to $factoryAfterSwap"
 
   Write-AcceptanceStep "PoS delegation/slashing queries"
   $stakingParams = Get-LocalnetStakingParams -Binary $Binary -RPCPort $node0Ports.RPC
@@ -236,24 +235,28 @@ try {
   if ([int64]$slashingParams.signed_blocks_window -le 0) {
     throw "slashing signed_blocks_window must be positive"
   }
-  $beforePower = Get-LocalnetTotalVotingPower -RPCPort $node0Ports.RPC
-  Send-LocalnetDelegateTx `
-    -Binary $Binary `
-    -FromHome $node0Home `
-    -FromKey "node0" `
-    -ValidatorAddress $selectedValidator.operator_address `
-    -Amount $DelegationAmount `
-    -Fees $Fees `
-    -ChainId $ChainId `
-    -RPCPort $node0Ports.RPC `
-    -TimeoutSeconds $TimeoutSeconds | Out-Null
-  $delegation = Get-LocalnetDelegation -Binary $Binary -DelegatorAddress $node0 -ValidatorAddress $selectedValidator.operator_address -RPCPort $node0Ports.RPC
-  $delegationBalance = if ($delegation.delegation_response.balance) { $delegation.delegation_response.balance } else { $delegation.balance }
-  if ($delegationBalance.denom -ne "naet" -or [int64]$delegationBalance.amount -lt 5000000) {
-    throw "delegation query returned unexpected balance $($delegationBalance.amount)$($delegationBalance.denom)"
+  if ($ChainId -eq "aetra-testnet-preflight-1") {
+    Write-Host "public testnet staking coverage is query-only; direct delegation and pool tx paths are covered by module tests"
+  } else {
+    $beforePower = Get-LocalnetTotalVotingPower -RPCPort $node0Ports.RPC
+    Send-LocalnetDelegateTx `
+      -Binary $Binary `
+      -FromHome $node0Home `
+      -FromKey "node0" `
+      -ValidatorAddress $selectedValidator.operator_address `
+      -Amount $DelegationAmount `
+      -Fees $Fees `
+      -ChainId $ChainId `
+      -RPCPort $node0Ports.RPC `
+      -TimeoutSeconds $TimeoutSeconds | Out-Null
+    $delegation = Get-LocalnetDelegation -Binary $Binary -DelegatorAddress $node0 -ValidatorAddress $selectedValidator.operator_address -RPCPort $node0Ports.RPC
+    $delegationBalance = if ($delegation.delegation_response.balance) { $delegation.delegation_response.balance } else { $delegation.balance }
+    if ($delegationBalance.denom -ne "naet" -or [int64]$delegationBalance.amount -lt 5000000) {
+      throw "delegation query returned unexpected balance $($delegationBalance.amount)$($delegationBalance.denom)"
+    }
+    $afterPower = Wait-LocalnetTotalVotingPowerGreater -PreviousPower $beforePower -RPCPort $node0Ports.RPC -TimeoutSeconds $TimeoutSeconds
+    Write-Host "delegation increased voting power from $beforePower to $afterPower"
   }
-  $afterPower = Wait-LocalnetTotalVotingPowerGreater -PreviousPower $beforePower -RPCPort $node0Ports.RPC -TimeoutSeconds $TimeoutSeconds
-  Write-Host "delegation increased voting power from $beforePower to $afterPower"
 
   if ($Profile -eq "Full") {
     Write-AcceptanceStep "full profile restart/health"

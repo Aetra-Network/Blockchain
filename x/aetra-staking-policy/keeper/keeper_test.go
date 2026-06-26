@@ -1,15 +1,35 @@
 package keeper_test
 
 import (
+	"context"
 	"testing"
 
+	corestore "cosmossdk.io/core/store"
+	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/stretchr/testify/require"
 
 	policykeeper "github.com/sovereign-l1/l1/x/aetra-staking-policy/keeper"
 	"github.com/sovereign-l1/l1/x/aetra-staking-policy/types"
+	"github.com/sovereign-l1/l1/x/internal/kvtest"
 )
 
 const authority = "ae1policygov"
+
+type ctxMarkerKey struct{}
+
+type recordingAetraStakingPolicyStoreService struct {
+	store   *kvtest.Store
+	lastCtx context.Context
+}
+
+func newRecordingAetraStakingPolicyStoreService() *recordingAetraStakingPolicyStoreService {
+	return &recordingAetraStakingPolicyStoreService{store: kvtest.NewStoreService().RawStore()}
+}
+
+func (s *recordingAetraStakingPolicyStoreService) OpenKVStore(ctx context.Context) corestore.KVStore {
+	s.lastCtx = ctx
+	return s.store
+}
 
 func TestKeeperExportImportPreservesPolicyState(t *testing.T) {
 	source := policykeeper.NewKeeper(authority)
@@ -20,14 +40,14 @@ func TestKeeperExportImportPreservesPolicyState(t *testing.T) {
 	require.NoError(t, err)
 	msgServer := policykeeper.NewMsgServerImpl(&source)
 	require.NoError(t, msgServer.RegisterValidatorIdentity(types.MsgRegisterValidatorIdentity{
-		Authority:	authority,
-		Identity:	types.ValidatorIdentityMetadata{OperatorAddress: "val-a", Moniker: "Aetra One", Website: "https://validator.example"},
+		Authority: authority,
+		Identity:  types.ValidatorIdentityMetadata{OperatorAddress: "val-a", Moniker: "Aetra One", Website: "https://validator.example"},
 	}))
 	require.NoError(t, msgServer.AcknowledgeConcentrationWarning(types.MsgAcknowledgeConcentrationWarning{
-		Authority:		authority,
-		OperatorAddress:	"val-a",
-		Warning:		types.DelegationWarningOverloaded,
-		Height:			10,
+		Authority:       authority,
+		OperatorAddress: "val-a",
+		Warning:         types.DelegationWarningOverloaded,
+		Height:          10,
 	}))
 
 	exported, err := source.ExportGenesis()
@@ -48,18 +68,42 @@ func TestGovernanceAuthorityRequiredForMessages(t *testing.T) {
 	params.CommissionFloorBps = 400
 
 	err := msgServer.UpdateStakingPolicyParams(types.MsgUpdateStakingPolicyParams{
-		Authority:	"ae1notgov",
-		Params:		params,
+		Authority: "ae1notgov",
+		Params:    params,
 	})
 	require.ErrorIs(t, err, types.ErrUnauthorized)
 
 	require.NoError(t, msgServer.UpdateStakingPolicyParams(types.MsgUpdateStakingPolicyParams{
-		Authority:	authority,
-		Params:		params,
+		Authority: authority,
+		Params:    params,
 	}))
 	res, err := k.QueryParams(types.QueryParamsRequest{})
 	require.NoError(t, err)
 	require.Equal(t, uint32(400), res.Params.CommissionFloorBps)
+}
+
+func TestGRPCMsgServerUsesCurrentContextForPersistence(t *testing.T) {
+	baseCtx := sdk.WrapSDKContext(sdk.Context{}.WithEventManager(sdk.NewEventManager()))
+	initCtx := context.WithValue(baseCtx, ctxMarkerKey{}, "init")
+	txCtx := context.WithValue(baseCtx, ctxMarkerKey{}, "tx")
+	service := newRecordingAetraStakingPolicyStoreService()
+	source := policykeeper.NewPersistentKeeper(service, authority)
+	require.NoError(t, source.InitGenesisState(initCtx, types.DefaultGenesisState(authority)))
+
+	msgServer := policykeeper.NewGRPCMsgServer(&source)
+	params := types.DefaultParams(authority)
+	params.CommissionFloorBps = 400
+	_, err := msgServer.UpdateStakingPolicyParams(txCtx, &types.MsgUpdateStakingPolicyParams{
+		Authority: authority,
+		Params:    params,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "tx", service.lastCtx.Value(ctxMarkerKey{}))
+
+	restarted := policykeeper.NewPersistentKeeper(service, authority)
+	exported, err := restarted.ExportGenesisState(txCtx)
+	require.NoError(t, err)
+	require.Equal(t, uint32(400), exported.Params.CommissionFloorBps)
 }
 
 func TestDeterministicQueriesExposeRequiredPolicyViews(t *testing.T) {

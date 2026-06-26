@@ -6,8 +6,8 @@ import (
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
 
-	addressing "github.com/sovereign-l1/l1/app/addressing"
 	v1 "github.com/sovereign-l1/l1/api/l1/validatorregistry/v1"
+	addressing "github.com/sovereign-l1/l1/app/addressing"
 	"github.com/sovereign-l1/l1/x/validator-registry/types"
 )
 
@@ -28,6 +28,7 @@ func (m msgServer) RegisterValidator(ctx context.Context, msg *v1.MsgRegisterVal
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
 	}
+	m.Keeper.runtimeCtx = ctx
 	nativeMsg := types.MsgRegisterValidator{
 		Authority: msg.Authority,
 		Validator: validatorRecordProtoToNative(msg.Validator),
@@ -55,6 +56,7 @@ func (m msgServer) UpdateValidatorMetadata(ctx context.Context, msg *v1.MsgUpdat
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
 	}
+	m.Keeper.runtimeCtx = ctx
 	nativeMsg := types.MsgUpdateValidatorMetadata{
 		Authority:       msg.Authority,
 		OperatorAddress: msg.OperatorAddress,
@@ -82,11 +84,12 @@ func (m msgServer) RotateConsensusKey(ctx context.Context, msg *v1.MsgRotateCons
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
 	}
+	m.Keeper.runtimeCtx = ctx
 	nativeMsg := types.MsgRotateConsensusKey{
 		Authority:             msg.Authority,
 		OperatorAddress:       msg.OperatorAddress,
 		NewConsensusPublicKey: msg.NewConsensusPublicKey,
-		ActivationHeight:     msg.ActivationHeight,
+		ActivationHeight:      msg.ActivationHeight,
 		Height:                msg.Height,
 	}
 	validator, err := m.Keeper.RotateConsensusKey(nativeMsg)
@@ -111,6 +114,7 @@ func (m msgServer) UpdateWithdrawalAddress(ctx context.Context, msg *v1.MsgUpdat
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
 	}
+	m.Keeper.runtimeCtx = ctx
 	nativeMsg := types.MsgUpdateWithdrawalAddress{
 		Authority:         msg.Authority,
 		OperatorAddress:   msg.OperatorAddress,
@@ -138,6 +142,7 @@ func (m msgServer) UpdateTreasuryAddress(ctx context.Context, msg *v1.MsgUpdateT
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
 	}
+	m.Keeper.runtimeCtx = ctx
 	nativeMsg := types.MsgUpdateTreasuryAddress{
 		Authority:       msg.Authority,
 		OperatorAddress: msg.OperatorAddress,
@@ -165,6 +170,7 @@ func (m msgServer) RetireValidator(ctx context.Context, msg *v1.MsgRetireValidat
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
 	}
+	m.Keeper.runtimeCtx = ctx
 	nativeMsg := types.MsgRetireValidator{
 		Authority:       msg.Authority,
 		OperatorAddress: msg.OperatorAddress,
@@ -191,6 +197,7 @@ func (m msgServer) SetValidatorCapabilities(ctx context.Context, msg *v1.MsgSetV
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
 	}
+	m.Keeper.runtimeCtx = ctx
 	nativeMsg := types.MsgSetValidatorCapabilities{
 		Authority:       msg.Authority,
 		OperatorAddress: msg.OperatorAddress,

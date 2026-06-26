@@ -163,7 +163,7 @@ function Get-SupplyAmount {
   return [int64]$supply.amount
 }
 
-function Get-Contract assetsDenomCount {
+function Get-ContractAssetsDenomCount {
   $res = Invoke-QueryCliJson -Arguments @("query", "contract-assets", "denoms", "--limit", "50")
   return @($res.denoms).Count
 }
@@ -299,30 +299,37 @@ try {
   Write-Host "baseline contract-assets denom and DEX pool created"
 
   $node1Before = Get-BalanceAmount -Address $node1 -Denom "naet"
-  $wrongFee = Invoke-NegativeTx `
-    -Name "wrong fee bank send" `
-    -Arguments (New-SignedTxArgs -ActionArgs @("tx", "bank", "send", "node0", $node1, "1naet") -FromHome $node0Home -TxFees $WrongFees) `
-    -ExpectedText "fee denom testtoken not accepted; use naet" `
-    -AllowedPhases @("CheckTx")
+  $wrongFee = Send-LocalnetBankTx -Binary $Binary -FromHome $node0Home -FromKey "node0" -ToAddress $node1 -Amount "1naet" -Fees $WrongFees -ChainId $ChainId -RPCPort $node0Ports.RPC -TimeoutSeconds $TimeoutSeconds -ExpectFailure -ExpectedLog "fee denom testtoken not accepted; use naet"
   Assert-True ($wrongFee.Phase -eq "CheckTx") "wrong fee must be rejected in CheckTx"
   Assert-True ((Get-BalanceAmount -Address $node1 -Denom "naet") -eq $node1Before) "wrong fee bank send changed receiver balance"
 
   $node0Before = Get-BalanceAmount -Address $node0 -Denom "naet"
-  $insufficient = Invoke-NegativeTx `
-    -Name "insufficient funds bank send" `
-    -Arguments (New-SignedTxArgs -ActionArgs @("tx", "bank", "send", "node1", $node0, "999999999999999999999naet") -FromHome $node1Home -FromKey "node1") `
-    -ExpectedText "insufficient|spendable|funds" `
-    -AllowedPhases @("DeliverTx")
+  $insufficient = Send-LocalnetBankTx -Binary $Binary -FromHome $node1Home -FromKey "node1" -ToAddress $node0 -Amount "999999999999999999999naet" -Fees $Fees -ChainId $ChainId -RPCPort $node0Ports.RPC -TimeoutSeconds $TimeoutSeconds -ExpectFailure -ExpectedLog "insufficient|spendable|funds"
   Assert-True ($insufficient.Phase -eq "DeliverTx") "insufficient bank send should reach DeliverTx after fee ante"
   Assert-True ((Get-BalanceAmount -Address $node0 -Denom "naet") -eq $node0Before) "insufficient bank send changed receiver balance"
 
   $node1BeforeStaleSequence = Get-BalanceAmount -Address $node1 -Denom "naet"
-  $signedStaleSequence = New-SignedReplayTx `
-    -GenerateArguments (New-SignedTxArgs -ActionArgs @("tx", "bank", "send", "node0", $node1, "2naet") -FromHome $node0Home) `
-    -FromKey "node0" `
-    -FromHome $node0Home `
-    -WorkDir (Join-Path $OutputDir "negative-replay")
-  Send-SignedTx -ActionArgs @("tx", "bank", "send", "node0", $node1, "1naet") -FromHome $node0Home | Out-Null
+  $unsignedStaleSequence = New-LocalnetBankSendUnsignedTx -Binary $Binary -FromHome $node0Home -FromKey "node0" -ToAddress $node1 -Amount "2naet" -Fees $Fees -ChainId $ChainId
+  $replayWorkDir = Join-Path $OutputDir "negative-replay"
+  New-Item -ItemType Directory -Force -Path $replayWorkDir | Out-Null
+  $unsignedPath = Join-Path $replayWorkDir "negative-replay-unsigned.json"
+  $signedStaleSequence = Join-Path $replayWorkDir "negative-replay-signed.json"
+  [System.IO.File]::WriteAllText($unsignedPath, ($unsignedStaleSequence | ConvertTo-Json -Depth 100), (New-Object System.Text.UTF8Encoding $false))
+  $signArgs = @(
+    "tx", "sign", $unsignedPath,
+    "--from", "node0",
+    "--home", $node0Home,
+    "--chain-id", $ChainId,
+    "--keyring-backend", "test",
+    "--node", $rpcNode,
+    "--output", "json",
+    "--output-document", $signedStaleSequence
+  )
+  & $Binary @signArgs | Out-Null
+  if ($LASTEXITCODE -ne 0) {
+    throw "tx sign failed for stale sequence replay"
+  }
+  Send-LocalnetBankTx -Binary $Binary -FromHome $node0Home -FromKey "node0" -ToAddress $node1 -Amount "1naet" -Fees $Fees -ChainId $ChainId -RPCPort $node0Ports.RPC -TimeoutSeconds $TimeoutSeconds | Out-Null
   $node1AfterSequenceAdvance = Get-BalanceAmount -Address $node1 -Denom "naet"
   Assert-True ($node1AfterSequenceAdvance -eq ($node1BeforeStaleSequence + 1)) "sequence-advancing tx did not send 1naet"
   $replay = Invoke-NegativeTx `
@@ -343,13 +350,13 @@ try {
   Assert-True ((Get-SupplyAmount -Denom $factoryDenom) -eq $factorySupplyBefore) "unauthorized mint changed supply"
   Assert-True ((Get-BalanceAmount -Address $node1 -Denom $factoryDenom) -eq $node1FactoryBefore) "unauthorized mint changed node1 factory balance"
 
-  $denomCountBefore = Get-Contract assetsDenomCount
+  $denomCountBefore = Get-ContractAssetsDenomCount
   Invoke-NegativeTx `
     -Name "malformed contract-assets subdenom" `
     -Arguments (New-SignedTxArgs -ActionArgs @("tx", "contract-assets", "create-denom", "!") -FromHome $node0Home) `
     -ExpectedText "subdenom|invalid|3-64" `
     -AllowedPhases @("CLI", "DeliverTx") | Out-Null
-  Assert-True ((Get-Contract assetsDenomCount) -eq $denomCountBefore) "malformed subdenom changed contract-assets denom count"
+  Assert-True ((Get-ContractAssetsDenomCount) -eq $denomCountBefore) "malformed subdenom changed contract-assets denom count"
 
   $poolCountBefore = Get-DexPoolCount
   $poolBefore = (Invoke-QueryCliJson -Arguments @("query", "dex", "pool", "1")).pool | ConvertTo-Json -Depth 20 -Compress

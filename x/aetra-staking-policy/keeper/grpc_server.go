@@ -13,31 +13,34 @@ var _ types.QueryServer = grpcQueryServer{}
 type grpcMsgServer struct{ keeper *Keeper }
 type grpcQueryServer struct{ keeper *Keeper }
 
-func NewGRPCMsgServer(k *Keeper) types.MsgServer	{ return grpcMsgServer{keeper: k} }
-func NewGRPCQueryServer(k *Keeper) types.QueryServer	{ return grpcQueryServer{keeper: k} }
+func NewGRPCMsgServer(k *Keeper) types.MsgServer     { return grpcMsgServer{keeper: k} }
+func NewGRPCQueryServer(k *Keeper) types.QueryServer { return grpcQueryServer{keeper: k} }
 
-func (s grpcMsgServer) UpdateStakingPolicyParams(_ context.Context, msg *types.MsgUpdateStakingPolicyParams) (*types.MsgUpdateStakingPolicyParamsResponse, error) {
+func (s grpcMsgServer) UpdateStakingPolicyParams(ctx context.Context, msg *types.MsgUpdateStakingPolicyParams) (*types.MsgUpdateStakingPolicyParamsResponse, error) {
 	if msg == nil {
 		return nil, errors.New("empty staking policy params update request")
 	}
+	s.keeper.runtimeCtx = ctx
 	if err := NewMsgServerImpl(s.keeper).UpdateStakingPolicyParams(*msg); err != nil {
 		return nil, err
 	}
 	return &types.MsgUpdateStakingPolicyParamsResponse{}, nil
 }
-func (s grpcMsgServer) RegisterValidatorIdentity(_ context.Context, msg *types.MsgRegisterValidatorIdentity) (*types.MsgRegisterValidatorIdentityResponse, error) {
+func (s grpcMsgServer) RegisterValidatorIdentity(ctx context.Context, msg *types.MsgRegisterValidatorIdentity) (*types.MsgRegisterValidatorIdentityResponse, error) {
 	if msg == nil {
 		return nil, errors.New("empty validator identity request")
 	}
+	s.keeper.runtimeCtx = ctx
 	if err := NewMsgServerImpl(s.keeper).RegisterValidatorIdentity(*msg); err != nil {
 		return nil, err
 	}
 	return &types.MsgRegisterValidatorIdentityResponse{}, nil
 }
-func (s grpcMsgServer) AcknowledgeConcentrationWarning(_ context.Context, msg *types.MsgAcknowledgeConcentrationWarning) (*types.MsgAcknowledgeConcentrationWarningResponse, error) {
+func (s grpcMsgServer) AcknowledgeConcentrationWarning(ctx context.Context, msg *types.MsgAcknowledgeConcentrationWarning) (*types.MsgAcknowledgeConcentrationWarningResponse, error) {
 	if msg == nil {
 		return nil, errors.New("empty concentration warning acknowledgement")
 	}
+	s.keeper.runtimeCtx = ctx
 	if err := NewMsgServerImpl(s.keeper).AcknowledgeConcentrationWarning(*msg); err != nil {
 		return nil, err
 	}

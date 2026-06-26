@@ -4,9 +4,12 @@ import (
 	"context"
 	"testing"
 
+	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/stretchr/testify/require"
 
+	v1 "github.com/sovereign-l1/l1/api/l1/configvoting/v1"
 	configvotingtypes "github.com/sovereign-l1/l1/x/config-voting/types"
+	configkeeper "github.com/sovereign-l1/l1/x/config/keeper"
 	configtypes "github.com/sovereign-l1/l1/x/config/types"
 	"github.com/sovereign-l1/l1/x/internal/kvtest"
 	"github.com/sovereign-l1/l1/x/internal/prototype"
@@ -29,14 +32,14 @@ func setupKeeper(t *testing.T) Keeper {
 
 func proposal(id string, snapshot []configvotingtypes.VotingPowerSnapshotEntry) configvotingtypes.ConfigProposal {
 	return configvotingtypes.ConfigProposal{
-		ProposalID:		id,
-		Title:			"critical config",
-		ConfigKey:		configtypes.KeyConsensusMaxBlockGas,
-		ConfigValue:		"1000000",
-		Operation:		configtypes.OperationSet,
-		SnapshotHeight:		1,
-		SubmitHeight:		2,
-		VotingPowerSnapshot:	snapshot,
+		ProposalID:          id,
+		Title:               "critical config",
+		ConfigKey:           configtypes.KeyConsensusMaxBlockGas,
+		ConfigValue:         "1000000",
+		Operation:           configtypes.OperationSet,
+		SnapshotHeight:      1,
+		SubmitHeight:        2,
+		VotingPowerSnapshot: snapshot,
 	}
 }
 
@@ -56,11 +59,11 @@ func submit(t *testing.T, k *Keeper, id string, snapshot []configvotingtypes.Vot
 
 func executeMsg(id string, height uint64) configvotingtypes.MsgExecuteConfigProposal {
 	return configvotingtypes.MsgExecuteConfigProposal{
-		Authority:	authority,
-		ProposalID:	id,
-		Height:		height,
-		ConfigParams:	configtypes.DefaultParams(),
-		ConfigState:	configtypes.ConfigState{},
+		Authority:    authority,
+		ProposalID:   id,
+		Height:       height,
+		ConfigParams: configtypes.DefaultParams(),
+		ConfigState:  configtypes.ConfigState{},
 	}
 }
 
@@ -143,6 +146,26 @@ func TestProposalCannotExecuteIfItViolatesConstitution(t *testing.T) {
 	})}
 	_, err = k.ExecuteConfigProposal(msg)
 	require.ErrorContains(t, err, "constitutional")
+}
+
+func TestMsgServerExecuteConfigProposalLoadsCurrentConstitutionState(t *testing.T) {
+	k := setupKeeper(t)
+	configKeeper := configkeeper.NewKeeper()
+	require.NoError(t, configKeeper.InitGenesis(configkeeper.DefaultGenesis()))
+	p := submit(t, &k, "p1", defaultSnapshot())
+	_, err := k.VoteConfigProposal(configvotingtypes.MsgVoteConfigProposal{Voter: "val1", ProposalID: "p1", Option: configvotingtypes.VoteOptionYes, Height: 3})
+	require.NoError(t, err)
+
+	msgServer := NewMsgServerImpl(&k, &configKeeper)
+	ctx := sdk.WrapSDKContext(sdk.Context{}.WithEventManager(sdk.NewEventManager()))
+	resp, err := msgServer.ExecuteConfigProposal(ctx, &v1.MsgExecuteConfigProposal{
+		Authority:  authority,
+		ProposalId: p.ProposalID,
+		Height:     p.EarliestExecutionHeight,
+	})
+	require.NoError(t, err)
+	require.Equal(t, p.ProposalID, resp.Proposal.ProposalId)
+	require.Equal(t, configvotingtypes.ProposalStatusExecuted, resp.Proposal.Status)
 }
 
 func TestVotingPowerSnapshotPreservedAcrossValidatorSetChange(t *testing.T) {

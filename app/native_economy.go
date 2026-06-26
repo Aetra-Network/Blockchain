@@ -17,7 +17,8 @@ import (
 // FinalizeNativeEconomyEpoch connects emission accounting to bank supply and
 // module balances. Rounding remainder is credited to treasury/community.
 func (app *L1App) FinalizeNativeEconomyEpoch(ctx sdk.Context, epoch uint64, stakingRatioBps uint32) (emissionstypes.EmissionEpoch, error) {
-	if ctx.BlockHeight() < 0 {
+	blockHeight, err := safeUint64FromInt64(ctx.BlockHeight(), "native economy block height")
+	if err != nil {
 		return emissionstypes.EmissionEpoch{}, fmt.Errorf("native economy epoch height cannot be negative")
 	}
 	record, err := app.EmissionsKeeper.FinalizeEmissionEpoch(ctx, epoch, stakingRatioBps)
@@ -33,7 +34,7 @@ func (app *L1App) FinalizeNativeEconomyEpoch(ctx sdk.Context, epoch uint64, stak
 		Denom:		record.EmissionAmount.Denom,
 		Amount:		record.EmissionAmount.Amount,
 		Epoch:		epoch,
-		Height:		uint64(ctx.BlockHeight()),
+		Height:		blockHeight,
 		Approved:	true,
 	}
 	decision.DecisionHash = mintauthoritytypes.ComputeEmissionDecisionHash(decision)
@@ -48,7 +49,7 @@ func (app *L1App) FinalizeNativeEconomyEpoch(ctx sdk.Context, epoch uint64, stak
 		Denom:			record.EmissionAmount.Denom,
 		Amount:			record.EmissionAmount.Amount,
 		Epoch:			epoch,
-		Height:			uint64(ctx.BlockHeight()),
+		Height:			blockHeight,
 		EmissionsDecisionHash:	decision.DecisionHash,
 	}, decision, mintauthoritytypes.ConstitutionEmergencyAuthorization{})
 	if err != nil {
@@ -75,7 +76,10 @@ func (app *L1App) maybeFinalizeNativeEmissionEpoch(ctx sdk.Context) error {
 		return nil
 	}
 	interval := uint64(nominatorpooltypes.DefaultRewardEpochDurationBlocks)
-	height := uint64(ctx.BlockHeight())
+	height, err := safeUint64FromInt64(ctx.BlockHeight(), "native emission block height")
+	if err != nil {
+		return err
+	}
 	if interval == 0 || height%interval != 0 {
 		return nil
 	}

@@ -6,8 +6,8 @@ import (
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
 
-	aetraaddress "github.com/sovereign-l1/l1/app/addressing"
 	v1 "github.com/sovereign-l1/l1/api/l1/validatorelection/v1"
+	aetraaddress "github.com/sovereign-l1/l1/app/addressing"
 	"github.com/sovereign-l1/l1/x/validator-election/types"
 )
 
@@ -28,6 +28,7 @@ func (m msgServer) ApplyForValidatorSet(ctx context.Context, msg *v1.MsgApplyFor
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
 	}
+	m.Keeper.runtimeCtx = ctx
 	nativeMsg := types.MsgApplyForValidatorSet{
 		Authority:   msg.Authority,
 		Application: candidateApplicationProtoToNative(msg.Application),
@@ -55,10 +56,11 @@ func (m msgServer) WithdrawApplication(ctx context.Context, msg *v1.MsgWithdrawA
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
 	}
+	m.Keeper.runtimeCtx = ctx
 	nativeMsg := types.MsgWithdrawApplication{
-		Authority:      msg.Authority,
+		Authority:       msg.Authority,
 		OperatorAddress: msg.OperatorAddress,
-		Height:         msg.Height,
+		Height:          msg.Height,
 	}
 	app, err := m.Keeper.WithdrawApplication(nativeMsg)
 	if err != nil {
@@ -81,6 +83,7 @@ func (m msgServer) CommitElection(ctx context.Context, msg *v1.MsgCommitElection
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
 	}
+	m.Keeper.runtimeCtx = ctx
 	nativeMsg := types.MsgCommitElection{
 		Authority: msg.Authority,
 		Height:    msg.Height,
@@ -107,6 +110,7 @@ func (m msgServer) FinalizeElection(ctx context.Context, msg *v1.MsgFinalizeElec
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
 	}
+	m.Keeper.runtimeCtx = ctx
 	nativeMsg := types.MsgFinalizeElection{
 		Authority: msg.Authority,
 		Height:    msg.Height,
@@ -133,10 +137,11 @@ func (m msgServer) RequestValidatorExit(ctx context.Context, msg *v1.MsgRequestV
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
 	}
+	m.Keeper.runtimeCtx = ctx
 	nativeMsg := types.MsgRequestValidatorExit{
-		Authority:      msg.Authority,
+		Authority:       msg.Authority,
 		OperatorAddress: msg.OperatorAddress,
-		Height:         msg.Height,
+		Height:          msg.Height,
 	}
 	exit, err := m.Keeper.RequestValidatorExit(nativeMsg)
 	if err != nil {
@@ -159,10 +164,11 @@ func (m msgServer) CancelValidatorExit(ctx context.Context, msg *v1.MsgCancelVal
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
 	}
+	m.Keeper.runtimeCtx = ctx
 	nativeMsg := types.MsgCancelValidatorExit{
-		Authority:      msg.Authority,
+		Authority:       msg.Authority,
 		OperatorAddress: msg.OperatorAddress,
-		Height:         msg.Height,
+		Height:          msg.Height,
 	}
 	exit, err := m.Keeper.CancelValidatorExit(nativeMsg)
 	if err != nil {
@@ -190,36 +196,36 @@ func (m msgServer) requireAuthority(authority string) error {
 
 func candidateApplicationProtoToNative(p v1.CandidateApplication) types.CandidateApplication {
 	return types.CandidateApplication{
-		OperatorAddress:   p.OperatorAddress,
+		OperatorAddress:    p.OperatorAddress,
 		ConsensusPublicKey: p.ConsensusPublicKey,
-		RequestedPower:    p.RequestedPower,
-		SelfBond:          p.SelfBond,
-		ValidatorStatus:   p.ValidatorStatus,
-		Status:            p.Status,
-		AppliedHeight:     p.AppliedHeight,
-		UpdatedHeight:     p.UpdatedHeight,
+		RequestedPower:     p.RequestedPower,
+		SelfBond:           p.SelfBond,
+		ValidatorStatus:    p.ValidatorStatus,
+		Status:             p.Status,
+		AppliedHeight:      p.AppliedHeight,
+		UpdatedHeight:      p.UpdatedHeight,
 	}
 }
 
 func candidateApplicationNativeToProto(n types.CandidateApplication) v1.CandidateApplication {
 	return v1.CandidateApplication{
-		OperatorAddress:   n.OperatorAddress,
+		OperatorAddress:    n.OperatorAddress,
 		ConsensusPublicKey: n.ConsensusPublicKey,
-		RequestedPower:    n.RequestedPower,
-		SelfBond:          n.SelfBond,
-		ValidatorStatus:   n.ValidatorStatus,
-		Status:            n.Status,
-		AppliedHeight:     n.AppliedHeight,
-		UpdatedHeight:     n.UpdatedHeight,
+		RequestedPower:     n.RequestedPower,
+		SelfBond:           n.SelfBond,
+		ValidatorStatus:    n.ValidatorStatus,
+		Status:             n.Status,
+		AppliedHeight:      n.AppliedHeight,
+		UpdatedHeight:      n.UpdatedHeight,
 	}
 }
 
 func validatorPowerNativeToProto(n types.ValidatorPower) v1.ValidatorPower {
 	return v1.ValidatorPower{
-		OperatorAddress:   n.OperatorAddress,
+		OperatorAddress:    n.OperatorAddress,
 		ConsensusPublicKey: n.ConsensusPublicKey,
-		VotingPower:       n.VotingPower,
-		ValidatorStatus:   n.ValidatorStatus,
+		VotingPower:        n.VotingPower,
+		ValidatorStatus:    n.ValidatorStatus,
 	}
 }
 
@@ -243,11 +249,11 @@ func electionResultNativeToProto(n types.ElectionResult) v1.ElectionResult {
 
 func validatorSetTransitionNativeToProto(n types.ValidatorSetTransition) v1.ValidatorSetTransition {
 	return v1.ValidatorSetTransition{
-		Epoch:        n.Epoch,
-		Height:       n.Height,
-		PreviousSet:  validatorPowerSliceNativeToProto(n.PreviousSet),
-		CurrentSet:   validatorPowerSliceNativeToProto(n.CurrentSet),
-		NextSet:      validatorPowerSliceNativeToProto(n.NextSet),
+		Epoch:       n.Epoch,
+		Height:      n.Height,
+		PreviousSet: validatorPowerSliceNativeToProto(n.PreviousSet),
+		CurrentSet:  validatorPowerSliceNativeToProto(n.CurrentSet),
+		NextSet:     validatorPowerSliceNativeToProto(n.NextSet),
 	}
 }
 
@@ -288,9 +294,9 @@ func stateNativeToProto(n types.State) v1.State {
 
 func electionWindowNativeToProto(n types.ElectionWindow) v1.ElectionWindow {
 	return v1.ElectionWindow{
-		StartHeight:             n.StartHeight,
-		EndHeight:               n.EndHeight,
-		WithdrawDeadlineHeight:  n.WithdrawDeadlineHeight,
+		StartHeight:            n.StartHeight,
+		EndHeight:              n.EndHeight,
+		WithdrawDeadlineHeight: n.WithdrawDeadlineHeight,
 	}
 }
 

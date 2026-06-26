@@ -171,19 +171,19 @@ try {
   $node0 = Get-LocalnetKeyAddress -Binary $Binary -NodeHome $node0Home -KeyName "node0"
   $node1 = Get-LocalnetKeyAddress -Binary $Binary -NodeHome $node1Home -KeyName "node1"
 
-  Send-SignedTx -ActionArgs @("tx", "bank", "send", "node0", $node1, "1000naet") -FromHome $node0Home -Fees $AcceptedFees | Out-Null
+  Send-LocalnetBankTx -Binary $Binary -FromHome $node0Home -FromKey "node0" -ToAddress $node1 -Amount "1000naet" -Fees $AcceptedFees -ChainId $ChainId -RPCPort $node0Ports.RPC -TimeoutSeconds $TimeoutSeconds | Out-Null
   Write-Host "bank send with naet fee succeeded"
 
-  Send-SignedTx -ActionArgs @("tx", "bank", "send", "node0", $node1, "1naet") -FromHome $node0Home -Fees $WrongFees -ExpectFailure -ExpectedLog $wrongFeeError | Out-Null
+  Send-LocalnetBankTx -Binary $Binary -FromHome $node0Home -FromKey "node0" -ToAddress $node1 -Amount "1naet" -Fees $WrongFees -ChainId $ChainId -RPCPort $node0Ports.RPC -TimeoutSeconds $TimeoutSeconds -ExpectFailure -ExpectedLog $wrongFeeError | Out-Null
   Write-Host "bank send with wrong fee denom is rejected"
 
-  Send-SignedTx -ActionArgs @("tx", "bank", "send", "node0", $node1, "1naet") -FromHome $node0Home -Fees $MultiDenomFees -ExpectFailure -ExpectedLog $wrongFeeError | Out-Null
+  Send-LocalnetBankTx -Binary $Binary -FromHome $node0Home -FromKey "node0" -ToAddress $node1 -Amount "1naet" -Fees $MultiDenomFees -ChainId $ChainId -RPCPort $node0Ports.RPC -TimeoutSeconds $TimeoutSeconds -ExpectFailure -ExpectedLog $wrongFeeError | Out-Null
   Write-Host "bank send with mixed fee denoms is rejected"
 
-  Send-SignedTx -ActionArgs @("tx", "bank", "send", "node0", $node1, "1naet") -FromHome $node0Home -Fees "0naet" -ExpectFailure -ExpectedLog "fee must be at least" | Out-Null
+  Send-LocalnetBankTx -Binary $Binary -FromHome $node0Home -FromKey "node0" -ToAddress $node1 -Amount "1naet" -Fees "0naet" -ChainId $ChainId -RPCPort $node0Ports.RPC -TimeoutSeconds $TimeoutSeconds -ExpectFailure -ExpectedLog "fee must be at least" | Out-Null
   Write-Host "bank send with zero naet fee is rejected by fee formula"
 
-  Send-SignedTx -ActionArgs @("tx", "bank", "send", "node0", $node1, "1naet") -FromHome $node0Home -Fees "" -ExpectFailure -ExpectedLog "fee must be at least" | Out-Null
+  Send-LocalnetBankTx -Binary $Binary -FromHome $node0Home -FromKey "node0" -ToAddress $node1 -Amount "1naet" -Fees "" -ChainId $ChainId -RPCPort $node0Ports.RPC -TimeoutSeconds $TimeoutSeconds -ExpectFailure -ExpectedLog "fee must be at least" | Out-Null
   Write-Host "bank send with empty fee list is rejected by fee formula"
 
   Send-SignedTx -ActionArgs @("tx", "contract-assets", "create-denom", "gold") -FromHome $node0Home -Fees $AcceptedFees | Out-Null

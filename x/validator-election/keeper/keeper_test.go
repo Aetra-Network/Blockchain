@@ -4,15 +4,33 @@ import (
 	"context"
 	"testing"
 
+	corestore "cosmossdk.io/core/store"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/stretchr/testify/require"
 
+	v1 "github.com/sovereign-l1/l1/api/l1/validatorelection/v1"
 	"github.com/sovereign-l1/l1/app/addressing"
 	"github.com/sovereign-l1/l1/x/internal/kvtest"
 	"github.com/sovereign-l1/l1/x/internal/prototype"
 	"github.com/sovereign-l1/l1/x/validator-election/types"
 	validatorregistrytypes "github.com/sovereign-l1/l1/x/validator-registry/types"
 )
+
+type ctxMarkerKey struct{}
+
+type recordingValidatorElectionStoreService struct {
+	store   *kvtest.Store
+	lastCtx context.Context
+}
+
+func newRecordingValidatorElectionStoreService() *recordingValidatorElectionStoreService {
+	return &recordingValidatorElectionStoreService{store: kvtest.NewStoreService().RawStore()}
+}
+
+func (s *recordingValidatorElectionStoreService) OpenKVStore(ctx context.Context) corestore.KVStore {
+	s.lastCtx = ctx
+	return s.store
+}
 
 func TestDefaultGenesisValidates(t *testing.T) {
 	require.NoError(t, DefaultGenesis().Validate())
@@ -79,14 +97,37 @@ func TestPersistentRuntimeMutationSurvivesRestartAndImport(t *testing.T) {
 	require.Len(t, imported.ElectionCandidates(), 1)
 }
 
+func TestMsgServerUsesCurrentContextForPersistence(t *testing.T) {
+	baseCtx := sdk.WrapSDKContext(sdk.Context{}.WithEventManager(sdk.NewEventManager()))
+	initCtx := context.WithValue(baseCtx, ctxMarkerKey{}, "init")
+	txCtx := context.WithValue(baseCtx, ctxMarkerKey{}, "tx")
+	service := newRecordingValidatorElectionStoreService()
+	source := NewPersistentKeeper(service)
+	require.NoError(t, source.InitGenesisState(initCtx, DefaultGenesis()))
+
+	applyCandidate(t, &source, 0x61, 100, 100, 2)
+	srv := NewMsgServerImpl(&source)
+	_, err := srv.CommitElection(txCtx, &v1.MsgCommitElection{
+		Authority: prototype.DefaultAuthority,
+		Height:    90,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "tx", service.lastCtx.Value(ctxMarkerKey{}))
+
+	restarted := NewPersistentKeeper(service)
+	exported, err := restarted.ExportGenesisState(txCtx)
+	require.NoError(t, err)
+	require.Len(t, exported.State.NextValidatorSet, 1)
+}
+
 func TestCandidateWithdrawalBeforeDeadline(t *testing.T) {
 	k := NewKeeper()
 	app := applyCandidate(t, &k, 0x11, 100, 100, 2)
 
 	withdrawn, err := k.WithdrawApplication(types.MsgWithdrawApplication{
-		Authority:		prototype.DefaultAuthority,
-		OperatorAddress:	app.OperatorAddress,
-		Height:			80,
+		Authority:       prototype.DefaultAuthority,
+		OperatorAddress: app.OperatorAddress,
+		Height:          80,
 	})
 	require.NoError(t, err)
 	require.Equal(t, types.ApplicationStatusWithdrawn, withdrawn.Status)
@@ -101,9 +142,9 @@ func TestCandidateWithdrawalAfterDeadlineRejected(t *testing.T) {
 	app := applyCandidate(t, &k, 0x11, 100, 100, 2)
 
 	_, err := k.WithdrawApplication(types.MsgWithdrawApplication{
-		Authority:		prototype.DefaultAuthority,
-		OperatorAddress:	app.OperatorAddress,
-		Height:			82,
+		Authority:       prototype.DefaultAuthority,
+		OperatorAddress: app.OperatorAddress,
+		Height:          82,
 	})
 	require.ErrorContains(t, err, "deadline")
 }
@@ -151,10 +192,10 @@ func TestMaxVotingPowerCapEnforced(t *testing.T) {
 func TestInvalidNextSetRejectedAtGenesis(t *testing.T) {
 	gs := DefaultGenesis()
 	gs.State.NextValidatorSet = []types.ValidatorPower{{
-		OperatorAddress:	testAddress(0x11),
-		ConsensusPublicKey:	"ed25519:bad",
-		VotingPower:		10,
-		ValidatorStatus:	validatorregistrytypes.StatusJailed,
+		OperatorAddress:    testAddress(0x11),
+		ConsensusPublicKey: "ed25519:bad",
+		VotingPower:        10,
+		ValidatorStatus:    validatorregistrytypes.StatusJailed,
 	}}
 	require.ErrorContains(t, gs.Validate(), "next set")
 }
@@ -176,15 +217,15 @@ func TestTotalVotingPowerLimitEnforced(t *testing.T) {
 func applyCandidate(t *testing.T, k *Keeper, fill byte, requestedPower, selfBond, height uint64) types.CandidateApplication {
 	t.Helper()
 	app, err := k.ApplyForValidatorSet(types.MsgApplyForValidatorSet{
-		Authority:	prototype.DefaultAuthority,
+		Authority: prototype.DefaultAuthority,
 		Application: types.CandidateApplication{
-			OperatorAddress:	testAddress(fill),
-			ConsensusPublicKey:	"ed25519:" + testAddress(fill),
-			RequestedPower:		requestedPower,
-			SelfBond:		selfBond,
-			ValidatorStatus:	validatorregistrytypes.StatusCandidate,
+			OperatorAddress:    testAddress(fill),
+			ConsensusPublicKey: "ed25519:" + testAddress(fill),
+			RequestedPower:     requestedPower,
+			SelfBond:           selfBond,
+			ValidatorStatus:    validatorregistrytypes.StatusCandidate,
 		},
-		Height:	height,
+		Height: height,
 	})
 	require.NoError(t, err)
 	return app
