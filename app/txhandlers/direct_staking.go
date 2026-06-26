@@ -9,21 +9,19 @@ import (
 
 func RejectDirectUserStakingDecorator(next sdk.AnteHandler) sdk.AnteHandler {
 	return func(ctx sdk.Context, tx sdk.Tx, simulate bool) (sdk.Context, error) {
-		for _, msg := range tx.GetMsgs() {
+		if err := walkTxMessages(tx.GetMsgs(), func(msg sdk.Msg) error {
 			switch msg := msg.(type) {
 			case *stakingtypes.MsgDelegate:
-				if err := stakingpolicy.ValidateDelegate(stakingpolicy.DefaultDirectDelegationPolicy(), msg); err != nil {
-					return ctx, err
-				}
+				return stakingpolicy.ValidateDelegate(stakingpolicy.DefaultDirectDelegationPolicy(), msg)
 			case *stakingtypes.MsgBeginRedelegate:
-				if err := stakingpolicy.ValidateBeginRedelegate(stakingpolicy.DefaultDirectDelegationPolicy(), msg); err != nil {
-					return ctx, err
-				}
+				return stakingpolicy.ValidateBeginRedelegate(stakingpolicy.DefaultDirectDelegationPolicy(), msg)
 			case *stakingtypes.MsgUndelegate:
-				if err := stakingpolicy.ValidateUndelegate(stakingpolicy.DefaultDirectDelegationPolicy(), msg); err != nil {
-					return ctx, err
-				}
+				return stakingpolicy.ValidateUndelegate(stakingpolicy.DefaultDirectDelegationPolicy(), msg)
+			default:
+				return nil
 			}
+		}); err != nil {
+			return ctx, err
 		}
 		return next(ctx, tx, simulate)
 	}

@@ -10,6 +10,7 @@ import (
 	cryptotypes "github.com/cosmos/cosmos-sdk/crypto/types"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	signing "github.com/cosmos/cosmos-sdk/types/tx/signing"
+	"github.com/cosmos/cosmos-sdk/x/authz"
 	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
 
 	aetraaddress "github.com/sovereign-l1/l1/app/addressing"
@@ -29,15 +30,15 @@ func (m mockNativeAccountReader) AccountStatus(_ context.Context, userAddress st
 }
 
 type sigTx struct {
-	msgs	[]sdk.Msg
-	signers	[][]byte
+	msgs    []sdk.Msg
+	signers [][]byte
 }
 
-func (tx sigTx) GetMsgs() []sdk.Msg					{ return tx.msgs }
-func (tx sigTx) GetMsgsV2() ([]protov2.Message, error)			{ return nil, nil }
-func (tx sigTx) GetSigners() ([][]byte, error)				{ return tx.signers, nil }
-func (tx sigTx) GetPubKeys() ([]cryptotypes.PubKey, error)		{ return nil, nil }
-func (tx sigTx) GetSignaturesV2() ([]signing.SignatureV2, error)	{ return nil, nil }
+func (tx sigTx) GetMsgs() []sdk.Msg                              { return tx.msgs }
+func (tx sigTx) GetMsgsV2() ([]protov2.Message, error)           { return nil, nil }
+func (tx sigTx) GetSigners() ([][]byte, error)                   { return tx.signers, nil }
+func (tx sigTx) GetPubKeys() ([]cryptotypes.PubKey, error)       { return nil, nil }
+func (tx sigTx) GetSignaturesV2() ([]signing.SignatureV2, error) { return nil, nil }
 
 func newSigTx(addr sdk.AccAddress, msg sdk.Msg) sigTx {
 	return sigTx{msgs: []sdk.Msg{msg}, signers: [][]byte{addr}}
@@ -138,6 +139,24 @@ func TestStorageRentDecoratorAllowsNonNativeMsg(t *testing.T) {
 	require.True(t, called)
 }
 
+func TestStorageRentDecoratorRejectsFrozenNestedMsgExecSigner(t *testing.T) {
+	grantee := testAccAddress(t)
+	frozen := testAccAddress(t)
+	frozenAE := aetraaddress.FormatAccAddress(frozen)
+	reader := mockNativeAccountReader{accounts: map[string]string{frozenAE: nativeaccounttypes.AccountStatusFrozen}}
+
+	called := false
+	next := func(ctx sdk.Context, tx sdk.Tx, simulate bool) (sdk.Context, error) {
+		called = true
+		return ctx, nil
+	}
+
+	execMsg := authz.NewMsgExec(grantee, []sdk.Msg{bankSendMsg(t, frozen)})
+	_, err := StorageRentDecorator(reader, next)(sdk.Context{}, newSigTx(grantee, &execMsg), false)
+	require.ErrorContains(t, err, "frozen native account")
+	require.False(t, called)
+}
+
 func testAccAddress(t *testing.T) sdk.AccAddress {
 	t.Helper()
 	bz := make([]byte, 20)
@@ -151,8 +170,8 @@ func bankSendMsg(t *testing.T, from sdk.AccAddress) *banktypes.MsgSend {
 	t.Helper()
 	aeAddr := aetraaddress.FormatAccAddress(from)
 	return &banktypes.MsgSend{
-		FromAddress:	aeAddr,
-		ToAddress:	aetraaddress.FormatAccAddress(make([]byte, 20)),
-		Amount:		sdk.NewCoins(sdk.NewInt64Coin("naet", 100)),
+		FromAddress: aeAddr,
+		ToAddress:   aetraaddress.FormatAccAddress(make([]byte, 20)),
+		Amount:      sdk.NewCoins(sdk.NewInt64Coin("naet", 100)),
 	}
 }

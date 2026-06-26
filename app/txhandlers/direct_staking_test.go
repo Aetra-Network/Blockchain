@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
+	"github.com/cosmos/cosmos-sdk/x/authz"
 	stakingtypes "github.com/cosmos/cosmos-sdk/x/staking/types"
 	"github.com/stretchr/testify/require"
 	protov2 "google.golang.org/protobuf/proto"
@@ -17,27 +18,27 @@ type msgTx struct {
 	msgs []sdk.Msg
 }
 
-func (tx msgTx) GetMsgs() []sdk.Msg	{ return tx.msgs }
+func (tx msgTx) GetMsgs() []sdk.Msg { return tx.msgs }
 
-func (tx msgTx) GetMsgsV2() ([]protov2.Message, error)	{ return nil, nil }
+func (tx msgTx) GetMsgsV2() ([]protov2.Message, error) { return nil, nil }
 
 func TestRejectDirectUserStakingDecorator(t *testing.T) {
 	amount := sdk.NewInt64Coin("naet", 10)
 	tests := []struct {
-		name	string
-		msg	sdk.Msg
+		name string
+		msg  sdk.Msg
 	}{
 		{
-			name:	"delegate",
-			msg:	stakingtypes.NewMsgDelegate("AE1", "AE2", amount),
+			name: "delegate",
+			msg:  stakingtypes.NewMsgDelegate("AE1", "AE2", amount),
 		},
 		{
-			name:	"redelegate",
-			msg:	stakingtypes.NewMsgBeginRedelegate("AE1", "AE2", "AE3", amount),
+			name: "redelegate",
+			msg:  stakingtypes.NewMsgBeginRedelegate("AE1", "AE2", "AE3", amount),
 		},
 		{
-			name:	"undelegate",
-			msg:	stakingtypes.NewMsgUndelegate("AE1", "AE2", amount),
+			name: "undelegate",
+			msg:  stakingtypes.NewMsgUndelegate("AE1", "AE2", amount),
 		},
 	}
 
@@ -78,6 +79,23 @@ func TestRejectDirectUserStakingDecoratorAllowsValidatorSelfBond(t *testing.T) {
 	_, err := RejectDirectUserStakingDecorator(next)(sdk.Context{}, msgTx{msgs: []sdk.Msg{msg}}, false)
 	require.NoError(t, err)
 	require.True(t, called)
+}
+
+func TestRejectDirectUserStakingDecoratorRejectsNestedMsgExecDelegate(t *testing.T) {
+	grantee := sdk.AccAddress(bytes.Repeat([]byte{0x55}, 20))
+	delegator := aeFromBytesForAnteTest(t, bytes.Repeat([]byte{0x66}, 20))
+	msg := stakingtypes.NewMsgDelegate(delegator, aeFromBytesForAnteTest(t, bytes.Repeat([]byte{0x77}, 20)), sdk.NewInt64Coin("naet", 10))
+	execMsg := authz.NewMsgExec(grantee, []sdk.Msg{msg})
+
+	called := false
+	next := func(ctx sdk.Context, tx sdk.Tx, simulate bool) (sdk.Context, error) {
+		called = true
+		return ctx, nil
+	}
+
+	_, err := RejectDirectUserStakingDecorator(next)(sdk.Context{}, msgTx{msgs: []sdk.Msg{&execMsg}}, false)
+	require.ErrorContains(t, err, stakingpolicy.DirectUserDelegationDisabledMessage)
+	require.False(t, called)
 }
 
 func aeFromBytesForAnteTest(t *testing.T, bz []byte) string {

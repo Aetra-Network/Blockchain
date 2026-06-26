@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
-	authsigning "github.com/cosmos/cosmos-sdk/x/auth/signing"
 
 	aetraaddress "github.com/sovereign-l1/l1/app/addressing"
 	nativeaccounttypes "github.com/sovereign-l1/l1/x/native-account/types"
@@ -28,12 +27,7 @@ func StorageRentDecorator(accountReader NativeAccountStatusReader, next sdk.Ante
 			return next(ctx, tx, simulate)
 		}
 
-		sigTx, ok := tx.(authsigning.SigVerifiableTx)
-		if !ok {
-			return next(ctx, tx, simulate)
-		}
-
-		signers, err := sigTx.GetSigners()
+		signers, err := collectTxSigners(tx)
 		if err != nil {
 			return ctx, err
 		}

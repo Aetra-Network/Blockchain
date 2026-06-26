@@ -18,23 +18,23 @@ import (
 var genesisKey = []byte{0x01}
 
 type GenesisState struct {
-	Version	uint64
-	Params	types.Params
-	State	types.State
+	Version uint64
+	Params  types.Params
+	State   types.State
 }
 
 type OperationCounters struct {
-	PoolLookups			uint64
-	DelegatorLookups		uint64
-	DelegatorRewardUpdates		uint64
-	ValidatorAllocationReads	uint64
-	ProofQueries			uint64
+	PoolLookups              uint64
+	DelegatorLookups         uint64
+	DelegatorRewardUpdates   uint64
+	ValidatorAllocationReads uint64
+	ProofQueries             uint64
 }
 
 const (
-	accountStatusActive	= "active"
-	accountStatusInactive	= "inactive"
-	accountStatusFrozen	= "frozen"
+	accountStatusActive   = "active"
+	accountStatusInactive = "inactive"
+	accountStatusFrozen   = "frozen"
 )
 
 type AccountStatusReader interface {
@@ -42,17 +42,17 @@ type AccountStatusReader interface {
 }
 
 type poolIndexEntry struct {
-	index		int
-	delegator	map[string]int
+	index     int
+	delegator map[string]int
 }
 
 type Keeper struct {
-	genesis			GenesisState
-	storeService		corestore.KVStoreService
-	runtimeCtx		context.Context
-	accountStatusReader	AccountStatusReader
-	indexes			map[string]poolIndexEntry
-	counters		OperationCounters
+	genesis             GenesisState
+	storeService        corestore.KVStoreService
+	runtimeCtx          context.Context
+	accountStatusReader AccountStatusReader
+	indexes             map[string]poolIndexEntry
+	counters            OperationCounters
 }
 
 func NewKeeper() Keeper {
@@ -195,9 +195,9 @@ func (k *Keeper) UpdateParams(msg types.MsgUpdateParams) (types.Params, error) {
 
 func (k *Keeper) UpdateStakingParams(msg types.MsgUpdateStakingParams) (types.Params, error) {
 	return k.UpdateParams(types.MsgUpdateParams{
-		Authority:	msg.Authority,
-		Params:		msg.Params,
-		Height:		msg.Height,
+		Authority: msg.Authority,
+		Params:    msg.Params,
+		Height:    msg.Height,
 	})
 }
 
@@ -228,15 +228,15 @@ func (k *Keeper) RegisterValidator(msg types.MsgRegisterValidator) (types.Valida
 		return types.ValidatorRegistrationReceipt{}, err
 	}
 	validator := types.Validator{
-		Address:		msg.ValidatorAddress,
-		SelfStake:		msg.SelfStake,
-		NominatorStake:		msg.NominatorStake,
-		Status:			types.StateValidatorStatusActive,
-		PerformanceScore:	types.MaxBasisPoints,
-		CommissionBps:		msg.CommissionBps,
-		SlashingRiskBps:	0,
-		AllocationLimitBps:	k.genesis.Params.MaxPoolValidatorAllocationBps,
-		UpdatedHeight:		msg.Height,
+		Address:            msg.ValidatorAddress,
+		SelfStake:          msg.SelfStake,
+		NominatorStake:     msg.NominatorStake,
+		Status:             types.StateValidatorStatusActive,
+		PerformanceScore:   types.MaxBasisPoints,
+		CommissionBps:      msg.CommissionBps,
+		SlashingRiskBps:    0,
+		AllocationLimitBps: k.genesis.Params.MaxPoolValidatorAllocationBps,
+		UpdatedHeight:      msg.Height,
 	}
 	next := cloneGenesis(k.genesis)
 	next.State.Validators = append(next.State.Validators, validator)
@@ -248,11 +248,11 @@ func (k *Keeper) RegisterValidator(msg types.MsgRegisterValidator) (types.Valida
 		return types.ValidatorRegistrationReceipt{}, err
 	}
 	return types.ValidatorRegistrationReceipt{
-		Validator:	msg.ValidatorAddress,
-		Status:		validator.Status,
-		SelfStake:	validator.SelfStake,
-		PoolStake:	validator.NominatorStake,
-		TouchedKeys:	[]string{string(types.ValidatorKey(msg.ValidatorAddress))},
+		Validator:   msg.ValidatorAddress,
+		Status:      validator.Status,
+		SelfStake:   validator.SelfStake,
+		PoolStake:   validator.NominatorStake,
+		TouchedKeys: []string{string(types.ValidatorKey(msg.ValidatorAddress))},
 	}, nil
 }
 
@@ -313,11 +313,11 @@ func (k *Keeper) UpdateValidator(msg types.MsgUpdateValidator) (types.ValidatorR
 		return types.ValidatorRegistrationReceipt{}, err
 	}
 	return types.ValidatorRegistrationReceipt{
-		Validator:	validator.Address,
-		Status:		validator.Status,
-		SelfStake:	validator.SelfStake,
-		PoolStake:	validator.NominatorStake,
-		TouchedKeys:	[]string{string(types.ValidatorKey(validator.Address))},
+		Validator:   validator.Address,
+		Status:      validator.Status,
+		SelfStake:   validator.SelfStake,
+		PoolStake:   validator.NominatorStake,
+		TouchedKeys: []string{string(types.ValidatorKey(validator.Address))},
 	}, nil
 }
 
@@ -325,8 +325,8 @@ func (k *Keeper) rebuildIndexes() {
 	k.indexes = make(map[string]poolIndexEntry, len(k.genesis.State.Pools))
 	for poolIdx, pool := range k.genesis.State.Pools {
 		entry := poolIndexEntry{
-			index:		poolIdx,
-			delegator:	make(map[string]int, len(pool.DelegatorShares)),
+			index:     poolIdx,
+			delegator: make(map[string]int, len(pool.DelegatorShares)),
 		}
 		for delegatorIdx, share := range pool.DelegatorShares {
 			entry.delegator[share.Delegator] = delegatorIdx
@@ -380,11 +380,11 @@ func (k *Keeper) CreateNominatorPool(msg types.MsgCreateNominatorPool) (types.No
 		return types.NominatorPool{}, errors.New("nominator pool already exists")
 	}
 	pool := types.NominatorPool{
-		PoolID:			msg.PoolID,
-		PoolOperator:		msg.PoolOperator,
-		ValidatorTarget:	msg.ValidatorTarget,
-		PoolCommissionBps:	msg.PoolCommissionBps,
-		Status:			types.PoolStatusActive,
+		PoolID:            msg.PoolID,
+		PoolOperator:      msg.PoolOperator,
+		ValidatorTarget:   msg.ValidatorTarget,
+		PoolCommissionBps: msg.PoolCommissionBps,
+		Status:            types.PoolStatusActive,
 	}
 	if err := pool.Validate(k.genesis.Params); err != nil {
 		return types.NominatorPool{}, err
@@ -412,13 +412,13 @@ func (k *Keeper) CreateOfficialLiquidStakingPool(msg types.MsgCreateOfficialLiqu
 		return types.NominatorPool{}, errors.New("official liquid staking pool already exists")
 	}
 	pool := types.NominatorPool{
-		PoolID:			msg.PoolID,
-		ContractAddressUser:	msg.ContractAddressUser,
-		ContractAddressRaw:	msg.ContractAddressRaw,
-		OfficialLiquidStaking:	true,
-		PoolOperator:		msg.PoolOperator,
-		PoolCommissionBps:	msg.PoolCommissionBps,
-		Status:			types.PoolStatusActive,
+		PoolID:                msg.PoolID,
+		ContractAddressUser:   msg.ContractAddressUser,
+		ContractAddressRaw:    msg.ContractAddressRaw,
+		OfficialLiquidStaking: true,
+		PoolOperator:          msg.PoolOperator,
+		PoolCommissionBps:     msg.PoolCommissionBps,
+		Status:                types.PoolStatusActive,
 	}
 	if err := pool.Validate(k.genesis.Params); err != nil {
 		return types.NominatorPool{}, err
@@ -426,13 +426,13 @@ func (k *Keeper) CreateOfficialLiquidStakingPool(msg types.MsgCreateOfficialLiqu
 	next := cloneGenesis(k.genesis)
 	next.State.Pools = append(next.State.Pools, pool)
 	next.State.LiquidStakingPools = append(next.State.LiquidStakingPools, types.LiquidStakingPool{
-		PoolID:				msg.PoolID,
-		ContractAddressUser:		msg.ContractAddressUser,
-		ContractAddressRaw:		msg.ContractAddressRaw,
-		ReceiptToken:			next.Params.PoolReceiptDenomOrCodeID,
-		RentPayerPolicy:		types.RentPayerPolicyPoolReserve,
-		Status:				types.PoolStatusActive,
-		LastStorageChargeHeight:	msg.Height,
+		PoolID:                  msg.PoolID,
+		ContractAddressUser:     msg.ContractAddressUser,
+		ContractAddressRaw:      msg.ContractAddressRaw,
+		ReceiptToken:            next.Params.PoolReceiptDenomOrCodeID,
+		RentPayerPolicy:         types.RentPayerPolicyPoolReserve,
+		Status:                  types.PoolStatusActive,
+		LastStorageChargeHeight: msg.Height,
 	})
 	next.State = next.State.Normalize(next.Params)
 	if err := next.Validate(); err != nil {
@@ -471,10 +471,10 @@ func (k *Keeper) DepositToPool(msg types.MsgDepositToPool) (types.DelegatorShare
 		pool.DelegatorShares[delegatorIdx] = delegator
 	} else {
 		delegator = types.DelegatorShare{
-			Delegator:		msg.Delegator,
-			Shares:			shareAmount,
-			RewardIndexCheckpoint:	pool.RewardIndex,
-			SlashIndexCheckpoint:	pool.SlashIndex,
+			Delegator:             msg.Delegator,
+			Shares:                shareAmount,
+			RewardIndexCheckpoint: pool.RewardIndex,
+			SlashIndexCheckpoint:  pool.SlashIndex,
 		}
 		pool.DelegatorShares = append(pool.DelegatorShares, delegator)
 	}
@@ -515,10 +515,10 @@ func (k *Keeper) DepositToOfficialLiquidStaking(msg types.MsgDepositToOfficialLi
 		pool.DelegatorShares[delegatorIdx] = delegator
 	} else {
 		delegator = types.DelegatorShare{
-			Delegator:		rawUserAddress,
-			Shares:			shareAmount,
-			RewardIndexCheckpoint:	pool.RewardIndex,
-			SlashIndexCheckpoint:	pool.SlashIndex,
+			Delegator:             rawUserAddress,
+			Shares:                shareAmount,
+			RewardIndexCheckpoint: pool.RewardIndex,
+			SlashIndexCheckpoint:  pool.SlashIndex,
 		}
 		pool.DelegatorShares = append(pool.DelegatorShares, delegator)
 	}
@@ -578,11 +578,11 @@ func (k *Keeper) DepositToStakingPool(msg types.MsgDepositToStakingPool) (types.
 		poolID = resolvedID
 	}
 	share, err := k.DepositToOfficialLiquidStaking(types.MsgDepositToOfficialLiquidStaking{
-		Authority:	k.genesis.Params.Authority,
-		PoolID:		poolID,
-		UserAddress:	msg.WalletAddress,
-		Amount:		msg.Amount,
-		Height:		msg.Height,
+		Authority:   k.genesis.Params.Authority,
+		PoolID:      poolID,
+		UserAddress: msg.WalletAddress,
+		Amount:      msg.Amount,
+		Height:      msg.Height,
 	})
 	if err != nil {
 		return types.StakingPoolDepositReceipt{}, err
@@ -602,16 +602,16 @@ func (k *Keeper) DepositToStakingPool(msg types.MsgDepositToStakingPool) (types.
 		return types.StakingPoolDepositReceipt{}, err
 	}
 	return types.StakingPoolDepositReceipt{
-		PoolID:				poolID,
-		OwnerAddress:			msg.WalletAddress,
-		PoolContractAddressUser:	pool.ContractAddressUser,
-		ReceiptToken:			k.genesis.Params.PoolReceiptDenomOrCodeID,
-		Amount:				msg.Amount,
-		Shares:				share.Shares,
-		Height:				msg.Height,
+		PoolID:                  poolID,
+		OwnerAddress:            msg.WalletAddress,
+		PoolContractAddressUser: pool.ContractAddressUser,
+		ReceiptToken:            k.genesis.Params.PoolReceiptDenomOrCodeID,
+		Amount:                  msg.Amount,
+		Shares:                  share.Shares,
+		Height:                  msg.Height,
 		InternalMetadata: types.PoolStateMetadata{
-			OwnerRaw:		rawUserAddress,
-			PoolContractAddressRaw:	pool.ContractAddressRaw,
+			OwnerRaw:               rawUserAddress,
+			PoolContractAddressRaw: pool.ContractAddressRaw,
 			TouchedKeys: []string{
 				string(types.PoolKey(poolID)),
 				string(types.PoolShareKey(poolID, msg.WalletAddress)),
@@ -655,9 +655,9 @@ func (k *Keeper) InjectPooledStake(msg types.MsgInjectPooledStake) (types.Nomina
 		pool.Allocations[allocationIdx] = allocation
 	} else {
 		pool.Allocations = append(pool.Allocations, types.PoolAllocation{
-			ValidatorAddress:	msg.ValidatorAddress,
-			Amount:			msg.Amount,
-			Height:			msg.Height,
+			ValidatorAddress: msg.ValidatorAddress,
+			Amount:           msg.Amount,
+			Height:           msg.Height,
 		})
 	}
 	savedPool, err := k.savePoolOnly(idx, pool)
@@ -679,11 +679,11 @@ func (k *Keeper) InjectPoolStake(msg types.MsgInjectPoolStake) (types.PoolRebala
 	var updated types.NominatorPool
 	for _, allocation := range types.SortAllocations(msg.Allocations) {
 		pool, err := k.InjectPooledStake(types.MsgInjectPooledStake{
-			CallerContractUser:	msg.CallerContractUser,
-			PoolID:			msg.PoolID,
-			ValidatorAddress:	allocation.ValidatorAddress,
-			Amount:			allocation.Amount,
-			Height:			msg.Height,
+			CallerContractUser: msg.CallerContractUser,
+			PoolID:             msg.PoolID,
+			ValidatorAddress:   allocation.ValidatorAddress,
+			Amount:             allocation.Amount,
+			Height:             msg.Height,
 		})
 		if err != nil {
 			return types.PoolRebalanceReceipt{}, err
@@ -738,9 +738,9 @@ func (k *Keeper) RebalancePoolAllocations(msg types.MsgRebalancePoolAllocations)
 		}
 		allocated += amount
 		nextAllocations = append(nextAllocations, types.PoolAllocation{
-			ValidatorAddress:	weight.ValidatorAddress,
-			Amount:			amount,
-			Height:			msg.Height,
+			ValidatorAddress: weight.ValidatorAddress,
+			Amount:           amount,
+			Height:           msg.Height,
 		})
 		if err := k.upsertPoolValidatorAllocation(msg.PoolID, weight.ValidatorAddress, amount, msg.Height); err != nil {
 			return types.PoolRebalanceReceipt{}, err
@@ -798,13 +798,13 @@ func (k *Keeper) SetOfficialLiquidStakingContract(msg types.MsgSetOfficialLiquid
 		next.State.LiquidStakingPools[liquidIdx] = liquid
 	} else {
 		next.State.LiquidStakingPools = append(next.State.LiquidStakingPools, types.LiquidStakingPool{
-			PoolID:				msg.PoolID,
-			ContractAddressUser:		msg.ContractAddressUser,
-			ContractAddressRaw:		msg.ContractAddressRaw,
-			ReceiptToken:			next.Params.PoolReceiptDenomOrCodeID,
-			RentPayerPolicy:		types.RentPayerPolicyPoolReserve,
-			Status:				pool.Status,
-			LastStorageChargeHeight:	msg.Height,
+			PoolID:                  msg.PoolID,
+			ContractAddressUser:     msg.ContractAddressUser,
+			ContractAddressRaw:      msg.ContractAddressRaw,
+			ReceiptToken:            next.Params.PoolReceiptDenomOrCodeID,
+			RentPayerPolicy:         types.RentPayerPolicyPoolReserve,
+			Status:                  pool.Status,
+			LastStorageChargeHeight: msg.Height,
 		})
 	}
 	next.State = next.State.Normalize(next.Params)
@@ -855,21 +855,21 @@ func (k *Keeper) RequestPoolWithdrawal(msg types.MsgRequestPoolWithdrawal) (type
 		pool.DelegatorShares[delegatorIdx] = delegator
 	}
 	withdrawal := types.PendingWithdrawal{
-		WithdrawalID:	msg.WithdrawalID,
-		Delegator:	msg.Delegator,
-		Shares:		msg.Shares,
-		Amount:		amount,
-		RequestHeight:	msg.Height,
-		CompleteHeight:	msg.Height + k.genesis.Params.UnbondingBlocks,
-		Status:		types.WithdrawalStatusPending,
+		WithdrawalID:   msg.WithdrawalID,
+		Delegator:      msg.Delegator,
+		Shares:         msg.Shares,
+		Amount:         amount,
+		RequestHeight:  msg.Height,
+		CompleteHeight: msg.Height + k.genesis.Params.UnbondingBlocks,
+		Status:         types.WithdrawalStatusPending,
 	}
 	pool.PendingWithdrawals = append(pool.PendingWithdrawals, withdrawal)
 	pool.UnbondingQueue = append(pool.UnbondingQueue, types.UnbondingEntry{
-		WithdrawalID:	withdrawal.WithdrawalID,
-		Delegator:	withdrawal.Delegator,
-		Amount:		withdrawal.Amount,
-		CompleteHeight:	withdrawal.CompleteHeight,
-		Status:		withdrawal.Status,
+		WithdrawalID:   withdrawal.WithdrawalID,
+		Delegator:      withdrawal.Delegator,
+		Amount:         withdrawal.Amount,
+		CompleteHeight: withdrawal.CompleteHeight,
+		Status:         withdrawal.Status,
 	})
 	next := cloneGenesis(k.genesis)
 	next.State.Pools[idx] = pool
@@ -895,12 +895,12 @@ func (k *Keeper) RequestPoolUnbond(msg types.MsgRequestPoolUnbond) (types.PoolUn
 		return types.PoolUnbondReceipt{}, err
 	}
 	withdrawal, err := k.RequestPoolWithdrawal(types.MsgRequestPoolWithdrawal{
-		Authority:	k.genesis.Params.Authority,
-		PoolID:		msg.PoolID,
-		WithdrawalID:	msg.RequestID,
-		Delegator:	rawOwner,
-		Shares:		msg.Shares,
-		Height:		msg.Height,
+		Authority:    k.genesis.Params.Authority,
+		PoolID:       msg.PoolID,
+		WithdrawalID: msg.RequestID,
+		Delegator:    rawOwner,
+		Shares:       msg.Shares,
+		Height:       msg.Height,
 	})
 	if err != nil {
 		return types.PoolUnbondReceipt{}, err
@@ -919,16 +919,16 @@ func (k *Keeper) RequestPoolUnbond(msg types.MsgRequestPoolUnbond) (types.PoolUn
 		return types.PoolUnbondReceipt{}, err
 	}
 	return types.PoolUnbondReceipt{
-		PoolID:		msg.PoolID,
-		OwnerAddress:	msg.OwnerAddress,
-		RequestID:	msg.RequestID,
-		Shares:		withdrawal.Shares,
-		Amount:		withdrawal.Amount,
-		RequestHeight:	withdrawal.RequestHeight,
-		CompleteHeight:	withdrawal.CompleteHeight,
+		PoolID:         msg.PoolID,
+		OwnerAddress:   msg.OwnerAddress,
+		RequestID:      msg.RequestID,
+		Shares:         withdrawal.Shares,
+		Amount:         withdrawal.Amount,
+		RequestHeight:  withdrawal.RequestHeight,
+		CompleteHeight: withdrawal.CompleteHeight,
 		InternalMetadata: types.PoolStateMetadata{
-			OwnerRaw:		rawOwner,
-			PoolContractAddressRaw:	pool.ContractAddressRaw,
+			OwnerRaw:               rawOwner,
+			PoolContractAddressRaw: pool.ContractAddressRaw,
 			TouchedKeys: []string{
 				string(types.PoolKey(msg.PoolID)),
 				string(types.PoolShareKey(msg.PoolID, msg.OwnerAddress)),
@@ -993,14 +993,14 @@ func (k *Keeper) WithdrawPoolStake(msg types.MsgWithdrawPoolStake) (types.PoolWi
 		return types.PoolWithdrawalReceipt{}, err
 	}
 	return types.PoolWithdrawalReceipt{
-		PoolID:		msg.PoolID,
-		OwnerAddress:	msg.OwnerAddress,
-		RequestID:	msg.RequestID,
-		Amount:		withdrawal.Amount,
-		Height:		msg.Height,
+		PoolID:       msg.PoolID,
+		OwnerAddress: msg.OwnerAddress,
+		RequestID:    msg.RequestID,
+		Amount:       withdrawal.Amount,
+		Height:       msg.Height,
 		InternalMetadata: types.PoolStateMetadata{
-			OwnerRaw:		rawOwner,
-			PoolContractAddressRaw:	pool.ContractAddressRaw,
+			OwnerRaw:               rawOwner,
+			PoolContractAddressRaw: pool.ContractAddressRaw,
 			TouchedKeys: []string{
 				string(types.PoolKey(msg.PoolID)),
 				string(types.PoolUnbondingKey(msg.PoolID, msg.OwnerAddress, msg.RequestID)),
@@ -1061,14 +1061,14 @@ func (k *Keeper) TopUpPoolReserve(msg types.MsgTopUpPoolReserve) (types.PoolTopU
 		return types.PoolTopUpReceipt{}, err
 	}
 	return types.PoolTopUpReceipt{
-		PoolID:			msg.PoolID,
-		PayerAddress:		msg.PayerAddress,
-		Amount:			msg.Amount,
-		StorageDebtPaid:	debtPaid,
-		Height:			msg.Height,
+		PoolID:          msg.PoolID,
+		PayerAddress:    msg.PayerAddress,
+		Amount:          msg.Amount,
+		StorageDebtPaid: debtPaid,
+		Height:          msg.Height,
 		InternalMetadata: types.PoolStateMetadata{
-			OwnerRaw:		rawPayer,
-			PoolContractAddressRaw:	pool.ContractAddressRaw,
+			OwnerRaw:               rawPayer,
+			PoolContractAddressRaw: pool.ContractAddressRaw,
 			TouchedKeys: []string{
 				string(types.PoolKey(msg.PoolID)),
 				string(types.PoolStorageDebtKey(msg.PoolID)),
@@ -1118,10 +1118,10 @@ func (k *Keeper) CancelPoolWithdrawal(msg types.MsgCancelPoolWithdrawal) (types.
 		pool.DelegatorShares[delegatorIdx] = delegator
 	} else {
 		pool.DelegatorShares = append(pool.DelegatorShares, types.DelegatorShare{
-			Delegator:		msg.Delegator,
-			Shares:			shares,
-			RewardIndexCheckpoint:	pool.RewardIndex,
-			SlashIndexCheckpoint:	pool.SlashIndex,
+			Delegator:             msg.Delegator,
+			Shares:                shares,
+			RewardIndexCheckpoint: pool.RewardIndex,
+			SlashIndexCheckpoint:  pool.SlashIndex,
 		})
 	}
 	pool.TotalShares += shares
@@ -1150,6 +1150,12 @@ func (k *Keeper) ClaimPoolRewards(msg types.MsgClaimPoolRewards) (uint64, error)
 		}
 		if err := k.ensureActiveWallet(ownerAddress, "pool reward claim"); err != nil {
 			return 0, err
+		}
+		if msg.Authority == "" {
+			msg.Authority = ownerAddress
+		}
+		if msg.Authority != ownerAddress {
+			return 0, errors.New("pool reward claim signer must match owner address")
 		}
 		rawOwner, err := types.RawAddressForUserAddress(ownerAddress)
 		if err != nil {
@@ -1212,14 +1218,14 @@ func (k *Keeper) ClaimPoolRewardsWithReceipt(msg types.MsgClaimPoolRewards) (typ
 		return types.PoolRewardClaimReceipt{}, errors.New("nominator pool not found")
 	}
 	return types.PoolRewardClaimReceipt{
-		PoolID:		msg.PoolID,
-		OwnerAddress:	msg.OwnerAddress,
-		Amount:		amount,
-		Epoch:		pool.RewardEpoch,
-		Height:		msg.Height,
+		PoolID:       msg.PoolID,
+		OwnerAddress: msg.OwnerAddress,
+		Amount:       amount,
+		Epoch:        pool.RewardEpoch,
+		Height:       msg.Height,
 		InternalMetadata: types.PoolStateMetadata{
-			OwnerRaw:		rawOwner,
-			PoolContractAddressRaw:	pool.ContractAddressRaw,
+			OwnerRaw:               rawOwner,
+			PoolContractAddressRaw: pool.ContractAddressRaw,
 			TouchedKeys: []string{
 				string(types.PoolShareKey(msg.PoolID, msg.OwnerAddress)),
 				string(types.RewardClaimKey(msg.PoolID, msg.OwnerAddress, pool.RewardEpoch)),
@@ -1286,13 +1292,13 @@ func (k *Keeper) ClaimStakeReputation(msg types.MsgClaimStakeReputation) (types.
 		return types.StakeReputationClaimReceipt{}, err
 	}
 	return types.StakeReputationClaimReceipt{
-		Account:		msg.OwnerAddress,
-		PoolID:			msg.PoolID,
-		ReputationDelta:	scoreDelta,
-		Height:			msg.Height,
+		Account:         msg.OwnerAddress,
+		PoolID:          msg.PoolID,
+		ReputationDelta: scoreDelta,
+		Height:          msg.Height,
 		InternalMetadata: types.PoolStateMetadata{
-			OwnerRaw:	rawOwner,
-			TouchedKeys:	[]string{string(types.PoolShareKey(msg.PoolID, msg.OwnerAddress))},
+			OwnerRaw:    rawOwner,
+			TouchedKeys: []string{string(types.PoolShareKey(msg.PoolID, msg.OwnerAddress))},
 		},
 	}, nil
 }
@@ -1503,15 +1509,15 @@ func (k *Keeper) ApplyValidatorSlash(msg types.MsgApplyValidatorSlash) ([]types.
 			k.genesis.State.Pools[poolIdx] = pool
 
 			event := types.ValidatorSlashEvent{
-				Height:			msg.Height,
-				Validator:		msg.ValidatorAddress,
-				PoolID:			pool.PoolID,
-				Fault:			msg.Fault,
-				Epoch:			msg.Epoch,
-				SlashingLoss:		slashAmount,
-				ValidatorStatus:	newStatus,
-				Tombstoned:		tombstoned,
-				PoolSlashIndexAfter:	pool.SlashIndex,
+				Height:              msg.Height,
+				Validator:           msg.ValidatorAddress,
+				PoolID:              pool.PoolID,
+				Fault:               msg.Fault,
+				Epoch:               msg.Epoch,
+				SlashingLoss:        slashAmount,
+				ValidatorStatus:     newStatus,
+				Tombstoned:          tombstoned,
+				PoolSlashIndexAfter: pool.SlashIndex,
 			}
 			events = append(events, event)
 
@@ -1610,8 +1616,8 @@ func (k *Keeper) PoolShare(req types.QueryPoolShareRequest) (types.QueryPoolShar
 		return types.QueryPoolShareResponse{}, false
 	}
 	return types.QueryPoolShareResponse{
-		Share:		share,
-		PendingRewards:	types.AccruedReward(share, pool.RewardIndex),
+		Share:          share,
+		PendingRewards: types.AccruedReward(share, pool.RewardIndex),
 	}, true
 }
 
@@ -1640,8 +1646,8 @@ func (k Keeper) PoolUnbondingQueue(poolID string) []types.UnbondingEntry {
 
 type Migrator struct{ keeper *Keeper }
 
-func NewMigrator(k *Keeper) Migrator	{ return Migrator{keeper: k} }
-func (m Migrator) Migrate1to2() error	{ return m.keeper.ExportGenesis().Validate() }
+func NewMigrator(k *Keeper) Migrator  { return Migrator{keeper: k} }
+func (m Migrator) Migrate1to2() error { return m.keeper.ExportGenesis().Validate() }
 func (k Keeper) Migrate1to2State(ctx context.Context) error {
 	_, err := k.ExportGenesisState(ctx)
 	return err
@@ -1765,12 +1771,12 @@ func (k *Keeper) upsertLiquidPoolAfterPoolMutation(pool types.NominatorPool, hei
 	idx, liquid, found := findLiquidPool(k.genesis.State.LiquidStakingPools, pool.PoolID)
 	if !found {
 		liquid = types.LiquidStakingPool{
-			PoolID:			pool.PoolID,
-			ContractAddressUser:	pool.ContractAddressUser,
-			ContractAddressRaw:	pool.ContractAddressRaw,
-			ReceiptToken:		k.genesis.Params.PoolReceiptDenomOrCodeID,
-			RentPayerPolicy:	types.RentPayerPolicyPoolReserve,
-			Status:			pool.Status,
+			PoolID:              pool.PoolID,
+			ContractAddressUser: pool.ContractAddressUser,
+			ContractAddressRaw:  pool.ContractAddressRaw,
+			ReceiptToken:        k.genesis.Params.PoolReceiptDenomOrCodeID,
+			RentPayerPolicy:     types.RentPayerPolicyPoolReserve,
+			Status:              pool.Status,
 		}
 	}
 	liquid.ContractAddressUser = pool.ContractAddressUser
@@ -1800,10 +1806,10 @@ func (k *Keeper) upsertPoolShare(poolID string, owner string, delegator types.De
 	idx, share, found := findPoolShare(k.genesis.State.PoolShares, poolID, owner)
 	if !found {
 		share = types.PoolShare{
-			Owner:			owner,
-			PoolID:			poolID,
-			CreatedHeight:		height,
-			LastReputationUpdate:	height,
+			Owner:                owner,
+			PoolID:               poolID,
+			CreatedHeight:        height,
+			LastReputationUpdate: height,
 		}
 	}
 	share.Shares = delegator.Shares
@@ -1970,13 +1976,13 @@ func (k Keeper) poolAllocationReceipt(pool types.NominatorPool, epoch uint64, he
 		touched = append(touched, string(types.PoolAllocationKey(pool.PoolID, allocation.Validator)))
 	}
 	return types.PoolRebalanceReceipt{
-		PoolID:		pool.PoolID,
-		Epoch:		epoch,
-		Height:		height,
-		Allocations:	allocations,
+		PoolID:      pool.PoolID,
+		Epoch:       epoch,
+		Height:      height,
+		Allocations: allocations,
 		InternalMetadata: types.PoolStateMetadata{
-			PoolContractAddressRaw:	pool.ContractAddressRaw,
-			TouchedKeys:		touched,
+			PoolContractAddressRaw: pool.ContractAddressRaw,
+			TouchedKeys:            touched,
 		},
 	}, nil
 }

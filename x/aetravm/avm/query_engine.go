@@ -1,6 +1,7 @@
 package avm
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -22,14 +23,14 @@ import (
 //   - No side-effect buffer exists
 //   - Only read-only execution frame is created
 type QueryExecutionDomain struct {
-	Snapshot	QuerySnapshot
-	MethodID	uint32
-	Args		[]byte
-	GasLimit	uint64
-	StackTrace	[]QueryTraceStep
-	GasUsed		uint64
-	ExitCode	uint32
-	Response	[]byte
+	Snapshot   QuerySnapshot
+	MethodID   uint32
+	Args       []byte
+	GasLimit   uint64
+	StackTrace []QueryTraceStep
+	GasUsed    uint64
+	ExitCode   uint32
+	Response   []byte
 }
 
 // QueryGasModel separates query gas from execution gas.
@@ -40,17 +41,17 @@ type QueryExecutionDomain struct {
 //   - query gas accounting is deterministic
 //   - gas breakdown is tracked per phase
 type QueryGasModel struct {
-	ComputeGas		uint64
-	DecodeGas		uint64
-	SerializationGas	uint64
+	ComputeGas       uint64
+	DecodeGas        uint64
+	SerializationGas uint64
 }
 
 // QueryGasAccounting tracks gas usage during query execution.
 type QueryGasAccounting struct {
-	Model	QueryGasModel
-	Used	QueryGasModel
-	Limit	uint64
-	Aborted	bool
+	Model   QueryGasModel
+	Used    QueryGasModel
+	Limit   uint64
+	Aborted bool
 }
 
 // QueryIsolationBoundary defines what a query frame MAY and MAY NOT access.
@@ -62,12 +63,12 @@ type QueryGasAccounting struct {
 //   - No effectful host function may be called
 //   - All inputs must come from QuerySnapshot or method arguments
 type QueryIsolationBoundary struct {
-	AllowedReads		[]string
-	ForbiddenEffects	[]HostFunction
-	CanReadStorage		bool
-	CanSendMessages		bool
-	CanEmitEvents		bool
-	CanWriteStorage		bool
+	AllowedReads     []string
+	ForbiddenEffects []HostFunction
+	CanReadStorage   bool
+	CanSendMessages  bool
+	CanEmitEvents    bool
+	CanWriteStorage  bool
 }
 
 // QueryProofMode enables verifiable query responses for light clients.
@@ -78,18 +79,18 @@ type QueryIsolationBoundary struct {
 //   - Allows light client verification without full state
 //   - Proof is deterministic: same (snapshot + args) → identical proof
 type QueryProofMode struct {
-	Enabled		bool
-	InclusionProofs	[]QueryInclusionProof
-	StateRootProof	[]byte
-	ResponseProof	[]byte
+	Enabled         bool
+	InclusionProofs []QueryInclusionProof
+	StateRootProof  []byte
+	ResponseProof   []byte
 }
 
 // QueryInclusionProof proves that a key-value pair exists in state.
 type QueryInclusionProof struct {
-	Key		[]byte
-	Value		[]byte
-	ProofPath	[][]byte
-	ProofIndex	int
+	Key        []byte
+	Value      []byte
+	ProofPath  [][]byte
+	ProofIndex int
 }
 
 // QueryResponseCanonicalEncoding ensures deterministic serialization.
@@ -100,11 +101,11 @@ type QueryInclusionProof struct {
 //   - No optional ambiguity
 //   - Same (snapshot + args) → identical bytes
 type QueryResponseCanonicalEncoding struct {
-	MethodID	uint32
-	GasUsed		uint64
-	ExitCode	uint32
-	Payload		[]byte
-	ProofRoot	[]byte
+	MethodID  uint32
+	GasUsed   uint64
+	ExitCode  uint32
+	Payload   []byte
+	ProofRoot []byte
 }
 
 // QueryCacheKey identifies a cacheable query result.
@@ -114,32 +115,33 @@ type QueryResponseCanonicalEncoding struct {
 //   - Cache MUST be invalidated on state root change
 //   - Cache entries are content-addressed
 type QueryCacheKey struct {
-	StateRootHash	[]byte
-	MethodID	uint32
-	ArgumentsHash	[]byte
+	StateRootHash []byte
+	MethodID      uint32
+	ArgumentsHash []byte
+	GasLimit      uint64
 }
 
 // QueryCacheEntry stores a cached query result with metadata.
 type QueryCacheEntry struct {
-	Key		QueryCacheKey
-	Response	QueryReceipt
-	CreatedAt	int64
+	Key       QueryCacheKey
+	Response  QueryReceipt
+	CreatedAt int64
 }
 
 // QueryCache provides deterministic query result caching.
 type QueryCache struct {
-	entries	map[string]QueryCacheEntry
-	maxSize	int
+	entries map[string]QueryCacheEntry
+	maxSize int
 }
 
 // MethodRegistryEntry describes a contract get method for discovery.
 type MethodRegistryEntry struct {
-	MethodID	uint32
-	Name		string
-	InputSchema	[]byte
-	OutputSchema	[]byte
-	GasEstimate	uint64
-	Cacheable	bool
+	MethodID     uint32
+	Name         string
+	InputSchema  []byte
+	OutputSchema []byte
+	GasEstimate  uint64
+	Cacheable    bool
 }
 
 // MethodRegistry provides method discovery for contract get methods.
@@ -149,17 +151,17 @@ type MethodRegistry struct {
 
 // QueryTraceStep records a single step of query execution for debugging.
 type QueryTraceStep struct {
-	Instruction	string
-	GasConsumed	uint64
-	ChunkReads	int
-	Opcode		string
+	Instruction string
+	GasConsumed uint64
+	ChunkReads  int
+	Opcode      string
 }
 
 // QueryTraceRecord holds the full execution trace of a query.
 type QueryTraceRecord struct {
-	Steps		[]QueryTraceStep
-	ChunkReads	[]string
-	GasBreakdown	QueryGasModel
+	Steps        []QueryTraceStep
+	ChunkReads   []string
+	GasBreakdown QueryGasModel
 }
 
 // QueryStackLimits enforces safety caps on query execution.
@@ -169,18 +171,18 @@ type QueryTraceRecord struct {
 //   - Max recursion depth prevents deep call chains
 //   - Max chunk traversal depth prevents state traversal attacks
 type QueryStackLimits struct {
-	MaxStackDepth		uint32
-	MaxRecursionDepth	uint32
-	MaxChunkTraversalDepth	uint32
+	MaxStackDepth          uint32
+	MaxRecursionDepth      uint32
+	MaxChunkTraversalDepth uint32
 }
 
 const (
-	DefaultQueryGasLimit				= 10_000_000
-	DefaultQueryMaxResponseBytes			= 1 << 20
-	DefaultQueryCacheMaxSize			= 1024
-	DefaultQueryMaxStackDepth		uint32	= 512
-	DefaultQueryMaxRecursionDepth		uint32	= 64
-	DefaultQueryMaxChunkTraversalDepth	uint32	= 128
+	DefaultQueryGasLimit                      = 10_000_000
+	DefaultQueryMaxResponseBytes              = 1 << 20
+	DefaultQueryCacheMaxSize                  = 1024
+	DefaultQueryMaxStackDepth          uint32 = 512
+	DefaultQueryMaxRecursionDepth      uint32 = 64
+	DefaultQueryMaxChunkTraversalDepth uint32 = 128
 )
 
 // QueryEngine handles read-only AVM queries.
@@ -194,28 +196,28 @@ const (
 //   - Effectful host calls are forbidden
 //   - Query gas is independent of execution gas
 type QueryEngine struct {
-	cache		*QueryCache
-	gasModel	QueryGasModel
-	limits		QueryStackLimits
-	proofMode	bool
-	registry	*MethodRegistry
+	cache     *QueryCache
+	gasModel  QueryGasModel
+	limits    QueryStackLimits
+	proofMode bool
+	registry  *MethodRegistry
 }
 
 func NewQueryEngine() *QueryEngine {
 	return &QueryEngine{
-		cache:	NewQueryCache(DefaultQueryCacheMaxSize),
+		cache: NewQueryCache(DefaultQueryCacheMaxSize),
 		gasModel: QueryGasModel{
-			ComputeGas:		10,
-			DecodeGas:		5,
-			SerializationGas:	2,
+			ComputeGas:       10,
+			DecodeGas:        5,
+			SerializationGas: 2,
 		},
 		limits: QueryStackLimits{
-			MaxStackDepth:		DefaultQueryMaxStackDepth,
-			MaxRecursionDepth:	DefaultQueryMaxRecursionDepth,
-			MaxChunkTraversalDepth:	DefaultQueryMaxChunkTraversalDepth,
+			MaxStackDepth:          DefaultQueryMaxStackDepth,
+			MaxRecursionDepth:      DefaultQueryMaxRecursionDepth,
+			MaxChunkTraversalDepth: DefaultQueryMaxChunkTraversalDepth,
 		},
-		proofMode:	false,
-		registry:	&MethodRegistry{},
+		proofMode: false,
+		registry:  &MethodRegistry{},
 	}
 }
 
@@ -253,46 +255,46 @@ func (e *QueryEngine) ExecuteQuery(snapshot QuerySnapshot, method string, args [
 		return QueryReceipt{}, fmt.Errorf("AVM query isolation check failed: %w", err)
 	}
 
-	cacheKey := ComputeQueryCacheKey(snapshot, methodID, args)
+	cacheKey := ComputeQueryCacheKey(snapshot, methodID, args, gasLimit)
 	if cached, ok := e.cache.Get(cacheKey); ok {
 		return cached, nil
 	}
 
 	frame := &QueryExecutionDomain{
-		Snapshot:	snapshot,
-		MethodID:	methodID,
-		Args:		args,
-		GasLimit:	gasLimit,
-		StackTrace:	make([]QueryTraceStep, 0),
+		Snapshot:   snapshot,
+		MethodID:   methodID,
+		Args:       args,
+		GasLimit:   gasLimit,
+		StackTrace: make([]QueryTraceStep, 0),
 	}
 
 	boundary := QueryIsolationBoundary{
-		AllowedReads:		[]string{},
-		ForbiddenEffects:	QueryForbiddenHostFunctions(),
-		CanReadStorage:		true,
-		CanSendMessages:	false,
-		CanEmitEvents:		false,
-		CanWriteStorage:	false,
+		AllowedReads:     []string{},
+		ForbiddenEffects: QueryForbiddenHostFunctions(),
+		CanReadStorage:   true,
+		CanSendMessages:  false,
+		CanEmitEvents:    false,
+		CanWriteStorage:  false,
 	}
 
 	accounting := &QueryGasAccounting{
-		Model:	e.gasModel,
-		Limit:	gasLimit,
+		Model: e.gasModel,
+		Limit: gasLimit,
 	}
 
 	if !accounting.ChargeDecode(uint64(len(args))) {
 		return QueryReceipt{
-			ExitCode:	contractstypes.ExitCodeOutOfGas,
-			GasUsed:	accounting.Used.Total(),
-			Response:	nil,
-			TraceHash:	"",
+			ExitCode:  contractstypes.ExitCodeOutOfGas,
+			GasUsed:   accounting.Used.Total(),
+			Response:  nil,
+			TraceHash: "",
 		}, nil
 	}
 
 	frame.StackTrace = append(frame.StackTrace, QueryTraceStep{
-		Instruction:	"QUERY_LOAD",
-		GasConsumed:	accounting.Used.DecodeGas,
-		Opcode:		"load_snapshot",
+		Instruction: "QUERY_LOAD",
+		GasConsumed: accounting.Used.DecodeGas,
+		Opcode:      "load_snapshot",
 	})
 
 	if !accounting.ChargeCompute(e.gasModel.ComputeGas) {
@@ -476,7 +478,15 @@ func BuildQueryProof(snapshot QuerySnapshot, method string, args []byte, receipt
 	h.Write(args)
 	stateProof := h.Sum(nil)
 
-	h = sha256.New()
+	return QueryProofMode{
+		Enabled:        true,
+		StateRootProof: stateProof,
+		ResponseProof:  computeQueryResponseProof(receipt),
+	}
+}
+
+func computeQueryResponseProof(receipt QueryReceipt) []byte {
+	h := sha256.New()
 	h.Write(receipt.Response)
 	var exitCode [4]byte
 	exitCode[0] = byte(receipt.ExitCode >> 24)
@@ -484,17 +494,11 @@ func BuildQueryProof(snapshot QuerySnapshot, method string, args []byte, receipt
 	exitCode[2] = byte(receipt.ExitCode >> 8)
 	exitCode[3] = byte(receipt.ExitCode)
 	h.Write(exitCode[:])
-	responseProof := h.Sum(nil)
-
-	return QueryProofMode{
-		Enabled:	true,
-		StateRootProof:	stateProof,
-		ResponseProof:	responseProof,
-	}
+	return h.Sum(nil)
 }
 
-// VerifyQueryProof verifies a query proof against a known state root.
-func VerifyQueryProof(proof QueryProofMode, stateRootHash []byte, method string, args []byte) bool {
+// VerifyQueryProof verifies a query proof against a known state root and response.
+func VerifyQueryProof(proof QueryProofMode, stateRootHash []byte, method string, args []byte, receipt QueryReceipt) bool {
 	if !proof.Enabled {
 		return false
 	}
@@ -505,14 +509,18 @@ func VerifyQueryProof(proof QueryProofMode, stateRootHash []byte, method string,
 	h.Write(args)
 	expected := h.Sum(nil)
 
-	return hex.EncodeToString(expected) == hex.EncodeToString(proof.StateRootProof)
+	if !bytes.Equal(expected, proof.StateRootProof) {
+		return false
+	}
+
+	return bytes.Equal(computeQueryResponseProof(receipt), proof.ResponseProof)
 }
 
 // NewQueryCache creates a new query result cache.
 func NewQueryCache(maxSize int) *QueryCache {
 	return &QueryCache{
-		entries:	make(map[string]QueryCacheEntry),
-		maxSize:	maxSize,
+		entries: make(map[string]QueryCacheEntry),
+		maxSize: maxSize,
 	}
 }
 
@@ -534,8 +542,8 @@ func (c *QueryCache) Put(key QueryCacheKey, receipt QueryReceipt) {
 		c.evict()
 	}
 	c.entries[key.String()] = QueryCacheEntry{
-		Key:		key,
-		Response:	receipt,
+		Key:      key,
+		Response: receipt,
 	}
 }
 
@@ -676,9 +684,9 @@ func ValidateMethodRegistryEntry(entry MethodRegistryEntry) error {
 // BuildQueryTrace creates a trace record from query execution.
 func BuildQueryTrace(domain *QueryExecutionDomain, accounting *QueryGasAccounting) QueryTraceRecord {
 	return QueryTraceRecord{
-		Steps:		domain.StackTrace,
-		ChunkReads:	[]string{},
-		GasBreakdown:	accounting.Used,
+		Steps:        domain.StackTrace,
+		ChunkReads:   []string{},
+		GasBreakdown: accounting.Used,
 	}
 }
 
@@ -689,16 +697,17 @@ func ComputeMethodID(method string) uint32 {
 }
 
 // ComputeQueryCacheKey computes a cache key for query results.
-func ComputeQueryCacheKey(snapshot QuerySnapshot, methodID uint32, args []byte) QueryCacheKey {
+func ComputeQueryCacheKey(snapshot QuerySnapshot, methodID uint32, args []byte, gasLimit uint64) QueryCacheKey {
 	argsHash := sha256.Sum256(args)
 	var stateHash []byte
 	if snapshot.StateRootChunk != nil {
 		stateHash = snapshot.StateRootChunk.Hash()
 	}
 	return QueryCacheKey{
-		StateRootHash:	stateHash,
-		MethodID:	methodID,
-		ArgumentsHash:	argsHash[:],
+		StateRootHash: stateHash,
+		MethodID:      methodID,
+		ArgumentsHash: argsHash[:],
+		GasLimit:      gasLimit,
 	}
 }
 
@@ -739,9 +748,9 @@ func executeQueryAgainstSnapshot(frame *QueryExecutionDomain, boundary QueryIsol
 	response = appendUint64(response, frame.GasLimit)
 
 	frame.StackTrace = append(frame.StackTrace, QueryTraceStep{
-		Instruction:	"QUERY_EXECUTE",
-		GasConsumed:	accounting.Used.ComputeGas,
-		Opcode:		"execute_query",
+		Instruction: "QUERY_EXECUTE",
+		GasConsumed: accounting.Used.ComputeGas,
+		Opcode:      "execute_query",
 	})
 
 	return response, nil
@@ -750,10 +759,10 @@ func executeQueryAgainstSnapshot(frame *QueryExecutionDomain, boundary QueryIsol
 func finalizeQueryReceipt(frame *QueryExecutionDomain, accounting *QueryGasAccounting) QueryReceipt {
 	traceHash := computeQueryTraceHash(frame.StackTrace)
 	return QueryReceipt{
-		ExitCode:	frame.ExitCode,
-		GasUsed:	accounting.Used.Total(),
-		Response:	frame.Response,
-		TraceHash:	hex.EncodeToString(traceHash),
+		ExitCode:  frame.ExitCode,
+		GasUsed:   accounting.Used.Total(),
+		Response:  frame.Response,
+		TraceHash: hex.EncodeToString(traceHash),
 	}
 }
 
@@ -817,7 +826,8 @@ func (a *QueryGasAccounting) ChargeSerialize(byteCount uint64) bool {
 func (k QueryCacheKey) String() string {
 	return hex.EncodeToString(k.StateRootHash) + ":" +
 		fmt.Sprintf("%d", k.MethodID) + ":" +
-		hex.EncodeToString(k.ArgumentsHash)
+		hex.EncodeToString(k.ArgumentsHash) + ":" +
+		fmt.Sprintf("%d", k.GasLimit)
 }
 
 func appendUint32(buf []byte, v uint32) []byte {

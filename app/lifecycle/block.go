@@ -2,6 +2,7 @@ package lifecycle
 
 import (
 	"encoding/json"
+	"fmt"
 
 	abci "github.com/cometbft/cometbft/abci/types"
 
@@ -24,17 +25,17 @@ func FinalizeBlock(req *abci.RequestFinalizeBlock, finalize func(*abci.RequestFi
 }
 
 type InitChainDependencies struct {
-	AppCodec			codec.Codec
-	ModuleManager			*module.Manager
-	SetModuleVersionMap		func(sdk.Context, module.VersionMap) error
-	ValidateGenesis			func(genesisconfig.State) error
-	EnsureCoreGenesisCollections	func(sdk.Context) error
+	AppCodec                     codec.Codec
+	ModuleManager                *module.Manager
+	SetModuleVersionMap          func(sdk.Context, module.VersionMap) error
+	ValidateGenesis              func(genesisconfig.State) error
+	EnsureCoreGenesisCollections func(sdk.Context) error
 }
 
 func InitChain(ctx sdk.Context, req *abci.RequestInitChain, deps InitChainDependencies) (*abci.ResponseInitChain, error) {
 	var genesisState genesisconfig.State
 	if err := json.Unmarshal(req.AppStateBytes, &genesisState); err != nil {
-		panic(err)
+		return nil, fmt.Errorf("decode genesis state: %w", err)
 	}
 	if err := deps.SetModuleVersionMap(ctx, deps.ModuleManager.GetVersionMap()); err != nil {
 		return nil, err

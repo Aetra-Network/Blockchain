@@ -24,13 +24,13 @@ func TestContinuationSlotDefaults(t *testing.T) {
 
 func TestExecutionSlotString(t *testing.T) {
 	slots := map[ExecutionSlot]string{
-		SlotReturn:	"SLOT_RETURN",
-		SlotAltReturn:	"SLOT_ALT_RETURN",
-		SlotError:	"SLOT_ERROR",
-		SlotDispatch:	"SLOT_DISPATCH",
-		SlotState:	"SLOT_STATE",
-		SlotActions:	"SLOT_ACTIONS",
-		SlotEnv:	"SLOT_ENV",
+		SlotReturn:    "SLOT_RETURN",
+		SlotAltReturn: "SLOT_ALT_RETURN",
+		SlotError:     "SLOT_ERROR",
+		SlotDispatch:  "SLOT_DISPATCH",
+		SlotState:     "SLOT_STATE",
+		SlotActions:   "SLOT_ACTIONS",
+		SlotEnv:       "SLOT_ENV",
 	}
 	for slot, expected := range slots {
 		if slot.String() != expected {
@@ -44,9 +44,9 @@ func TestExecutionSlotString(t *testing.T) {
 
 func TestSetGetContinuation(t *testing.T) {
 	frame := &KernelExecutionFrame{
-		Stack:		make([]StackValue, 0),
-		PhaseGas:	make(map[Phase]uint64),
-		ActionQueue:	NewActionQueueChunk(),
+		Stack:       make([]StackValue, 0),
+		PhaseGas:    make(map[Phase]uint64),
+		ActionQueue: NewActionQueueChunk(),
 	}
 
 	frame.SetContinuation(SlotReturn, 42)
@@ -96,13 +96,13 @@ func TestStructuredExitCodeRoundTrip(t *testing.T) {
 
 func TestExitCategoryStrings(t *testing.T) {
 	categories := map[ExitCategory]string{
-		ExitCategorySuccess:		"SUCCESS",
-		ExitCategoryVMError:		"VM_ERROR",
-		ExitCategoryTypeError:		"TYPE_ERROR",
-		ExitCategoryExecutionError:	"EXECUTION_ERROR",
-		ExitCategoryActionError:	"ACTION_ERROR",
-		ExitCategoryStateError:		"STATE_ERROR",
-		ExitCategoryGasError:		"GAS_ERROR",
+		ExitCategorySuccess:        "SUCCESS",
+		ExitCategoryVMError:        "VM_ERROR",
+		ExitCategoryTypeError:      "TYPE_ERROR",
+		ExitCategoryExecutionError: "EXECUTION_ERROR",
+		ExitCategoryActionError:    "ACTION_ERROR",
+		ExitCategoryStateError:     "STATE_ERROR",
+		ExitCategoryGasError:       "GAS_ERROR",
 	}
 	for cat, expected := range categories {
 		if cat.String() != expected {
@@ -166,17 +166,17 @@ func TestStackValueConstructors(t *testing.T) {
 
 func TestStackValueTypeStrings(t *testing.T) {
 	expected := map[StackValueType]string{
-		StackTypeInt256:	"int256",
-		StackTypeBool:		"bool",
-		StackTypeChunkRef:	"ChunkRef",
-		StackTypeFrameRef:	"ExecutionFrameRef",
-		StackTypeTuple:		"tuple",
-		StackTypeAddress:	"address",
-		StackTypeHash:		"hash",
-		StackTypeCoins:		"coins",
-		StackTypeString:	"string",
-		StackTypeBytes:		"bytes",
-		StackTypeNull:		"null",
+		StackTypeInt256:   "int256",
+		StackTypeBool:     "bool",
+		StackTypeChunkRef: "ChunkRef",
+		StackTypeFrameRef: "ExecutionFrameRef",
+		StackTypeTuple:    "tuple",
+		StackTypeAddress:  "address",
+		StackTypeHash:     "hash",
+		StackTypeCoins:    "coins",
+		StackTypeString:   "string",
+		StackTypeBytes:    "bytes",
+		StackTypeNull:     "null",
 	}
 	for typ, str := range expected {
 		if typ.String() != str {
@@ -187,10 +187,10 @@ func TestStackValueTypeStrings(t *testing.T) {
 
 func TestPushPopStack(t *testing.T) {
 	frame := &KernelExecutionFrame{
-		Stack:		make([]StackValue, 0),
-		PhaseGas:	make(map[Phase]uint64),
-		ActionQueue:	NewActionQueueChunk(),
-		GasLimit:	100000,
+		Stack:       make([]StackValue, 0),
+		PhaseGas:    make(map[Phase]uint64),
+		ActionQueue: NewActionQueueChunk(),
+		GasLimit:    100000,
 	}
 
 	err := frame.PushValue(StackValueInt256(10))
@@ -229,10 +229,10 @@ func TestPushPopStack(t *testing.T) {
 
 func TestPopValueOfTypeEnforcement(t *testing.T) {
 	frame := &KernelExecutionFrame{
-		Stack:		make([]StackValue, 0),
-		PhaseGas:	make(map[Phase]uint64),
-		ActionQueue:	NewActionQueueChunk(),
-		GasLimit:	100000,
+		Stack:       make([]StackValue, 0),
+		PhaseGas:    make(map[Phase]uint64),
+		ActionQueue: NewActionQueueChunk(),
+		GasLimit:    100000,
 	}
 
 	frame.PushValue(StackValueInt256(42))
@@ -251,10 +251,10 @@ func TestPopValueOfTypeEnforcement(t *testing.T) {
 
 func TestStackOverflowProtection(t *testing.T) {
 	frame := &KernelExecutionFrame{
-		Stack:		make([]StackValue, 1023),
-		PhaseGas:	make(map[Phase]uint64),
-		ActionQueue:	NewActionQueueChunk(),
-		GasLimit:	100000,
+		Stack:       make([]StackValue, 1023),
+		PhaseGas:    make(map[Phase]uint64),
+		ActionQueue: NewActionQueueChunk(),
+		GasLimit:    100000,
 	}
 
 	err := frame.PushValue(StackValueInt256(1))
@@ -276,10 +276,10 @@ func TestStackOverflowProtection(t *testing.T) {
 
 func TestStackUnderflowProtection(t *testing.T) {
 	frame := &KernelExecutionFrame{
-		Stack:		make([]StackValue, 0),
-		PhaseGas:	make(map[Phase]uint64),
-		ActionQueue:	NewActionQueueChunk(),
-		GasLimit:	100000,
+		Stack:       make([]StackValue, 0),
+		PhaseGas:    make(map[Phase]uint64),
+		ActionQueue: NewActionQueueChunk(),
+		GasLimit:    100000,
 	}
 
 	_, err := frame.PopValue()
@@ -293,9 +293,9 @@ func TestStackUnderflowProtection(t *testing.T) {
 
 func TestChargeGas(t *testing.T) {
 	frame := &KernelExecutionFrame{
-		PhaseGas:	make(map[Phase]uint64),
-		GasLimit:	1000,
-		ActionQueue:	NewActionQueueChunk(),
+		PhaseGas:    make(map[Phase]uint64),
+		GasLimit:    1000,
+		ActionQueue: NewActionQueueChunk(),
 	}
 
 	frame.Phase = PhaseCompute
@@ -323,6 +323,31 @@ func TestChargeGas(t *testing.T) {
 	if !frame.Aborted {
 		t.Error("frame should be aborted on gas exhaustion")
 	}
+	if frame.PhaseGas[PhaseCompute] != 1000 {
+		t.Errorf("expected PhaseGas[Compute]=1000 after exact cap, got %d", frame.PhaseGas[PhaseCompute])
+	}
+}
+
+func TestChargeGasCountsRemainingGasOnExhaustion(t *testing.T) {
+	frame := &KernelExecutionFrame{
+		PhaseGas:    make(map[Phase]uint64),
+		GasLimit:    1000,
+		GasUsed:     400,
+		ActionQueue: NewActionQueueChunk(),
+	}
+
+	frame.Phase = PhaseCompute
+	frame.PhaseGas[PhaseCompute] = 400
+
+	if frame.ChargeGas(700) {
+		t.Error("charge 700 should fail once the limit is exceeded")
+	}
+	if frame.GasUsed != 1000 {
+		t.Errorf("expected GasUsed=1000, got %d", frame.GasUsed)
+	}
+	if frame.PhaseGas[PhaseCompute] != 1000 {
+		t.Errorf("expected PhaseGas[Compute]=1000, got %d", frame.PhaseGas[PhaseCompute])
+	}
 }
 
 func TestISAOpcodeTableCompleteness(t *testing.T) {
@@ -349,13 +374,13 @@ func TestISAOpcodeTableCompleteness(t *testing.T) {
 
 func TestISAStackEffect(t *testing.T) {
 	tests := map[ISAOpcode]int{
-		OpISANop:	0,
-		OpISAPush:	1,
-		OpISADup:	1,
-		OpISADrop:	-1,
-		OpISAAdd:	-1,
-		OpISASwap:	0,
-		OpISAEq:	-1,
+		OpISANop:  0,
+		OpISAPush: 1,
+		OpISADup:  1,
+		OpISADrop: -1,
+		OpISAAdd:  -1,
+		OpISASwap: 0,
+		OpISAEq:   -1,
 	}
 	for op, expected := range tests {
 		effect, ok := ISAStackEffect(op)
@@ -386,13 +411,13 @@ func TestISAVerifyStackContract(t *testing.T) {
 
 func TestISAGasCosts(t *testing.T) {
 	tests := map[ISAOpcode]uint64{
-		OpISANop:		1,
-		OpISAPush:		2,
-		OpISAAdd:		3,
-		OpISADiv:		5,
-		OpISACallFrame:		100,
-		OpISAHashChunk:		90,
-		OpISAChunkMapGet:	30,
+		OpISANop:         1,
+		OpISAPush:        2,
+		OpISAAdd:         3,
+		OpISADiv:         5,
+		OpISACallFrame:   100,
+		OpISAHashChunk:   90,
+		OpISAChunkMapGet: 30,
 	}
 	for op, expectedMin := range tests {
 		cost := ISAGasCost(op)
@@ -562,14 +587,14 @@ func TestStateRootImmutability(t *testing.T) {
 
 func TestExecutionContextChunkToChunk(t *testing.T) {
 	ctx := ExecutionContextChunk{
-		Caller:			"caller1",
-		Origin:			"origin1",
-		AttachedValue:		1000,
-		BlockHeight:		42,
-		ChainID:		"testnet-1",
-		ContractAddress:	"contract1",
-		MessageHash:		[]byte{1, 2, 3, 4},
-		Timestamp:		1234567890,
+		Caller:          "caller1",
+		Origin:          "origin1",
+		AttachedValue:   1000,
+		BlockHeight:     42,
+		ChainID:         "testnet-1",
+		ContractAddress: "contract1",
+		MessageHash:     []byte{1, 2, 3, 4},
+		Timestamp:       1234567890,
 	}
 
 	chk, err := ctx.ToChunk()
@@ -586,15 +611,15 @@ func TestExecutionContextChunkToChunk(t *testing.T) {
 
 func TestExecutionContextFromBlockContext(t *testing.T) {
 	blockCtx := BlockContext{
-		Height:		100,
-		Timestamp:	1234567890,
-		ChainID:	"mainnet",
+		Height:    100,
+		Timestamp: 1234567890,
+		ChainID:   "mainnet",
 	}
 	msg := Message{
-		Sender:		"sender1",
-		Target:		"target1",
-		Value:		500,
-		GasLimit:	10000,
+		Sender:   "sender1",
+		Target:   "target1",
+		Value:    500,
+		GasLimit: 10000,
 	}
 
 	ctx := ExecutionContextFromBlockContext(blockCtx, msg)
@@ -617,10 +642,10 @@ func TestExecuteKernelSemanticsFivePhases(t *testing.T) {
 	state := emptyMap.Root()
 
 	msg := Message{
-		Sender:		"sender1",
-		Target:		"target1",
-		Value:		100,
-		GasLimit:	100000,
+		Sender:   "sender1",
+		Target:   "target1",
+		Value:    100,
+		GasLimit: 100000,
 	}
 
 	frame := NewKernelExecutionFrame(state, msg, 100)
@@ -654,10 +679,10 @@ func TestExecuteKernelSemanticsGasExhaustion(t *testing.T) {
 	state := emptyMap.Root()
 
 	msg := Message{
-		Sender:		"sender1",
-		Target:		"target1",
-		Value:		100,
-		GasLimit:	100,
+		Sender:   "sender1",
+		Target:   "target1",
+		Value:    100,
+		GasLimit: 100,
 	}
 
 	frame := NewKernelExecutionFrame(state, msg, 10)
@@ -675,10 +700,10 @@ func TestExecuteKernelSemanticsActionBudgetExceeded(t *testing.T) {
 	state := emptyMap.Root()
 
 	msg := Message{
-		Sender:		"sender1",
-		Target:		"target1",
-		Value:		100,
-		GasLimit:	100000,
+		Sender:   "sender1",
+		Target:   "target1",
+		Value:    100,
+		GasLimit: 100000,
 	}
 
 	frame := NewKernelExecutionFrame(state, msg, 2)
@@ -700,10 +725,10 @@ func TestKernelExecutionTraceDeterminism(t *testing.T) {
 	state := emptyMap.Root()
 
 	msg := Message{
-		Sender:		"sender1",
-		Target:		"target1",
-		Value:		100,
-		GasLimit:	100000,
+		Sender:   "sender1",
+		Target:   "target1",
+		Value:    100,
+		GasLimit: 100000,
 	}
 
 	frame1 := NewKernelExecutionFrame(state, msg, 100)
