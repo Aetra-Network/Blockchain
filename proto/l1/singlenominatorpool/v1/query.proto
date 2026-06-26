@@ -1,0 +1,45 @@
+syntax = "proto3";
+
+package l1.singlenominatorpool.v1;
+
+import "google/api/annotations.proto";
+import "gogoproto/gogo.proto";
+import "l1/singlenominatorpool/v1/genesis.proto";
+
+option go_package = "github.com/sovereign-l1/l1/api/l1/singlenominatorpool/v1;singlenominatorpoolv1";
+
+service Query {
+  rpc SingleNominatorPool(QuerySingleNominatorPoolRequest) returns (QuerySingleNominatorPoolResponse) {
+    option (google.api.http).get = "/l1/single-nominator-pool/v1/pools/{pool_address}";
+  }
+
+  rpc SingleNominatorPools(QuerySingleNominatorPoolsRequest) returns (QuerySingleNominatorPoolsResponse) {
+    option (google.api.http).get = "/l1/single-nominator-pool/v1/pools";
+  }
+
+  rpc SingleNominatorRewards(QuerySingleNominatorRewardsRequest) returns (QuerySingleNominatorRewardsResponse) {
+    option (google.api.http).get = "/l1/single-nominator-pool/v1/rewards/{pool_address}";
+  }
+}
+
+message QuerySingleNominatorPoolRequest {
+  string pool_address = 1;
+}
+
+message QuerySingleNominatorPoolResponse {
+  SingleNominatorPool pool = 1;
+}
+
+message QuerySingleNominatorPoolsRequest {}
+
+message QuerySingleNominatorPoolsResponse {
+  repeated SingleNominatorPool pools = 1 [(gogoproto.nullable) = false];
+}
+
+message QuerySingleNominatorRewardsRequest {
+  string pool_address = 1;
+}
+
+message QuerySingleNominatorRewardsResponse {
+  uint64 reward_balance = 1;
+}

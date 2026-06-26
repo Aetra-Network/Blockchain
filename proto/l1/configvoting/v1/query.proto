@@ -1,0 +1,55 @@
+syntax = "proto3";
+
+package l1.configvoting.v1;
+
+import "google/api/annotations.proto";
+import "gogoproto/gogo.proto";
+import "l1/configvoting/v1/genesis.proto";
+
+option go_package = "github.com/sovereign-l1/l1/api/l1/configvoting/v1;configvotingv1";
+
+service Query {
+  rpc ConfigProposal(QueryConfigProposalRequest) returns (QueryConfigProposalResponse) {
+    option (google.api.http).get = "/l1/config-voting/v1/proposals/{proposal_id}";
+  }
+
+  rpc ConfigProposals(QueryConfigProposalsRequest) returns (QueryConfigProposalsResponse) {
+    option (google.api.http).get = "/l1/config-voting/v1/proposals";
+  }
+
+  rpc ConfigVotes(QueryConfigVotesRequest) returns (QueryConfigVotesResponse) {
+    option (google.api.http).get = "/l1/config-voting/v1/proposals/{proposal_id}/votes";
+  }
+
+  rpc ConfigVotingParams(QueryConfigVotingParamsRequest) returns (QueryConfigVotingParamsResponse) {
+    option (google.api.http).get = "/l1/config-voting/v1/params";
+  }
+}
+
+message QueryConfigProposalRequest {
+  string proposal_id = 1;
+}
+
+message QueryConfigProposalResponse {
+  ConfigProposal proposal = 1 [(gogoproto.nullable) = false];
+}
+
+message QueryConfigProposalsRequest {}
+
+message QueryConfigProposalsResponse {
+  repeated ConfigProposal proposals = 1 [(gogoproto.nullable) = false];
+}
+
+message QueryConfigVotesRequest {
+  string proposal_id = 1;
+}
+
+message QueryConfigVotesResponse {
+  repeated ConfigVote votes = 1 [(gogoproto.nullable) = false];
+}
+
+message QueryConfigVotingParamsRequest {}
+
+message QueryConfigVotingParamsResponse {
+  ConfigVotingParams params = 1 [(gogoproto.nullable) = false];
+}

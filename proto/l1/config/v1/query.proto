@@ -1,0 +1,60 @@
+syntax = "proto3";
+package l1.config.v1;
+
+import "google/api/annotations.proto";
+import "gogoproto/gogo.proto";
+import "l1/config/v1/genesis.proto";
+
+option go_package = "github.com/sovereign-l1/l1/api/l1/config/v1;configv1";
+
+service Query {
+  rpc Params(QueryParamsRequest) returns (QueryParamsResponse) {
+    option (google.api.http).get = "/l1/config/v1/params";
+  }
+  rpc ConfigValue(QueryConfigValueRequest) returns (QueryConfigValueResponse) {
+    option (google.api.http).get = "/l1/config/v1/value/{key}";
+  }
+  rpc PendingConfigChanges(QueryPendingConfigChangesRequest) returns (QueryPendingConfigChangesResponse) {
+    option (google.api.http).get = "/l1/config/v1/pending_changes";
+  }
+  rpc ConfigChange(QueryConfigChangeRequest) returns (QueryConfigChangeResponse) {
+    option (google.api.http).get = "/l1/config/v1/change/{change_id}";
+  }
+  rpc Authority(QueryAuthorityRequest) returns (QueryAuthorityResponse) {
+    option (google.api.http).get = "/l1/config/v1/authority";
+  }
+}
+
+message QueryParamsRequest {}
+
+message QueryParamsResponse {
+  Params params = 1 [(gogoproto.nullable) = false];
+}
+
+message QueryConfigValueRequest {
+  string key = 1;
+}
+
+message QueryConfigValueResponse {
+  ConfigEntry entry = 1 [(gogoproto.nullable) = false];
+}
+
+message QueryPendingConfigChangesRequest {}
+
+message QueryPendingConfigChangesResponse {
+  repeated ConfigChange changes = 1 [(gogoproto.nullable) = false];
+}
+
+message QueryConfigChangeRequest {
+  string change_id = 1;
+}
+
+message QueryConfigChangeResponse {
+  ConfigChange change = 1 [(gogoproto.nullable) = false];
+}
+
+message QueryAuthorityRequest {}
+
+message QueryAuthorityResponse {
+  string authority = 1;
+}

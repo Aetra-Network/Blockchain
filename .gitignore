@@ -1,0 +1,100 @@
+# Spec / planning workspace (not for VCS)
+.kiro/
+
+# Local workspace / research cache
+.work/
+.codex/
+ecosystem/
+STEP*.md
+ROADMAP.md
+Roadmap_v2.md
+ROADMAP_v3.md
+ROADMAP_V4.md
+TO_AUDIT.md
+UPDATES_V2.md
+
+# Lint output
+staticcheck.out
+
+# Secrets and private config
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+*.crt
+*.csr
+*.mnemonic
+*mnemonic*
+*private*
+*secret*
+*seed*
+*wallet*
+keyring/
+keys/
+secrets/
+credentials/
+config/*.toml.local
+
+# Cosmos / CometBFT node state
+.ignite/
+.orbitalis/
+.localnet/
+.localnet*/
+data/
+node_home/
+networks/local/
+priv_validator_key.json
+priv_validator_state.json
+node_key.json
+genesis.json
+addrbook.json
+
+# Build outputs
+build/
+dist/
+out/
+bin/
+*.exe
+*.test
+coverage.out
+coverage/
+
+# Go / tooling caches
+.cache/
+tmp/
+vendor/
+
+# Logs and runtime diagnostics
+*.log
+*.prof
+*.pprof
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.ide/
+.history/
+*.swp
+*.swo
+
+# Private research and planning docs
+AUDIT_RESULTS_V2.md
+AVM.md
+BLOCKCHAIN.md
+COMPONENTS.md
+DNS.md
+ECONOMICS.md
+NETWORKING.md
+NEXT_ARCHITECTURE.md
+PAYMENTS.md
+POS.md
+UPDATE.md
+architecture.md
+SYSTEM_ENTETIES.md
+SERVICES.md
+TO_AUDIT_V2.md

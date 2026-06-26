@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package l1.aetrastakingpolicy.v1;
+
+import "google/api/annotations.proto";
+
+option go_package = "github.com/sovereign-l1/l1/api/l1/aetrastakingpolicy/v1;aetrastakingpolicyv1";
+
+service Query {
+  rpc Params(QueryParamsRequest) returns (QueryParamsResponse) {
+    option (google.api.http).get = "/l1/aetrastakingpolicy/v1/params";
+  }
+  rpc ValidatorEffectivePower(QueryValidatorEffectivePowerRequest) returns (QueryValidatorEffectivePowerResponse) {
+    option (google.api.http).get = "/l1/aetrastakingpolicy/v1/validator_power";
+  }
+  rpc ValidatorStake(QueryValidatorStakeRequest) returns (QueryValidatorStakeResponse) {
+    option (google.api.http).get = "/l1/aetrastakingpolicy/v1/validator_stake";
+  }
+  rpc TopNConcentration(QueryTopNConcentrationRequest) returns (QueryTopNConcentrationResponse) {
+    option (google.api.http).get = "/l1/aetrastakingpolicy/v1/concentration";
+  }
+  rpc ValidatorRewardMultiplier(QueryValidatorRewardMultiplierRequest) returns (QueryValidatorRewardMultiplierResponse) {
+    option (google.api.http).get = "/l1/aetrastakingpolicy/v1/reward_multiplier";
+  }
+  rpc DelegationWarningStatus(QueryDelegationWarningStatusRequest) returns (QueryDelegationWarningStatusResponse) {
+    option (google.api.http).get = "/l1/aetrastakingpolicy/v1/warning_status";
+  }
+}
+
+message QueryParamsRequest {}
+message QueryParamsResponse {}
+message QueryValidatorEffectivePowerRequest {}
+message QueryValidatorEffectivePowerResponse {}
+message QueryValidatorStakeRequest {}
+message QueryValidatorStakeResponse {}
+message QueryTopNConcentrationRequest {}
+message QueryTopNConcentrationResponse {}
+message QueryValidatorRewardMultiplierRequest {}
+message QueryValidatorRewardMultiplierResponse {}
+message QueryDelegationWarningStatusRequest {}
+message QueryDelegationWarningStatusResponse {}

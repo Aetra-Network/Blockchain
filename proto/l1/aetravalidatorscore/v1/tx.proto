@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package l1.aetravalidatorscore.v1;
+
+import "cosmos/msg/v1/msg.proto";
+
+option go_package = "github.com/sovereign-l1/l1/api/l1/aetravalidatorscore/v1;aetravalidatorscorev1";
+
+service Msg {
+  option (cosmos.msg.v1.service) = true;
+
+  rpc UpdateValidatorScoreParams(MsgUpdateValidatorScoreParams) returns (MsgUpdateValidatorScoreParamsResponse);
+  rpc UpdateValidatorScores(MsgUpdateValidatorScores) returns (MsgUpdateValidatorScoresResponse);
+}
+
+message MsgUpdateValidatorScoreParams {
+  option (cosmos.msg.v1.signer) = "authority";
+
+  string authority = 1;
+}
+
+message MsgUpdateValidatorScoreParamsResponse {}
+
+message MsgUpdateValidatorScores {
+  option (cosmos.msg.v1.signer) = "authority";
+
+  string authority = 1;
+}
+
+message MsgUpdateValidatorScoresResponse {}

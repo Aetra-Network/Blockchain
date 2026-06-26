@@ -1,0 +1,85 @@
+syntax = "proto3";
+
+package l1.validatorelection.v1;
+
+import "google/api/annotations.proto";
+import "gogoproto/gogo.proto";
+import "l1/validatorelection/v1/genesis.proto";
+
+option go_package = "github.com/sovereign-l1/l1/api/l1/validatorelection/v1;validatorelectionv1";
+
+service Query {
+  rpc PreviousValidatorSet(QueryPreviousValidatorSetRequest) returns (QueryPreviousValidatorSetResponse) {
+    option (google.api.http).get = "/l1/validator-election/v1/previous_validator_set";
+  }
+
+  rpc CurrentValidatorSet(QueryCurrentValidatorSetRequest) returns (QueryCurrentValidatorSetResponse) {
+    option (google.api.http).get = "/l1/validator-election/v1/current_validator_set";
+  }
+
+  rpc NextValidatorSet(QueryNextValidatorSetRequest) returns (QueryNextValidatorSetResponse) {
+    option (google.api.http).get = "/l1/validator-election/v1/next_validator_set";
+  }
+
+  rpc Election(QueryElectionRequest) returns (QueryElectionResponse) {
+    option (google.api.http).get = "/l1/validator-election/v1/election";
+  }
+
+  rpc ElectionCandidates(QueryElectionCandidatesRequest) returns (QueryElectionCandidatesResponse) {
+    option (google.api.http).get = "/l1/validator-election/v1/candidates";
+  }
+
+  rpc FrozenStake(QueryFrozenStakeRequest) returns (QueryFrozenStakeResponse) {
+    option (google.api.http).get = "/l1/validator-election/v1/frozen_stake/{operator_address}";
+  }
+
+  rpc ValidatorSetTransition(QueryValidatorSetTransitionRequest) returns (QueryValidatorSetTransitionResponse) {
+    option (google.api.http).get = "/l1/validator-election/v1/transitions/{epoch}";
+  }
+}
+
+message QueryPreviousValidatorSetRequest {}
+
+message QueryCurrentValidatorSetRequest {}
+
+message QueryNextValidatorSetRequest {}
+
+message QueryPreviousValidatorSetResponse {
+  repeated ValidatorPower validators = 1 [(gogoproto.nullable) = false];
+}
+
+message QueryCurrentValidatorSetResponse {
+  repeated ValidatorPower validators = 1 [(gogoproto.nullable) = false];
+}
+
+message QueryNextValidatorSetResponse {
+  repeated ValidatorPower validators = 1 [(gogoproto.nullable) = false];
+}
+
+message QueryElectionRequest {}
+
+message QueryElectionResponse {
+  State election = 1 [(gogoproto.nullable) = false];
+}
+
+message QueryElectionCandidatesRequest {}
+
+message QueryElectionCandidatesResponse {
+  repeated CandidateApplication candidates = 1 [(gogoproto.nullable) = false];
+}
+
+message QueryFrozenStakeRequest {
+  string operator_address = 1;
+}
+
+message QueryFrozenStakeResponse {
+  repeated FrozenStake frozen_stakes = 1 [(gogoproto.nullable) = false];
+}
+
+message QueryValidatorSetTransitionRequest {
+  uint64 epoch = 1;
+}
+
+message QueryValidatorSetTransitionResponse {
+  ValidatorSetTransition transition = 1;
+}

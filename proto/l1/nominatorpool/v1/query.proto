@@ -1,0 +1,161 @@
+syntax = "proto3";
+
+package l1.nominatorpool.v1;
+
+import "google/api/annotations.proto";
+import "l1/nominatorpool/v1/genesis.proto";
+
+option go_package = "github.com/sovereign-l1/l1/api/l1/nominatorpool/v1;nominatorpoolv1";
+
+service Query {
+  rpc NominatorPool(QueryNominatorPoolRequest) returns (QueryNominatorPoolResponse) {
+    option (google.api.http).get = "/l1/nominatorpool/v1/pool/{pool_id}";
+  }
+  rpc NominatorPools(QueryNominatorPoolsRequest) returns (QueryNominatorPoolsResponse) {
+    option (google.api.http).get = "/l1/nominatorpool/v1/pools";
+  }
+  rpc PoolDelegator(QueryPoolDelegatorRequest) returns (QueryPoolDelegatorResponse) {
+    option (google.api.http).get = "/l1/nominatorpool/v1/pool/{pool_id}/delegator/{delegator}";
+  }
+  rpc PoolRewards(QueryPoolRewardsRequest) returns (QueryPoolRewardsResponse) {
+    option (google.api.http).get = "/l1/nominatorpool/v1/pool/{pool_id}/rewards/{delegator}";
+  }
+  rpc PoolShare(QueryPoolShareRequest) returns (QueryPoolShareResponse) {
+    option (google.api.http).get = "/l1/nominatorpool/v1/pool/{pool_id}/share/{delegator}";
+  }
+  rpc PoolAllocations(QueryPoolAllocationsRequest) returns (QueryPoolAllocationsResponse) {
+    option (google.api.http).get = "/l1/nominatorpool/v1/pool/{pool_id}/allocations";
+  }
+  rpc StakeReputation(QueryStakeReputationRequest) returns (QueryStakeReputationResponse) {
+    option (google.api.http).get = "/l1/nominatorpool/v1/reputation/{account}";
+  }
+  rpc AccountReputation(QueryAccountReputationRequest) returns (QueryAccountReputationResponse) {
+    option (google.api.http).get = "/l1/nominatorpool/v1/account_reputation/{account}";
+  }
+  rpc StakingRewards(QueryStakingRewardsRequest) returns (QueryStakingRewardsResponse) {
+    option (google.api.http).get = "/l1/nominatorpool/v1/staking_rewards";
+  }
+  rpc StakingProof(QueryStakingProofRequest) returns (QueryStakingProofResponse) {
+    option (google.api.http).get = "/l1/nominatorpool/v1/staking_proof";
+  }
+  rpc PoolUnbondingQueue(QueryPoolUnbondingQueueRequest) returns (QueryPoolUnbondingQueueResponse) {
+    option (google.api.http).get = "/l1/nominatorpool/v1/pool/{pool_id}/unbonding";
+  }
+}
+
+message QueryNominatorPoolRequest {
+  string pool_id = 1;
+}
+
+message QueryNominatorPoolResponse {
+  NominatorPool pool = 1;
+}
+
+message QueryNominatorPoolsRequest {
+  uint64 offset = 1;
+  uint64 limit = 2;
+}
+
+message QueryNominatorPoolsResponse {
+  repeated NominatorPool pools = 1;
+  uint64 next_offset = 2;
+  uint64 total = 3;
+}
+
+message QueryPoolDelegatorRequest {
+  string pool_id = 1;
+  string delegator = 2;
+}
+
+message QueryPoolDelegatorResponse {
+  DelegatorShare delegator = 1;
+}
+
+message QueryPoolRewardsRequest {
+  string pool_id = 1;
+  string delegator = 2;
+}
+
+message QueryPoolRewardsResponse {
+  uint64 reward_amount = 1;
+}
+
+message QueryPoolShareRequest {
+  string pool_id = 1;
+  string delegator = 2;
+}
+
+message QueryPoolShareResponse {
+  DelegatorShare share = 1;
+  uint64 pending_rewards = 2;
+}
+
+message QueryPoolAllocationsRequest {
+  string pool_id = 1;
+}
+
+message QueryPoolAllocationsResponse {
+  repeated ValidatorRewardAllocation allocations = 1;
+}
+
+message QueryStakeReputationRequest {
+  string account = 1;
+}
+
+message QueryStakeReputationResponse {
+  QueryStakeReputationAccumulator accumulator = 1;
+  bool found = 2;
+}
+
+message QueryStakeReputationAccumulator {
+  string account = 1;
+  uint64 stake_weighted_seconds = 2;
+  uint64 last_updated_height = 3;
+  uint64 reputation_score = 4;
+}
+
+message QueryAccountReputationRequest {
+  string account = 1;
+}
+
+message QueryAccountReputationResponse {
+  string account = 1;
+  uint64 reputation_score = 2;
+  uint64 stake_weighted_seconds = 3;
+  uint64 last_updated_height = 4;
+  bool has_stake_reputation = 5;
+  string accumulator_state_key = 6;
+  bool non_transferable_by_token = 7;
+}
+
+message QueryStakingRewardsRequest {
+  string delegator = 1;
+  string validator = 2;
+  bool internal_migration = 3;
+}
+
+message QueryStakingRewardsResponse {
+  uint64 reward_amount = 1;
+}
+
+message QueryStakingProofRequest {
+  string kind = 1;
+  uint64 height = 2;
+  string pool_id = 3;
+  string account = 4;
+  uint64 epoch = 5;
+  string app_hash = 6;
+  string root_hash = 7;
+}
+
+message QueryStakingProofResponse {
+  string metadata_json = 1;
+}
+
+message QueryPoolUnbondingQueueRequest {
+  string pool_id = 1;
+}
+
+message QueryPoolUnbondingQueueResponse {
+  repeated UnbondingEntry unbonding_queue = 1;
+}

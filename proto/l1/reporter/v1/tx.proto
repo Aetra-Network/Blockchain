@@ -1,0 +1,89 @@
+syntax = "proto3";
+
+package l1.reporter.v1;
+
+import "cosmos/msg/v1/msg.proto";
+import "gogoproto/gogo.proto";
+import "l1/reporter/v1/genesis.proto";
+
+option go_package = "github.com/sovereign-l1/l1/api/l1/reporter/v1;reporterv1";
+
+service Msg {
+  option (cosmos.msg.v1.service) = true;
+
+  rpc RegisterReporter(MsgRegisterReporter) returns (MsgRegisterReporterResponse);
+  rpc BondReporter(MsgBondReporter) returns (MsgBondReporterResponse);
+  rpc UnbondReporter(MsgUnbondReporter) returns (MsgUnbondReporterResponse);
+  rpc SubmitReport(MsgSubmitReport) returns (MsgSubmitReportResponse);
+  rpc ClaimReporterReward(MsgClaimReporterReward) returns (MsgClaimReporterRewardResponse);
+}
+
+message MsgRegisterReporter {
+  option (cosmos.msg.v1.signer) = "authority";
+
+  string authority = 1;
+  string reporter_address = 2;
+  uint64 height = 3;
+}
+
+message MsgRegisterReporterResponse {
+  ReporterRecord reporter = 1 [(gogoproto.nullable) = false];
+}
+
+message MsgBondReporter {
+  option (cosmos.msg.v1.signer) = "authority";
+
+  string authority = 1;
+  string reporter_address = 2;
+  uint64 amount = 3;
+  uint64 height = 4;
+}
+
+message MsgBondReporterResponse {
+  ReporterRecord reporter = 1 [(gogoproto.nullable) = false];
+}
+
+message MsgUnbondReporter {
+  option (cosmos.msg.v1.signer) = "authority";
+
+  string authority = 1;
+  string reporter_address = 2;
+  uint64 height = 3;
+}
+
+message MsgUnbondReporterResponse {
+  ReporterRecord reporter = 1 [(gogoproto.nullable) = false];
+}
+
+message MsgSubmitReport {
+  option (cosmos.msg.v1.signer) = "authority";
+
+  string authority = 1;
+  string reporter_address = 2;
+  string report_id = 3;
+  string report_type = 4;
+  string subject = 5;
+  string payload_hash = 6;
+  uint32 payload_size_bytes = 7;
+  bool accepted = 8;
+  bool malicious = 9;
+  uint64 reward_amount = 10;
+  uint64 height = 11;
+}
+
+message MsgSubmitReportResponse {
+  ReportRecord report = 1 [(gogoproto.nullable) = false];
+}
+
+message MsgClaimReporterReward {
+  option (cosmos.msg.v1.signer) = "authority";
+
+  string authority = 1;
+  string reporter_address = 2;
+  string report_id = 3;
+  uint64 height = 4;
+}
+
+message MsgClaimReporterRewardResponse {
+  ReporterReward reward = 1 [(gogoproto.nullable) = false];
+}

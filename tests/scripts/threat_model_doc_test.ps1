@@ -1,0 +1,217 @@
+param(
+  [string]$Doc = "docs\architecture\threat-model.md",
+  [string]$Policy = "app\params\threat_model_spec.go",
+  [string]$Tests = "app\params\threat_model_spec_test.go"
+)
+
+$ErrorActionPreference = "Stop"
+
+$RepoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
+
+function Resolve-RepoPath {
+  param([string]$Path)
+  if ([System.IO.Path]::IsPathRooted($Path)) { return $Path }
+  return Join-Path $RepoRoot $Path
+}
+
+function Assert-Contains {
+  param([string]$Text, [string]$Pattern, [string]$Message)
+  if ($Text -notmatch $Pattern) { throw $Message }
+}
+
+$docText = Get-Content -Raw -LiteralPath (Resolve-RepoPath $Doc)
+$policyText = Get-Content -Raw -LiteralPath (Resolve-RepoPath $Policy)
+$testText = Get-Content -Raw -LiteralPath (Resolve-RepoPath $Tests)
+
+foreach ($term in @(
+    'Threat Model',
+    'This document defines section 29 of the Aetra architecture backlog',
+    'The implementation gate is `app/params/threat_model_spec.go`',
+    '29.1 Validator Cartel',
+    'several validators coordinate censorship or governance capture',
+    '100-300 validator target',
+    'validator power cap',
+    'top-N monitoring',
+    'commission floor',
+    'identity transparency',
+    'governance participation metrics',
+    'delegation warnings',
+    'top-10 concentration simulation',
+    'split-identity validator simulation',
+    'delegation overflow simulation',
+    'governance capture threshold analysis',
+    'Cartel detection must use objective chain data',
+    'economic signals, warnings, caps, and metrics',
+    'Identity transparency must not become mandatory KYC',
+    'Concentration warnings must not halt staking',
+    'Governance capture threshold analysis must model proposal quorum',
+    'Split-identity simulation must assume one operator can run multiple validators',
+    'Delegation overflow simulation must prove over-cap stake cannot increase effective voting power',
+    'BuildAetraValidatorCartelThreatReport',
+    '29.2 Stake Centralization Through Rewards',
+    'large validators grow faster because delegators chase apparent safety/APR',
+    'overflow rewards reduced',
+    'over-cap warnings',
+    'concentration metrics',
+    'reward multiplier based on cap',
+    'rewards for over-cap validator lower than normal',
+    'delegator APR estimate reflects overflow penalty',
+    'cap changes do not create accounting corruption',
+    'Reward accounting must not let overflow stake receive the same effective reward weight as in-cap stake',
+    'APR estimates shown to delegators must include overflow penalty and commission impact',
+    'Cap changes must be epoch-boundary or otherwise deterministic',
+    'BuildAetraStakeCentralizationRewardsThreatReport',
+    '29.3 Downtime And Weak Operators',
+    'too many low-quality validators reduce liveness',
+    'minimum self-bond',
+    'validator score',
+    'downtime slashing',
+    'jail',
+    'public metrics',
+    'gradual validator set growth',
+    'liveness with < 1/3 voting power offline',
+    'halt behavior with > 1/3 offline documented',
+    'recovery after validators return',
+    'downtime penalties applied',
+    'Validator score must use objective chain data',
+    'Halt behavior with more than one third voting power offline must be documented clearly as a BFT liveness boundary',
+    'BuildAetraDowntimeWeakOperatorsThreatReport',
+    '29.4 Governance Attack',
+    'malicious proposal changes economics, slashing, cap, or VM params dangerously',
+    'param bounds',
+    'delayed activation',
+    'emergency review window for critical params',
+    'explicit authority checks',
+    'event monitoring',
+    'malicious param proposal rejected',
+    'out-of-range values rejected',
+    'authority spoofing rejected',
+    'delayed activation works',
+    'Economics, slashing, validator power cap, validator set growth, block gas/bytes, and VM/CosmWasm/AVM params must define explicit min/max bounds',
+    'Critical params must activate after a deterministic delay or epoch boundary',
+    'Governance and params messages must verify explicit authority and reject spoofed signers',
+    'Param update execution must emit stable events with old value, new value, activation height or epoch, authority, and criticality',
+    'BuildAetraGovernanceAttackThreatReport',
+    '29.5 Contract Attack',
+    'malicious CosmWasm contract consumes gas/storage, exploits permissions, or causes state bloat',
+    'gas limits',
+    'storage pricing',
+    'upload policy',
+    'migration controls',
+    'contract size limit',
+    'malicious contract test suite',
+    'gas exhaustion',
+    'storage abuse',
+    'unauthorized migration',
+    'invalid instantiate',
+    'export/import with malicious-but-contained contract state',
+    'Gas limits must bound instantiate, execute, query, migrate, reply, and submessage paths',
+    'Storage pricing must make large writes economically bounded',
+    'Upload policy must be governance-gated or permissioned before security review',
+    'Migration controls must reject unauthorized admin changes',
+    'Contract size limit must reject oversized wasm code',
+    'Export/import with malicious-but-contained contract state must preserve app hash',
+    'BuildAetraContractAttackThreatReport'
+  )) {
+  Assert-Contains -Text $docText -Pattern ([regex]::Escape($term)) -Message "threat model doc missing: $term"
+}
+
+foreach ($term in @(
+    'AetraThreatModelModuleName',
+    'AetraThreatValidatorCartel',
+    'AetraThreatStakeCentralizationThroughRewards',
+    'AetraThreatDowntimeWeakOperators',
+    'AetraThreatGovernanceAttack',
+    'AetraThreatContractAttack',
+    'AetraThreatControlValidatorSetTarget',
+    'AetraThreatControlValidatorPowerCap',
+    'AetraThreatControlTopNMonitoring',
+    'AetraThreatControlCommissionFloor',
+    'AetraThreatControlIdentityTransparency',
+    'AetraThreatControlGovernanceParticipationMetrics',
+    'AetraThreatControlDelegationWarnings',
+    'AetraThreatControlOverflowRewardsReduced',
+    'AetraThreatControlOverCapWarnings',
+    'AetraThreatControlConcentrationMetrics',
+    'AetraThreatControlRewardMultiplierBasedOnCap',
+    'AetraThreatControlMinimumSelfBond',
+    'AetraThreatControlValidatorScore',
+    'AetraThreatControlDowntimeSlashing',
+    'AetraThreatControlJail',
+    'AetraThreatControlPublicMetrics',
+    'AetraThreatControlGradualValidatorSetGrowth',
+    'AetraThreatControlParamBounds',
+    'AetraThreatControlDelayedActivation',
+    'AetraThreatControlEmergencyReviewWindow',
+    'AetraThreatControlExplicitAuthorityChecks',
+    'AetraThreatControlEventMonitoring',
+    'AetraThreatControlGasLimits',
+    'AetraThreatControlStoragePricing',
+    'AetraThreatControlUploadPolicy',
+    'AetraThreatControlMigrationControls',
+    'AetraThreatControlContractSizeLimit',
+    'AetraThreatControlMaliciousContractTestSuite',
+    'AetraThreatSimulationTop10Concentration',
+    'AetraThreatSimulationSplitIdentityValidator',
+    'AetraThreatSimulationDelegationOverflow',
+    'AetraThreatSimulationGovernanceCaptureThreshold',
+    'AetraThreatTestOverCapRewardsLower',
+    'AetraThreatTestDelegatorAPROverflowPenalty',
+    'AetraThreatTestCapChangeAccountingSafe',
+    'AetraThreatTestLivenessUnderOneThirdOffline',
+    'AetraThreatTestHaltOverOneThirdOfflineDoc',
+    'AetraThreatTestRecoveryAfterValidatorsReturn',
+    'AetraThreatTestDowntimePenaltiesApplied',
+    'AetraThreatTestMaliciousParamProposalRejected',
+    'AetraThreatTestOutOfRangeValuesRejected',
+    'AetraThreatTestAuthoritySpoofingRejected',
+    'AetraThreatTestDelayedActivationWorks',
+    'AetraThreatTestContractGasExhaustion',
+    'AetraThreatTestContractStorageAbuse',
+    'AetraThreatTestUnauthorizedMigration',
+    'AetraThreatTestInvalidInstantiate',
+    'AetraThreatTestMaliciousContainedExportImport',
+    'AetraValidatorCartelThreatEvidence',
+    'DefaultAetraValidatorCartelThreatEvidence',
+    'ValidateAetraValidatorCartelThreat',
+    'BuildAetraValidatorCartelThreatReport',
+    'UsesObjectiveChainData',
+    'UsesEconomicSignals',
+    'AvoidsMandatoryValidatorKYC',
+    'DoesNotHaltStakingOnWarning',
+    'AetraStakeCentralizationRewardsThreatEvidence',
+    'DefaultAetraStakeCentralizationRewardsThreatEvidence',
+    'ValidateAetraStakeCentralizationRewardsThreat',
+    'BuildAetraStakeCentralizationRewardsThreatReport',
+    'AetraDowntimeWeakOperatorsThreatEvidence',
+    'DefaultAetraDowntimeWeakOperatorsThreatEvidence',
+    'ValidateAetraDowntimeWeakOperatorsThreat',
+    'BuildAetraDowntimeWeakOperatorsThreatReport',
+    'AetraGovernanceAttackThreatEvidence',
+    'DefaultAetraGovernanceAttackThreatEvidence',
+    'ValidateAetraGovernanceAttackThreat',
+    'BuildAetraGovernanceAttackThreatReport',
+    'AetraContractAttackThreatEvidence',
+    'DefaultAetraContractAttackThreatEvidence',
+    'ValidateAetraContractAttackThreat',
+    'BuildAetraContractAttackThreatReport'
+  )) {
+  Assert-Contains -Text $policyText -Pattern ([regex]::Escape($term)) -Message "threat model gate missing: $term"
+}
+
+foreach ($term in @(
+    'TestDefaultAetraValidatorCartelThreatCoversSection291',
+    'TestAetraValidatorCartelThreatRejectsMissingControlsSimulationsAndSafety',
+    'TestDefaultAetraStakeCentralizationRewardsThreatCoversSection292',
+    'TestAetraStakeCentralizationRewardsThreatRejectsMissingControlsAndTests',
+    'TestDefaultAetraDowntimeWeakOperatorsThreatCoversSection293',
+    'TestAetraDowntimeWeakOperatorsThreatRejectsMissingControlsAndTests',
+    'TestDefaultAetraGovernanceAttackThreatCoversSection294',
+    'TestAetraGovernanceAttackThreatRejectsMissingControlsAndTests',
+    'TestDefaultAetraContractAttackThreatCoversSection295',
+    'TestAetraContractAttackThreatRejectsMissingControlsAndTests'
+  )) {
+  Assert-Contains -Text $testText -Pattern ([regex]::Escape($term)) -Message "threat model tests missing: $term"
+}
+
+Write-Host "threat model doc test passed"

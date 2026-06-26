@@ -1,0 +1,336 @@
+syntax = "proto3";
+
+package l1.nominatorpool.v1;
+
+import "cosmos/msg/v1/msg.proto";
+import "l1/nominatorpool/v1/genesis.proto";
+
+option go_package = "github.com/sovereign-l1/l1/api/l1/nominatorpool/v1;nominatorpoolv1";
+
+service Msg {
+  option (cosmos.msg.v1.service) = true;
+
+  rpc CreateNominatorPool(MsgCreateNominatorPool) returns (MsgCreateNominatorPoolResponse);
+  rpc DepositToPool(MsgDepositToPool) returns (MsgDepositToPoolResponse);
+  rpc RequestPoolWithdrawal(MsgRequestPoolWithdrawal) returns (MsgRequestPoolWithdrawalResponse);
+  rpc CancelPoolWithdrawal(MsgCancelPoolWithdrawal) returns (MsgCancelPoolWithdrawalResponse);
+  rpc ClaimPoolRewards(MsgClaimPoolRewards) returns (MsgClaimPoolRewardsResponse);
+  rpc SyncPoolRewards(MsgSyncPoolRewards) returns (MsgSyncPoolRewardsResponse);
+  rpc ClaimStakingRewards(MsgClaimStakingRewards) returns (MsgClaimStakingRewardsResponse);
+  rpc UpdatePoolCommission(MsgUpdatePoolCommission) returns (MsgUpdatePoolCommissionResponse);
+  rpc ChangePoolValidator(MsgChangePoolValidator) returns (MsgChangePoolValidatorResponse);
+
+  rpc DepositToStakingPool(MsgDepositToStakingPool) returns (MsgDepositToStakingPoolResponse);
+  rpc RequestPoolUnbond(MsgRequestPoolUnbond) returns (MsgRequestPoolUnbondResponse);
+  rpc WithdrawPoolStake(MsgWithdrawPoolStake) returns (MsgWithdrawPoolStakeResponse);
+  rpc TopUpPoolReserve(MsgTopUpPoolReserve) returns (MsgTopUpPoolReserveResponse);
+  rpc ClaimStakeReputation(MsgClaimStakeReputation) returns (MsgClaimStakeReputationResponse);
+  rpc DelegateToValidator(MsgDelegateToValidator) returns (MsgDelegateToValidatorResponse);
+  rpc RegisterValidator(MsgRegisterValidator) returns (MsgRegisterValidatorResponse);
+  rpc UpdateValidator(MsgUpdateValidator) returns (MsgUpdateValidatorResponse);
+  rpc UpdateStakingParams(MsgUpdateStakingParams) returns (MsgUpdateStakingParamsResponse);
+  rpc CreateOfficialLiquidStakingPool(MsgCreateOfficialLiquidStakingPool) returns (MsgCreateOfficialLiquidStakingPoolResponse);
+}
+
+message MsgCreateNominatorPool {
+  option (cosmos.msg.v1.signer) = "authority";
+
+  string authority = 1;
+  string pool_id = 2;
+  string pool_operator = 3;
+  string validator_target = 4;
+  uint32 pool_commission_bps = 5;
+  uint64 height = 6;
+  string validator_status = 7;
+}
+
+message MsgCreateNominatorPoolResponse {
+  NominatorPool pool = 1;
+}
+
+message MsgDepositToPool {
+  option (cosmos.msg.v1.signer) = "authority";
+
+  string authority = 1;
+  string pool_id = 2;
+  string delegator = 3;
+  uint64 amount = 4;
+  uint64 height = 5;
+}
+
+message MsgDepositToPoolResponse {
+  DelegatorShare delegator = 1;
+}
+
+message MsgRequestPoolWithdrawal {
+  option (cosmos.msg.v1.signer) = "authority";
+
+  string authority = 1;
+  string pool_id = 2;
+  string withdrawal_id = 3;
+  string delegator = 4;
+  uint64 shares = 5;
+  uint64 height = 6;
+}
+
+message MsgRequestPoolWithdrawalResponse {
+  PendingWithdrawal withdrawal = 1;
+}
+
+message MsgCancelPoolWithdrawal {
+  option (cosmos.msg.v1.signer) = "authority";
+
+  string authority = 1;
+  string pool_id = 2;
+  string withdrawal_id = 3;
+  string delegator = 4;
+  uint64 height = 5;
+}
+
+message MsgCancelPoolWithdrawalResponse {
+  PendingWithdrawal withdrawal = 1;
+}
+
+message MsgClaimPoolRewards {
+  option (cosmos.msg.v1.signer) = "authority";
+
+  string authority = 1;
+  string pool_id = 2;
+  string delegator = 3;
+  uint64 height = 4;
+}
+
+message MsgClaimPoolRewardsResponse {
+  uint64 reward_amount = 1;
+}
+
+message MsgSyncPoolRewards {
+  option (cosmos.msg.v1.signer) = "authority";
+
+  string authority = 1;
+  string pool_id = 2;
+  uint64 epoch = 3;
+  uint32 reward_rate_bps = 4;
+  uint64 emissions_allocated = 5;
+  uint64 fees_allocated = 6;
+  uint64 height = 7;
+  repeated ValidatorRewardAllocation allocations = 8;
+}
+
+message MsgSyncPoolRewardsResponse {
+  uint64 pool_user_rewards = 1;
+  uint64 validator_commission = 2;
+  uint64 pool_protocol_fee = 3;
+  uint64 reward_index_after = 4;
+}
+
+message MsgClaimStakingRewards {
+  option (cosmos.msg.v1.signer) = "authority";
+
+  string authority = 1;
+  string delegator = 2;
+  string validator = 3;
+  uint64 height = 4;
+  bool internal_migration = 5;
+}
+
+message MsgClaimStakingRewardsResponse {
+  uint64 reward_amount = 1;
+}
+
+message MsgUpdatePoolCommission {
+  option (cosmos.msg.v1.signer) = "authority";
+
+  string authority = 1;
+  string pool_id = 2;
+  string pool_operator = 3;
+  uint32 pool_commission_bps = 4;
+  uint64 height = 5;
+}
+
+message MsgUpdatePoolCommissionResponse {
+  NominatorPool pool = 1;
+}
+
+message MsgChangePoolValidator {
+  option (cosmos.msg.v1.signer) = "authority";
+
+  string authority = 1;
+  string pool_id = 2;
+  string pool_operator = 3;
+  string validator_target = 4;
+  string validator_status = 5;
+  uint64 height = 6;
+}
+
+message MsgChangePoolValidatorResponse {
+  NominatorPool pool = 1;
+}
+
+message MsgDepositToStakingPool {
+  option (cosmos.msg.v1.signer) = "wallet_address";
+
+  string pool_id = 1;
+  string wallet_address = 2;
+  uint64 amount = 3;
+  uint64 height = 4;
+  string reserved_routing = 5;
+  string official_contract = 6;
+}
+
+message MsgDepositToStakingPoolResponse {
+  string pool_id = 1;
+  string owner_address = 2;
+  uint64 amount = 3;
+  uint64 shares = 4;
+  uint64 height = 5;
+  string receipt_token = 6;
+}
+
+message MsgRequestPoolUnbond {
+  option (cosmos.msg.v1.signer) = "owner_address";
+
+  string pool_id = 1;
+  string owner_address = 2;
+  string request_id = 3;
+  uint64 shares = 4;
+  uint64 height = 5;
+}
+
+message MsgRequestPoolUnbondResponse {
+  string pool_id = 1;
+  string owner_address = 2;
+  string request_id = 3;
+  uint64 shares = 4;
+  uint64 amount = 5;
+  uint64 complete_height = 6;
+}
+
+message MsgWithdrawPoolStake {
+  option (cosmos.msg.v1.signer) = "caller_contract_user";
+
+  string caller_contract_user = 1;
+  string pool_id = 2;
+  string owner_address = 3;
+  string request_id = 4;
+  uint64 height = 5;
+}
+
+message MsgWithdrawPoolStakeResponse {
+  string pool_id = 1;
+  string owner_address = 2;
+  string request_id = 3;
+  uint64 amount = 4;
+  uint64 height = 5;
+}
+
+message MsgTopUpPoolReserve {
+  option (cosmos.msg.v1.signer) = "payer_address";
+
+  string pool_id = 1;
+  string payer_address = 2;
+  uint64 amount = 3;
+  uint64 height = 4;
+}
+
+message MsgTopUpPoolReserveResponse {
+  string pool_id = 1;
+  string payer_address = 2;
+  uint64 amount = 3;
+  uint64 storage_debt_paid = 4;
+}
+
+message MsgClaimStakeReputation {
+  option (cosmos.msg.v1.signer) = "owner_address";
+
+  string pool_id = 1;
+  string owner_address = 2;
+  uint64 height = 3;
+}
+
+message MsgClaimStakeReputationResponse {
+  string account = 1;
+  string pool_id = 2;
+  uint64 reputation_delta = 3;
+  uint64 reputation_score = 4;
+}
+
+message MsgDelegateToValidator {
+  option (cosmos.msg.v1.signer) = "authority";
+
+  string authority = 1;
+  string user_address = 2;
+  string validator_address = 3;
+  uint64 amount = 4;
+  uint64 height = 5;
+}
+
+message MsgDelegateToValidatorResponse {}
+
+message MsgRegisterValidator {
+  option (cosmos.msg.v1.signer) = "signer_address";
+
+  string signer_address = 1;
+  string validator_address = 2;
+  uint64 self_stake = 3;
+  uint64 nominator_stake = 4;
+  uint32 commission_bps = 5;
+  uint64 height = 6;
+}
+
+message MsgRegisterValidatorResponse {
+  string validator = 1;
+  string status = 2;
+  uint64 self_stake = 3;
+  uint64 pool_stake = 4;
+}
+
+message MsgUpdateValidator {
+  option (cosmos.msg.v1.signer) = "signer_address";
+
+  string signer_address = 1;
+  string validator_address = 2;
+  uint64 self_stake = 3;
+  uint64 nominator_stake = 4;
+  uint32 performance_score = 5;
+  uint32 commission_bps = 6;
+  uint32 slashing_risk_bps = 7;
+  uint32 allocation_limit_bps = 8;
+  string status = 9;
+  uint64 height = 10;
+}
+
+message MsgUpdateValidatorResponse {
+  string validator = 1;
+  string status = 2;
+  uint64 self_stake = 3;
+  uint64 pool_stake = 4;
+}
+
+message MsgUpdateStakingParams {
+  option (cosmos.msg.v1.signer) = "authority";
+
+  string authority = 1;
+  Params params = 2;
+  uint64 height = 3;
+}
+
+message MsgUpdateStakingParamsResponse {}
+
+message MsgCreateOfficialLiquidStakingPool {
+  option (cosmos.msg.v1.signer) = "authority";
+
+  string authority = 1;
+  string pool_id = 2;
+  string contract_address_user = 3;
+  string contract_address_raw = 4;
+  string pool_operator = 5;
+  uint32 pool_commission_bps = 6;
+  uint64 height = 7;
+}
+
+message MsgCreateOfficialLiquidStakingPoolResponse {
+  string pool_id = 1;
+  string contract_address_user = 2;
+  string contract_address_raw = 3;
+}

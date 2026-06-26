@@ -1,0 +1,67 @@
+syntax = "proto3";
+
+package l1.configvoting.v1;
+
+import "cosmos/msg/v1/msg.proto";
+import "gogoproto/gogo.proto";
+import "l1/configvoting/v1/genesis.proto";
+
+option go_package = "github.com/sovereign-l1/l1/api/l1/configvoting/v1;configvotingv1";
+
+service Msg {
+  option (cosmos.msg.v1.service) = true;
+
+  rpc SubmitConfigProposal(MsgSubmitConfigProposal) returns (MsgSubmitConfigProposalResponse);
+  rpc VoteConfigProposal(MsgVoteConfigProposal) returns (MsgVoteConfigProposalResponse);
+  rpc ExecuteConfigProposal(MsgExecuteConfigProposal) returns (MsgExecuteConfigProposalResponse);
+  rpc VetoConfigProposal(MsgVetoConfigProposal) returns (MsgVetoConfigProposalResponse);
+}
+
+message MsgSubmitConfigProposal {
+  option (cosmos.msg.v1.signer) = "authority";
+
+  string authority = 1;
+  ConfigProposal proposal = 2 [(gogoproto.nullable) = false];
+}
+
+message MsgSubmitConfigProposalResponse {
+  ConfigProposal proposal = 1 [(gogoproto.nullable) = false];
+}
+
+message MsgVoteConfigProposal {
+  option (cosmos.msg.v1.signer) = "voter";
+
+  string voter = 1;
+  string proposal_id = 2;
+  string option = 3;
+  uint64 height = 4;
+}
+
+message MsgVoteConfigProposalResponse {
+  ConfigVote vote = 1 [(gogoproto.nullable) = false];
+}
+
+message MsgExecuteConfigProposal {
+  option (cosmos.msg.v1.signer) = "authority";
+
+  string authority = 1;
+  string proposal_id = 2;
+  uint64 height = 3;
+}
+
+message MsgExecuteConfigProposalResponse {
+  ConfigProposal proposal = 1 [(gogoproto.nullable) = false];
+}
+
+message MsgVetoConfigProposal {
+  option (cosmos.msg.v1.signer) = "authority";
+
+  string authority = 1;
+  string proposal_id = 2;
+  string reason = 3;
+  uint64 height = 4;
+}
+
+message MsgVetoConfigProposalResponse {
+  ConfigProposal proposal = 1 [(gogoproto.nullable) = false];
+}

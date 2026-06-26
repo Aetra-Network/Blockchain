@@ -1,0 +1,49 @@
+syntax = "proto3";
+package l1.constitution.v1;
+
+import "google/api/annotations.proto";
+import "gogoproto/gogo.proto";
+import "l1/constitution/v1/genesis.proto";
+
+option go_package = "github.com/sovereign-l1/l1/api/l1/constitution/v1;constitutionv1";
+
+service Query {
+  rpc Constitution(QueryConstitutionRequest) returns (QueryConstitutionResponse) {
+    option (google.api.http).get = "/l1/constitution/v1/constitution";
+  }
+  rpc PendingAmendments(QueryPendingAmendmentsRequest) returns (QueryPendingAmendmentsResponse) {
+    option (google.api.http).get = "/l1/constitution/v1/amendments/pending";
+  }
+  rpc Amendment(QueryAmendmentRequest) returns (QueryAmendmentResponse) {
+    option (google.api.http).get = "/l1/constitution/v1/amendments/{amendment_id}";
+  }
+  rpc ProtectedLimits(QueryProtectedLimitsRequest) returns (QueryProtectedLimitsResponse) {
+    option (google.api.http).get = "/l1/constitution/v1/protected_limits";
+  }
+}
+
+message QueryConstitutionRequest {}
+
+message QueryConstitutionResponse {
+  Constitution constitution = 1 [(gogoproto.nullable) = false];
+}
+
+message QueryPendingAmendmentsRequest {}
+
+message QueryPendingAmendmentsResponse {
+  repeated Amendment amendments = 1 [(gogoproto.nullable) = false];
+}
+
+message QueryAmendmentRequest {
+  string amendment_id = 1;
+}
+
+message QueryAmendmentResponse {
+  Amendment amendment = 1 [(gogoproto.nullable) = false];
+}
+
+message QueryProtectedLimitsRequest {}
+
+message QueryProtectedLimitsResponse {
+  ProtectedLimits limits = 1 [(gogoproto.nullable) = false];
+}

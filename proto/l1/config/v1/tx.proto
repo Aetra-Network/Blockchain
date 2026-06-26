@@ -1,0 +1,76 @@
+syntax = "proto3";
+package l1.config.v1;
+
+import "cosmos/msg/v1/msg.proto";
+import "gogoproto/gogo.proto";
+import "l1/config/v1/genesis.proto";
+
+option go_package = "github.com/sovereign-l1/l1/api/l1/config/v1;configv1";
+
+service Msg {
+  option (cosmos.msg.v1.service) = true;
+
+  rpc SubmitConfigChange(MsgSubmitConfigChange) returns (MsgSubmitConfigChangeResponse);
+  rpc ApproveConfigChange(MsgApproveConfigChange) returns (MsgApproveConfigChangeResponse);
+  rpc RejectConfigChange(MsgRejectConfigChange) returns (MsgRejectConfigChangeResponse);
+  rpc ExecuteConfigChange(MsgExecuteConfigChange) returns (MsgExecuteConfigChangeResponse);
+  rpc CancelConfigChange(MsgCancelConfigChange) returns (MsgCancelConfigChangeResponse);
+}
+
+message MsgSubmitConfigChange {
+  option (cosmos.msg.v1.signer) = "authority";
+
+  string authority = 1;
+  ConfigChange change = 2 [(gogoproto.nullable) = false];
+}
+
+message MsgSubmitConfigChangeResponse {
+  ConfigChange change = 1 [(gogoproto.nullable) = false];
+}
+
+message MsgApproveConfigChange {
+  option (cosmos.msg.v1.signer) = "authority";
+
+  string authority = 1;
+  string change_id = 2;
+}
+
+message MsgApproveConfigChangeResponse {
+  ConfigChange change = 1 [(gogoproto.nullable) = false];
+}
+
+message MsgRejectConfigChange {
+  option (cosmos.msg.v1.signer) = "authority";
+
+  string authority = 1;
+  string change_id = 2;
+  string reason = 3;
+}
+
+message MsgRejectConfigChangeResponse {
+  ConfigChange change = 1 [(gogoproto.nullable) = false];
+}
+
+message MsgExecuteConfigChange {
+  option (cosmos.msg.v1.signer) = "authority";
+
+  string authority = 1;
+  string change_id = 2;
+}
+
+message MsgExecuteConfigChangeResponse {
+  ConfigEntry entry = 1 [(gogoproto.nullable) = false];
+  ConfigChange change = 2 [(gogoproto.nullable) = false];
+}
+
+message MsgCancelConfigChange {
+  option (cosmos.msg.v1.signer) = "authority";
+
+  string authority = 1;
+  string change_id = 2;
+  string reason = 3;
+}
+
+message MsgCancelConfigChangeResponse {
+  ConfigChange change = 1 [(gogoproto.nullable) = false];
+}

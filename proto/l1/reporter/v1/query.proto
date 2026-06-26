@@ -1,0 +1,57 @@
+syntax = "proto3";
+
+package l1.reporter.v1;
+
+import "google/api/annotations.proto";
+import "gogoproto/gogo.proto";
+import "l1/reporter/v1/genesis.proto";
+
+option go_package = "github.com/sovereign-l1/l1/api/l1/reporter/v1;reporterv1";
+
+service Query {
+  rpc Reporter(QueryReporterRequest) returns (QueryReporterResponse) {
+    option (google.api.http).get = "/l1/reporter/v1/reporters/{reporter_address}";
+  }
+
+  rpc Reporters(QueryReportersRequest) returns (QueryReportersResponse) {
+    option (google.api.http).get = "/l1/reporter/v1/reporters";
+  }
+
+  rpc ReporterReports(QueryReporterReportsRequest) returns (QueryReporterReportsResponse) {
+    option (google.api.http).get = "/l1/reporter/v1/reporters/{reporter_address}/reports";
+  }
+
+  rpc ReporterRewards(QueryReporterRewardsRequest) returns (QueryReporterRewardsResponse) {
+    option (google.api.http).get = "/l1/reporter/v1/reporters/{reporter_address}/rewards";
+  }
+}
+
+message QueryReporterRequest {
+  string reporter_address = 1;
+}
+
+message QueryReporterResponse {
+  ReporterRecord reporter = 1 [(gogoproto.nullable) = false];
+}
+
+message QueryReportersRequest {}
+
+message QueryReportersResponse {
+  repeated ReporterRecord reporters = 1 [(gogoproto.nullable) = false];
+}
+
+message QueryReporterReportsRequest {
+  string reporter_address = 1;
+}
+
+message QueryReporterReportsResponse {
+  repeated ReportRecord reports = 1 [(gogoproto.nullable) = false];
+}
+
+message QueryReporterRewardsRequest {
+  string reporter_address = 1;
+}
+
+message QueryReporterRewardsResponse {
+  repeated ReporterReward rewards = 1 [(gogoproto.nullable) = false];
+}

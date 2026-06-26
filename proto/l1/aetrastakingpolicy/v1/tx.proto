@@ -1,0 +1,39 @@
+syntax = "proto3";
+
+package l1.aetrastakingpolicy.v1;
+
+import "cosmos/msg/v1/msg.proto";
+
+option go_package = "github.com/sovereign-l1/l1/api/l1/aetrastakingpolicy/v1;aetrastakingpolicyv1";
+
+service Msg {
+  option (cosmos.msg.v1.service) = true;
+
+  rpc UpdateStakingPolicyParams(MsgUpdateStakingPolicyParams) returns (MsgUpdateStakingPolicyParamsResponse);
+  rpc RegisterValidatorIdentity(MsgRegisterValidatorIdentity) returns (MsgRegisterValidatorIdentityResponse);
+  rpc AcknowledgeConcentrationWarning(MsgAcknowledgeConcentrationWarning) returns (MsgAcknowledgeConcentrationWarningResponse);
+}
+
+message MsgUpdateStakingPolicyParams {
+  option (cosmos.msg.v1.signer) = "authority";
+
+  string authority = 1;
+}
+
+message MsgUpdateStakingPolicyParamsResponse {}
+
+message MsgRegisterValidatorIdentity {
+  option (cosmos.msg.v1.signer) = "authority";
+
+  string authority = 1;
+}
+
+message MsgRegisterValidatorIdentityResponse {}
+
+message MsgAcknowledgeConcentrationWarning {
+  option (cosmos.msg.v1.signer) = "authority";
+
+  string authority = 1;
+}
+
+message MsgAcknowledgeConcentrationWarningResponse {}

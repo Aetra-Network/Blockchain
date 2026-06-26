@@ -1,0 +1,90 @@
+syntax = "proto3";
+
+package l1.validatorelection.v1;
+
+import "cosmos/msg/v1/msg.proto";
+import "gogoproto/gogo.proto";
+import "l1/validatorelection/v1/genesis.proto";
+
+option go_package = "github.com/sovereign-l1/l1/api/l1/validatorelection/v1;validatorelectionv1";
+
+service Msg {
+  option (cosmos.msg.v1.service) = true;
+
+  rpc ApplyForValidatorSet(MsgApplyForValidatorSet) returns (MsgApplyForValidatorSetResponse);
+  rpc WithdrawApplication(MsgWithdrawApplication) returns (MsgWithdrawApplicationResponse);
+  rpc CommitElection(MsgCommitElection) returns (MsgCommitElectionResponse);
+  rpc FinalizeElection(MsgFinalizeElection) returns (MsgFinalizeElectionResponse);
+  rpc RequestValidatorExit(MsgRequestValidatorExit) returns (MsgRequestValidatorExitResponse);
+  rpc CancelValidatorExit(MsgCancelValidatorExit) returns (MsgCancelValidatorExitResponse);
+}
+
+message MsgApplyForValidatorSet {
+  option (cosmos.msg.v1.signer) = "authority";
+
+  string authority = 1;
+  CandidateApplication application = 2 [(gogoproto.nullable) = false];
+  uint64 height = 3;
+}
+
+message MsgApplyForValidatorSetResponse {
+  CandidateApplication application = 1 [(gogoproto.nullable) = false];
+}
+
+message MsgWithdrawApplication {
+  option (cosmos.msg.v1.signer) = "authority";
+
+  string authority = 1;
+  string operator_address = 2;
+  uint64 height = 3;
+}
+
+message MsgWithdrawApplicationResponse {
+  CandidateApplication application = 1 [(gogoproto.nullable) = false];
+}
+
+message MsgCommitElection {
+  option (cosmos.msg.v1.signer) = "authority";
+
+  string authority = 1;
+  uint64 height = 2;
+}
+
+message MsgCommitElectionResponse {
+  ElectionResult result = 1 [(gogoproto.nullable) = false];
+}
+
+message MsgFinalizeElection {
+  option (cosmos.msg.v1.signer) = "authority";
+
+  string authority = 1;
+  uint64 height = 2;
+}
+
+message MsgFinalizeElectionResponse {
+  ValidatorSetTransition transition = 1 [(gogoproto.nullable) = false];
+}
+
+message MsgRequestValidatorExit {
+  option (cosmos.msg.v1.signer) = "authority";
+
+  string authority = 1;
+  string operator_address = 2;
+  uint64 height = 3;
+}
+
+message MsgRequestValidatorExitResponse {
+  PendingExit exit = 1 [(gogoproto.nullable) = false];
+}
+
+message MsgCancelValidatorExit {
+  option (cosmos.msg.v1.signer) = "authority";
+
+  string authority = 1;
+  string operator_address = 2;
+  uint64 height = 3;
+}
+
+message MsgCancelValidatorExitResponse {
+  PendingExit exit = 1 [(gogoproto.nullable) = false];
+}

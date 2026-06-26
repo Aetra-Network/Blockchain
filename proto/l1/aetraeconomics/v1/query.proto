@@ -1,0 +1,46 @@
+syntax = "proto3";
+
+package l1.aetraeconomics.v1;
+
+import "google/api/annotations.proto";
+
+option go_package = "github.com/sovereign-l1/l1/api/l1/aetraeconomics/v1;aetraeconomicsv1";
+
+service Query {
+  rpc CurrentInflation(QueryCurrentInflationRequest) returns (QueryCurrentInflationResponse) {
+    option (google.api.http).get = "/l1/aetraeconomics/v1/inflation";
+  }
+  rpc CurrentBondedRatio(QueryCurrentBondedRatioRequest) returns (QueryCurrentBondedRatioResponse) {
+    option (google.api.http).get = "/l1/aetraeconomics/v1/bonded_ratio";
+  }
+  rpc EstimatedAPR(QueryEstimatedAPRRequest) returns (QueryEstimatedAPRResponse) {
+    option (google.api.http).get = "/l1/aetraeconomics/v1/estimated_apr";
+  }
+  rpc FeeSplitParams(QueryFeeSplitParamsRequest) returns (QueryFeeSplitParamsResponse) {
+    option (google.api.http).get = "/l1/aetraeconomics/v1/fee_split";
+  }
+  rpc BurnedSupply(QueryBurnedSupplyRequest) returns (QueryBurnedSupplyResponse) {
+    option (google.api.http).get = "/l1/aetraeconomics/v1/burned_supply";
+  }
+  rpc TreasuryBalance(QueryTreasuryBalanceRequest) returns (QueryTreasuryBalanceResponse) {
+    option (google.api.http).get = "/l1/aetraeconomics/v1/treasury";
+  }
+  rpc EpochRewardSummary(QueryEpochRewardSummaryRequest) returns (QueryEpochRewardSummaryResponse) {
+    option (google.api.http).get = "/l1/aetraeconomics/v1/epoch_rewards";
+  }
+}
+
+message QueryCurrentInflationRequest {}
+message QueryCurrentInflationResponse {}
+message QueryCurrentBondedRatioRequest {}
+message QueryCurrentBondedRatioResponse {}
+message QueryEstimatedAPRRequest {}
+message QueryEstimatedAPRResponse {}
+message QueryFeeSplitParamsRequest {}
+message QueryFeeSplitParamsResponse {}
+message QueryBurnedSupplyRequest {}
+message QueryBurnedSupplyResponse {}
+message QueryTreasuryBalanceRequest {}
+message QueryTreasuryBalanceResponse {}
+message QueryEpochRewardSummaryRequest {}
+message QueryEpochRewardSummaryResponse {}

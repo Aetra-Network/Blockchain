@@ -1,0 +1,45 @@
+syntax = "proto3";
+
+package l1.validatorinsurance.v1;
+
+import "google/api/annotations.proto";
+import "gogoproto/gogo.proto";
+import "l1/validatorinsurance/v1/genesis.proto";
+
+option go_package = "github.com/sovereign-l1/l1/api/l1/validatorinsurance/v1;validatorinsurancev1";
+
+service Query {
+  rpc ValidatorInsurance(QueryValidatorInsuranceRequest) returns (QueryValidatorInsuranceResponse) {
+    option (google.api.http).get = "/l1/validator-insurance/v1/insurances/{validator_address}";
+  }
+
+  rpc InsuranceClaims(QueryInsuranceClaimsRequest) returns (QueryInsuranceClaimsResponse) {
+    option (google.api.http).get = "/l1/validator-insurance/v1/claims/{validator_address}";
+  }
+
+  rpc InsuranceParams(QueryInsuranceParamsRequest) returns (QueryInsuranceParamsResponse) {
+    option (google.api.http).get = "/l1/validator-insurance/v1/params";
+  }
+}
+
+message QueryValidatorInsuranceRequest {
+  string validator_address = 1;
+}
+
+message QueryValidatorInsuranceResponse {
+  ValidatorInsurance insurance = 1;
+}
+
+message QueryInsuranceClaimsRequest {
+  string validator_address = 1;
+}
+
+message QueryInsuranceClaimsResponse {
+  repeated InsuranceClaim claims = 1 [(gogoproto.nullable) = false];
+}
+
+message QueryInsuranceParamsRequest {}
+
+message QueryInsuranceParamsResponse {
+  Params params = 1 [(gogoproto.nullable) = false];
+}

@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+package l1.aetravalidatorscore.v1;
+
+import "google/api/annotations.proto";
+
+option go_package = "github.com/sovereign-l1/l1/api/l1/aetravalidatorscore/v1;aetravalidatorscorev1";
+
+service Query {
+  rpc Params(QueryParamsRequest) returns (QueryParamsResponse) {
+    option (google.api.http).get = "/l1/aetravalidatorscore/v1/params";
+  }
+  rpc ValidatorScore(QueryValidatorScoreRequest) returns (QueryValidatorScoreResponse) {
+    option (google.api.http).get = "/l1/aetravalidatorscore/v1/score";
+  }
+  rpc PublicValidatorMetrics(QueryPublicValidatorMetricsRequest) returns (QueryPublicValidatorMetricsResponse) {
+    option (google.api.http).get = "/l1/aetravalidatorscore/v1/metrics";
+  }
+  rpc AllValidatorScores(QueryAllValidatorScoresRequest) returns (QueryAllValidatorScoresResponse) {
+    option (google.api.http).get = "/l1/aetravalidatorscore/v1/scores";
+  }
+}
+
+message QueryParamsRequest {}
+message QueryParamsResponse {}
+message QueryValidatorScoreRequest {}
+message QueryValidatorScoreResponse {}
+message QueryPublicValidatorMetricsRequest {}
+message QueryPublicValidatorMetricsResponse {}
+message QueryAllValidatorScoresRequest {}
+message QueryAllValidatorScoresResponse {}

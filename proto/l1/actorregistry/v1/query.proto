@@ -1,0 +1,83 @@
+syntax = "proto3";
+
+package l1.actorregistry.v1;
+
+import "google/api/annotations.proto";
+import "gogoproto/gogo.proto";
+import "l1/actorregistry/v1/genesis.proto";
+
+option go_package = "github.com/sovereign-l1/l1/api/l1/actorregistry/v1;actorregistryv1";
+
+service Query {
+  rpc Actor(QueryActorRequest) returns (QueryActorResponse) {
+    option (google.api.http).get = "/l1/actor-registry/v1/actors/{actor_id}";
+  }
+
+  rpc ActorsByOwner(QueryActorsByOwnerRequest) returns (QueryActorsByOwnerResponse) {
+    option (google.api.http).get = "/l1/actor-registry/v1/actors/owner/{owner}";
+  }
+
+  rpc ActorsByCodeHash(QueryActorsByCodeHashRequest) returns (QueryActorsByCodeHashResponse) {
+    option (google.api.http).get = "/l1/actor-registry/v1/actors/code_hash/{code_hash}";
+  }
+
+  rpc ActorStatus(QueryActorStatusRequest) returns (QueryActorStatusResponse) {
+    option (google.api.http).get = "/l1/actor-registry/v1/actors/{actor_id}/status";
+  }
+
+  rpc ActorMailbox(QueryActorMailboxRequest) returns (QueryActorMailboxResponse) {
+    option (google.api.http).get = "/l1/actor-registry/v1/actors/{actor_id}/mailbox";
+  }
+
+  rpc ActorStorageRoot(QueryActorStorageRootRequest) returns (QueryActorStorageRootResponse) {
+    option (google.api.http).get = "/l1/actor-registry/v1/actors/{actor_id}/storage_root";
+  }
+}
+
+message QueryActorRequest {
+  string actor_id = 1;
+}
+
+message QueryActorResponse {
+  ActorRecord actor = 1 [(gogoproto.nullable) = false];
+}
+
+message QueryActorsByOwnerRequest {
+  string owner = 1;
+}
+
+message QueryActorsByOwnerResponse {
+  repeated ActorRecord actors = 1 [(gogoproto.nullable) = false];
+}
+
+message QueryActorsByCodeHashRequest {
+  string code_hash = 1;
+}
+
+message QueryActorsByCodeHashResponse {
+  repeated ActorRecord actors = 1 [(gogoproto.nullable) = false];
+}
+
+message QueryActorStatusRequest {
+  string actor_id = 1;
+}
+
+message QueryActorStatusResponse {
+  string status = 1;
+}
+
+message QueryActorMailboxRequest {
+  string actor_id = 1;
+}
+
+message QueryActorMailboxResponse {
+  string mailbox_root = 1;
+}
+
+message QueryActorStorageRootRequest {
+  string actor_id = 1;
+}
+
+message QueryActorStorageRootResponse {
+  string storage_root = 1;
+}

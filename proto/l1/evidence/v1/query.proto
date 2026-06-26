@@ -1,0 +1,67 @@
+syntax = "proto3";
+
+package l1.evidence.v1;
+
+import "google/api/annotations.proto";
+import "gogoproto/gogo.proto";
+import "l1/evidence/v1/genesis.proto";
+
+option go_package = "github.com/sovereign-l1/l1/api/l1/evidence/v1;evidencev1";
+
+service Query {
+  rpc Evidence(QueryEvidenceRequest) returns (QueryEvidenceResponse) {
+    option (google.api.http).get = "/l1/evidence/v1/evidence/{evidence_id}";
+  }
+
+  rpc EvidenceByValidator(QueryEvidenceByValidatorRequest) returns (QueryEvidenceByValidatorResponse) {
+    option (google.api.http).get = "/l1/evidence/v1/evidence/validator/{validator_address}";
+  }
+
+  rpc EvidenceByReporter(QueryEvidenceByReporterRequest) returns (QueryEvidenceByReporterResponse) {
+    option (google.api.http).get = "/l1/evidence/v1/evidence/reporter/{reporter}";
+  }
+
+  rpc PendingEvidence(QueryPendingEvidenceRequest) returns (QueryPendingEvidenceResponse) {
+    option (google.api.http).get = "/l1/evidence/v1/evidence/pending";
+  }
+
+  rpc EvidenceParams(QueryEvidenceParamsRequest) returns (QueryEvidenceParamsResponse) {
+    option (google.api.http).get = "/l1/evidence/v1/params";
+  }
+}
+
+message QueryEvidenceRequest {
+  string evidence_id = 1;
+}
+
+message QueryEvidenceResponse {
+  EvidenceRecord evidence = 1 [(gogoproto.nullable) = false];
+}
+
+message QueryEvidenceByValidatorRequest {
+  string validator_address = 1;
+}
+
+message QueryEvidenceByReporterRequest {
+  string reporter = 1;
+}
+
+message QueryPendingEvidenceRequest {}
+
+message QueryEvidenceByValidatorResponse {
+  repeated EvidenceRecord evidence = 1 [(gogoproto.nullable) = false];
+}
+
+message QueryEvidenceByReporterResponse {
+  repeated EvidenceRecord evidence = 1 [(gogoproto.nullable) = false];
+}
+
+message QueryPendingEvidenceResponse {
+  repeated EvidenceRecord evidence = 1 [(gogoproto.nullable) = false];
+}
+
+message QueryEvidenceParamsRequest {}
+
+message QueryEvidenceParamsResponse {
+  Params params = 1 [(gogoproto.nullable) = false];
+}
