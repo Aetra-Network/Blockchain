@@ -38,6 +38,8 @@ go test ./x/aetravm/avm ./x/aetravm/async ./x/vm/types
 ```
 
 Public testnet is not ready if direct delegation is enabled, if AVM/contracts
-or native-account are only types/spec packages, if official pool staking cannot
-deposit/claim/unbond through the pool path, or if storage rent cannot freeze
-recoverable user/contract state while leaving protocol-critical state executable.
+or native-account are only types/spec packages, if deterministic execution
+gate does not pass, if official pool staking still lacks honest runtime
+evidence for deposit/claim/unbond through the real pool path, or if storage rent
+cannot freeze recoverable user/contract state while leaving protocol-critical
+state executable.

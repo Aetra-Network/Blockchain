@@ -33,7 +33,7 @@ Individual profiles:
 .\scripts\testnet\public-testnet-preflight.ps1 -ValidatorProfile 10 -SkipBuild
 ```
 
-The preflight runs full prototype acceptance, validates the requested validator count, exercises bank, fees, official liquid staking pool flows, direct delegation rejection, storage rent recovery behavior, query surfaces, restart persistence, and asserts CosmWasm remains disabled unless explicitly gated. Application-level asset behavior must be exercised through AVM contracts and standards, not through native app modules. Token, NFT, and DEX-style behavior must be exercised through AVM contracts. Token, NFT, market, and exchange-style application logic now targets AVM contracts. The 10-validator profile is the stress profile for public testnet readiness; it is expected to be slower and should run before advertising modular execution features.
+The preflight runs full prototype acceptance, validates the requested validator count, exercises bank, fees, direct user delegation rejection, staking/slashing query surfaces, restart persistence, and asserts CosmWasm remains disabled unless explicitly gated. Application-level asset behavior must be exercised through AVM contracts and standards, not through native app modules. Token, NFT, and DEX-style behavior must be exercised through AVM contracts. Token, NFT, market, and exchange-style application logic now targets AVM contracts. Official liquid staking pool deposit/claim/unbond, validator operator self-bond compatibility, and storage-rent recovery still require their own focused runtime evidence and must not be inferred from this preflight alone. The 10-validator profile is the stress profile for public testnet readiness; it is expected to be slower and should run before advertising modular execution features.
 
 The focused E2E smoke command list is maintained in
 [Public Testnet E2E Smoke Commands](public-testnet-e2e-smoke-commands.md).
@@ -42,18 +42,18 @@ Long-running network evidence is tracked in
 
 ## What To Tighten Before Public Testnet
 
-The current launch posture still benefits from a few operational fixes before
-opening public joins:
+The current launch posture still depends on a few operational gates being
+green before opening public joins:
 
 - Run and pin `.\scripts\testnet\public-testnet-preflight.ps1 -ValidatorProfile All`
-  under Go 1.25.x. The current failure mode is a toolchain mismatch in
-  `scripts\build-aetrad.ps1` with Go 1.26.4, not a product bug.
+  against the release artifact, and make sure the 3, 5, and 10 validator
+  profiles are green individually as well.
+- Keep the deterministic execution gate green before every launch cut.
 - Finish and archive operational evidence for snapshot restore, state-sync
-  restore, fresh validator onboarding, and long-running incident/rollback
-  traces.
-- Keep the release artifact tree clean before the public launch. The current
-  checkout is dirty, so the launch cut should be separated from any unrelated
-  worktree state.
+  restore, fresh validator onboarding, and long-running restart and rollback
+  traces with owner/source/interval/retention filled in.
+- Keep the release artifact tree clean before the public launch so the launch
+  cut is separated from unrelated worktree state.
 
 ## Localnet Hardening
 

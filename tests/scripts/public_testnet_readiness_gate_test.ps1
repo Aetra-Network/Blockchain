@@ -77,9 +77,9 @@ foreach ($term in @(
 }
 
 foreach ($term in @(
-    "official liquid staking pool flows",
-    "direct delegation rejection",
-    "storage rent recovery behavior",
+    "direct user delegation rejection",
+    "staking/slashing query surfaces",
+    "Official liquid staking pool deposit/claim/unbond, validator operator self-bond compatibility, and storage-rent recovery still require their own focused runtime evidence",
     "Token, NFT, and DEX-style behavior must be exercised through AVM contracts"
   )) {
   Assert-Contains -Text $prepText -Pattern ([regex]::Escape($term)) -Message "preparation doc missing readiness behavior: $term"

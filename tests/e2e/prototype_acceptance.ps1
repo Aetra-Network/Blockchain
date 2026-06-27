@@ -23,7 +23,6 @@ param(
   [string]$Node = "",
   [string]$Fees = "300000naet",
   [string]$WrongFees = "1000testtoken",
-  [string]$FactorySubdenom = "acceptgold",
   [string]$DelegationAmount = "5000000naet",
   [switch]$SkipBuild,
   [switch]$KeepLogsOnFailure
@@ -85,6 +84,21 @@ $ctx = [pscustomobject]@{
 
 $failure = $null
 
+function New-AcceptanceUserKey {
+  param(
+    [string]$BinaryPath,
+    [string]$NodeHomePath,
+    [string]$KeyName
+  )
+
+  Invoke-ExternalChecked `
+    -FilePath $BinaryPath `
+    -Arguments @("keys", "add", $KeyName, "--home", $NodeHomePath, "--keyring-backend", "test", "--no-backup") `
+    -FailureMessage "failed to create acceptance user key $KeyName" | Out-Null
+
+  return Get-LocalnetKeyAddress -Binary $BinaryPath -NodeHome $NodeHomePath -KeyName $KeyName
+}
+
 Push-Location $RepoRoot
 try {
   Write-AcceptanceStep "profile=$Profile validators=$ValidatorCount chain-id=$ChainId"
@@ -143,83 +157,6 @@ try {
   Assert-AcceptanceNativeMetadata -Metadata $metadata
   $feesParams = Invoke-AcceptanceQueryGrpcJson -Context $ctx -Arguments @("query", "fees", "params")
   Assert-AcceptanceFeesParams -Params $feesParams.params
-  if ($EnableAPI) {
-    $restNode = Invoke-AcceptanceRestJson -Context $ctx -Path "/cosmos/base/tendermint/v1beta1/node_info"
-    if ($restNode.default_node_info.network -ne $ChainId) {
-      throw "REST node_info network mismatch: $($restNode.default_node_info.network)"
-    }
-  }
-  Write-Host "base CLI/gRPC/REST queries passed"
-
-  Write-AcceptanceStep "bank send"
-  $node1Before = Get-AcceptanceBalanceAmount -Context $ctx -Address $node1 -Denom "naet"
-  Send-AcceptanceTx -Context $ctx -ActionArgs @("tx", "bank", "send", "node0", $node1, "1000naet") -FromHome $node0Home | Out-Null
-  $node1After = Get-AcceptanceBalanceAmount -Context $ctx -Address $node1 -Denom "naet"
-  if ($node1After -ne ($node1Before + 1000)) {
-    throw "bank send did not increase node1 balance by 1000naet: before=$node1Before after=$node1After"
-  }
-  Write-Host "bank send updated node1 balance to $($node1After)naet"
-
-  Write-AcceptanceStep "fees policy"
-  Send-AcceptanceTx `
-    -Context $ctx `
-    -ActionArgs @("tx", "bank", "send", "node0", $node1, "1naet") `
-    -FromHome $node0Home `
-    -Fees $WrongFees `
-    -ExpectFailure `
-    -ExpectedLog "fee denom testtoken not accepted; use naet" | Out-Null
-  Write-Host "wrong fee denom rejected"
-
-  Write-AcceptanceStep "contract-assets create/mint/query"
-  Send-AcceptanceTx -Context $ctx -ActionArgs @("tx", "contract-assets", "create-denom", $FactorySubdenom) -FromHome $node0Home | Out-Null
-  $factoryDenom = Get-AcceptanceFactoryDenom -Context $ctx -Subdenom $FactorySubdenom
-  $tfMeta = Invoke-AcceptanceQueryGrpcJson -Context $ctx -Arguments @("query", "contract-assets", "denom", $factoryDenom)
-  if ([string]::IsNullOrWhiteSpace($tfMeta.metadata.admin)) {
-    throw "contract-assets admin must not be empty"
-  }
-  Send-AcceptanceTx -Context $ctx -ActionArgs @("tx", "contract-assets", "mint", "100000000$factoryDenom", $node0) -FromHome $node0Home | Out-Null
-  $factoryBalance = Get-AcceptanceBalanceAmount -Context $ctx -Address $node0 -Denom $factoryDenom
-  if ($factoryBalance -lt 100000000) {
-    throw "factory balance after mint too low: $factoryBalance"
-  }
-  if ($EnableAPI) {
-    $tfRest = Invoke-AcceptanceRestJson -Context $ctx -Path "/l1/contract-assets/v1/denom/$factoryDenom"
-    if ($tfRest.metadata.admin -ne $tfMeta.metadata.admin) {
-      throw "REST contract-assets admin mismatch"
-    }
-  }
-  Write-Host "factory denom $factoryDenom minted to node0"
-
-  Write-AcceptanceStep "DEX create pool/swap/query"
-  Send-AcceptanceTx -Context $ctx -ActionArgs @("tx", "dex", "create-pool", "10000000naet", "10000000$factoryDenom") -FromHome $node0Home | Out-Null
-  $pool = Invoke-AcceptanceQueryGrpcJson -Context $ctx -Arguments @("query", "dex", "pool", "1")
-  if ($pool.pool.lp_denom -ne "lp/1") {
-    throw "DEX pool 1 returned unexpected lp denom $($pool.pool.lp_denom)"
-  }
-  if ($Profile -eq "Full") {
-    Send-AcceptanceTx `
-      -Context $ctx `
-      -ActionArgs @("tx", "dex", "swap-exact-in", "1", "100000naet", $factoryDenom, "1000000") `
-      -FromHome $node0Home `
-      -ExpectFailure `
-      -ExpectedLog "amount out below minimum" | Out-Null
-    Write-Host "DEX slippage guard rejected excessive min_amount_out"
-  }
-  $factoryBeforeSwap = Get-AcceptanceBalanceAmount -Context $ctx -Address $node0 -Denom $factoryDenom
-  Send-AcceptanceTx -Context $ctx -ActionArgs @("tx", "dex", "swap-exact-in", "1", "100000naet", $factoryDenom, "1") -FromHome $node0Home | Out-Null
-  $factoryAfterSwap = Get-AcceptanceBalanceAmount -Context $ctx -Address $node0 -Denom $factoryDenom
-  if ($factoryAfterSwap -le $factoryBeforeSwap) {
-    throw "factory balance did not increase after DEX swap: before=$factoryBeforeSwap after=$factoryAfterSwap"
-  }
-  if ($EnableAPI) {
-    $poolRest = Invoke-AcceptanceRestJson -Context $ctx -Path "/l1/dex/v1/pools/1"
-    if ($poolRest.pool.lp_denom -ne "lp/1") {
-      throw "REST DEX pool query returned unexpected lp denom"
-    }
-  }
-  Write-Host "DEX swap increased factory balance from $factoryBeforeSwap to $factoryAfterSwap"
-
-  Write-AcceptanceStep "PoS delegation/slashing queries"
   $stakingParams = Get-LocalnetStakingParams -Binary $Binary -RPCPort $node0Ports.RPC
   if ($stakingParams.bond_denom -ne "naet") {
     throw "staking bond denom must be naet, got $($stakingParams.bond_denom)"
@@ -232,28 +169,74 @@ try {
     Assert-AcceptanceBondedValidator -Validator $validator
   }
   $selectedValidator = @($validators | Sort-Object -Property operator_address | Select-Object -First 1)[0]
-  $slashingParams = Get-LocalnetSlashingParams -Binary $Binary -RPCPort $node0Ports.RPC
-  if ([int64]$slashingParams.signed_blocks_window -le 0) {
-    throw "slashing signed_blocks_window must be positive"
+  if ($EnableAPI) {
+    $restNode = Invoke-AcceptanceRestJson -Context $ctx -Path "/cosmos/base/tendermint/v1beta1/node_info"
+    if ($restNode.default_node_info.network -ne $ChainId) {
+      throw "REST node_info network mismatch: $($restNode.default_node_info.network)"
+    }
   }
-  $beforePower = Get-LocalnetTotalVotingPower -RPCPort $node0Ports.RPC
-  Send-LocalnetDelegateTx `
+  Write-Host "base CLI/gRPC/REST queries passed"
+
+  Write-AcceptanceStep "bank send"
+  $node1Before = Get-AcceptanceBalanceAmount -Context $ctx -Address $node1 -Denom "naet"
+  Send-LocalnetBankTx `
     -Binary $Binary `
     -FromHome $node0Home `
     -FromKey "node0" `
-    -ValidatorAddress $selectedValidator.operator_address `
-    -Amount $DelegationAmount `
+    -ToAddress $node1 `
+    -Amount "1000naet" `
     -Fees $Fees `
     -ChainId $ChainId `
     -RPCPort $node0Ports.RPC `
     -TimeoutSeconds $TimeoutSeconds | Out-Null
-  $delegation = Get-LocalnetDelegation -Binary $Binary -DelegatorAddress $node0 -ValidatorAddress $selectedValidator.operator_address -RPCPort $node0Ports.RPC
-  $delegationBalance = if ($delegation.delegation_response.balance) { $delegation.delegation_response.balance } else { $delegation.balance }
-  if ($delegationBalance.denom -ne "naet" -or [int64]$delegationBalance.amount -lt 5000000) {
-    throw "delegation query returned unexpected balance $($delegationBalance.amount)$($delegationBalance.denom)"
+  $node1After = Get-AcceptanceBalanceAmount -Context $ctx -Address $node1 -Denom "naet"
+  if ($node1After -ne ($node1Before + 1000)) {
+    throw "bank send did not increase node1 balance by 1000naet: before=$node1Before after=$node1After"
   }
-  $afterPower = Wait-LocalnetTotalVotingPowerGreater -PreviousPower $beforePower -RPCPort $node0Ports.RPC -TimeoutSeconds $TimeoutSeconds
-  Write-Host "delegation increased voting power from $beforePower to $afterPower"
+  Write-Host "bank send updated node1 balance to $($node1After)naet"
+
+  Write-AcceptanceStep "fees policy"
+  Send-LocalnetBankTx `
+    -Binary $Binary `
+    -FromHome $node0Home `
+    -FromKey "node0" `
+    -ToAddress $node1 `
+    -Amount "1naet" `
+    -Fees $WrongFees `
+    -ChainId $ChainId `
+    -RPCPort $node0Ports.RPC `
+    -TimeoutSeconds $TimeoutSeconds `
+    -ExpectFailure `
+    -ExpectedLog "fee denom testtoken not accepted; use naet" | Out-Null
+  Write-Host "wrong fee denom rejected"
+
+  Write-AcceptanceStep "PoS query and policy checks"
+  $slashingParams = Get-LocalnetSlashingParams -Binary $Binary -RPCPort $node0Ports.RPC
+  if ([int64]$slashingParams.signed_blocks_window -le 0) {
+    throw "slashing signed_blocks_window must be positive"
+  }
+
+  $acceptanceUserKey = "acceptance-user"
+  $acceptanceUser = New-AcceptanceUserKey -BinaryPath $Binary -NodeHomePath $node0Home -KeyName $acceptanceUserKey
+  Send-LocalnetBankTx `
+    -Binary $Binary `
+    -FromHome $node0Home `
+    -FromKey "node0" `
+    -ToAddress $acceptanceUser `
+    -Amount "7000000naet" `
+    -Fees $Fees `
+    -ChainId $ChainId `
+    -RPCPort $node0Ports.RPC `
+    -TimeoutSeconds $TimeoutSeconds | Out-Null
+  Send-AcceptanceTx `
+    -Context $ctx `
+    -ActionArgs @("tx", "staking", "delegate", $selectedValidator.operator_address, $DelegationAmount) `
+    -FromHome $node0Home `
+    -FromKey $acceptanceUserKey `
+    -ExpectFailure `
+    -ExpectedLog "direct user delegation to validators is disabled; use official liquid staking pool deposit" | Out-Null
+  Write-Host "direct user staking delegation rejected by pool-only policy"
+  Write-Host "staking/slashing query surfaces and direct-delegation policy checks passed"
 
   if ($Profile -eq "Full") {
     Write-AcceptanceStep "full profile restart/health"
