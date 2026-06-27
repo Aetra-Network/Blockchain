@@ -44,6 +44,7 @@ jobs:
       - name: Install tools
         shell: pwsh
         run: |
+          go install github.com/zricethezav/gitleaks/v8@v8.28.0
           go install github.com/bufbuild/buf/cmd/buf@latest
           go install github.com/securego/gosec/v2/cmd/gosec@latest
           go install golang.org/x/vuln/cmd/govulncheck@latest
@@ -61,9 +62,10 @@ jobs:
         run: buf lint
 
       - name: Gitleaks
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $Gitleaks = Join-Path (go env GOPATH) 'bin\gitleaks.exe'
+          & $Gitleaks git --no-banner --redact --log-opts=--all .
 
       - name: Prototype audit gate
         shell: pwsh

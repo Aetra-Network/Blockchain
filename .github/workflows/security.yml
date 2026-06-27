@@ -12,6 +12,7 @@ on:
 permissions:
   contents: read
   pull-requests: read
+  actions: read
   security-events: write
 
 jobs:
@@ -72,6 +73,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      actions: read
       security-events: write
     steps:
       - name: Checkout
@@ -118,7 +120,7 @@ jobs:
 
       - name: Upload gosec SARIF
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: gosec.sarif
 
@@ -131,10 +133,13 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Install gitleaks
+        run: go install github.com/zricethezav/gitleaks/v8@v8.28.0
+
       - name: Run gitleaks
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          GITLEAKS_BIN="$(go env GOPATH)/bin/gitleaks"
+          "${GITLEAKS_BIN}" git --no-banner --redact --log-opts=--all .
 
   dependency-review:
     name: dependency review
@@ -157,6 +162,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      actions: read
       security-events: write
     steps:
       - name: Checkout
@@ -169,12 +175,12 @@ jobs:
           cache: true
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
+        uses: github/codeql-action/init@v4
         with:
           languages: go
 
       - name: Autobuild
-        uses: github/codeql-action/autobuild@v3
+        uses: github/codeql-action/autobuild@v4
 
       - name: Analyze
-        uses: github/codeql-action/analyze@v3
+        uses: github/codeql-action/analyze@v4
