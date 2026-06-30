@@ -24,3 +24,12 @@ Per `app/params/mainnet_readiness.go`:
 ## Tracking
 
 This file will be updated when an independent audit is commissioned, in progress, or completed. Until then, all security evidence is limited to internal and automated checks.
+
+## Local Verification Snapshot
+
+Verified on 2026-06-29 against commit `7afe0d3`:
+
+- `gosec` reported `0` issues at high severity with generated protobuf excluded.
+- `gitleaks` passed with the repo allowlist in [`.gitleaks.toml`](</C:/Users/Ryzen/Desktop/L1/.gitleaks.toml>).
+- `govulncheck` reported only the triaged GO IDs already listed in `.github/security/govulncheck-triage.txt`.
+- `CodeQL` and dependency review remain enforced by [`.github/workflows/security.yml`](</C:/Users/Ryzen/Desktop/L1/.github/workflows/security.yml>) for GitHub-hosted PR and push runs.

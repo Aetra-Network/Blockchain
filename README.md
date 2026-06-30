@@ -1,5 +1,7 @@
 # Aetra Blockchain
 
+For symptom-specific fixes and recovery steps, see [Operator Troubleshooting Runbook](docs/operator-troubleshooting.md).
+
 Aetra is a sovereign Cosmos SDK Layer 1 blockchain — a deterministic, account-based PoS chain with an embedded Aetra Virtual Machine (AVM) for smart contracts. Built for moderate hardware, pool-based staking with no direct user→validator delegation, and governance-controlled economics with deterministic fee admission.
 
 | Property | Value |
@@ -487,3 +489,5 @@ For operator guides see [docs/VALIDATOR.md](docs/VALIDATOR.md), [docs/TESTNET.md
 ## Security
 
 Deterministic genesis validation, export/import roundtrip tests, zero-address rejection, reserved system address checks, native fee validation, bounded dynamic fees, reputation-based fee adjustments, module-account wiring invariants, blocked-address policy, localnet smoke tests, and 26 registered app invariants covering supply, staking, storage rent, and asset-module boundaries.
+
+

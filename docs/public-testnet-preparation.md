@@ -35,6 +35,8 @@ Individual profiles:
 
 The preflight runs full prototype acceptance, validates the requested validator count, exercises bank, fees, direct user delegation rejection, staking/slashing query surfaces, restart persistence, and asserts CosmWasm remains disabled unless explicitly gated. Application-level asset behavior must be exercised through AVM contracts and standards, not through native app modules. Token, NFT, and DEX-style behavior must be exercised through AVM contracts. Token, NFT, market, and exchange-style application logic now targets AVM contracts. Official liquid staking pool deposit/claim/unbond, validator operator self-bond compatibility, and storage-rent recovery still require their own focused runtime evidence and must not be inferred from this preflight alone. The 10-validator profile is the stress profile for public testnet readiness; it is expected to be slower and should run before advertising modular execution features.
 
+Public testnet staking remains pool-only: users enter through the official liquid staking pool, and direct delegation to validators stays disabled on the normal user path.
+
 The focused E2E smoke command list is maintained in
 [Public Testnet E2E Smoke Commands](public-testnet-e2e-smoke-commands.md).
 Long-running network evidence is tracked in
@@ -42,16 +44,21 @@ Long-running network evidence is tracked in
 
 ## What To Tighten Before Public Testnet
 
-The current launch posture still depends on a few operational gates being
-green before opening public joins:
+To reach 100/100 for public testnet readiness, the remaining concrete steps are:
 
-- Run and pin `.\scripts\testnet\public-testnet-preflight.ps1 -ValidatorProfile All`
-  against the release artifact, and make sure the 3, 5, and 10 validator
-  profiles are green individually as well.
-- Keep the deterministic execution gate green before every launch cut.
-- Finish and archive operational evidence for snapshot restore, state-sync
-  restore, fresh validator onboarding, and long-running restart and rollback
-  traces with owner/source/interval/retention filled in.
+- Run `.\scripts\testnet\public-testnet-preflight.ps1 -ValidatorProfile 3`,
+  `5`, `10`, and `All` on the release binary, then pin the passing output as
+  launch evidence.
+- Capture and archive evidence for snapshot restore, state-sync restore,
+  fresh validator onboarding, and long-running restart and rollback traces.
+- Run the full security layer and keep every `High`/`Critical` finding closed
+  or explicitly triaged: `govulncheck`, `gosec`, `CodeQL`, `gitleaks`, and
+  dependency review.
+- Obtain an independent audit and close or explicitly accept all findings.
+- Finish operational readiness for faucet, explorer/indexer, incident
+  response, rollback planning, and validator documentation on a clean machine.
+- Run `buf lint` in the environment where `buf` is installed and record it as a
+  mandatory gate, not a local-only convenience check.
 - Keep the release artifact tree clean before the public launch so the launch
   cut is separated from unrelated worktree state.
 

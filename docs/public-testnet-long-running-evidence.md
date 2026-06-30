@@ -34,3 +34,17 @@ Required long-run checklist:
 - Protocol-critical system state remains executable under system rent
   underfunding alerts.
 - All high/critical security findings are closed or explicitly owner-triaged.
+
+## Evidence Captured On 2026-06-29
+
+- `scripts/testnet/public-testnet-preflight.ps1 -ValidatorProfile 3` passed against `build/aetrad.exe` at commit `7afe0d3`.
+- `scripts/testnet/public-testnet-preflight.ps1 -ValidatorProfile 5` passed against `build/aetrad.exe` at commit `7afe0d3`.
+- `scripts/testnet/public-testnet-preflight.ps1 -ValidatorProfile 10` passed against `build/aetrad.exe` at commit `7afe0d3`.
+- `scripts/testnet/public-testnet-preflight.ps1 -ValidatorProfile All` passed against `build/aetrad.exe` at commit `7afe0d3`.
+- `tests/e2e/export_import_smoke.ps1` passed on a fresh localnet and verified export/import roundtrip behavior.
+- Fresh clean-home onboarding smoke passed in a temporary user profile: `aetrad init`, `genesis validate-genesis`, `keys add`, and `keys show` all succeeded against the published genesis.
+- Snapshot evidence was captured at `.work/snapshots/statesync-test-14.tar`.
+- A state-sync restart on a 3-validator localnet reached `height=2` with `catching_up=False`.
+- `gosec` reported `0` high-severity issues in the current tree.
+- `govulncheck` reported only the repository-triaged GO IDs listed in `.github/security/govulncheck-triage.txt`.
+- `gitleaks` passed after the repo-scoped allowlist in `.gitleaks.toml` was applied to the validator-registry consensus-key-length validation false positive.

@@ -1,0 +1,10 @@
+title = "Aetra gitleaks configuration"
+
+[allowlist]
+description = "False positive on validator registry consensus key byte limit validation."
+paths = [
+  "x/validator-registry/types/state.go",
+]
+regexes = [
+  "p\\.MaxConsensusKeyBytes == 0 \\|\\| p\\.MaxConsensusKeyBytes > MaxConsensusKeyBytesV1",
+]

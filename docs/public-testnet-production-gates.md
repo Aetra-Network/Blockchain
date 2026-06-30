@@ -168,6 +168,7 @@ Required production evidence:
 - Validator set can upgrade safely.
 - Staking, fees, AVM, and contract standards have adversarial tests.
 - State export/import is deterministic.
+- Staking, fees, DEX, AVM, and contract standards have adversarial tests.
 - Independent audit is completed and high/critical findings are fixed or
   explicitly accepted by governance with public rationale.
 - Emergency governance and halt/restart process is tested.
@@ -190,8 +191,11 @@ Production exclusions:
 3. Build deterministic async queue without AVM first.
 4. Build minimal AVM with a counter contract.
 5. Implement AW-5 wallet.
+   Historical roadmap references preserved for traceability:
+   - Implement AFT-44 token master/wallet
+   - Implement ANFT-66 NFT collection/item
+   - Implement ASBT-67 soulbound item
 6. Implement contract standards for user-created assets.
-8. Implement ASBT-67 non-transferable item.
 9. Gate CosmWasm behind explicit config and tests.
 10. Start sharding simulator and spec.
 11. Only after simulator and audit, prototype masterchain/workchain/shardchain.

@@ -139,7 +139,7 @@ jobs:
       - name: Run gitleaks
         run: |
           GITLEAKS_BIN="$(go env GOPATH)/bin/gitleaks"
-          "${GITLEAKS_BIN}" git --no-banner --redact --log-opts=--all .
+          "${GITLEAKS_BIN}" git --config .gitleaks.toml --no-banner --redact --log-opts=--all .
 
   dependency-review:
     name: dependency review

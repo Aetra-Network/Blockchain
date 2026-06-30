@@ -195,9 +195,9 @@ try {
   }
 
   if (Test-Path -LiteralPath $Gitleaks) {
-    Invoke-AuditNative -Name "gitleaks-staged" -Executable $Gitleaks -Arguments @("protect", "--staged", "--redact", "--no-banner")
+    Invoke-AuditNative -Name "gitleaks-staged" -Executable $Gitleaks -Arguments @("protect", "--config", ".gitleaks.toml", "--staged", "--redact", "--no-banner")
     if ($Profile -ne "Fast" -and -not $SkipGitleaksHistory) {
-      Invoke-AuditNative -Name "gitleaks-history" -Executable $Gitleaks -Arguments @("detect", "--source", ".", "--redact", "--no-banner", "--log-opts", "--all")
+      Invoke-AuditNative -Name "gitleaks-history" -Executable $Gitleaks -Arguments @("detect", "--config", ".gitleaks.toml", "--source", ".", "--redact", "--no-banner", "--log-opts", "--all")
     }
   } else {
     Add-AuditResult -Name "gitleaks" -Status "skipped" -ExitCode 0 -Log "" -Notes "gitleaks.exe not found"

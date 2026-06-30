@@ -72,8 +72,9 @@ The public-testnet audit pack is [Security Audit Pack](security-audit-pack.md).
 - AFT-44 rejects token supply divergence, non-admin mint/admin takeover,
   metadata spoofing, replayed wallet messages, malformed messages, and
   non-`naet` fee paths.
-- ANFT-66 rejects NFT unauthorized transfer, metadata spoofing, malformed
-  collection/item state, and unbounded batch minting.
+- ANFT-66 rejects NFT unauthorized transfer, NFT/SBT transfer bypass,
+  metadata spoofing, malformed collection/item state, and unbounded batch
+  minting.
 - ASBT-67 rejects SBT transfer bypass and unauthorized revoke.
 - Async execution rejects async queue DoS, malformed envelopes, duplicate
   contract addresses, duplicate queue sequences, bounce/refund double-spend

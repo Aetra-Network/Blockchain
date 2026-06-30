@@ -283,7 +283,9 @@ function Send-LocalnetBankTx {
     [string]$Fees = "300000naet",
     [string]$ChainId = "aetra-local-1",
     [int]$RPCPort = 26657,
-    [int]$TimeoutSeconds = 60
+    [int]$TimeoutSeconds = 60,
+    [switch]$ExpectFailure,
+    [string]$ExpectedLog = ""
   )
 
   $node = "tcp://127.0.0.1:$RPCPort"
@@ -331,7 +333,13 @@ function Send-LocalnetBankTx {
   )
   $broadcastCode = Get-LocalnetTxCode -Tx $tx
   if ($broadcastCode -ne 0) {
+    if ($ExpectFailure) {
+      return Assert-LocalnetTxFailure -Tx $tx -ExpectedLog $ExpectedLog
+    }
     throw "bank send broadcast failed with code $broadcastCode`: $(Get-LocalnetTxLog -Tx $tx)"
+  }
+  if ($ExpectFailure) {
+    throw "bank send succeeded but failure was expected"
   }
 
   $txHash = $tx.txhash

@@ -65,7 +65,7 @@ jobs:
         shell: pwsh
         run: |
           $Gitleaks = Join-Path (go env GOPATH) 'bin\gitleaks.exe'
-          & $Gitleaks git --no-banner --redact --log-opts=--all .
+          & $Gitleaks git --config .gitleaks.toml --no-banner --redact --log-opts=--all .
 
       - name: Prototype audit gate
         shell: pwsh
