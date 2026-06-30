@@ -6,6 +6,7 @@ param(
   [switch]$SkipTests,
   [switch]$SkipGovulncheck,
   [switch]$SkipGosec,
+  [string]$GitleaksConfig = "",
   [switch]$SkipGitleaksHistory,
   [switch]$SkipAcceptance
 )
@@ -59,6 +60,23 @@ function Resolve-AuditTool {
   $cmd = Get-Command $Name -ErrorAction SilentlyContinue
   if ($cmd) { return $cmd.Source }
   return $LocalPath
+}
+
+function Resolve-GitleaksConfig {
+  param([string]$Path)
+
+  $repoRoot = Get-AuditRepoRoot
+  if ([string]::IsNullOrWhiteSpace($Path)) {
+    $Path = Join-Path $repoRoot ".gitleaks.toml"
+  } elseif (-not [System.IO.Path]::IsPathRooted($Path)) {
+    $Path = Join-Path $repoRoot $Path
+  }
+
+  $fullPath = [System.IO.Path]::GetFullPath($Path)
+  if (!(Test-Path -LiteralPath $fullPath)) {
+    throw "gitleaks config not found: $fullPath"
+  }
+  return $fullPath
 }
 
 function Add-AuditResult {
@@ -160,6 +178,7 @@ $Buf = Resolve-AuditTool -Name "buf" -LocalPath (Join-Path $ToolBin "buf.exe")
 $Gitleaks = Resolve-AuditTool -Name "gitleaks" -LocalPath (Join-Path $ToolBin "gitleaks.exe")
 $Gosec = Resolve-AuditTool -Name "gosec" -LocalPath (Join-Path $ToolBin "gosec.exe")
 $Govulncheck = Resolve-AuditTool -Name "govulncheck" -LocalPath (Join-Path $ToolBin "govulncheck.exe")
+$GitleaksConfig = Resolve-GitleaksConfig -Path $GitleaksConfig
 
 $goCache = Join-Path $RepoRoot ".work\gocache"
 $goTmp = Join-Path $RepoRoot ".work\gotmp"
@@ -195,9 +214,9 @@ try {
   }
 
   if (Test-Path -LiteralPath $Gitleaks) {
-    Invoke-AuditNative -Name "gitleaks-staged" -Executable $Gitleaks -Arguments @("protect", "--config", ".gitleaks.toml", "--staged", "--redact", "--no-banner")
+    Invoke-AuditNative -Name "gitleaks-staged" -Executable $Gitleaks -Arguments @("protect", "--config", $GitleaksConfig, "--staged", "--redact", "--no-banner")
     if ($Profile -ne "Fast" -and -not $SkipGitleaksHistory) {
-      Invoke-AuditNative -Name "gitleaks-history" -Executable $Gitleaks -Arguments @("detect", "--config", ".gitleaks.toml", "--source", ".", "--redact", "--no-banner", "--log-opts", "--all")
+      Invoke-AuditNative -Name "gitleaks-history" -Executable $Gitleaks -Arguments @("detect", "--config", $GitleaksConfig, "--source", ".", "--redact", "--no-banner", "--log-opts", "--all")
     }
   } else {
     Add-AuditResult -Name "gitleaks" -Status "skipped" -ExitCode 0 -Log "" -Notes "gitleaks.exe not found"
@@ -209,6 +228,7 @@ try {
     $gosecJson = Join-Path $OutputDir "gosec.json"
     Invoke-AuditPowerShell `
       -Name "gosec" `
+      -AllowFailure `
       -Notes "generated protobuf excluded; see gosec.json for source findings" `
       -Script {
         $previousErrorActionPreference = $ErrorActionPreference
@@ -232,6 +252,9 @@ try {
           "gosec source issues: $count"
           foreach ($issue in @($doc.Issues)) {
             "$($issue.severity) $($issue.rule_id) $($issue.file):$($issue.line) $($issue.details)"
+          }
+          if ($count -gt 0) {
+            throw "gosec reported $count source findings"
           }
         }
       }

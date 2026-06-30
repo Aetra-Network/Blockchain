@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"encoding/json"
 	"testing"
 
 	sdkmath "cosmossdk.io/math"
@@ -16,6 +17,8 @@ import (
 	burntypes "github.com/sovereign-l1/l1/x/burn/types"
 	emissionstypes "github.com/sovereign-l1/l1/x/emissions/types"
 	feecollectortypes "github.com/sovereign-l1/l1/x/fee-collector/types"
+	mintauthoritykeeper "github.com/sovereign-l1/l1/x/mint-authority/keeper"
+	mintauthoritypb "github.com/sovereign-l1/l1/x/mint-authority/types/mintauthoritypb"
 	nominatorpooltypes "github.com/sovereign-l1/l1/x/nominator-pool/types"
 	treasurytypes "github.com/sovereign-l1/l1/x/treasury/types"
 )
@@ -95,24 +98,24 @@ func TestGoldenNativeEconomyLoopCoversFeesEmissionsPoolRewardsAndStorageRent(t *
 	require.True(t, emission.RoundingRemainder.Amount.IsZero())
 
 	nextPool, rewardSummary, err := nominatorpooltypes.SyncPoolRewards(nominatorpooltypes.DefaultParams(), nominatorpooltypes.NominatorPool{
-		PoolID:			"golden-pool",
-		TotalBondedStake:	1_000,
-		TotalShares:		1_000,
-		PoolCommissionBps:	100,
+		PoolID:            "golden-pool",
+		TotalBondedStake:  1_000,
+		TotalShares:       1_000,
+		PoolCommissionBps: 100,
 	}, nominatorpooltypes.MsgSyncPoolRewards{
-		Authority:		nominatorpooltypes.DefaultParams().Authority,
-		PoolID:			"golden-pool",
-		Epoch:			7,
-		RewardRateBps:		1_000,
-		EmissionsAllocated:	uint64(emission.ValidatorReward.Amount.Uint64()),
-		FeesAllocated:		7_000_000,
-		Height:			43,
+		Authority:          nominatorpooltypes.DefaultParams().Authority,
+		PoolID:             "golden-pool",
+		Epoch:              7,
+		RewardRateBps:      1_000,
+		EmissionsAllocated: uint64(emission.ValidatorReward.Amount.Uint64()),
+		FeesAllocated:      7_000_000,
+		Height:             43,
 		Allocations: []nominatorpooltypes.ValidatorRewardAllocation{{
-			Validator:		testAEAddress(0x51),
-			PoolAllocatedStake:	1_000,
-			ValidatorSelfStake:	500,
-			PerformanceBps:		10_000,
-			CommissionBps:		500,
+			Validator:          testAEAddress(0x51),
+			PoolAllocatedStake: 1_000,
+			ValidatorSelfStake: 500,
+			PerformanceBps:     10_000,
+			CommissionBps:      500,
 		}},
 	})
 	require.NoError(t, err)
@@ -203,8 +206,8 @@ func configureGoldenBurnParams(t *testing.T, app *L1App, ctx sdk.Context) {
 	t.Helper()
 	params := burntypes.DefaultParams()
 	params.ProtocolBurnPermissions = append(params.ProtocolBurnPermissions, burntypes.BurnPermission{
-		ModuleName:	authtypes.FeeCollectorName,
-		AllowedDenoms:	[]string{appparams.BaseDenom},
+		ModuleName:    authtypes.FeeCollectorName,
+		AllowedDenoms: []string{appparams.BaseDenom},
 	})
 	require.NoError(t, app.BurnKeeper.SetParams(ctx, params))
 }
@@ -271,25 +274,25 @@ func TestJailedValidatorProducesZeroPoolRewards(t *testing.T) {
 	require.NoError(t, err)
 
 	_, rewardSummary, err := nominatorpooltypes.SyncPoolRewards(nominatorpooltypes.DefaultParams(), nominatorpooltypes.NominatorPool{
-		PoolID:			"jail-test-pool",
-		TotalBondedStake:	1_000,
-		TotalShares:		1_000,
-		PoolCommissionBps:	100,
+		PoolID:            "jail-test-pool",
+		TotalBondedStake:  1_000,
+		TotalShares:       1_000,
+		PoolCommissionBps: 100,
 	}, nominatorpooltypes.MsgSyncPoolRewards{
-		Authority:		nominatorpooltypes.DefaultParams().Authority,
-		PoolID:			"jail-test-pool",
-		Epoch:			7,
-		RewardRateBps:		1_000,
-		EmissionsAllocated:	uint64(emission.ValidatorReward.Amount.Uint64()),
-		FeesAllocated:		0,
-		Height:			42,
+		Authority:          nominatorpooltypes.DefaultParams().Authority,
+		PoolID:             "jail-test-pool",
+		Epoch:              7,
+		RewardRateBps:      1_000,
+		EmissionsAllocated: uint64(emission.ValidatorReward.Amount.Uint64()),
+		FeesAllocated:      0,
+		Height:             42,
 		Allocations: []nominatorpooltypes.ValidatorRewardAllocation{{
-			Validator:		testAEAddress(0x51),
-			PoolAllocatedStake:	1_000,
-			ValidatorSelfStake:	500,
-			PerformanceBps:		10_000,
-			CommissionBps:		500,
-			Jailed:			true,
+			Validator:          testAEAddress(0x51),
+			PoolAllocatedStake: 1_000,
+			ValidatorSelfStake: 500,
+			PerformanceBps:     10_000,
+			CommissionBps:      500,
+			Jailed:             true,
 		}},
 	})
 	require.NoError(t, err)
@@ -320,4 +323,37 @@ func TestMaybeFinalizeNativeEmissionEpochAtEpochBoundary(t *testing.T) {
 
 	err = app.maybeFinalizeNativeEmissionEpoch(ctx)
 	require.NoError(t, err)
+}
+
+func TestMintAuthorityRejectsNonCanonicalBaseDenomUpdateAndFinalizeStillWorks(t *testing.T) {
+	app := Setup(t, false)
+	ctx := app.NewContext(false).WithBlockHeight(42)
+
+	state, err := app.MintAuthorityKeeper.GetState(ctx)
+	require.NoError(t, err)
+
+	badState := state
+	badState.Params.BaseDenom = "uatom"
+	bz, err := json.Marshal(badState)
+	require.NoError(t, err)
+
+	msgServer := mintauthoritykeeper.NewMsgServerImpl(app.MintAuthorityKeeper)
+	_, err = msgServer.UpdateMintAuthorityParams(ctx, &mintauthoritypb.MsgUpdateMintAuthorityParams{
+		Authority: state.Params.Authority,
+		StateJson: string(bz),
+	})
+	require.ErrorContains(t, err, "canonical")
+
+	configureGoldenBurnParams(t, app, ctx)
+	configureGoldenEmissionParams(t, app, ctx)
+	ctx = ctx.WithBlockHeight(43)
+
+	emission, err := app.FinalizeNativeEconomyEpoch(ctx, 7, 5_000)
+	require.NoError(t, err)
+	require.Equal(t, appparams.BaseDenom, emission.EmissionAmount.Denom)
+	require.Equal(t, appparams.BaseDenom, emission.ValidatorReward.Denom)
+
+	currentState, err := app.MintAuthorityKeeper.GetState(ctx)
+	require.NoError(t, err)
+	require.Equal(t, appparams.BaseDenom, currentState.Params.BaseDenom)
 }

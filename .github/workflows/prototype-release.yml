@@ -28,6 +28,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-go@v5
         with:
@@ -49,6 +51,15 @@ jobs:
           go install github.com/securego/gosec/v2/cmd/gosec@latest
           go install golang.org/x/vuln/cmd/govulncheck@latest
 
+      - name: Resolve gitleaks config
+        shell: pwsh
+        run: |
+          $ConfigRef = "${{ github.event.repository.default_branch }}"
+          git fetch --no-tags --depth=1 origin $ConfigRef
+          $GitleaksConfig = Join-Path $env:RUNNER_TEMP 'gitleaks.toml'
+          git show "origin/$ConfigRef:.gitleaks.toml" | Set-Content -LiteralPath $GitleaksConfig
+          "GITLEAKS_CONFIG=$GitleaksConfig" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Unit tests
         shell: pwsh
         run: go test -p=1 ./...
@@ -65,11 +76,11 @@ jobs:
         shell: pwsh
         run: |
           $Gitleaks = Join-Path (go env GOPATH) 'bin\gitleaks.exe'
-          & $Gitleaks git --config .gitleaks.toml --no-banner --redact --log-opts=--all .
+          & $Gitleaks git --config $env:GITLEAKS_CONFIG --no-banner --redact --log-opts=--all .
 
       - name: Prototype audit gate
         shell: pwsh
-        run: .\scripts\security\prototype-audit.ps1 -Profile Full -SkipTests -SkipGitleaksHistory
+        run: .\scripts\security\prototype-audit.ps1 -Profile Full -Strict -SkipTests -GitleaksConfig $env:GITLEAKS_CONFIG
 
       - name: Upload audit evidence
         uses: actions/upload-artifact@v4
