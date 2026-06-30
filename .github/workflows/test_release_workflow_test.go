@@ -12,8 +12,9 @@ func repoRoot() string {
 		return dir
 	}
 	cwd, _ := os.Getwd()
+	normalized := strings.ReplaceAll(cwd, "\\", "/")
 
-	if strings.HasSuffix(cwd, ".github/workflows") {
+	if strings.HasSuffix(normalized, ".github/workflows") {
 		return filepath.Dir(filepath.Dir(cwd))
 	}
 	return cwd
@@ -41,6 +42,116 @@ func TestReleaseWorkflowHasGoTest(t *testing.T) {
 	text := string(content)
 	if !strings.Contains(text, "go test ./...") {
 		t.Error("testnet-readiness.yml should run 'go test ./...'")
+	}
+}
+
+func TestSecurityWorkflowReadsGovulncheckTriageFromProtectedBaseBranch(t *testing.T) {
+	workflowPath := filepath.Join(repoRoot(), ".github", "workflows", "security.yml")
+	content, err := os.ReadFile(workflowPath)
+	if os.IsNotExist(err) {
+		t.Skip("security.yml not found")
+	}
+	if err != nil {
+		t.Fatalf("error reading security.yml: %v", err)
+	}
+
+	text := string(content)
+	for _, want := range []string{
+		`GITHUB_EVENT_NAME`,
+		`pull_request`,
+		`GITHUB_BASE_REF`,
+		`git fetch --no-tags --depth=1 origin "${GITHUB_BASE_REF}"`,
+		`triage_file=".github/security/govulncheck-triage.txt"`,
+		`git show "origin/${GITHUB_BASE_REF}:${triage_file}"`,
+		`triage_source`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("security.yml should contain %q", want)
+		}
+	}
+	if strings.Contains(text, `grep -E '^GO-[0-9]+-[0-9]+' .github/security/govulncheck-triage.txt`) {
+		t.Error("security.yml should not read govulncheck triage from the checkout tree on PRs")
+	}
+}
+
+func TestSecurityWorkflowUsesProtectedGitleaksConfig(t *testing.T) {
+	workflowPath := filepath.Join(repoRoot(), ".github", "workflows", "security.yml")
+	content, err := os.ReadFile(workflowPath)
+	if os.IsNotExist(err) {
+		t.Skip("security.yml not found")
+	}
+	if err != nil {
+		t.Fatalf("error reading security.yml: %v", err)
+	}
+
+	text := string(content)
+	for _, want := range []string{
+		`config_ref="${{ github.event.repository.default_branch }}"`,
+		`if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]`,
+		`git show "origin/${config_ref}:.gitleaks.toml"`,
+		`--config "${gitleaks_config}"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("security.yml should contain %q", want)
+		}
+	}
+	if strings.Contains(text, `--config .gitleaks.toml`) {
+		t.Error("security.yml should not pass the checkout-tree gitleaks config directly")
+	}
+}
+
+func TestPrototypeReleaseUsesProtectedGitleaksConfig(t *testing.T) {
+	workflowPath := filepath.Join(repoRoot(), ".github", "workflows", "prototype-release.yml")
+	content, err := os.ReadFile(workflowPath)
+	if os.IsNotExist(err) {
+		t.Skip("prototype-release.yml not found")
+	}
+	if err != nil {
+		t.Fatalf("error reading prototype-release.yml: %v", err)
+	}
+
+	text := string(content)
+	for _, want := range []string{
+		`fetch-depth: 0`,
+		`Resolve gitleaks config`,
+		`$ConfigRef = "${{ github.event.repository.default_branch }}"`,
+		`git show "origin/$ConfigRef:.gitleaks.toml"`,
+		`GITLEAKS_CONFIG=$GitleaksConfig`,
+		`--config $env:GITLEAKS_CONFIG`,
+		`-GitleaksConfig $env:GITLEAKS_CONFIG`,
+		`-Strict`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("prototype-release.yml should contain %q", want)
+		}
+	}
+	if strings.Contains(text, `--config .gitleaks.toml`) {
+		t.Error("prototype-release.yml should not pass the checkout-tree gitleaks config directly")
+	}
+	if strings.Contains(text, `-SkipGitleaksHistory`) {
+		t.Error("prototype-release.yml should not skip gitleaks history scanning")
+	}
+
+	scriptPath := filepath.Join(repoRoot(), "scripts", "security", "prototype-audit.ps1")
+	scriptContent, err := os.ReadFile(scriptPath)
+	if err != nil {
+		t.Fatalf("error reading prototype-audit.ps1: %v", err)
+	}
+	scriptText := string(scriptContent)
+	for _, want := range []string{
+		`[string]$GitleaksConfig = ""`,
+		`Resolve-GitleaksConfig -Path $GitleaksConfig`,
+		`-AllowFailure`,
+		`gosec source issues`,
+		`throw "gosec reported $count source findings"`,
+		`--config", $GitleaksConfig`,
+	} {
+		if !strings.Contains(scriptText, want) {
+			t.Fatalf("prototype-audit.ps1 should contain %q", want)
+		}
+	}
+	if strings.Contains(scriptText, `--config", ".gitleaks.toml"`) {
+		t.Error("prototype-audit.ps1 should not hardcode the checkout-tree gitleaks config")
 	}
 }
 

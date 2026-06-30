@@ -35,6 +35,18 @@ jobs:
       - name: Run govulncheck
         shell: bash
         run: |
+          set -euo pipefail
+
+          triage_file=".github/security/govulncheck-triage.txt"
+          triage_source="${triage_file}"
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+            # Read the allowlist from the protected base branch, not the PR tree.
+            git fetch --no-tags --depth=1 origin "${GITHUB_BASE_REF}"
+            triage_source="$(mktemp)"
+            git show "origin/${GITHUB_BASE_REF}:${triage_file}" > "${triage_source}"
+            trap 'rm -f "${triage_source}"' EXIT
+          fi
+
           set +e
           govulncheck ./... 2>&1 | tee govulncheck.txt
           govuln_status=${PIPESTATUS[0]}
@@ -45,7 +57,7 @@ jobs:
           fi
 
           mapfile -t findings < <(grep -E '^Vulnerability #[0-9]+: GO-[0-9]+-[0-9]+' govulncheck.txt | awk '{print $3}' | sort -u)
-          mapfile -t triaged < <(grep -E '^GO-[0-9]+-[0-9]+' .github/security/govulncheck-triage.txt | sort -u)
+          mapfile -t triaged < <(grep -E '^GO-[0-9]+-[0-9]+' "${triage_source}" | sort -u)
 
           if [[ "${#findings[@]}" -eq 0 ]]; then
             printf 'govulncheck failed without parseable GO advisory IDs.\n'
@@ -138,8 +150,20 @@ jobs:
 
       - name: Run gitleaks
         run: |
+          set -euo pipefail
+
+          config_ref="${{ github.event.repository.default_branch }}"
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+            config_ref="${GITHUB_BASE_REF}"
+          fi
+
+          git fetch --no-tags --depth=1 origin "${config_ref}"
+          gitleaks_config="$(mktemp)"
+          git show "origin/${config_ref}:.gitleaks.toml" > "${gitleaks_config}"
+          trap 'rm -f "${gitleaks_config}"' EXIT
+
           GITLEAKS_BIN="$(go env GOPATH)/bin/gitleaks"
-          "${GITLEAKS_BIN}" git --config .gitleaks.toml --no-banner --redact --log-opts=--all .
+          "${GITLEAKS_BIN}" git --config "${gitleaks_config}" --no-banner --redact --log-opts=--all .
 
   dependency-review:
     name: dependency review
