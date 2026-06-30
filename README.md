@@ -1,6 +1,16 @@
 # Aetra Blockchain
 
+<p align="center">
+  <img src="assets/aetra.png" alt="Aetra logo" width="220" />
+</p>
+
 For symptom-specific fixes and recovery steps, see [Operator Troubleshooting Runbook](docs/operator-troubleshooting.md).
+
+Aetra is copyright 2026 The Aetra Project and is licensed under [Apache License 2.0](LICENSE).
+The Aetra name and logo are project identifiers covered by the project
+[trademark policy](docs/legal/trademark-policy.md). Forks may reuse the code
+under the license, but they may not present themselves as the official Aetra
+project.
 
 Aetra is a sovereign Cosmos SDK Layer 1 blockchain — a deterministic, account-based PoS chain with an embedded Aetra Virtual Machine (AVM) for smart contracts. Built for moderate hardware, pool-based staking with no direct user→validator delegation, and governance-controlled economics with deterministic fee admission.
 
