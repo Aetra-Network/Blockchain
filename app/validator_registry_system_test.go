@@ -1,6 +1,8 @@
 package app
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"testing"
 
@@ -38,14 +40,14 @@ func TestValidatorRegistrySystemStateSurvivesFinalizeBlockRestart(t *testing.T) 
 	genesis := GenesisStateWithSingleValidator(t, source)
 	registryGenesis := validatorregistrykeeper.DefaultGenesis()
 	registryGenesis.State.Validators = append(registryGenesis.State.Validators, validatorregistrytypes.ValidatorRecord{
-		OperatorAddress:	rawAddress("11"),
-		ConsensusPublicKey:	"ed25519:app-validator",
-		TreasuryAddress:	rawAddress("12"),
-		WithdrawalAddress:	rawAddress("13"),
-		EmergencyAddress:	rawAddress("14"),
-		CommissionPolicy:	validatorregistrytypes.DefaultCommissionPolicy(),
-		Status:			validatorregistrytypes.StatusCandidate,
-		SelfBond:		validatorregistrytypes.DefaultMinValidatorStake,
+		OperatorAddress:    rawAddress("11"),
+		ConsensusPublicKey: testConsensusKeyString("ed25519:app-validator"),
+		TreasuryAddress:    rawAddress("12"),
+		WithdrawalAddress:  rawAddress("13"),
+		EmergencyAddress:   rawAddress("14"),
+		CommissionPolicy:   validatorregistrytypes.DefaultCommissionPolicy(),
+		Status:             validatorregistrytypes.StatusCandidate,
+		SelfBond:           validatorregistrytypes.DefaultMinValidatorStake,
 		History: []validatorregistrytypes.ValidatorHistoryEvent{
 			{Height: 1, Type: validatorregistrytypes.HistoryRegistered, Detail: "genesis"},
 		},
@@ -59,15 +61,15 @@ func TestValidatorRegistrySystemStateSurvivesFinalizeBlockRestart(t *testing.T) 
 	require.NoError(t, err)
 
 	_, err = source.InitChain(&abci.RequestInitChain{
-		Validators:		[]abci.ValidatorUpdate{},
-		ConsensusParams:	sims.DefaultConsensusParams,
-		AppStateBytes:		stateBytes,
+		Validators:      []abci.ValidatorUpdate{},
+		ConsensusParams: sims.DefaultConsensusParams,
+		AppStateBytes:   stateBytes,
 	})
 	require.NoError(t, err)
 
 	_, err = source.FinalizeBlock(&abci.RequestFinalizeBlock{
-		Height:	1,
-		Hash:	source.LastCommitID().Hash,
+		Height: 1,
+		Hash:   source.LastCommitID().Hash,
 	})
 	require.NoError(t, err)
 	_, err = source.Commit()
@@ -79,9 +81,14 @@ func TestValidatorRegistrySystemStateSurvivesFinalizeBlockRestart(t *testing.T) 
 	require.NoError(t, err)
 	validator, found := exported.State.Validator(rawAddress("11"))
 	require.True(t, found)
-	require.Equal(t, "ed25519:app-validator", validator.ConsensusPublicKey)
+	require.Equal(t, testConsensusKeyString("ed25519:app-validator"), validator.ConsensusPublicKey)
 }
 
 func rawAddress(hexByte string) string {
 	return "4:000000000000000000000000" + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte
+}
+
+func testConsensusKeyString(seed string) string {
+	sum := sha256.Sum256([]byte(seed))
+	return "ed25519:" + hex.EncodeToString(sum[:])
 }

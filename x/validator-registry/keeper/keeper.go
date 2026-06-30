@@ -14,16 +14,16 @@ import (
 var genesisKey = []byte{0x01}
 
 type GenesisState struct {
-	Version	uint64
-	Params	types.Params
-	State	types.State
+	Version uint64
+	Params  types.Params
+	State   types.State
 }
 
 type Keeper struct {
-	genesis			GenesisState
-	storeService		corestore.KVStoreService
-	runtimeCtx		context.Context
-	reputationKeeper	types.ReputationKeeper
+	genesis          GenesisState
+	storeService     corestore.KVStoreService
+	runtimeCtx       context.Context
+	reputationKeeper types.ReputationKeeper
 }
 
 func NewKeeper() Keeper {
@@ -42,9 +42,9 @@ func (k Keeper) WithReputationKeeper(rk types.ReputationKeeper) Keeper {
 func DefaultGenesis() GenesisState {
 	params := types.DefaultParams()
 	return GenesisState{
-		Version:	prototype.CurrentGenesisVersion,
-		Params:		params,
-		State:		types.State{Validators: []types.ValidatorRecord{}},
+		Version: prototype.CurrentGenesisVersion,
+		Params:  params,
+		State:   types.State{Validators: []types.ValidatorRecord{}},
 	}
 }
 
@@ -157,11 +157,15 @@ func (k *Keeper) RotateConsensusKey(msg types.MsgRotateConsensusKey) (types.Vali
 	if msg.ActivationHeight < msg.Height+k.genesis.Params.ConsensusKeyRotationDelay {
 		return types.ValidatorRecord{}, errors.New("validator registry consensus key rotation delay has not elapsed")
 	}
+	normalizedKey, err := types.NormalizeConsensusPublicKey(msg.NewConsensusPublicKey)
+	if err != nil {
+		return types.ValidatorRecord{}, err
+	}
 	return k.transition(msg.OperatorAddress, msg.Height, func(v types.ValidatorRecord) (types.ValidatorRecord, error) {
 		if v.Status == types.StatusTombstoned || v.Status == types.StatusRetired {
 			return types.ValidatorRecord{}, errors.New("validator registry inactive validator cannot rotate consensus key")
 		}
-		v.PendingConsensusPublicKey = msg.NewConsensusPublicKey
+		v.PendingConsensusPublicKey = normalizedKey
 		v.ConsensusKeyActivationHeight = msg.ActivationHeight
 		return types.AddHistory(v, msg.Height, types.HistoryConsensusRotated, "consensus key rotation scheduled", k.genesis.Params), nil
 	})

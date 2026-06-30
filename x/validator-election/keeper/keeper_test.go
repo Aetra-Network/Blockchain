@@ -2,6 +2,8 @@ package keeper
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"testing"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
@@ -84,9 +86,9 @@ func TestCandidateWithdrawalBeforeDeadline(t *testing.T) {
 	app := applyCandidate(t, &k, 0x11, 100, 100, 2)
 
 	withdrawn, err := k.WithdrawApplication(types.MsgWithdrawApplication{
-		Authority:		prototype.DefaultAuthority,
-		OperatorAddress:	app.OperatorAddress,
-		Height:			80,
+		Authority:       prototype.DefaultAuthority,
+		OperatorAddress: app.OperatorAddress,
+		Height:          80,
 	})
 	require.NoError(t, err)
 	require.Equal(t, types.ApplicationStatusWithdrawn, withdrawn.Status)
@@ -101,9 +103,9 @@ func TestCandidateWithdrawalAfterDeadlineRejected(t *testing.T) {
 	app := applyCandidate(t, &k, 0x11, 100, 100, 2)
 
 	_, err := k.WithdrawApplication(types.MsgWithdrawApplication{
-		Authority:		prototype.DefaultAuthority,
-		OperatorAddress:	app.OperatorAddress,
-		Height:			82,
+		Authority:       prototype.DefaultAuthority,
+		OperatorAddress: app.OperatorAddress,
+		Height:          82,
 	})
 	require.ErrorContains(t, err, "deadline")
 }
@@ -151,10 +153,10 @@ func TestMaxVotingPowerCapEnforced(t *testing.T) {
 func TestInvalidNextSetRejectedAtGenesis(t *testing.T) {
 	gs := DefaultGenesis()
 	gs.State.NextValidatorSet = []types.ValidatorPower{{
-		OperatorAddress:	testAddress(0x11),
-		ConsensusPublicKey:	"ed25519:bad",
-		VotingPower:		10,
-		ValidatorStatus:	validatorregistrytypes.StatusJailed,
+		OperatorAddress:    testAddress(0x11),
+		ConsensusPublicKey: testConsensusKey(0x40),
+		VotingPower:        10,
+		ValidatorStatus:    validatorregistrytypes.StatusJailed,
 	}}
 	require.ErrorContains(t, gs.Validate(), "next set")
 }
@@ -176,15 +178,15 @@ func TestTotalVotingPowerLimitEnforced(t *testing.T) {
 func applyCandidate(t *testing.T, k *Keeper, fill byte, requestedPower, selfBond, height uint64) types.CandidateApplication {
 	t.Helper()
 	app, err := k.ApplyForValidatorSet(types.MsgApplyForValidatorSet{
-		Authority:	prototype.DefaultAuthority,
+		Authority: prototype.DefaultAuthority,
 		Application: types.CandidateApplication{
-			OperatorAddress:	testAddress(fill),
-			ConsensusPublicKey:	"ed25519:" + testAddress(fill),
-			RequestedPower:		requestedPower,
-			SelfBond:		selfBond,
-			ValidatorStatus:	validatorregistrytypes.StatusCandidate,
+			OperatorAddress:    testAddress(fill),
+			ConsensusPublicKey: testConsensusKey(fill),
+			RequestedPower:     requestedPower,
+			SelfBond:           selfBond,
+			ValidatorStatus:    validatorregistrytypes.StatusCandidate,
 		},
-		Height:	height,
+		Height: height,
 	})
 	require.NoError(t, err)
 	return app
@@ -200,4 +202,9 @@ func bytesOf(fill byte) []byte {
 		out[i] = fill
 	}
 	return out
+}
+
+func testConsensusKey(fill byte) string {
+	sum := sha256.Sum256(bytesOf(fill))
+	return "ed25519:" + hex.EncodeToString(sum[:])
 }

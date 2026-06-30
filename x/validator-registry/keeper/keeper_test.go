@@ -2,6 +2,8 @@ package keeper
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"testing"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
@@ -20,13 +22,13 @@ func TestDefaultGenesisValidates(t *testing.T) {
 func TestRegisterValidatorWithValidKeySeparation(t *testing.T) {
 	k := NewKeeper()
 	validator, err := k.RegisterValidator(types.MsgRegisterValidator{
-		Authority:	prototype.DefaultAuthority,
-		Validator:	testValidator(0x11, "ed25519:validator-a"),
-		Height:		1,
+		Authority: prototype.DefaultAuthority,
+		Validator: testValidator(0x11, "ed25519:validator-a"),
+		Height:    1,
 	})
 	require.NoError(t, err)
 	require.Equal(t, types.StatusCandidate, validator.Status)
-	require.Equal(t, "ed25519:validator-a", validator.ConsensusPublicKey)
+	require.Equal(t, testConsensusKeyString("ed25519:validator-a"), validator.ConsensusPublicKey)
 	require.NotEqual(t, validator.OperatorAddress, validator.ConsensusPublicKey)
 
 	keys, found, err := k.ValidatorKeys(validator.OperatorAddress)
@@ -38,16 +40,16 @@ func TestRegisterValidatorWithValidKeySeparation(t *testing.T) {
 func TestRejectDuplicateConsensusKeys(t *testing.T) {
 	k := NewKeeper()
 	_, err := k.RegisterValidator(types.MsgRegisterValidator{
-		Authority:	prototype.DefaultAuthority,
-		Validator:	testValidator(0x11, "ed25519:duplicate"),
-		Height:		1,
+		Authority: prototype.DefaultAuthority,
+		Validator: testValidator(0x11, "ed25519:duplicate"),
+		Height:    1,
 	})
 	require.NoError(t, err)
 
 	_, err = k.RegisterValidator(types.MsgRegisterValidator{
-		Authority:	prototype.DefaultAuthority,
-		Validator:	testValidator(0x22, "ed25519:duplicate"),
-		Height:		2,
+		Authority: prototype.DefaultAuthority,
+		Validator: testValidator(0x22, "ed25519:duplicate"),
+		Height:    2,
 	})
 	require.ErrorContains(t, err, "duplicate consensus key")
 }
@@ -58,9 +60,9 @@ func TestRejectZeroWithdrawalAddress(t *testing.T) {
 	validator.WithdrawalAddress = addressing.ZeroRawAddress
 
 	_, err := k.RegisterValidator(types.MsgRegisterValidator{
-		Authority:	prototype.DefaultAuthority,
-		Validator:	validator,
-		Height:		1,
+		Authority: prototype.DefaultAuthority,
+		Validator: validator,
+		Height:    1,
 	})
 	require.ErrorContains(t, err, "must not be zero address")
 }
@@ -70,24 +72,24 @@ func TestConsensusKeyRotationDelayIsEnforced(t *testing.T) {
 	validator := registerValidator(t, &k, 0x11, "ed25519:rotate-a")
 
 	_, err := k.RotateConsensusKey(types.MsgRotateConsensusKey{
-		Authority:		prototype.DefaultAuthority,
-		OperatorAddress:	validator.OperatorAddress,
-		NewConsensusPublicKey:	"ed25519:rotate-b",
-		ActivationHeight:	99,
-		Height:			1,
+		Authority:             prototype.DefaultAuthority,
+		OperatorAddress:       validator.OperatorAddress,
+		NewConsensusPublicKey: testConsensusKeyString("ed25519:rotate-b"),
+		ActivationHeight:      99,
+		Height:                1,
 	})
 	require.ErrorContains(t, err, "delay")
 
 	rotating, err := k.RotateConsensusKey(types.MsgRotateConsensusKey{
-		Authority:		prototype.DefaultAuthority,
-		OperatorAddress:	validator.OperatorAddress,
-		NewConsensusPublicKey:	"ed25519:rotate-b",
-		ActivationHeight:	101,
-		Height:			1,
+		Authority:             prototype.DefaultAuthority,
+		OperatorAddress:       validator.OperatorAddress,
+		NewConsensusPublicKey: testConsensusKeyString("ed25519:rotate-b"),
+		ActivationHeight:      101,
+		Height:                1,
 	})
 	require.NoError(t, err)
-	require.Equal(t, "ed25519:rotate-a", rotating.ConsensusPublicKey)
-	require.Equal(t, "ed25519:rotate-b", rotating.PendingConsensusPublicKey)
+	require.Equal(t, testConsensusKeyString("ed25519:rotate-a"), rotating.ConsensusPublicKey)
+	require.Equal(t, testConsensusKeyString("ed25519:rotate-b"), rotating.PendingConsensusPublicKey)
 
 	_, applied, err := k.ApplyConsensusKeyRotation(validator.OperatorAddress, 100)
 	require.ErrorContains(t, err, "delay")
@@ -96,7 +98,7 @@ func TestConsensusKeyRotationDelayIsEnforced(t *testing.T) {
 	rotated, applied, err := k.ApplyConsensusKeyRotation(validator.OperatorAddress, 101)
 	require.NoError(t, err)
 	require.True(t, applied)
-	require.Equal(t, "ed25519:rotate-b", rotated.ConsensusPublicKey)
+	require.Equal(t, testConsensusKeyString("ed25519:rotate-b"), rotated.ConsensusPublicKey)
 	require.Empty(t, rotated.PendingConsensusPublicKey)
 }
 
@@ -119,9 +121,9 @@ func TestTombstonedValidatorCannotReregisterWithSameConsensusKey(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = k.RegisterValidator(types.MsgRegisterValidator{
-		Authority:	prototype.DefaultAuthority,
-		Validator:	testValidator(0x22, "ed25519:tombstone"),
-		Height:		3,
+		Authority: prototype.DefaultAuthority,
+		Validator: testValidator(0x22, "ed25519:tombstone"),
+		Height:    3,
 	})
 	require.ErrorContains(t, err, "duplicate consensus key")
 }
@@ -130,17 +132,17 @@ func TestExportImportPreservesHistory(t *testing.T) {
 	source := NewKeeper()
 	validator := registerValidator(t, &source, 0x11, "ed25519:history")
 	_, err := source.UpdateValidatorMetadata(types.MsgUpdateValidatorMetadata{
-		Authority:		prototype.DefaultAuthority,
-		OperatorAddress:	validator.OperatorAddress,
-		Metadata:		`{"moniker":"a"}`,
-		Height:			2,
+		Authority:       prototype.DefaultAuthority,
+		OperatorAddress: validator.OperatorAddress,
+		Metadata:        `{"moniker":"a"}`,
+		Height:          2,
 	})
 	require.NoError(t, err)
 	_, err = source.SetValidatorCapabilities(types.MsgSetValidatorCapabilities{
-		Authority:		prototype.DefaultAuthority,
-		OperatorAddress:	validator.OperatorAddress,
-		Capabilities:		[]string{"fast-sync", "mev-resistant"},
-		Height:			3,
+		Authority:       prototype.DefaultAuthority,
+		OperatorAddress: validator.OperatorAddress,
+		Capabilities:    []string{"fast-sync", "mev-resistant"},
+		Height:          3,
 	})
 	require.NoError(t, err)
 
@@ -169,10 +171,10 @@ func TestPersistentRuntimeMutationSurvivesRestartAndImport(t *testing.T) {
 
 	validator := registerValidator(t, &source, 0x51, "ed25519:persistent-history")
 	_, err := source.UpdateValidatorMetadata(types.MsgUpdateValidatorMetadata{
-		Authority:		prototype.DefaultAuthority,
-		OperatorAddress:	validator.OperatorAddress,
-		Metadata:		`{"moniker":"persistent"}`,
-		Height:			2,
+		Authority:       prototype.DefaultAuthority,
+		OperatorAddress: validator.OperatorAddress,
+		Metadata:        `{"moniker":"persistent"}`,
+		Height:          2,
 	})
 	require.NoError(t, err)
 
@@ -208,28 +210,28 @@ func TestValidatorSecurityQueries(t *testing.T) {
 func TestValidatorAdmissionStakePolicy(t *testing.T) {
 	params := types.DefaultParams()
 	require.ErrorContains(t, params.ValidateValidatorFunding(types.ValidatorFunding{
-		Mode:		types.ValidatorFundingPoolBacked,
-		SelfStake:	params.PoolBackedMinSelfStake,
-		NominatorBond:	params.MinValidatorStake - params.PoolBackedMinSelfStake - 1,
+		Mode:          types.ValidatorFundingPoolBacked,
+		SelfStake:     params.PoolBackedMinSelfStake,
+		NominatorBond: params.MinValidatorStake - params.PoolBackedMinSelfStake - 1,
 	}), "minimum validator stake")
 	require.ErrorContains(t, params.ValidateValidatorFunding(types.ValidatorFunding{
-		Mode:		types.ValidatorFundingSolo,
-		SelfStake:	params.SoloMinSelfStake - 1,
+		Mode:      types.ValidatorFundingSolo,
+		SelfStake: params.SoloMinSelfStake - 1,
 	}), "self-stake")
 	require.ErrorContains(t, params.ValidateValidatorFunding(types.ValidatorFunding{
-		Mode:		types.ValidatorFundingPoolBacked,
-		SelfStake:	params.PoolBackedMinSelfStake - 1,
-		NominatorBond:	params.PoolBackedMaxNominatorStake,
+		Mode:          types.ValidatorFundingPoolBacked,
+		SelfStake:     params.PoolBackedMinSelfStake - 1,
+		NominatorBond: params.PoolBackedMaxNominatorStake,
 	}), "self-stake")
 	require.ErrorContains(t, params.ValidateValidatorFunding(types.ValidatorFunding{
-		Mode:		types.ValidatorFundingPoolBacked,
-		SelfStake:	params.PoolBackedMinSelfStake,
-		NominatorBond:	params.PoolBackedMaxNominatorStake + 1,
+		Mode:          types.ValidatorFundingPoolBacked,
+		SelfStake:     params.PoolBackedMinSelfStake,
+		NominatorBond: params.PoolBackedMaxNominatorStake + 1,
 	}), "nominator contribution")
 	require.NoError(t, params.ValidateValidatorFunding(types.ValidatorFunding{
-		Mode:		types.ValidatorFundingPoolBacked,
-		SelfStake:	params.PoolBackedMinSelfStake,
-		NominatorBond:	params.PoolBackedMaxNominatorStake,
+		Mode:          types.ValidatorFundingPoolBacked,
+		SelfStake:     params.PoolBackedMinSelfStake,
+		NominatorBond: params.PoolBackedMaxNominatorStake,
 	}))
 
 	k := NewKeeper()
@@ -268,19 +270,19 @@ func TestValidatorCommissionUpdateEnforcesDailyChange(t *testing.T) {
 	validator := registerValidator(t, &k, 0x41, "ed25519:commission")
 
 	updated, err := k.UpdateValidatorCommission(types.MsgUpdateValidatorCommission{
-		Authority:		prototype.DefaultAuthority,
-		OperatorAddress:	validator.OperatorAddress,
-		NewRateBps:		types.DefaultParams().DefaultCommissionBps + types.DefaultParams().CommissionMaxDailyChangeBps,
-		Height:			2,
+		Authority:       prototype.DefaultAuthority,
+		OperatorAddress: validator.OperatorAddress,
+		NewRateBps:      types.DefaultParams().DefaultCommissionBps + types.DefaultParams().CommissionMaxDailyChangeBps,
+		Height:          2,
 	})
 	require.NoError(t, err)
 	require.Equal(t, types.DefaultParams().DefaultCommissionBps+types.DefaultParams().CommissionMaxDailyChangeBps, updated.CommissionPolicy.CurrentRateBps)
 
 	_, err = k.UpdateValidatorCommission(types.MsgUpdateValidatorCommission{
-		Authority:		prototype.DefaultAuthority,
-		OperatorAddress:	validator.OperatorAddress,
-		NewRateBps:		updated.CommissionPolicy.CurrentRateBps + types.DefaultParams().CommissionMaxDailyChangeBps + 1,
-		Height:			3,
+		Authority:       prototype.DefaultAuthority,
+		OperatorAddress: validator.OperatorAddress,
+		NewRateBps:      updated.CommissionPolicy.CurrentRateBps + types.DefaultParams().CommissionMaxDailyChangeBps + 1,
+		Height:          3,
 	})
 	require.ErrorContains(t, err, "daily change")
 }
@@ -307,9 +309,9 @@ func TestValidatorAllocationEngineQueryIsDeterministic(t *testing.T) {
 func TestMaliciousAuthorityCannotRegisterValidator(t *testing.T) {
 	k := NewKeeper()
 	_, err := k.RegisterValidator(types.MsgRegisterValidator{
-		Authority:	"4:0000000000000000000000000000000000000000000000000000000000000002",
-		Validator:	testValidator(0x11, "ed25519:bad-authority"),
-		Height:		1,
+		Authority: "4:0000000000000000000000000000000000000000000000000000000000000002",
+		Validator: testValidator(0x11, "ed25519:bad-authority"),
+		Height:    1,
 	})
 	require.ErrorContains(t, err, "governance authority")
 }
@@ -317,9 +319,9 @@ func TestMaliciousAuthorityCannotRegisterValidator(t *testing.T) {
 func registerValidator(t *testing.T, k *Keeper, fill byte, consensusKey string) types.ValidatorRecord {
 	t.Helper()
 	validator, err := k.RegisterValidator(types.MsgRegisterValidator{
-		Authority:	prototype.DefaultAuthority,
-		Validator:	testValidator(fill, consensusKey),
-		Height:		1,
+		Authority: prototype.DefaultAuthority,
+		Validator: testValidator(fill, consensusKey),
+		Height:    1,
 	})
 	require.NoError(t, err)
 	return validator
@@ -327,19 +329,19 @@ func registerValidator(t *testing.T, k *Keeper, fill byte, consensusKey string) 
 
 func testValidator(fill byte, consensusKey string) types.ValidatorRecord {
 	return types.ValidatorRecord{
-		OperatorAddress:	testAddress(fill),
-		ConsensusPublicKey:	consensusKey,
-		TreasuryAddress:	testAddress(fill + 1),
-		WithdrawalAddress:	testAddress(fill + 2),
-		EmergencyAddress:	testAddress(fill + 3),
-		Metadata:		`{"moniker":"validator"}`,
-		CommissionPolicy:	types.DefaultCommissionPolicy(),
-		ReputationScore:	9_000,
-		PerformanceScore:	8_500,
-		Status:			types.StatusCandidate,
-		Capabilities:		[]string{"archive", "fast-sync"},
-		SelfBond:		types.DefaultMinValidatorStake,
-		ExternalAuditFlags:	[]string{"soc2"},
+		OperatorAddress:    testAddress(fill),
+		ConsensusPublicKey: testConsensusKeyString(consensusKey),
+		TreasuryAddress:    testAddress(fill + 1),
+		WithdrawalAddress:  testAddress(fill + 2),
+		EmergencyAddress:   testAddress(fill + 3),
+		Metadata:           `{"moniker":"validator"}`,
+		CommissionPolicy:   types.DefaultCommissionPolicy(),
+		ReputationScore:    9_000,
+		PerformanceScore:   8_500,
+		Status:             types.StatusCandidate,
+		Capabilities:       []string{"archive", "fast-sync"},
+		SelfBond:           types.DefaultMinValidatorStake,
+		ExternalAuditFlags: []string{"soc2"},
 		UptimeHistory: []types.UptimeSample{
 			{Height: 1, UptimeBps: 9_900},
 		},
@@ -359,4 +361,9 @@ func bytesOf(fill byte) []byte {
 		out[i] = fill
 	}
 	return out
+}
+
+func testConsensusKeyString(seed string) string {
+	sum := sha256.Sum256([]byte(seed))
+	return "ed25519:" + hex.EncodeToString(sum[:])
 }

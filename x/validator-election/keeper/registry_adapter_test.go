@@ -2,6 +2,8 @@ package keeper
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"testing"
@@ -64,8 +66,8 @@ func TestRegisteredValidatorEligibilityRejectsUnderfundedAndUninsured(t *testing
 	strictParams := validatorregistrytypes.DefaultParams()
 	strictParams.MinValidatorStake = validatorregistrytypes.DefaultMinValidatorStake + 1
 	strictRegistry := fakeRegistry{
-		records:	map[string]validatorregistrytypes.ValidatorRecord{operator: record},
-		params:		strictParams,
+		records: map[string]validatorregistrytypes.ValidatorRecord{operator: record},
+		params:  strictParams,
 	}
 	_, err = k.ApplyRegisteredValidator(prototype.DefaultAuthority, operator, 2, strictRegistry, fakeInsurance{eligible: map[string]bool{operator: true}})
 	require.ErrorContains(t, err, "minimum validator stake")
@@ -76,8 +78,8 @@ func TestRegisteredValidatorEligibilityRejectsJailedAndSlashed(t *testing.T) {
 	jailed := adapterAddress(0x33)
 	slashed := adapterAddress(0x44)
 	registry := fakeRegistry{records: map[string]validatorregistrytypes.ValidatorRecord{
-		jailed:		adapterValidator(jailed, "ed25519:validator-jailed", validatorregistrytypes.StatusJailed),
-		slashed:	adapterValidator(slashed, "ed25519:validator-slashed", validatorregistrytypes.StatusCandidate),
+		jailed:  adapterValidator(jailed, "ed25519:validator-jailed", validatorregistrytypes.StatusJailed),
+		slashed: adapterValidator(slashed, "ed25519:validator-slashed", validatorregistrytypes.StatusCandidate),
 	}}
 	slashedRecord := registry.records[slashed]
 	slashedRecord.SlashingHistory = []validatorregistrytypes.SlashingEvent{{Height: 7, FractionBps: 100, Reason: "downtime"}}
@@ -127,9 +129,9 @@ func TestRegistryActiveValidatorCountPolicyIsEnforcedAtCommit(t *testing.T) {
 
 func TestElectionExportImportPreservesPreviousCurrentAndNextSet(t *testing.T) {
 	source := NewKeeper()
-	current := []types.ValidatorPower{{OperatorAddress: adapterAddress(0x11), ConsensusPublicKey: "ed25519:current", VotingPower: 7, ValidatorStatus: validatorregistrytypes.StatusActive}}
-	previous := []types.ValidatorPower{{OperatorAddress: adapterAddress(0x22), ConsensusPublicKey: "ed25519:previous", VotingPower: 3, ValidatorStatus: validatorregistrytypes.StatusActive}}
-	next := []types.ValidatorPower{{OperatorAddress: adapterAddress(0x33), ConsensusPublicKey: "ed25519:next", VotingPower: 5, ValidatorStatus: validatorregistrytypes.StatusCandidate}}
+	current := []types.ValidatorPower{{OperatorAddress: adapterAddress(0x11), ConsensusPublicKey: testConsensusKeyString("ed25519:current"), VotingPower: 7, ValidatorStatus: validatorregistrytypes.StatusActive}}
+	previous := []types.ValidatorPower{{OperatorAddress: adapterAddress(0x22), ConsensusPublicKey: testConsensusKeyString("ed25519:previous"), VotingPower: 3, ValidatorStatus: validatorregistrytypes.StatusActive}}
+	next := []types.ValidatorPower{{OperatorAddress: adapterAddress(0x33), ConsensusPublicKey: testConsensusKeyString("ed25519:next"), VotingPower: 5, ValidatorStatus: validatorregistrytypes.StatusCandidate}}
 	gs := source.ExportGenesis()
 	gs.State.PreviousValidatorSet = previous
 	gs.State.CurrentValidatorSet = current
@@ -152,12 +154,12 @@ func TestStakingSyncUpdatesAreDeterministic(t *testing.T) {
 	stays := adapterAddress(0x22)
 	added := adapterAddress(0x11)
 	gs.State.PreviousValidatorSet = []types.ValidatorPower{
-		{OperatorAddress: removed, ConsensusPublicKey: "ed25519:removed", VotingPower: 9, ValidatorStatus: validatorregistrytypes.StatusActive},
-		{OperatorAddress: stays, ConsensusPublicKey: "ed25519:stays", VotingPower: 4, ValidatorStatus: validatorregistrytypes.StatusActive},
+		{OperatorAddress: removed, ConsensusPublicKey: testConsensusKeyString("ed25519:removed"), VotingPower: 9, ValidatorStatus: validatorregistrytypes.StatusActive},
+		{OperatorAddress: stays, ConsensusPublicKey: testConsensusKeyString("ed25519:stays"), VotingPower: 4, ValidatorStatus: validatorregistrytypes.StatusActive},
 	}
 	gs.State.CurrentValidatorSet = []types.ValidatorPower{
-		{OperatorAddress: stays, ConsensusPublicKey: "ed25519:stays", VotingPower: 4, ValidatorStatus: validatorregistrytypes.StatusActive},
-		{OperatorAddress: added, ConsensusPublicKey: "ed25519:added", VotingPower: 8, ValidatorStatus: validatorregistrytypes.StatusActive},
+		{OperatorAddress: stays, ConsensusPublicKey: testConsensusKeyString("ed25519:stays"), VotingPower: 4, ValidatorStatus: validatorregistrytypes.StatusActive},
+		{OperatorAddress: added, ConsensusPublicKey: testConsensusKeyString("ed25519:added"), VotingPower: 8, ValidatorStatus: validatorregistrytypes.StatusActive},
 	}
 	gs.State = gs.State.Normalize(gs.Params)
 	require.NoError(t, k.InitGenesis(gs))
@@ -166,16 +168,16 @@ func TestStakingSyncUpdatesAreDeterministic(t *testing.T) {
 	updates, err := k.SyncCurrentSetToStaking(context.Background(), syncer)
 	require.NoError(t, err)
 	require.Equal(t, []StakingValidatorUpdate{
-		{OperatorAddress: removed, ConsensusPublicKey: "ed25519:removed", Remove: true},
-		{OperatorAddress: added, ConsensusPublicKey: "ed25519:added", VotingPower: 8},
-		{OperatorAddress: stays, ConsensusPublicKey: "ed25519:stays", VotingPower: 4},
+		{OperatorAddress: removed, ConsensusPublicKey: testConsensusKeyString("ed25519:removed"), Remove: true},
+		{OperatorAddress: added, ConsensusPublicKey: testConsensusKeyString("ed25519:added"), VotingPower: 8},
+		{OperatorAddress: stays, ConsensusPublicKey: testConsensusKeyString("ed25519:stays"), VotingPower: 4},
 	}, updates)
 	require.Equal(t, updates, syncer.updates)
 }
 
 type fakeRegistry struct {
-	records	map[string]validatorregistrytypes.ValidatorRecord
-	params	validatorregistrytypes.Params
+	records map[string]validatorregistrytypes.ValidatorRecord
+	params  validatorregistrytypes.Params
 }
 
 func (f fakeRegistry) Validator(operator string) (validatorregistrytypes.ValidatorRecord, bool, error) {
@@ -212,14 +214,14 @@ func (r *recordingStakingSyncer) ApplyValidatorSetUpdate(_ context.Context, upda
 
 func adapterValidator(operator, consensusKey, status string) validatorregistrytypes.ValidatorRecord {
 	return validatorregistrytypes.ValidatorRecord{
-		OperatorAddress:	operator,
-		ConsensusPublicKey:	consensusKey,
-		TreasuryAddress:	adapterAddress(0x66),
-		WithdrawalAddress:	adapterAddress(0x77),
-		EmergencyAddress:	adapterAddress(0x88),
-		CommissionPolicy:	validatorregistrytypes.DefaultCommissionPolicy(),
-		Status:			status,
-		SelfBond:		validatorregistrytypes.DefaultMinValidatorStake,
+		OperatorAddress:    operator,
+		ConsensusPublicKey: testConsensusKeyString(consensusKey),
+		TreasuryAddress:    adapterAddress(0x66),
+		WithdrawalAddress:  adapterAddress(0x77),
+		EmergencyAddress:   adapterAddress(0x88),
+		CommissionPolicy:   validatorregistrytypes.DefaultCommissionPolicy(),
+		Status:             status,
+		SelfBond:           validatorregistrytypes.DefaultMinValidatorStake,
 	}
 }
 
@@ -242,4 +244,9 @@ func adapterBytes(fill byte) []byte {
 		out[i] = fill
 	}
 	return out
+}
+
+func testConsensusKeyString(seed string) string {
+	sum := sha256.Sum256([]byte(seed))
+	return "ed25519:" + hex.EncodeToString(sum[:])
 }

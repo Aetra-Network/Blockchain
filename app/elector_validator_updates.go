@@ -1,13 +1,11 @@
 package app
 
 import (
-	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
 	"sort"
-	"strings"
 
 	abci "github.com/cometbft/cometbft/abci/types"
 	cmtcrypto "github.com/cometbft/cometbft/proto/tendermint/crypto"
@@ -15,6 +13,7 @@ import (
 	sdk "github.com/cosmos/cosmos-sdk/types"
 
 	"github.com/sovereign-l1/l1/x/validator-election/types"
+	validatorregistrytypes "github.com/sovereign-l1/l1/x/validator-registry/types"
 )
 
 func (app *L1App) applyElectionValidatorUpdates(req *abci.RequestFinalizeBlock, res *abci.ResponseFinalizeBlock) error {
@@ -102,25 +101,17 @@ func electionValidatorPowerToABCIUpdate(validator types.ValidatorPower) (abci.Va
 		return abci.ValidatorUpdate{}, errors.New("validator election voting power exceeds CometBFT int64 power")
 	}
 	return abci.ValidatorUpdate{
-		PubKey:	cmtcrypto.PublicKey{Sum: &cmtcrypto.PublicKey_Ed25519{Ed25519: key}},
-		Power:	int64(validator.VotingPower),
+		PubKey: cmtcrypto.PublicKey{Sum: &cmtcrypto.PublicKey_Ed25519{Ed25519: key}},
+		Power:  int64(validator.VotingPower),
 	}, nil
 }
 
 func parseElectionConsensusPublicKey(text string) ([]byte, error) {
-	kind, value, found := strings.Cut(strings.TrimSpace(text), ":")
-	if !found || kind != "ed25519" {
-		return nil, errors.New("must use ed25519:<32-byte-hex-or-base64>")
+	key, err := validatorregistrytypes.ParseConsensusPublicKey(text)
+	if err != nil {
+		return nil, err
 	}
-	value = strings.TrimSpace(value)
-	key, err := hex.DecodeString(value)
-	if err != nil || len(key) != 32 {
-		key, err = base64.StdEncoding.DecodeString(value)
-	}
-	if err != nil || len(key) != 32 {
-		return nil, errors.New("ed25519 public key must be exactly 32 bytes")
-	}
-	return append([]byte(nil), key...), nil
+	return key, nil
 }
 
 func validatorUpdateKey(update abci.ValidatorUpdate) string {
