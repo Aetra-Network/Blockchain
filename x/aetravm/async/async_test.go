@@ -749,6 +749,38 @@ func TestExportImportPreservesBounceRefundStatus(t *testing.T) {
 	require.Equal(t, receipts[0].Sequence, imported.Queue()[0].Envelope.RefundOfSequence)
 }
 
+func TestExportImportPreservesObservabilityMetricsAndReceiptOrder(t *testing.T) {
+	executor := newTestExecutor(t)
+	deployer := testAddr(1)
+	source := deployTestContract(t, executor, deployer, []byte("metrics-source"))
+	missingDest, err := DeriveContractAddress(deployer, testCodeHash(11), []byte("missing-metrics-bounce"))
+	require.NoError(t, err)
+
+	msg := testMessage(source, missingDest, 99)
+	msg.Value = naetCoin(5)
+	msg.Bounce = true
+	require.NoError(t, executor.EnqueueTxMessages([]MessageEnvelope{msg}))
+
+	receipts, err := executor.ProcessBlock(1)
+	require.NoError(t, err)
+	require.Len(t, receipts, 2)
+	require.True(t, receipts[0].BounceCreated)
+	require.True(t, receipts[1].Bounced)
+	require.True(t, executor.Metrics().BouncedMessages > 0)
+
+	exported := executor.ExportState()
+	imported, err := ImportState(exported)
+	require.NoError(t, err)
+
+	importedState := imported.ExportState()
+	require.True(t, reflect.DeepEqual(exported.Metrics, importedState.Metrics))
+	require.True(t, reflect.DeepEqual(exported.Queue, importedState.Queue))
+	require.True(t, reflect.DeepEqual(exported.Receipts, importedState.Receipts))
+	require.Equal(t, exported.Metrics.ProcessedMessages, importedState.Metrics.ProcessedMessages)
+	require.Equal(t, exported.Metrics.BouncedMessages, importedState.Metrics.BouncedMessages)
+	require.Equal(t, exported.Metrics.QueueLag, importedState.Metrics.QueueLag)
+}
+
 func TestExecutionLimitsRejectGasEmittedMessagesAndStorageWrites(t *testing.T) {
 	params := DefaultParams()
 	params.MaxEmittedMessagesPerExec = 1

@@ -239,6 +239,33 @@ func TestExecutionProofIsDeterministicAndBindsStateContextAndTrace(t *testing.T)
 	require.NotEqual(t, ExecutionProofHash(first), ExecutionProofHash(changed))
 }
 
+func TestExecutionProofHashChangesWhenOutgoingOrTraceChanges(t *testing.T) {
+	runner := newTestRunner(t)
+	module := emitterModule()
+	storage := Storage{"counter": EncodeU64(7)}
+	ctx := runtimeCtx(EntryReceiveInternal)
+	ctx.EmitDestination = testAddr(7)
+
+	exec, err := runner.Run(module, storage, ctx)
+	require.NoError(t, err)
+	base, err := BuildExecutionProof(module, storage, ctx, exec)
+	require.NoError(t, err)
+
+	outgoingMutated := exec
+	outgoingMutated.Outgoing = append([]async.MessageEnvelope(nil), exec.Outgoing...)
+	outgoingMutated.Outgoing[0].Body = append(outgoingMutated.Outgoing[0].Body, 0xff)
+	outgoingProof, err := BuildExecutionProof(module, storage, ctx, outgoingMutated)
+	require.NoError(t, err)
+	require.NotEqual(t, ExecutionProofHash(base), ExecutionProofHash(outgoingProof))
+
+	traceMutated := exec
+	traceMutated.ExecutedOpcode = append([]Opcode(nil), exec.ExecutedOpcode...)
+	traceMutated.ExecutedOpcode = append(traceMutated.ExecutedOpcode, OpNop)
+	traceProof, err := BuildExecutionProof(module, storage, ctx, traceMutated)
+	require.NoError(t, err)
+	require.NotEqual(t, ExecutionProofHash(base), ExecutionProofHash(traceProof))
+}
+
 func TestInterfaceManifestHashCommitsMetadataAndExports(t *testing.T) {
 	manifest := InterfaceManifest{
 		Name:    "counter",

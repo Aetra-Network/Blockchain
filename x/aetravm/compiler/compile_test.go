@@ -368,6 +368,86 @@ fn decorate(x: u64) -> u64 {
 	}
 }
 
+func TestCompileRuntimeDifferentialStabilityAcrossFormattingAndRepeatedRuns(t *testing.T) {
+	c, err := New(DefaultOptions())
+	if err != nil {
+		t.Fatalf("new compiler: %v", err)
+	}
+
+	parsed, err := ParseSourceNamed("counter.avm", counterSource)
+	if err != nil {
+		t.Fatalf("parse source: %v", err)
+	}
+	formatted := FormatSource(parsed)
+	if formatted == "" {
+		t.Fatal("formatted source must not be empty")
+	}
+
+	original, err := c.Compile([]byte(counterSource))
+	if err != nil {
+		t.Fatalf("compile original: %v", err)
+	}
+	recompiled, err := c.Compile([]byte(counterSource))
+	if err != nil {
+		t.Fatalf("compile repeated: %v", err)
+	}
+	formattedResult, err := c.Compile([]byte(formatted))
+	if err != nil {
+		t.Fatalf("compile formatted: %v", err)
+	}
+
+	if original.ModuleHash != recompiled.ModuleHash || original.ManifestHash != recompiled.ManifestHash || original.StateInitHash != recompiled.StateInitHash {
+		t.Fatal("repeat compile changed canonical commitments")
+	}
+	if original.ModuleHash != formattedResult.ModuleHash || original.ManifestHash != formattedResult.ManifestHash || original.StateInitHash != formattedResult.StateInitHash {
+		t.Fatal("format round-trip changed canonical commitments")
+	}
+
+	runner, err := avm.NewRunner(avm.DefaultParams())
+	if err != nil {
+		t.Fatalf("new runner: %v", err)
+	}
+	ctx := avm.RuntimeContext{
+		Entry:    avm.EntryReceiveExternal,
+		Message:  async.MessageEnvelope{Opcode: 11, QueryID: 9, GasLimit: 100_000},
+		GasLimit: 100_000,
+	}
+	storage := avm.Storage{"count": avm.EncodeU64(41)}
+
+	first, err := runner.Run(original.Module, storage, ctx)
+	if err != nil {
+		t.Fatalf("run original: %v", err)
+	}
+	second, err := runner.Run(recompiled.Module, storage, ctx)
+	if err != nil {
+		t.Fatalf("run repeated: %v", err)
+	}
+	third, err := runner.Run(formattedResult.Module, storage, ctx)
+	if err != nil {
+		t.Fatalf("run formatted: %v", err)
+	}
+
+	if !reflect.DeepEqual(first, second) || !reflect.DeepEqual(first, third) {
+		t.Fatalf("runtime execution drifted across equivalent compiler inputs:\noriginal=%#v\nrecompiled=%#v\nformatted=%#v", first, second, third)
+	}
+
+	proof1, err := avm.BuildExecutionProof(original.Module, storage, ctx, first)
+	if err != nil {
+		t.Fatalf("build proof original: %v", err)
+	}
+	proof2, err := avm.BuildExecutionProof(recompiled.Module, storage, ctx, second)
+	if err != nil {
+		t.Fatalf("build proof repeated: %v", err)
+	}
+	proof3, err := avm.BuildExecutionProof(formattedResult.Module, storage, ctx, third)
+	if err != nil {
+		t.Fatalf("build proof formatted: %v", err)
+	}
+	if avm.ExecutionProofHash(proof1) != avm.ExecutionProofHash(proof2) || avm.ExecutionProofHash(proof1) != avm.ExecutionProofHash(proof3) {
+		t.Fatal("execution proof hash drifted across equivalent compiler/runtime inputs")
+	}
+}
+
 func TestCompileDiagnosticsAreStableAcrossRepeatedRuns(t *testing.T) {
 	bad := `
 struct CounterState {
