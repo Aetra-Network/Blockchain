@@ -1,0 +1,34 @@
+struct CounterState {
+  count: u64 = 0
+  owner: Address = "AEowner"
+}
+
+contract Counter {
+  storage CounterState
+  namespace "counter"
+  chain "avm-local"
+  deploy {
+    set state.count = 0
+    return 0
+  }
+  message external Increment(amount: u64) selector = 11 {
+    set state.count = amount
+    return 0
+  }
+  message bounced Refund() selector = 12 {
+    return 0
+  }
+  getter GetCount() -> u64 selector = 13 {
+    return state.count
+  }
+  event CountChanged(old: u64, new: u64)
+  wallet action Increment {
+    title = "Increment counter"
+    risk = "low"
+    confirm_label = "Increment"
+    warning_level = "info"
+    expected_side_effects = ["state write"]
+    fund_access = false
+    approval_semantics = "request"
+  }
+}

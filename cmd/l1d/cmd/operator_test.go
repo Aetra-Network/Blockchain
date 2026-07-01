@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -29,6 +30,9 @@ func TestFaucetCommandBuildsLocalOnlyFundingPlan(t *testing.T) {
 	require.Contains(t, plan.Equivalent, "scripts/localnet/fund.ps1")
 	require.Contains(t, plan.Equivalent, recipient)
 	require.Contains(t, plan.Equivalent, "123"+appparams.BaseDenom)
+	require.NotNil(t, plan.RecipientAddress)
+	require.Equal(t, recipient, plan.RecipientAddress.UserFriendly)
+	requireAddressWarning(t, plan.RecipientAddress.Warnings, addressing.AddressWarningNewAddress)
 	require.Contains(t, plan.Notes, "does not mint and does not edit genesis")
 }
 
@@ -60,9 +64,9 @@ func TestSystemAddressesCommandReturnsAEAndRawCatalog(t *testing.T) {
 	require.NoError(t, err)
 
 	var res struct {
-		Command		string				`json:"command"`
-		Count		int				`json:"count"`
-		Addresses	[]addressing.SystemAddress	`json:"addresses"`
+		Command   string                     `json:"command"`
+		Count     int                        `json:"count"`
+		Addresses []addressing.SystemAddress `json:"addresses"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(out), &res), out)
 	require.Equal(t, "system-addresses", res.Command)
@@ -82,4 +86,44 @@ func TestSystemModuleCommandSurfaceBuildsPlans(t *testing.T) {
 	out, err = executeAVMCommand(NewSystemTxCmd(), "validator-registry", "register-validator", "--help")
 	require.NoError(t, err)
 	require.Contains(t, out, "register-validator")
+}
+
+func TestAddressInspectUsesBookAndVerifiedLabelSources(t *testing.T) {
+	recipient := aeAddressForCLI(0x44)
+	entry, err := addressing.NewAddressBookEntry("Treasury Ops", recipient, addressing.LabelSourceSignedAttestation, "sig:example", 90, 100)
+	require.NoError(t, err)
+	book := addressing.AddressBook{ChainID: "aetra-local-1", Entries: []addressing.AddressBookEntry{entry}}
+	bookJSON, err := json.Marshal(book)
+	require.NoError(t, err)
+	bookFile := t.TempDir() + "/book.json"
+	require.NoError(t, os.WriteFile(bookFile, bookJSON, 0o600))
+
+	out, err := executeAVMCommand(NewAddressCmd(), "inspect", recipient, "--chain-id", "aetra-local-1", "--book-file", bookFile, "--current-height", "95", "--recent-window", "10")
+	require.NoError(t, err)
+
+	var display addressing.AddressDisplay
+	require.NoError(t, json.Unmarshal([]byte(out), &display), out)
+	require.True(t, display.Known)
+	require.Equal(t, "Treasury Ops", display.VerifiedLabel)
+	requireAddressWarning(t, display.Warnings, addressing.AddressWarningRecentlyCreated)
+}
+
+func TestAddressBookAddRejectsUnsignedVerifiedClaim(t *testing.T) {
+	recipient := aeAddressForCLI(0x45)
+	_, err := executeAVMCommand(NewAddressCmd(), "book", "add", "Ops", recipient, "--source", addressing.LabelSourceSignedAttestation)
+	require.ErrorContains(t, err, "attestation")
+
+	out, err := executeAVMCommand(NewAddressCmd(), "book", "add", "Ops", recipient, "--source", addressing.LabelSourceSignedAttestation, "--attestation", "sig:example")
+	require.NoError(t, err)
+	require.Contains(t, out, addressing.LabelSourceSignedAttestation)
+}
+
+func requireAddressWarning(t *testing.T, warnings []addressing.AddressWarning, code string) {
+	t.Helper()
+	for _, warning := range warnings {
+		if warning.Code == code {
+			return
+		}
+	}
+	t.Fatalf("missing warning %s in %#v", code, warnings)
 }

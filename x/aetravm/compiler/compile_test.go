@@ -689,6 +689,50 @@ func TestCompileAndRuntimeReceiptsAreStableAcrossRepeatedRuns(t *testing.T) {
 	}
 }
 
+func TestCompileCanonicalExamplesCoverAllEntrypointKinds(t *testing.T) {
+	examples, err := filepath.Glob("../../../examples/avm/*.avm")
+	if err != nil {
+		t.Fatalf("glob examples: %v", err)
+	}
+	if len(examples) == 0 {
+		t.Fatal("expected canonical AVM examples")
+	}
+	c, err := New(DefaultOptions())
+	if err != nil {
+		t.Fatalf("new compiler: %v", err)
+	}
+	covered := map[avm.Entrypoint]bool{}
+	for _, path := range examples {
+		src, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read example %s: %v", path, err)
+		}
+		res, err := c.Compile(src)
+		if err != nil {
+			t.Fatalf("compile example %s: %v", path, err)
+		}
+		if err := res.Manifest.Validate(); err != nil {
+			t.Fatalf("validate example %s: %v", path, err)
+		}
+		for entry := range res.Module.Exports {
+			covered[entry] = true
+		}
+	}
+	required := []avm.Entrypoint{
+		avm.EntryDeploy,
+		avm.EntryReceiveExternal,
+		avm.EntryReceiveInternal,
+		avm.EntryReceiveBounced,
+		avm.EntryQuery,
+		avm.EntryMigrate,
+	}
+	for _, entry := range required {
+		if !covered[entry] {
+			t.Fatalf("canonical examples do not cover entrypoint %v", entry)
+		}
+	}
+}
+
 func hasOpcode(code []avm.Instruction, op avm.Opcode) bool {
 	for _, ins := range code {
 		if ins.Op == op {

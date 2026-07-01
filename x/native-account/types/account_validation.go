@@ -105,6 +105,11 @@ func (p AuthPolicy) Validate() error {
 	if err := p.Timelock.Validate(); err != nil {
 		return err
 	}
+	if p.StepUp != nil {
+		if err := p.StepUp.Validate(); err != nil {
+			return err
+		}
+	}
 	return validateSpendingLimits(p.SpendingLimits)
 }
 

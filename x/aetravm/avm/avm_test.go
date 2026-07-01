@@ -11,6 +11,7 @@ import (
 
 	appparams "github.com/sovereign-l1/l1/app/params"
 	"github.com/sovereign-l1/l1/x/aetravm/async"
+	"github.com/sovereign-l1/l1/x/aetravm/chunk"
 )
 
 func TestDeployValidModuleAndRejectMalformedBytecode(t *testing.T) {
@@ -64,6 +65,10 @@ func TestVerifierRejectsOversizedCodeAndNondeterministicOpcode(t *testing.T) {
 	badImport.Imports = append(badImport.Imports, HostFunction(999))
 	require.ErrorContains(t, verifier.Verify(badImport), "not allowed")
 
+	dupImport := counterModule()
+	dupImport.Imports = append(dupImport.Imports, HostReturn)
+	require.ErrorContains(t, verifier.Verify(dupImport), "duplicated")
+
 	missingImport := counterModule()
 	missingImport.Imports = []HostFunction{HostReadStorage, HostReturn}
 	require.ErrorContains(t, verifier.Verify(missingImport), "requires host function")
@@ -92,11 +97,76 @@ func TestRunSimpleCounterDeterministicallyAndBoundsGas(t *testing.T) {
 	require.Equal(t, async.ResultLimitExceeded, limited.ResultCode)
 }
 
+func TestRunRollsBackStateOnFailure(t *testing.T) {
+	params := DefaultParams()
+	params.MaxMemoryBytes = 20
+	runner, err := NewRunner(params)
+	require.NoError(t, err)
+
+	module := Module{
+		Version: Version,
+		Imports: []HostFunction{
+			HostWriteStorage,
+			HostReturn,
+		},
+		Exports: map[Entrypoint]uint32{EntryReceiveInternal: 0},
+		Code: []Instruction{
+			{Op: OpPushU64, Arg: 42},
+			{Op: OpWriteStorage, Data: []byte("counter")},
+			{Op: OpPushU64, Arg: 7},
+			{Op: OpWriteStorage, Data: []byte("extra")},
+			{Op: OpReturn, Arg: uint64(async.ResultOK)},
+		},
+	}
+	storage := Storage{"counter": EncodeU64(41)}
+	exec, err := runner.Run(module, storage, runtimeCtx(EntryReceiveInternal))
+	require.NoError(t, err)
+	require.Equal(t, async.ResultLimitExceeded, exec.ResultCode)
+	require.Equal(t, EncodeU64(41), exec.State["counter"])
+	_, exists := exec.State["extra"]
+	require.False(t, exists)
+	require.Empty(t, exec.Outgoing)
+}
+
+func TestAsyncHandlerRollsBackStateOnFailure(t *testing.T) {
+	params := DefaultParams()
+	params.MaxMemoryBytes = 20
+	runner, err := NewRunner(params)
+	require.NoError(t, err)
+
+	module := Module{
+		Version: Version,
+		Imports: []HostFunction{
+			HostWriteStorage,
+			HostReturn,
+		},
+		Exports: map[Entrypoint]uint32{EntryReceiveInternal: 0},
+		Code: []Instruction{
+			{Op: OpPushU64, Arg: 42},
+			{Op: OpWriteStorage, Data: []byte("counter")},
+			{Op: OpPushU64, Arg: 7},
+			{Op: OpWriteStorage, Data: []byte("extra")},
+			{Op: OpReturn, Arg: uint64(async.ResultOK)},
+		},
+	}
+
+	storage := Storage{"counter": EncodeU64(41)}
+	handler := runner.AsyncHandler(module, nil, RuntimeContext{})
+	contract := async.ContractAccount{
+		Address: testAddr(1),
+		State:   EncodeSnapshot(storage),
+	}
+	result := handler(contract, testAsyncMessage(testAddr(2), testAddr(1), 1))
+	require.Equal(t, async.ResultLimitExceeded, result.ResultCode)
+	require.Equal(t, contract.State, result.NewState)
+	require.Empty(t, result.Outgoing)
+}
+
 func TestStorageSnapshotIsDeterministicAndBounded(t *testing.T) {
 	storage := Storage{
-		"z":	EncodeU64(26),
-		"a":	EncodeU64(1),
-		"m":	EncodeU64(13),
+		"z": EncodeU64(26),
+		"a": EncodeU64(1),
+		"m": EncodeU64(13),
 	}
 	snapshot := Snapshot(storage)
 	require.Equal(t, []string{"a", "m", "z"}, []string{snapshot[0].Key, snapshot[1].Key, snapshot[2].Key})
@@ -107,12 +177,12 @@ func TestStorageSnapshotIsDeterministicAndBounded(t *testing.T) {
 	runner, err := NewRunner(params)
 	require.NoError(t, err)
 	module := Module{
-		Version:	Version,
+		Version: Version,
 		Imports: []HostFunction{
 			HostWriteStorage,
 			HostReturn,
 		},
-		Exports:	map[Entrypoint]uint32{EntryReceiveInternal: 0},
+		Exports: map[Entrypoint]uint32{EntryReceiveInternal: 0},
 		Code: []Instruction{
 			{Op: OpPushU64, Arg: 1},
 			{Op: OpWriteStorage, Data: []byte("large-key")},
@@ -126,8 +196,8 @@ func TestStorageSnapshotIsDeterministicAndBounded(t *testing.T) {
 
 func TestSnapshotDecodeRoundTripRejectsNonCanonicalInput(t *testing.T) {
 	storage := Storage{
-		"a":	EncodeU64(1),
-		"b":	EncodeU64(2),
+		"a": EncodeU64(1),
+		"b": EncodeU64(2),
 	}
 	decoded, err := DecodeSnapshot(EncodeSnapshot(storage))
 	require.NoError(t, err)
@@ -171,13 +241,13 @@ func TestExecutionProofIsDeterministicAndBindsStateContextAndTrace(t *testing.T)
 
 func TestInterfaceManifestHashCommitsMetadataAndExports(t *testing.T) {
 	manifest := InterfaceManifest{
-		Name:		"counter",
-		Version:	1,
+		Name:    "counter",
+		Version: 1,
 		Methods: []InterfaceMethod{
 			{Name: "increment", Entrypoint: EntryReceiveInternal, Opcode: 1, Async: true},
 			{Name: "query", Entrypoint: EntryQuery, Opcode: 2},
 		},
-		Events:	[]InterfaceEvent{{Name: "incremented", Opcode: 10}},
+		Events: []InterfaceEvent{{Name: "incremented", Opcode: 10}},
 	}
 	hash, err := InterfaceHash(manifest)
 	require.NoError(t, err)
@@ -197,7 +267,7 @@ func TestInterfaceManifestHashCommitsMetadataAndExports(t *testing.T) {
 func TestHostContextOpcodesReadEnvelopeBlockAndChargeGas(t *testing.T) {
 	runner := newTestRunner(t)
 	module := Module{
-		Version:	Version,
+		Version: Version,
 		Imports: []HostFunction{
 			HostInspectMsg,
 			HostBlockContext,
@@ -205,7 +275,7 @@ func TestHostContextOpcodesReadEnvelopeBlockAndChargeGas(t *testing.T) {
 			HostWriteStorage,
 			HostReturn,
 		},
-		Exports:	map[Entrypoint]uint32{EntryReceiveInternal: 0},
+		Exports: map[Entrypoint]uint32{EntryReceiveInternal: 0},
 		Code: []Instruction{
 			{Op: OpReadMsgOpcode},
 			{Op: OpReadMsgQueryID},
@@ -311,6 +381,55 @@ func TestAVMSchedulesSelfContinuationAtFutureBlock(t *testing.T) {
 	require.Equal(t, async.ResultOK, receipts[0].ResultCode)
 }
 
+func TestChunkPayloadSpilloverRoundTrip(t *testing.T) {
+	data := bytes.Repeat([]byte("payload"), 128)
+	root, err := BuildChunkPayload(data, chunk.TypeSystem)
+	require.NoError(t, err)
+	require.NotNil(t, root)
+
+	flattened, err := FlattenChunkPayload(root)
+	require.NoError(t, err)
+	require.Equal(t, data, flattened)
+}
+
+func TestKernelRejectsPrunedPayloadBeforeExecution(t *testing.T) {
+	state := chunk.NewEmptyMap().Root()
+	payload, err := chunk.NewPrunedChunk(0, [][]byte{bytes.Repeat([]byte{1}, chunk.HashSize), bytes.Repeat([]byte{2}, chunk.HashSize)})
+	require.NoError(t, err)
+
+	msg := Message{
+		Type:     MessageInternal,
+		Sender:   "sender1",
+		Target:   "target1",
+		Payload:  payload,
+		GasLimit: 1000,
+	}
+
+	frame := NewKernelExecutionFrame(state, msg, 100)
+	_, _, _, _, err = ExecuteKernelSemantics(frame)
+	require.ErrorContains(t, err, "pruned chunk")
+}
+
+func TestGetterEntryIsReadOnly(t *testing.T) {
+	runner := newTestRunner(t)
+	module := counterModule()
+	ctx := runtimeCtx(EntryQuery)
+	storage := Storage{"counter": EncodeU64(41)}
+
+	_, err := runner.Run(module, storage, ctx)
+	require.ErrorContains(t, err, "getter entrypoint cannot write storage")
+	require.Equal(t, EncodeU64(41), storage["counter"])
+}
+
+func TestBouncedContextMismatchIsRejected(t *testing.T) {
+	runner := newTestRunner(t)
+	module := counterModule()
+	ctx := runtimeCtx(EntryReceiveBounced)
+
+	_, err := runner.Run(module, nil, ctx)
+	require.ErrorContains(t, err, "bounced message")
+}
+
 func TestAVMAsyncFailedSendBouncesAndQueueSurvivesExportImport(t *testing.T) {
 	runner := newTestRunner(t)
 	module := emitterModule()
@@ -340,7 +459,7 @@ func TestAVMAsyncFailedSendBouncesAndQueueSurvivesExportImport(t *testing.T) {
 
 func counterModule() Module {
 	return Module{
-		Version:	Version,
+		Version: Version,
 		Imports: []HostFunction{
 			HostReadStorage,
 			HostWriteStorage,
@@ -348,12 +467,12 @@ func counterModule() Module {
 			HostReturn,
 		},
 		Exports: map[Entrypoint]uint32{
-			EntryDeploy:		0,
-			EntryReceiveExternal:	0,
-			EntryReceiveInternal:	0,
-			EntryReceiveBounced:	0,
-			EntryQuery:		0,
-			EntryMigrate:		0,
+			EntryDeploy:          0,
+			EntryReceiveExternal: 0,
+			EntryReceiveInternal: 0,
+			EntryReceiveBounced:  0,
+			EntryQuery:           0,
+			EntryMigrate:         0,
 		},
 		Code: []Instruction{
 			{Op: OpReadStorage, Data: []byte("counter")},
@@ -367,12 +486,12 @@ func counterModule() Module {
 
 func emitterModule() Module {
 	return Module{
-		Version:	Version,
+		Version: Version,
 		Imports: []HostFunction{
 			HostEmitInternal,
 			HostReturn,
 		},
-		Exports:	map[Entrypoint]uint32{EntryReceiveInternal: 0},
+		Exports: map[Entrypoint]uint32{EntryReceiveInternal: 0},
 		Code: []Instruction{
 			{Op: OpEmitInternal, Arg: 77, Data: []byte("avm-out")},
 			{Op: OpReturn, Arg: uint64(async.ResultOK)},
@@ -382,12 +501,12 @@ func emitterModule() Module {
 
 func continuationModule() Module {
 	return Module{
-		Version:	Version,
+		Version: Version,
 		Imports: []HostFunction{
 			HostScheduleSelf,
 			HostReturn,
 		},
-		Exports:	map[Entrypoint]uint32{EntryReceiveInternal: 0},
+		Exports: map[Entrypoint]uint32{EntryReceiveInternal: 0},
 		Code: []Instruction{
 			{Op: OpScheduleSelf, Arg: 2, Data: []byte("resume")},
 			{Op: OpReturn, Arg: uint64(async.ResultOK)},
@@ -411,9 +530,9 @@ func newTestRunner(t *testing.T) *Runner {
 
 func runtimeCtx(entry Entrypoint) RuntimeContext {
 	return RuntimeContext{
-		Entry:		entry,
-		Message:	testAsyncMessage(testAddr(9), testAddr(8), 1),
-		GasLimit:	100_000,
+		Entry:    entry,
+		Message:  testAsyncMessage(testAddr(9), testAddr(8), 1),
+		GasLimit: 100_000,
 	}
 }
 
@@ -430,16 +549,16 @@ func deployAsyncContract(t *testing.T, executor *async.Executor, deployer sdk.Ac
 
 func testAsyncMessage(source, destination sdk.AccAddress, queryID uint64) async.MessageEnvelope {
 	return async.MessageEnvelope{
-		Source:			source,
-		Destination:		destination,
-		Value:			sdk.NewCoin(appparams.BaseDenom, sdkmath.ZeroInt()),
-		Opcode:			1,
-		QueryID:		queryID,
-		Body:			[]byte("in"),
-		Bounce:			true,
-		CreatedLogicalTime:	queryID,
-		GasLimit:		100_000,
-		ForwardFee:		sdk.NewCoin(appparams.BaseDenom, async.DefaultParams().ForwardingFee),
+		Source:             source,
+		Destination:        destination,
+		Value:              sdk.NewCoin(appparams.BaseDenom, sdkmath.ZeroInt()),
+		Opcode:             1,
+		QueryID:            queryID,
+		Body:               []byte("in"),
+		Bounce:             true,
+		CreatedLogicalTime: queryID,
+		GasLimit:           100_000,
+		ForwardFee:         sdk.NewCoin(appparams.BaseDenom, async.DefaultParams().ForwardingFee),
 	}
 }
 

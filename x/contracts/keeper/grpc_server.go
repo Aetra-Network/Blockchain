@@ -8,18 +8,18 @@ import (
 )
 
 var (
-	_	types.GRPCMsgServer	= grpcMsgServer{}
-	_	types.GRPCQueryServer	= grpcQueryServer{}
+	_ types.GRPCMsgServer   = grpcMsgServer{}
+	_ types.GRPCQueryServer = grpcQueryServer{}
 )
 
 type grpcMsgServer struct {
 	types.UnimplementedGRPCMsgServer
-	keeper	*Keeper
+	keeper *Keeper
 }
 
 type grpcQueryServer struct {
 	types.UnimplementedGRPCQueryServer
-	keeper	*Keeper
+	keeper *Keeper
 }
 
 func NewGRPCMsgServer(k *Keeper) types.GRPCMsgServer {
@@ -95,6 +95,34 @@ func (m grpcMsgServer) UpdateContractParams(ctx context.Context, msg *types.MsgU
 	return &types.MsgUpdateContractParamsResponse{StateRoot: m.keeper.ExportGenesis().StateRoot}, nil
 }
 
+func (m grpcMsgServer) SubmitSecurityAttestation(ctx context.Context, msg *types.MsgSubmitSecurityAttestation) (*types.MsgSubmitSecurityAttestationResponse, error) {
+	if msg == nil {
+		return nil, errors.New("empty contracts security attestation submit request")
+	}
+	res, err := m.keeper.SubmitSecurityAttestation(*msg)
+	if err != nil {
+		return nil, err
+	}
+	if err := m.keeper.writeGenesis(ctx); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (m grpcMsgServer) RevokeSecurityAttestation(ctx context.Context, msg *types.MsgRevokeSecurityAttestation) (*types.MsgRevokeSecurityAttestationResponse, error) {
+	if msg == nil {
+		return nil, errors.New("empty contracts security attestation revoke request")
+	}
+	res, err := m.keeper.RevokeSecurityAttestation(*msg)
+	if err != nil {
+		return nil, err
+	}
+	if err := m.keeper.writeGenesis(ctx); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
 func (q grpcQueryServer) Params(context.Context, *types.QueryParamsRequest) (*types.QueryParamsResponse, error) {
 	return &types.QueryParamsResponse{Params: q.keeper.Params()}, nil
 }
@@ -168,4 +196,20 @@ func (q grpcQueryServer) ContractStateRoot(_ context.Context, req *types.QueryCo
 	}
 	root, err := q.keeper.ContractStateRoot(*req)
 	return &types.QueryContractStateRootResponse{StateRoot: root}, err
+}
+
+func (q grpcQueryServer) SecurityAttestations(_ context.Context, req *types.QuerySecurityAttestationsRequest) (*types.QuerySecurityAttestationsResponse, error) {
+	if req == nil {
+		return nil, errors.New("empty contracts security attestations query")
+	}
+	attestations, err := q.keeper.SecurityAttestations(*req)
+	return &types.QuerySecurityAttestationsResponse{Attestations: attestations}, err
+}
+
+func (q grpcQueryServer) SecurityBadge(_ context.Context, req *types.QuerySecurityBadgeRequest) (*types.QuerySecurityBadgeResponse, error) {
+	if req == nil {
+		return nil, errors.New("empty contracts security badge query")
+	}
+	badge, found, err := q.keeper.SecurityBadge(*req)
+	return &types.QuerySecurityBadgeResponse{Badge: badge, Found: found}, err
 }

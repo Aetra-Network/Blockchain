@@ -53,9 +53,9 @@ func initAppConfig() (string, interface{}) {
 	}
 
 	type CustomAppConfig struct {
-		serverconfig.Config	`mapstructure:",squash"`
+		serverconfig.Config `mapstructure:",squash"`
 
-		Custom	CustomConfig	`mapstructure:"custom"`
+		Custom CustomConfig `mapstructure:"custom"`
 	}
 
 	srvCfg := serverconfig.DefaultConfig()
@@ -63,7 +63,7 @@ func initAppConfig() (string, interface{}) {
 	srvCfg.MinGasPrices = fmt.Sprintf("0%s", appparams.BaseDenom)
 
 	customAppConfig := CustomAppConfig{
-		Config:	*srvCfg,
+		Config: *srvCfg,
 		Custom: CustomConfig{
 			CustomField: "anything",
 		},
@@ -99,6 +99,7 @@ func initRootCmd(
 		NewSystemAddressesCmd(),
 		NewInvariantsCmd(),
 		debugCmd,
+		NewAVMCmd(),
 		confixcmd.ConfigCommand(),
 		pruning.Cmd(newApp, l1app.DefaultNodeHome),
 		snapshot.Cmd(newApp),
@@ -119,7 +120,7 @@ func initRootCmd(
 		topLevelCollectGenTxsCmd(txConfig, basicManager),
 		genesisCommand(txConfig, basicManager),
 		queryCommand(),
-		txCommand(),
+		txCommand(txConfig),
 		keys.Commands(),
 	)
 }
@@ -137,12 +138,12 @@ func genesisCommand(txConfig client.TxConfig, basicManager module.BasicManager, 
 
 func queryCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:				"query",
-		Aliases:			[]string{"q"},
-		Short:				"Querying subcommands",
-		DisableFlagParsing:		false,
-		SuggestionsMinimumDistance:	2,
-		RunE:				client.ValidateCmd,
+		Use:                        "query",
+		Aliases:                    []string{"q"},
+		Short:                      "Querying subcommands",
+		DisableFlagParsing:         false,
+		SuggestionsMinimumDistance: 2,
+		RunE:                       client.ValidateCmd,
 	}
 
 	cmd.AddCommand(
@@ -159,13 +160,13 @@ func queryCommand() *cobra.Command {
 	return cmd
 }
 
-func txCommand() *cobra.Command {
+func txCommand(txConfig client.TxConfig) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:				"tx",
-		Short:				"Transactions subcommands",
-		DisableFlagParsing:		false,
-		SuggestionsMinimumDistance:	2,
-		RunE:				client.ValidateCmd,
+		Use:                        "tx",
+		Short:                      "Transactions subcommands",
+		DisableFlagParsing:         false,
+		SuggestionsMinimumDistance: 2,
+		RunE:                       client.ValidateCmd,
 	}
 
 	cmd.AddCommand(
@@ -178,6 +179,7 @@ func txCommand() *cobra.Command {
 		authcmd.GetEncodeCommand(),
 		authcmd.GetDecodeCommand(),
 		authcmd.GetSimulateCmd(),
+		NewTxPreviewCmd(txConfig),
 		NewAVMTxCmd(),
 		NewSystemTxCmd(),
 	)

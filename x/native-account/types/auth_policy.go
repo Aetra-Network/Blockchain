@@ -2,63 +2,72 @@ package types
 
 import (
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 )
 
 const (
-	AuthModeMultisig	= "multisig"
-	AuthModeThreshold	= "threshold"
-	AuthModeWeighted	= "weighted"
-	AuthModeTwoDevice	= "two_device"
+	AuthModeMultisig  = "multisig"
+	AuthModeThreshold = "threshold"
+	AuthModeWeighted  = "weighted"
+	AuthModeTwoDevice = "two_device"
 
-	AuthKeyRolePrimary	= "primary"
-	AuthKeyRoleDevice	= "device"
-	AuthKeyRoleRecovery	= "recovery"
+	AuthKeyRolePrimary   = "primary"
+	AuthKeyRoleDevice    = "device"
+	AuthKeyRoleChallenge = "challenge"
+	AuthKeyRoleGuardian  = "guardian"
+	AuthKeyRoleRecovery  = "recovery"
 
-	AuthOperationTransfer		= "transfer"
-	AuthOperationStakingChange	= "staking_change"
-	AuthOperationAuthPolicyUpdate	= "auth_policy_update"
-	AuthOperationRecoverAccount	= "recover_account"
-	AuthOperationFreezeAccount	= "freeze_account"
-	AuthOperationPayStorageDebt	= "pay_storage_debt"
-	AuthOperationUnfreezeAccount	= "unfreeze_account"
-	AuthOperationMetadataUpdate	= "metadata_update"
-	AuthOperationParamsUpdate	= "params_update"
+	AuthOperationTransfer         = "transfer"
+	AuthOperationStakingChange    = "staking_change"
+	AuthOperationAuthPolicyUpdate = "auth_policy_update"
+	AuthOperationRecoverAccount   = "recover_account"
+	AuthOperationFreezeAccount    = "freeze_account"
+	AuthOperationPayStorageDebt   = "pay_storage_debt"
+	AuthOperationUnfreezeAccount  = "unfreeze_account"
+	AuthOperationMetadataUpdate   = "metadata_update"
+	AuthOperationParamsUpdate     = "params_update"
 )
 
 type AuthKey struct {
-	ID		string	`protobuf:"bytes,1,opt,name=id,proto3" json:"id"`
-	PublicKey	string	`protobuf:"bytes,2,opt,name=public_key,json=publicKey,proto3" json:"public_key"`
-	Role		string	`protobuf:"bytes,3,opt,name=role,proto3" json:"role,omitempty"`
+	ID        string `protobuf:"bytes,1,opt,name=id,proto3" json:"id"`
+	PublicKey string `protobuf:"bytes,2,opt,name=public_key,json=publicKey,proto3" json:"public_key"`
+	Role      string `protobuf:"bytes,3,opt,name=role,proto3" json:"role,omitempty"`
 }
 
 type AuthWeight struct {
-	KeyID	string	`protobuf:"bytes,1,opt,name=key_id,json=keyID,proto3" json:"key_id"`
-	Weight	uint64	`protobuf:"varint,2,opt,name=weight,proto3" json:"weight"`
+	KeyID  string `protobuf:"bytes,1,opt,name=key_id,json=keyID,proto3" json:"key_id"`
+	Weight uint64 `protobuf:"varint,2,opt,name=weight,proto3" json:"weight"`
 }
 
 type RecoveryPolicy struct {
-	Keys			[]string	`protobuf:"bytes,1,rep,name=keys,proto3" json:"keys,omitempty"`
-	Threshold		uint64		`protobuf:"varint,2,opt,name=threshold,proto3" json:"threshold,omitempty"`
-	TimelockEndHeight	uint64		`protobuf:"varint,3,opt,name=timelock_end_height,json=timelockEndHeight,proto3" json:"timelock_end_height,omitempty"`
+	Keys              []string `protobuf:"bytes,1,rep,name=keys,proto3" json:"keys,omitempty"`
+	Threshold         uint64   `protobuf:"varint,2,opt,name=threshold,proto3" json:"threshold,omitempty"`
+	TimelockEndHeight uint64   `protobuf:"varint,3,opt,name=timelock_end_height,json=timelockEndHeight,proto3" json:"timelock_end_height,omitempty"`
 }
 
 type TimelockPolicy struct {
-	AuthPolicyUpdateEndHeight	uint64	`protobuf:"varint,1,opt,name=auth_policy_update_end_height,json=authPolicyUpdateEndHeight,proto3" json:"auth_policy_update_end_height,omitempty"`
-	RecoveryEndHeight		uint64	`protobuf:"varint,2,opt,name=recovery_end_height,json=recoveryEndHeight,proto3" json:"recovery_end_height,omitempty"`
+	AuthPolicyUpdateEndHeight uint64 `protobuf:"varint,1,opt,name=auth_policy_update_end_height,json=authPolicyUpdateEndHeight,proto3" json:"auth_policy_update_end_height,omitempty"`
+	RecoveryEndHeight         uint64 `protobuf:"varint,2,opt,name=recovery_end_height,json=recoveryEndHeight,proto3" json:"recovery_end_height,omitempty"`
 }
 
 type SpendingLimit struct {
-	Operation	string	`protobuf:"bytes,1,opt,name=operation,proto3" json:"operation"`
-	MaxAmount	uint64	`protobuf:"varint,2,opt,name=max_amount,json=maxAmount,proto3" json:"max_amount"`
+	Operation string `protobuf:"bytes,1,opt,name=operation,proto3" json:"operation"`
+	MaxAmount uint64 `protobuf:"varint,2,opt,name=max_amount,json=maxAmount,proto3" json:"max_amount"`
+}
+
+type StepUpPolicy struct {
+	Mode                string   `protobuf:"bytes,1,opt,name=mode,proto3" json:"mode,omitempty"`
+	RequiredRoles       []string `protobuf:"bytes,2,rep,name=required_roles,json=requiredRoles,proto3" json:"required_roles,omitempty"`
+	ProtectedOperations []string `protobuf:"bytes,3,rep,name=protected_operations,json=protectedOperations,proto3" json:"protected_operations,omitempty"`
 }
 
 type AuthzResult struct {
-	Authorized	bool
-	Mode		string
-	Signers		[]string
-	Weight		uint64
+	Authorized bool
+	Mode       string
+	Signers    []string
+	Weight     uint64
 }
 
 func (p AuthPolicy) Normalize() AuthPolicy {
@@ -74,6 +83,10 @@ func (p AuthPolicy) Normalize() AuthPolicy {
 	}
 	sort.SliceStable(p.Weights, func(i, j int) bool { return p.Weights[i].KeyID < p.Weights[j].KeyID })
 	p.RecoveryPolicy = p.RecoveryPolicy.Normalize()
+	if p.StepUp != nil {
+		stepUp := p.StepUp.Normalize()
+		p.StepUp = &stepUp
+	}
 	p.SpendingLimits = append([]SpendingLimit(nil), p.SpendingLimits...)
 	for i := range p.SpendingLimits {
 		p.SpendingLimits[i].Operation = strings.TrimSpace(p.SpendingLimits[i].Operation)
@@ -131,5 +144,69 @@ func (p RecoveryPolicy) Validate() error {
 }
 
 func (p TimelockPolicy) Validate() error {
+	return nil
+}
+
+func (p StepUpPolicy) Normalize() StepUpPolicy {
+	p.Mode = strings.TrimSpace(p.Mode)
+	p.RequiredRoles = append([]string(nil), p.RequiredRoles...)
+	for i := range p.RequiredRoles {
+		p.RequiredRoles[i] = strings.TrimSpace(p.RequiredRoles[i])
+	}
+	sort.Strings(p.RequiredRoles)
+	p.ProtectedOperations = append([]string(nil), p.ProtectedOperations...)
+	for i := range p.ProtectedOperations {
+		p.ProtectedOperations[i] = strings.TrimSpace(p.ProtectedOperations[i])
+	}
+	sort.Strings(p.ProtectedOperations)
+	return p
+}
+
+func (p StepUpPolicy) Validate() error {
+	p = p.Normalize()
+	if p.Mode == "" && len(p.RequiredRoles) == 0 && len(p.ProtectedOperations) == 0 {
+		return nil
+	}
+	switch p.Mode {
+	case "2fa", "challenge", "guardian":
+	default:
+		return fmt.Errorf("unsupported native account step-up policy mode %q", p.Mode)
+	}
+	if len(p.RequiredRoles) == 0 {
+		switch p.Mode {
+		case "2fa":
+			p.RequiredRoles = []string{AuthKeyRoleDevice}
+		case "challenge":
+			p.RequiredRoles = []string{AuthKeyRoleChallenge}
+		case "guardian":
+			p.RequiredRoles = []string{AuthKeyRoleGuardian}
+		}
+	}
+	previous := ""
+	for _, role := range p.RequiredRoles {
+		if role == "" {
+			return errors.New("native account step-up policy role is required")
+		}
+		if containsSecretLikeText(role) {
+			return errors.New("native account step-up policy roles must not contain private keys or seed phrases")
+		}
+		if role <= previous {
+			return errors.New("native account step-up policy roles must be sorted and unique")
+		}
+		previous = role
+	}
+	previous = ""
+	for _, op := range p.ProtectedOperations {
+		if op == "" {
+			return errors.New("native account step-up policy protected operation is required")
+		}
+		if containsSecretLikeText(op) {
+			return errors.New("native account step-up policy protected operations must not contain private keys or seed phrases")
+		}
+		if op <= previous {
+			return errors.New("native account step-up policy protected operations must be sorted and unique")
+		}
+		previous = op
+	}
 	return nil
 }

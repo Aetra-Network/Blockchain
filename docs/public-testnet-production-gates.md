@@ -42,7 +42,9 @@ Required checks:
 - CosmWasm smoke passes if CosmWasm is enabled:
   - `tests\e2e\cosmwasm_smoke.ps1 -EnableWasm`
 - AVM smoke passes if AVM is enabled:
-  - `go test ./x/aetravm/avm ./x/aetravm/async`
+  - `go test ./x/aetravm/compiler ./x/aetravm/avm ./x/aetravm/async ./cmd/l1d/cmd`
+  - AVM developer tooling exists, but production AVM runtime wiring is still
+    behind the keeper gate.
 - Contract standard smoke passes if async contracts are enabled:
 - E2E smoke command list is current:
   - `docs\public-testnet-e2e-smoke-commands.md`

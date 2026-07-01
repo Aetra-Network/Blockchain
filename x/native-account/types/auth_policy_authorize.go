@@ -12,17 +12,27 @@ func AuthorizeAuthPolicy(account Account, msg ExternalMessage) (AuthzResult, err
 	if err := policy.Validate(); err != nil {
 		return AuthzResult{}, err
 	}
+	risk := ClassifyAuthOperationRisk(msg.Operation)
 	keys := effectiveAuthKeys(account)
 	signers := canonicalSigners(msg.Signers)
 	switch policy.Mode {
 	case AuthModeSingleKey:
-		if operationWithinSpendingLimit(policy, msg.Operation, msg.Amount) || len(policy.SpendingLimits) == 0 {
+		if risk == AuthOperationRiskLow && operationWithinSpendingLimit(policy, msg.Operation, msg.Amount) {
 			if signedByAnyKey(keys, signers) {
 				return AuthzResult{Authorized: true, Mode: policy.Mode, Signers: signers}, nil
 			}
 			return AuthzResult{}, errors.New("external message missing authorized single-key signer")
 		}
-		return AuthzResult{}, errors.New("external message amount exceeds single-key spending limit")
+		if !policy.RequiresStepUp(msg.Operation) {
+			if signedByAnyKey(keys, signers) {
+				return AuthzResult{Authorized: true, Mode: policy.Mode, Signers: signers}, nil
+			}
+			return AuthzResult{}, errors.New("external message missing authorized single-key signer")
+		}
+		if signedByAnyKey(keys, signers) && policy.hasRequiredStepUpSigners(keys, signers) {
+			return AuthzResult{Authorized: true, Mode: policy.Mode, Signers: signers}, nil
+		}
+		return AuthzResult{}, errors.New("external message missing required second factor")
 	case AuthModeMultisig, AuthModeThreshold:
 		threshold := policy.Threshold
 		if policy.Mode == AuthModeMultisig && threshold == 0 {
@@ -32,18 +42,24 @@ func AuthorizeAuthPolicy(account Account, msg ExternalMessage) (AuthzResult, err
 		if count < threshold {
 			return AuthzResult{}, fmt.Errorf("external message signatures %d below threshold %d", count, threshold)
 		}
+		if policy.RequiresStepUp(msg.Operation) && !policy.hasRequiredStepUpSigners(keys, signers) {
+			return AuthzResult{}, errors.New("external message missing required second factor")
+		}
 		return AuthzResult{Authorized: true, Mode: policy.Mode, Signers: signers}, nil
 	case AuthModeWeighted:
 		weight := signedWeight(policy.Weights, signers)
 		if weight < policy.Threshold {
 			return AuthzResult{}, fmt.Errorf("external message signer weight %d below threshold %d", weight, policy.Threshold)
 		}
+		if policy.RequiresStepUp(msg.Operation) && !policy.hasRequiredStepUpSigners(keys, signers) {
+			return AuthzResult{}, errors.New("external message missing required second factor")
+		}
 		return AuthzResult{Authorized: true, Mode: policy.Mode, Signers: signers, Weight: weight}, nil
 	case AuthModeTwoDevice:
-		if operationWithinSpendingLimit(policy, msg.Operation, msg.Amount) && signedByRole(keys, signers, AuthKeyRolePrimary) {
+		if risk == AuthOperationRiskLow && operationWithinSpendingLimit(policy, msg.Operation, msg.Amount) && signedByRole(keys, signers, AuthKeyRolePrimary) {
 			return AuthzResult{Authorized: true, Mode: policy.Mode, Signers: signers}, nil
 		}
-		if signedByRole(keys, signers, AuthKeyRolePrimary) && signedByRole(keys, signers, AuthKeyRoleDevice) {
+		if signedByRole(keys, signers, AuthKeyRolePrimary) && (signedByRole(keys, signers, AuthKeyRoleDevice) || signedByRole(keys, signers, AuthKeyRoleChallenge) || signedByRole(keys, signers, AuthKeyRoleGuardian)) {
 			return AuthzResult{Authorized: true, Mode: policy.Mode, Signers: signers}, nil
 		}
 		return AuthzResult{}, errors.New("two-device auth requires primary and device signatures")
@@ -157,6 +173,74 @@ func validateSpendingLimits(limits []SpendingLimit) error {
 		previous = key
 	}
 	return nil
+}
+
+const (
+	AuthOperationRiskLow  = "low"
+	AuthOperationRiskHigh = "high"
+)
+
+func ClassifyAuthOperationRisk(operation string) string {
+	switch strings.TrimSpace(operation) {
+	case AuthOperationTransfer:
+		return AuthOperationRiskLow
+	case AuthOperationStakingChange,
+		AuthOperationAuthPolicyUpdate,
+		AuthOperationRecoverAccount,
+		AuthOperationFreezeAccount,
+		AuthOperationPayStorageDebt,
+		AuthOperationUnfreezeAccount,
+		AuthOperationMetadataUpdate,
+		AuthOperationParamsUpdate:
+		return AuthOperationRiskHigh
+	default:
+		return AuthOperationRiskHigh
+	}
+}
+
+func (p AuthPolicy) RequiresStepUp(operation string) bool {
+	if p.StepUp == nil {
+		return false
+	}
+	stepUp := p.StepUp.Normalize()
+	if stepUp.Mode == "" {
+		return false
+	}
+	if len(stepUp.ProtectedOperations) == 0 {
+		return ClassifyAuthOperationRisk(operation) == AuthOperationRiskHigh
+	}
+	for _, protected := range stepUp.ProtectedOperations {
+		if protected == strings.TrimSpace(operation) {
+			return true
+		}
+	}
+	return false
+}
+
+func (p AuthPolicy) hasRequiredStepUpSigners(keys []AuthKey, signers []string) bool {
+	if p.StepUp == nil {
+		return false
+	}
+	stepUp := p.StepUp.Normalize()
+	roles := append([]string(nil), stepUp.RequiredRoles...)
+	if len(roles) == 0 {
+		switch stepUp.Mode {
+		case "2fa":
+			roles = []string{AuthKeyRoleDevice}
+		case "challenge":
+			roles = []string{AuthKeyRoleChallenge}
+		case "guardian":
+			roles = []string{AuthKeyRoleGuardian}
+		default:
+			return false
+		}
+	}
+	for _, role := range roles {
+		if !signedByRole(keys, signers, role) {
+			return false
+		}
+	}
+	return true
 }
 
 func hasAuthKeyRole(keys []AuthKey, role string) bool {

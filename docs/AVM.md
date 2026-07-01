@@ -18,6 +18,17 @@ The canonical implementation lives under:
 - `x/aetravm/standards`
 - `x/contracts`
 
+## Language And ABI Specs
+
+The canonical language and ABI documents are:
+
+- [docs/architecture/language-spec.md](architecture/language-spec.md)
+- [docs/architecture/abi-spec.md](architecture/abi-spec.md)
+- [docs/architecture/serialization-spec.md](architecture/serialization-spec.md)
+- [docs/architecture/message-model.md](architecture/message-model.md)
+- [docs/architecture/storage-model.md](architecture/storage-model.md)
+- [docs/architecture/selector-registry.md](architecture/selector-registry.md)
+
 ## Verifier
 
 Every module must pass verification before deployment or execution. The
