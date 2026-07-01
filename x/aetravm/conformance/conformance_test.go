@@ -89,6 +89,57 @@ contract Timer {
 }
 `
 
+const treasuryStandardSource = `
+struct TreasuryState {
+  balance: u64 = 0
+  pending: u64 = 0
+  owner: Address = "AEowner"
+}
+
+contract Treasury {
+  storage TreasuryState
+  namespace "treasury"
+  chain "avm-local"
+  deploy {
+    set state.balance = 0
+    set state.pending = 0
+    return 0
+  }
+  message external Deposit() selector = 21 {
+    let previous = state.balance
+    set state.balance = state.balance + 1
+    emit BalanceChanged(previous, state.balance)
+    return 0
+  }
+  message internal Credit() selector = 22 {
+    set state.pending = state.pending + 1
+    send 0 to "AErouter" opcode = 88;
+    return 0
+  }
+  message bounced Refund() selector = 23 {
+    set state.pending = 0
+    return 0
+  }
+  message migrate Upgrade() selector = 24 {
+    set state.balance = state.balance + 1
+    return 0
+  }
+  getter GetBalance() -> u64 selector = 25 {
+    return state.balance
+  }
+  event BalanceChanged(old: u64, new: u64)
+  wallet action Deposit {
+    title = "Deposit treasury funds"
+    risk = "low"
+    confirm_label = "Deposit"
+    warning_level = "info"
+    expected_side_effects = ["state write", "event emission"]
+    fund_access = false
+    approval_semantics = "request"
+  }
+}
+`
+
 func TestConformanceDeployInternalBouncedRefundGetter(t *testing.T) {
 	sender := compileConformance(t, senderSource)
 
@@ -284,6 +335,73 @@ func TestConformanceGetterOnlyAndScheduledSelfStandardPackages(t *testing.T) {
 	require.Len(t, tickExec.Outgoing, 1)
 	require.Equal(t, uint64(7), tickExec.Outgoing[0].DeliverAtBlock)
 	require.True(t, tickExec.Outgoing[0].Destination.Equals(testAddress(3)))
+}
+
+func TestConformanceTreasuryStandardPackageCoversLifecycle(t *testing.T) {
+	treasury := compileConformance(t, treasuryStandardSource)
+	require.NoError(t, avm.VerifyInterface(treasury.Module, treasury.Manifest))
+
+	runner, err := avm.NewRunner(avm.DefaultParams())
+	require.NoError(t, err)
+
+	deployExec, err := runner.Run(treasury.Module, nil, avm.RuntimeContext{
+		Entry:    avm.EntryDeploy,
+		GasLimit: 100_000,
+		Message:  async.MessageEnvelope{GasLimit: 100_000},
+	})
+	require.NoError(t, err)
+	require.Equal(t, async.ResultOK, deployExec.ResultCode)
+	require.Equal(t, uint64(0), avm.DecodeU64(deployExec.State["balance"]))
+	require.Equal(t, uint64(0), avm.DecodeU64(deployExec.State["pending"]))
+
+	externalExec, err := runner.Run(treasury.Module, deployExec.State, avm.RuntimeContext{
+		Entry:    avm.EntryReceiveExternal,
+		GasLimit: 100_000,
+		Message:  async.MessageEnvelope{Opcode: 21, QueryID: 21, GasLimit: 100_000},
+	})
+	require.NoError(t, err)
+	require.Equal(t, async.ResultOK, externalExec.ResultCode)
+	require.Equal(t, uint64(1), avm.DecodeU64(externalExec.State["balance"]))
+
+	internalExec, err := runner.Run(treasury.Module, externalExec.State, avm.RuntimeContext{
+		Entry:           avm.EntryReceiveInternal,
+		GasLimit:        100_000,
+		EmitDestination: testAddress(4),
+		Message:         async.MessageEnvelope{Opcode: 22, QueryID: 22, GasLimit: 100_000},
+	})
+	require.NoError(t, err)
+	require.Equal(t, async.ResultOK, internalExec.ResultCode)
+	require.Len(t, internalExec.Outgoing, 1)
+	require.True(t, internalExec.Outgoing[0].Destination.Equals(testAddress(4)))
+	require.Equal(t, uint64(1), avm.DecodeU64(internalExec.State["pending"]))
+
+	bouncedExec, err := runner.Run(treasury.Module, internalExec.State, avm.RuntimeContext{
+		Entry:    avm.EntryReceiveBounced,
+		GasLimit: 100_000,
+		Message:  async.MessageEnvelope{Opcode: 23, QueryID: 23, GasLimit: 100_000, Bounced: true},
+	})
+	require.NoError(t, err)
+	require.Equal(t, async.ResultOK, bouncedExec.ResultCode)
+	require.Equal(t, uint64(0), avm.DecodeU64(bouncedExec.State["pending"]))
+
+	migrateExec, err := runner.Run(treasury.Module, bouncedExec.State, avm.RuntimeContext{
+		Entry:    avm.EntryMigrate,
+		GasLimit: 100_000,
+		Message:  async.MessageEnvelope{Opcode: 24, QueryID: 24, GasLimit: 100_000},
+	})
+	require.NoError(t, err)
+	require.Equal(t, async.ResultOK, migrateExec.ResultCode)
+	require.Equal(t, uint64(2), avm.DecodeU64(migrateExec.State["balance"]))
+
+	getExec, err := runner.Run(treasury.Module, migrateExec.State, avm.RuntimeContext{
+		Entry:    avm.EntryQuery,
+		GasLimit: 100_000,
+		Message:  async.MessageEnvelope{Opcode: 25, QueryID: 25, GasLimit: 100_000},
+	})
+	require.NoError(t, err)
+	require.Equal(t, async.ResultOK, getExec.ResultCode)
+	require.Equal(t, uint64(2), getExec.ReturnValue)
+	require.Empty(t, getExec.Outgoing)
 }
 
 func compileConformance(t *testing.T, src string) *compiler.Result {

@@ -303,6 +303,47 @@ func TestHostContextOpcodesReadEnvelopeBlockAndChargeGas(t *testing.T) {
 	require.Equal(t, async.ResultLimitExceeded, limited.ResultCode)
 }
 
+func TestGasAccountingIsDeterministicAcrossEntrypointsAndLimits(t *testing.T) {
+	runner := newTestRunner(t)
+	module := counterModule()
+	storage := Storage{"counter": EncodeU64(7)}
+	cases := []struct {
+		name    string
+		entry   Entrypoint
+		bounced bool
+	}{
+		{name: "deploy", entry: EntryDeploy},
+		{name: "external", entry: EntryReceiveExternal},
+		{name: "internal", entry: EntryReceiveInternal},
+		{name: "bounced", entry: EntryReceiveBounced, bounced: true},
+		{name: "query", entry: EntryQuery},
+		{name: "migrate", entry: EntryMigrate},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := runtimeCtx(tc.entry)
+			ctx.Message.Bounced = tc.bounced
+			if tc.entry == EntryReceiveBounced {
+				ctx.Message.Bounced = true
+			}
+			first, firstErr := runner.Run(module, storage, ctx)
+			second, secondErr := runner.Run(module, storage, ctx)
+			if tc.entry == EntryQuery {
+				require.Error(t, firstErr)
+				require.Error(t, secondErr)
+				require.Equal(t, firstErr.Error(), secondErr.Error())
+				return
+			}
+			require.NoError(t, firstErr)
+			require.NoError(t, secondErr)
+			require.Equal(t, first.ResultCode, second.ResultCode)
+			require.Equal(t, first.GasUsed, second.GasUsed)
+			require.Equal(t, first.State, second.State)
+			require.Equal(t, first.Outgoing, second.Outgoing)
+		})
+	}
+}
+
 func TestAVMEmitsInternalMessageIntoAsyncQueue(t *testing.T) {
 	runner := newTestRunner(t)
 	module := emitterModule()
