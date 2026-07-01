@@ -16,9 +16,11 @@ Required checks:
 - Objective readiness report passes:
   - `scripts\testnet\public-testnet-readiness-report.ps1`
   - `scripts\testnet\public-testnet-readiness-report.ps1 -OutputFormat Json`
+- Proto lint is mandatory and reproducible:
+  - `buf lint` passes in CI and in the local readiness workflow.
+  - The testnet readiness CI job installs `buf` with `bufbuild/buf-setup-action@v1`.
 - `go test ./...` passes.
 - `go vet ./...` passes.
-- `buf lint` passes.
 - Security scans pass or findings are triaged:
   - `govulncheck`
   - `gosec`

@@ -43,19 +43,20 @@ foreach ($check in $report.checks) {
 
 $ids = @($report.checks | ForEach-Object { $_.id })
 foreach ($id in @(
-    "avm_runtime_wired",
-    "native_account_wired",
-    "direct_delegation_disabled",
-    "official_pool_staking",
-    "storage_rent_enforcement",
-    "system_governance_safety",
-    "app_invariants_registered",
-    "export_import_roundtrip",
-    "no_native_asset_modules",
-    "docs_match_behavior",
-    "localnet_profiles",
-    "long_running_evidence",
-    "e2e_smoke_commands"
+  "avm_runtime_wired",
+  "native_account_wired",
+  "direct_delegation_disabled",
+  "official_pool_staking",
+  "storage_rent_enforcement",
+  "system_governance_safety",
+  "app_invariants_registered",
+  "export_import_roundtrip",
+  "buf_lint_gate",
+  "no_native_asset_modules",
+  "docs_match_behavior",
+  "localnet_profiles",
+  "long_running_evidence",
+  "e2e_smoke_commands"
   )) {
   if ($ids -notcontains $id) {
     throw "readiness report missing check id: $id"
@@ -77,6 +78,8 @@ foreach ($term in @(
 }
 
 foreach ($term in @(
+    "bufbuild/buf-setup-action@v1",
+    "same command",
     "direct user delegation rejection",
     "staking/slashing query surfaces",
     "Official liquid staking pool deposit/claim/unbond, validator operator self-bond compatibility, and storage-rent recovery still require their own focused runtime evidence",

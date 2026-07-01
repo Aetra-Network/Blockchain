@@ -61,6 +61,7 @@ foreach ($term in @(
     "go test -p=1 ./...",
     "go vet -p=1 ./...",
     "buf lint",
+    "bufbuild/buf-setup-action@v1",
     "1000000naet",
     "aetrad"
   )) {

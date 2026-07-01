@@ -12,11 +12,15 @@ Run the objective readiness report before starting localnet profiles. It checks
 that AVM/contracts, native-account, official pool staking, storage rent,
 governance/config safety, app invariants, export/import evidence, and
 contract-only asset boundaries are implemented in runtime paths rather
-than only prototype/spec packages:
+than only prototype/spec packages. The readiness gate also treats `buf lint`
+as mandatory. The CI workflow installs `buf` with
+`bufbuild/buf-setup-action@v1`, and local runs should invoke the same command
+surface so proto lint is not a machine-specific convenience check:
 
 ```powershell
 .\scripts\testnet\public-testnet-readiness-report.ps1
 .\scripts\testnet\public-testnet-readiness-report.ps1 -OutputFormat Json
+buf lint
 ```
 
 Run all local profiles before publishing testnet genesis:
@@ -57,8 +61,8 @@ To reach 100/100 for public testnet readiness, the remaining concrete steps are:
 - Obtain an independent audit and close or explicitly accept all findings.
 - Finish operational readiness for faucet, explorer/indexer, incident
   response, rollback planning, and validator documentation on a clean machine.
-- Run `buf lint` in the environment where `buf` is installed and record it as a
-  mandatory gate, not a local-only convenience check.
+- Run `buf lint` through the same reproducible toolchain used by CI and record
+  it as a mandatory gate, not a local-only convenience check.
 - Keep the release artifact tree clean before the public launch so the launch
   cut is separated from unrelated worktree state.
 

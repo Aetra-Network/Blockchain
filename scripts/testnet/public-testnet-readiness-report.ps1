@@ -157,6 +157,13 @@ Add-Check $checks "export_import_roundtrip" "export/import roundtrip evidence ex
   Assert-Contains "docs\public-testnet-long-running-evidence.md" "Export/import roundtrip preserves account, contract, pool, storage rent, and" "long-running export/import requirement"
 }
 
+Add-Check $checks "buf_lint_gate" "buf lint is wired as a mandatory reproducible gate" {
+  Assert-Contains ".github\workflows\testnet-readiness.yml" "bufbuild/buf-setup-action@v1" "CI installs buf before linting"
+  Assert-Contains ".github\workflows\testnet-readiness.yml" "buf lint" "CI runs buf lint"
+  Assert-Contains "docs\public-testnet-production-gates.md" "buf lint passes in CI" "production gate documents buf lint"
+  Assert-Contains "docs\public-testnet-preparation.md" "buf lint" "preparation docs mention buf lint"
+}
+
 Add-Check $checks "formal_ci_readiness" "formal public testnet CI readiness workflow exists" {
   Assert-FileExists ".github\workflows\testnet-readiness.yml"
   foreach ($term in @(

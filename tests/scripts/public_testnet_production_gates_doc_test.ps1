@@ -34,6 +34,7 @@ foreach ($term in @(
     'go test ./...',
     'go vet ./...',
     'buf lint',
+    'bufbuild/buf-setup-action@v1',
     'govulncheck',
     'gosec',
     'CodeQL',
