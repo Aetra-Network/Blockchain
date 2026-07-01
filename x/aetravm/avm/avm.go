@@ -17,46 +17,46 @@ import (
 )
 
 const (
-	Magic		= "AVM1"
-	Version	uint16	= 1
+	Magic          = "AVM1"
+	Version uint16 = 1
 
-	MetadataHashLength	= 32
-	MaxKeySize		= 128
+	MetadataHashLength = 32
+	MaxKeySize         = 128
 
-	EntryDeploy		Entrypoint	= 1
-	EntryReceiveExternal	Entrypoint	= 2
-	EntryReceiveInternal	Entrypoint	= 3
-	EntryReceiveBounced	Entrypoint	= 4
-	EntryQuery		Entrypoint	= 5
-	EntryMigrate		Entrypoint	= 6
+	EntryDeploy          Entrypoint = 1
+	EntryReceiveExternal Entrypoint = 2
+	EntryReceiveInternal Entrypoint = 3
+	EntryReceiveBounced  Entrypoint = 4
+	EntryQuery           Entrypoint = 5
+	EntryMigrate         Entrypoint = 6
 
-	HostReadStorage		HostFunction	= 1
-	HostWriteStorage	HostFunction	= 2
-	HostEmitInternal	HostFunction	= 3
-	HostInspectMsg		HostFunction	= 4
-	HostBlockContext	HostFunction	= 5
-	HostChargeGas		HostFunction	= 6
-	HostReturn		HostFunction	= 7
-	HostScheduleSelf	HostFunction	= 8
+	HostReadStorage  HostFunction = 1
+	HostWriteStorage HostFunction = 2
+	HostEmitInternal HostFunction = 3
+	HostInspectMsg   HostFunction = 4
+	HostBlockContext HostFunction = 5
+	HostChargeGas    HostFunction = 6
+	HostReturn       HostFunction = 7
+	HostScheduleSelf HostFunction = 8
 
-	OpNop			Opcode	= 0x00
-	OpPushU64		Opcode	= 0x01
-	OpReadStorage		Opcode	= 0x02
-	OpWriteStorage		Opcode	= 0x03
-	OpAdd			Opcode	= 0x04
-	OpEmitInternal		Opcode	= 0x05
-	OpReturn		Opcode	= 0x06
-	OpReadMsgOpcode		Opcode	= 0x07
-	OpReadMsgQueryID	Opcode	= 0x08
-	OpReadBlock		Opcode	= 0x09
-	OpChargeGas		Opcode	= 0x0a
-	OpScheduleSelf		Opcode	= 0x0b
+	OpNop            Opcode = 0x00
+	OpPushU64        Opcode = 0x01
+	OpReadStorage    Opcode = 0x02
+	OpWriteStorage   Opcode = 0x03
+	OpAdd            Opcode = 0x04
+	OpEmitInternal   Opcode = 0x05
+	OpReturn         Opcode = 0x06
+	OpReadMsgOpcode  Opcode = 0x07
+	OpReadMsgQueryID Opcode = 0x08
+	OpReadBlock      Opcode = 0x09
+	OpChargeGas      Opcode = 0x0a
+	OpScheduleSelf   Opcode = 0x0b
 
-	OpWallClock	Opcode	= 0xf0
-	OpRandom	Opcode	= 0xf1
-	OpFileRead	Opcode	= 0xf2
-	OpFloatAdd	Opcode	= 0xf3
-	OpIterMap	Opcode	= 0xf4
+	OpWallClock Opcode = 0xf0
+	OpRandom    Opcode = 0xf1
+	OpFileRead  Opcode = 0xf2
+	OpFloatAdd  Opcode = 0xf3
+	OpIterMap   Opcode = 0xf4
 )
 
 type Entrypoint uint8
@@ -64,65 +64,65 @@ type HostFunction uint16
 type Opcode uint8
 
 type Params struct {
-	MaxCodeBytes	uint32
-	MaxInstructions	uint32
-	MaxImports	uint16
-	MaxStackDepth	uint32
-	MaxMemoryBytes	uint32
-	GasSchedule	map[Opcode]uint64
+	MaxCodeBytes    uint32
+	MaxInstructions uint32
+	MaxImports      uint16
+	MaxStackDepth   uint32
+	MaxMemoryBytes  uint32
+	GasSchedule     map[Opcode]uint64
 }
 
 type Module struct {
-	Version		uint16
-	Imports		[]HostFunction
-	Exports		map[Entrypoint]uint32
-	MetadataHash	[MetadataHashLength]byte
-	Code		[]Instruction
+	Version      uint16
+	Imports      []HostFunction
+	Exports      map[Entrypoint]uint32
+	MetadataHash [MetadataHashLength]byte
+	Code         []Instruction
 }
 
 type Instruction struct {
-	Op	Opcode
-	Arg	uint64
-	Data	[]byte
+	Op   Opcode
+	Arg  uint64
+	Data []byte
 }
 
 type RuntimeContext struct {
-	Entry		Entrypoint
-	ContractAddress	sdk.AccAddress
-	Message		async.MessageEnvelope
-	BlockHeight	uint64
-	GasLimit	uint64
-	EmitDestination	sdk.AccAddress
+	Entry           Entrypoint
+	ContractAddress sdk.AccAddress
+	Message         async.MessageEnvelope
+	BlockHeight     uint64
+	GasLimit        uint64
+	EmitDestination sdk.AccAddress
 }
 
 type Execution struct {
-	State		Storage
-	Outgoing	[]async.MessageEnvelope
-	GasUsed		uint64
-	ResultCode	uint32
-	StorageWrites	uint32
-	ReturnValue	uint64
-	ExecutedOpcode	[]Opcode
+	State          Storage
+	Outgoing       []async.MessageEnvelope
+	GasUsed        uint64
+	ResultCode     uint32
+	StorageWrites  uint32
+	ReturnValue    uint64
+	ExecutedOpcode []Opcode
 }
 
 type Storage map[string][]byte
 
 type SnapshotEntry struct {
-	Key	string
-	Value	[]byte
+	Key   string
+	Value []byte
 }
 
 type ExecutionProof struct {
-	ModuleHash	[32]byte
-	BeforeRoot	[32]byte
-	AfterRoot	[32]byte
-	ContextHash	[32]byte
-	OutgoingRoot	[32]byte
-	TraceHash	[32]byte
-	GasUsed		uint64
-	ResultCode	uint32
-	StorageWrites	uint32
-	ReturnValue	uint64
+	ModuleHash    [32]byte
+	BeforeRoot    [32]byte
+	AfterRoot     [32]byte
+	ContextHash   [32]byte
+	OutgoingRoot  [32]byte
+	TraceHash     [32]byte
+	GasUsed       uint64
+	ResultCode    uint32
+	StorageWrites uint32
+	ReturnValue   uint64
 }
 
 type Verifier struct {
@@ -135,24 +135,24 @@ type Runner struct {
 
 func DefaultParams() Params {
 	return Params{
-		MaxCodeBytes:		64 * 1024,
-		MaxInstructions:	4096,
-		MaxImports:		32,
-		MaxStackDepth:		1024,
-		MaxMemoryBytes:		1024 * 1024,
+		MaxCodeBytes:    64 * 1024,
+		MaxInstructions: 4096,
+		MaxImports:      32,
+		MaxStackDepth:   1024,
+		MaxMemoryBytes:  1024 * 1024,
 		GasSchedule: map[Opcode]uint64{
-			OpNop:			1,
-			OpPushU64:		2,
-			OpReadStorage:		20,
-			OpWriteStorage:		50,
-			OpAdd:			3,
-			OpEmitInternal:		100,
-			OpReturn:		1,
-			OpReadMsgOpcode:	5,
-			OpReadMsgQueryID:	5,
-			OpReadBlock:		5,
-			OpChargeGas:		1,
-			OpScheduleSelf:		100,
+			OpNop:            1,
+			OpPushU64:        2,
+			OpReadStorage:    20,
+			OpWriteStorage:   50,
+			OpAdd:            3,
+			OpEmitInternal:   100,
+			OpReturn:         1,
+			OpReadMsgOpcode:  5,
+			OpReadMsgQueryID: 5,
+			OpReadBlock:      5,
+			OpChargeGas:      1,
+			OpScheduleSelf:   100,
 		},
 	}
 }
@@ -231,10 +231,15 @@ func (v *Verifier) Verify(module Module) error {
 	if len(module.Exports) == 0 {
 		return errors.New("AVM module must export at least one entrypoint")
 	}
+	seenImports := make(map[HostFunction]struct{}, len(module.Imports))
 	for _, host := range module.Imports {
 		if !IsAllowedHostFunction(host) {
 			return fmt.Errorf("AVM host function %d is not allowed", host)
 		}
+		if _, found := seenImports[host]; found {
+			return fmt.Errorf("AVM module import %d is duplicated", host)
+		}
+		seenImports[host] = struct{}{}
 	}
 	imports := hostImportSet(module.Imports)
 	for entry, offset := range module.Exports {
@@ -272,13 +277,18 @@ func (r *Runner) Run(module Module, storage Storage, ctx RuntimeContext) (Execut
 	if err := verifier.Verify(module); err != nil {
 		return Execution{}, err
 	}
+	if err := ValidateRuntimeContext(ctx); err != nil {
+		return Execution{}, err
+	}
 	pc, ok := module.Exports[ctx.Entry]
 	if !ok {
 		return Execution{}, fmt.Errorf("AVM entrypoint %d is not exported", ctx.Entry)
 	}
+	originalState := CloneStorage(storage)
 	state := CloneStorage(storage)
 	stack := make([]uint64, 0)
 	exec := Execution{State: state}
+	readOnly := IsReadOnlyEntrypoint(ctx.Entry)
 	gasLimit := ctx.GasLimit
 	if gasLimit == 0 {
 		gasLimit = ctx.Message.GasLimit
@@ -286,131 +296,140 @@ func (r *Runner) Run(module Module, storage Storage, ctx RuntimeContext) (Execut
 	if gasLimit == 0 {
 		return Execution{}, errors.New("AVM gas limit must be positive")
 	}
+	rollback := func(resultCode uint32, runErr error) (Execution, error) {
+		exec.ResultCode = resultCode
+		exec.State = originalState
+		exec.Outgoing = nil
+		return exec, runErr
+	}
 
 	for ; int(pc) < len(module.Code); pc++ {
 		ins := module.Code[pc]
 		gas := r.params.GasSchedule[ins.Op]
 		nextGas, overflow := safeAddU64(exec.GasUsed, gas)
 		if overflow {
-			exec.ResultCode = async.ResultLimitExceeded
-			return exec, nil
+			return rollback(async.ResultLimitExceeded, nil)
 		}
 		exec.GasUsed = nextGas
 		if exec.GasUsed > gasLimit {
-			exec.ResultCode = async.ResultLimitExceeded
-			return exec, nil
+			return rollback(async.ResultLimitExceeded, nil)
 		}
 		exec.ExecutedOpcode = append(exec.ExecutedOpcode, ins.Op)
 		switch ins.Op {
 		case OpNop:
 		case OpPushU64:
 			if len(stack) >= int(r.params.MaxStackDepth) {
-				exec.ResultCode = async.ResultLimitExceeded
-				return exec, nil
+				return rollback(async.ResultLimitExceeded, nil)
 			}
 			stack = append(stack, ins.Arg)
 		case OpReadStorage:
 			value := DecodeU64(state[string(ins.Data)])
 			if len(stack) >= int(r.params.MaxStackDepth) {
-				exec.ResultCode = async.ResultLimitExceeded
-				return exec, nil
+				return rollback(async.ResultLimitExceeded, nil)
 			}
 			stack = append(stack, value)
 		case OpWriteStorage:
+			if readOnly {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM getter entrypoint cannot write storage"))
+			}
 			value, ok := pop(&stack)
 			if !ok {
-				return exec, errors.New("AVM stack underflow on write storage")
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on write storage"))
 			}
 			state[string(ins.Data)] = EncodeU64(value)
 			exec.StorageWrites++
 			if StorageMemoryBytes(state) > uint64(r.params.MaxMemoryBytes) {
-				exec.ResultCode = async.ResultLimitExceeded
-				return exec, nil
+				return rollback(async.ResultLimitExceeded, nil)
 			}
 		case OpAdd:
 			right, ok := pop(&stack)
 			if !ok {
-				return exec, errors.New("AVM stack underflow on add")
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on add"))
 			}
 			left, ok := pop(&stack)
 			if !ok {
-				return exec, errors.New("AVM stack underflow on add")
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on add"))
 			}
 			stack = append(stack, left+right)
 		case OpEmitInternal:
+			if readOnly {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM getter entrypoint cannot emit internal messages"))
+			}
 			if len(ctx.EmitDestination) == 0 {
-				return exec, errors.New("AVM emit internal requires destination")
+				return rollback(async.ResultExecutionFailed, errors.New("AVM emit internal requires destination"))
 			}
 			exec.Outgoing = append(exec.Outgoing, async.MessageEnvelope{
-				Destination:	ctx.EmitDestination,
-				Value:		sdk.NewCoin(appparams.BaseDenom, sdkmath.ZeroInt()),
-				Opcode:		uint32(ins.Arg),
-				QueryID:	ctx.Message.QueryID,
-				Body:		append([]byte(nil), ins.Data...),
-				Bounce:		true,
-				GasLimit:	ctx.Message.GasLimit,
-				ForwardFee:	sdk.NewCoin(appparams.BaseDenom, async.DefaultParams().ForwardingFee),
+				Destination: ctx.EmitDestination,
+				Value:       sdk.NewCoin(appparams.BaseDenom, sdkmath.ZeroInt()),
+				Opcode:      uint32(ins.Arg),
+				QueryID:     ctx.Message.QueryID,
+				Body:        append([]byte(nil), ins.Data...),
+				Bounce:      true,
+				GasLimit:    ctx.Message.GasLimit,
+				ForwardFee:  sdk.NewCoin(appparams.BaseDenom, async.DefaultParams().ForwardingFee),
 			})
 		case OpReadMsgOpcode:
 			if len(stack) >= int(r.params.MaxStackDepth) {
-				exec.ResultCode = async.ResultLimitExceeded
-				return exec, nil
+				return rollback(async.ResultLimitExceeded, nil)
 			}
 			stack = append(stack, uint64(ctx.Message.Opcode))
 		case OpReadMsgQueryID:
 			if len(stack) >= int(r.params.MaxStackDepth) {
-				exec.ResultCode = async.ResultLimitExceeded
-				return exec, nil
+				return rollback(async.ResultLimitExceeded, nil)
 			}
 			stack = append(stack, ctx.Message.QueryID)
 		case OpReadBlock:
 			if len(stack) >= int(r.params.MaxStackDepth) {
-				exec.ResultCode = async.ResultLimitExceeded
-				return exec, nil
+				return rollback(async.ResultLimitExceeded, nil)
 			}
 			stack = append(stack, ctx.BlockHeight)
 		case OpChargeGas:
 			nextGas, overflow := safeAddU64(exec.GasUsed, ins.Arg)
 			if overflow || nextGas > gasLimit {
-				exec.ResultCode = async.ResultLimitExceeded
-				return exec, nil
+				return rollback(async.ResultLimitExceeded, nil)
 			}
 			exec.GasUsed = nextGas
 		case OpScheduleSelf:
+			if readOnly {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM getter entrypoint cannot schedule self messages"))
+			}
 			if len(ctx.ContractAddress) == 0 {
-				return exec, errors.New("AVM schedule self requires contract address")
+				return rollback(async.ResultExecutionFailed, errors.New("AVM schedule self requires contract address"))
 			}
 			if ctx.BlockHeight == 0 {
-				return exec, errors.New("AVM schedule self requires block height")
+				return rollback(async.ResultExecutionFailed, errors.New("AVM schedule self requires block height"))
 			}
 			if ins.Arg == 0 {
-				return exec, errors.New("AVM schedule self delay must be positive")
+				return rollback(async.ResultExecutionFailed, errors.New("AVM schedule self delay must be positive"))
 			}
 			deliverAt, overflow := safeAddU64(ctx.BlockHeight, ins.Arg)
 			if overflow {
-				exec.ResultCode = async.ResultLimitExceeded
-				return exec, nil
+				return rollback(async.ResultLimitExceeded, nil)
 			}
 			exec.Outgoing = append(exec.Outgoing, async.MessageEnvelope{
-				Destination:	append(sdk.AccAddress(nil), ctx.ContractAddress...),
-				Value:		sdk.NewCoin(appparams.BaseDenom, sdkmath.ZeroInt()),
-				Opcode:		ctx.Message.Opcode,
-				QueryID:	ctx.Message.QueryID,
-				Body:		append([]byte(nil), ins.Data...),
-				Bounce:		false,
-				DeliverAtBlock:	deliverAt,
-				DeadlineBlock:	ctx.Message.DeadlineBlock,
-				GasLimit:	ctx.Message.GasLimit,
-				ForwardFee:	sdk.NewCoin(appparams.BaseDenom, async.DefaultParams().ForwardingFee),
+				Destination:    append(sdk.AccAddress(nil), ctx.ContractAddress...),
+				Value:          sdk.NewCoin(appparams.BaseDenom, sdkmath.ZeroInt()),
+				Opcode:         ctx.Message.Opcode,
+				QueryID:        ctx.Message.QueryID,
+				Body:           append([]byte(nil), ins.Data...),
+				Bounce:         false,
+				DeliverAtBlock: deliverAt,
+				DeadlineBlock:  ctx.Message.DeadlineBlock,
+				GasLimit:       ctx.Message.GasLimit,
+				ForwardFee:     sdk.NewCoin(appparams.BaseDenom, async.DefaultParams().ForwardingFee),
 			})
 		case OpReturn:
 			exec.ResultCode = uint32(ins.Arg)
 			if len(stack) > 0 {
 				exec.ReturnValue = stack[len(stack)-1]
 			}
+			if exec.ResultCode != async.ResultOK {
+				exec.State = originalState
+				exec.Outgoing = nil
+			}
 			return exec, nil
 		default:
-			return exec, fmt.Errorf("AVM opcode 0x%02x is not executable", byte(ins.Op))
+			return rollback(async.ResultExecutionFailed, fmt.Errorf("AVM opcode 0x%02x is not executable", byte(ins.Op)))
 		}
 	}
 	exec.ResultCode = async.ResultOK
@@ -445,13 +464,22 @@ func (r *Runner) AsyncHandler(module Module, storage Storage, ctx RuntimeContext
 		if err != nil {
 			return async.ExecutionResult{NewState: contract.State, ResultCode: async.ResultExecutionFailed, Error: err.Error()}
 		}
+		if exec.ResultCode != async.ResultOK {
+			return async.ExecutionResult{
+				NewState:      contract.State,
+				Outgoing:      nil,
+				GasUsed:       exec.GasUsed,
+				StorageWrites: exec.StorageWrites,
+				ResultCode:    exec.ResultCode,
+			}
+		}
 		snapshot := EncodeSnapshot(exec.State)
 		return async.ExecutionResult{
-			NewState:	snapshot,
-			Outgoing:	exec.Outgoing,
-			GasUsed:	exec.GasUsed,
-			StorageWrites:	exec.StorageWrites,
-			ResultCode:	exec.ResultCode,
+			NewState:      snapshot,
+			Outgoing:      exec.Outgoing,
+			GasUsed:       exec.GasUsed,
+			StorageWrites: exec.StorageWrites,
+			ResultCode:    exec.ResultCode,
 		}
 	}
 }
@@ -597,6 +625,23 @@ func IsValidEntrypoint(entry Entrypoint) bool {
 	default:
 		return false
 	}
+}
+
+func IsReadOnlyEntrypoint(entry Entrypoint) bool {
+	return entry == EntryQuery
+}
+
+func ValidateRuntimeContext(ctx RuntimeContext) error {
+	if !IsValidEntrypoint(ctx.Entry) {
+		return fmt.Errorf("AVM runtime entrypoint %d is invalid", ctx.Entry)
+	}
+	if ctx.Entry == EntryReceiveBounced && !ctx.Message.Bounced {
+		return errors.New("AVM bounced entrypoint requires bounced message")
+	}
+	if ctx.Entry != EntryReceiveBounced && ctx.Message.Bounced {
+		return fmt.Errorf("AVM entrypoint %d does not accept bounced messages", ctx.Entry)
+	}
+	return nil
 }
 
 func IsForbiddenOpcode(op Opcode) bool {
@@ -773,16 +818,16 @@ func BuildExecutionProof(module Module, before Storage, ctx RuntimeContext, exec
 		return ExecutionProof{}, err
 	}
 	return ExecutionProof{
-		ModuleHash:	moduleHash,
-		BeforeRoot:	StorageRoot(before),
-		AfterRoot:	StorageRoot(exec.State),
-		ContextHash:	RuntimeContextHash(ctx),
-		OutgoingRoot:	OutgoingMessagesRoot(exec.Outgoing),
-		TraceHash:	OpcodeTraceHash(exec.ExecutedOpcode),
-		GasUsed:	exec.GasUsed,
-		ResultCode:	exec.ResultCode,
-		StorageWrites:	exec.StorageWrites,
-		ReturnValue:	exec.ReturnValue,
+		ModuleHash:    moduleHash,
+		BeforeRoot:    StorageRoot(before),
+		AfterRoot:     StorageRoot(exec.State),
+		ContextHash:   RuntimeContextHash(ctx),
+		OutgoingRoot:  OutgoingMessagesRoot(exec.Outgoing),
+		TraceHash:     OpcodeTraceHash(exec.ExecutedOpcode),
+		GasUsed:       exec.GasUsed,
+		ResultCode:    exec.ResultCode,
+		StorageWrites: exec.StorageWrites,
+		ReturnValue:   exec.ReturnValue,
 	}, nil
 }
 

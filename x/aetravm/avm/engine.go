@@ -2,6 +2,7 @@ package avm
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"sort"
@@ -21,15 +22,18 @@ func NewEngine() *Engine {
 // Execute performs a deterministic state transition.
 // (StateChunk, Message, BlockContext) -> (NewStateChunk, Actions, Receipt, error)
 func (e *Engine) Execute(state *chunk.Chunk, msg Message, blockCtx BlockContext, gasLimit uint64, maxActions uint32) (*chunk.Chunk, []Action, AVMReceipt, error) {
+	if err := ValidateMessageSemantics(&msg); err != nil {
+		return nil, nil, AVMReceipt{}, err
+	}
 	msg.GasLimit = gasLimit
 	frame := NewExecutionFrame(state, msg, maxActions)
 
 	frame.BlockCtx = blockCtx
 	frame.Capabilities = CapabilityMask{
-		Crypto:		true,
-		Chain:		true,
-		Messaging:	true,
-		Storage:	true,
+		Crypto:    true,
+		Chain:     true,
+		Messaging: true,
+		Storage:   true,
 	}
 
 	frame.Phase = PhaseStorage
@@ -53,7 +57,14 @@ func (e *Engine) Execute(state *chunk.Chunk, msg Message, blockCtx BlockContext,
 
 	frame.Phase = PhaseCompute
 
-	payloadData := frame.Message.Payload.Data()
+	var payloadData []byte
+	if frame.Message.Payload != nil {
+		var err error
+		payloadData, err = FlattenChunkPayload(frame.Message.Payload)
+		if err != nil {
+			return frame.finalize(contractstypes.ExitCodeCodeRejected)
+		}
+	}
 
 	if string(payloadData) == "trigger_abort" {
 		frame.Aborted = true
@@ -66,32 +77,32 @@ func (e *Engine) Execute(state *chunk.Chunk, msg Message, blockCtx BlockContext,
 
 	if string(payloadData) == "emit_actions" || string(payloadData) == "emit_with_bounce" {
 		frame.PendingActions = append(frame.PendingActions, Action{
-			Type:		ActionInternal,
-			Target:		"contract_b",
-			Payload:	frame.Message.Payload,
+			Type:    ActionInternal,
+			Target:  "contract_b",
+			Payload: frame.Message.Payload,
 		})
 
 		if string(payloadData) == "emit_with_bounce" {
 			frame.PendingActions = append(frame.PendingActions, Action{
-				Type:		ActionSystem,
-				Target:		"system_notifier",
-				Payload:	frame.Message.Payload,
-				SystemBounce:	true,
+				Type:         ActionSystem,
+				Target:       "system_notifier",
+				Payload:      frame.Message.Payload,
+				SystemBounce: true,
 			})
 		} else {
 			frame.PendingActions = append(frame.PendingActions, Action{
-				Type:		ActionExternal,
-				Target:		"user_a",
-				Payload:	frame.Message.Payload,
+				Type:    ActionExternal,
+				Target:  "user_a",
+				Payload: frame.Message.Payload,
 			})
 		}
 	}
 
 	frame.Trace.Steps = append(frame.Trace.Steps, TraceStep{
-		Instruction:	"LOAD_BAL",
-		StackDelta:	1,
-		GasConsumed:	10,
-		Phase:		PhaseCompute,
+		Instruction: "LOAD_BAL",
+		StackDelta:  1,
+		GasConsumed: 10,
+		Phase:       PhaseCompute,
 	})
 
 	if !frame.ChargeGas(1000) {
@@ -121,11 +132,13 @@ func (f *ExecutionFrame) finalize(exitCode uint32) (*chunk.Chunk, []Action, AVMR
 	f.ExitCode = exitCode
 
 	receipt := AVMReceipt{
-		ExitCode:		f.ExitCode,
-		GasUsed:		f.GasUsed,
-		GasLimit:		f.GasLimit,
-		PhaseGas:		f.PhaseGas,
-		StateRootBefore:	hex.EncodeToString(f.StateSnapshot.Hash()),
+		ExitCode: f.ExitCode,
+		GasUsed:  f.GasUsed,
+		GasLimit: f.GasLimit,
+		PhaseGas: f.PhaseGas,
+	}
+	if f.StateSnapshot != nil {
+		receipt.StateRootBefore = hex.EncodeToString(f.StateSnapshot.Hash())
 	}
 
 	sort.SliceStable(f.PendingActions, func(i, j int) bool {
@@ -151,7 +164,9 @@ func (f *ExecutionFrame) finalize(exitCode uint32) (*chunk.Chunk, []Action, AVMR
 		return f.StateSnapshot, finalActions, receipt, nil
 	}
 
-	receipt.StateRootAfter = hex.EncodeToString(f.WorkingState.Hash())
+	if f.WorkingState != nil {
+		receipt.StateRootAfter = hex.EncodeToString(f.WorkingState.Hash())
+	}
 	receipt.EmittedActionsHash = f.computeActionsHash(f.PendingActions)
 	receipt.ExecutionTraceHash = f.computeTraceHash()
 
@@ -161,7 +176,21 @@ func (f *ExecutionFrame) finalize(exitCode uint32) (*chunk.Chunk, []Action, AVMR
 func (f *ExecutionFrame) computeActionsHash(actions []Action) string {
 	h := sha256.New()
 	for _, a := range actions {
-		h.Write([]byte(fmt.Sprintf("%d:%s:%v", a.Type, a.Target, a.Payload.Hash())))
+		h.Write([]byte{byte(a.Type)})
+		h.Write([]byte(a.Target))
+		if a.Payload != nil {
+			h.Write(a.Payload.Hash())
+		} else {
+			h.Write(make([]byte, 32))
+		}
+		var value [8]byte
+		binary.BigEndian.PutUint64(value[:], a.Value)
+		h.Write(value[:])
+		if a.SystemBounce {
+			h.Write([]byte{1})
+		} else {
+			h.Write([]byte{0})
+		}
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }

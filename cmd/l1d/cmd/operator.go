@@ -13,24 +13,25 @@ import (
 )
 
 const (
-	flagFaucetAmount	= "amount"
-	flagFaucetFees		= "fees"
-	flagFaucetFromKey	= "from-key"
-	flagFaucetFromHome	= "from-home"
+	flagFaucetAmount   = "amount"
+	flagFaucetFees     = "fees"
+	flagFaucetFromKey  = "from-key"
+	flagFaucetFromHome = "from-home"
 )
 
 type operatorCommandPlan struct {
-	Command		string		`json:"command"`
-	Equivalent	[]string	`json:"equivalent_args"`
-	RPCPath		string		`json:"rpc_path,omitempty"`
-	Denom		string		`json:"denom,omitempty"`
-	Notes		[]string	`json:"notes,omitempty"`
+	Command          string                     `json:"command"`
+	Equivalent       []string                   `json:"equivalent_args"`
+	RPCPath          string                     `json:"rpc_path,omitempty"`
+	Denom            string                     `json:"denom,omitempty"`
+	Notes            []string                   `json:"notes,omitempty"`
+	RecipientAddress *addressing.AddressDisplay `json:"recipient_address,omitempty"`
 }
 
 func NewFaucetCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:	"faucet",
-		Short:	"Localnet faucet helpers using genesis-funded test keys",
+		Use:   "faucet",
+		Short: "Localnet faucet helpers using genesis-funded test keys",
 	}
 	cmd.AddCommand(newFaucetSendCmd())
 	return cmd
@@ -38,9 +39,9 @@ func NewFaucetCmd() *cobra.Command {
 
 func newFaucetSendCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:	"send [recipient]",
-		Short:	"Build a localnet faucet transfer command",
-		Args:	cobra.ExactArgs(1),
+		Use:   "send [recipient]",
+		Short: "Build a localnet faucet transfer command",
+		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			recipient := strings.TrimSpace(args[0])
 			if err := addressing.ValidateUserRecipientAddress(recipient); err != nil {
@@ -49,6 +50,10 @@ func newFaucetSendCmd() *cobra.Command {
 			chainID, _ := cmd.Flags().GetString(flags.FlagChainID)
 			if !strings.Contains(chainID, "local") {
 				return fmt.Errorf("faucet refuses non-local chain-id %q", chainID)
+			}
+			recipientDisplay, err := faucetRecipientDisplay(cmd, recipient, chainID)
+			if err != nil {
+				return err
 			}
 			amount, _ := cmd.Flags().GetString(flagFaucetAmount)
 			fees, _ := cmd.Flags().GetString(flagFaucetFees)
@@ -62,7 +67,7 @@ func newFaucetSendCmd() *cobra.Command {
 			fromKey, _ := cmd.Flags().GetString(flagFaucetFromKey)
 			fromHome, _ := cmd.Flags().GetString(flagFaucetFromHome)
 			return writeCommandJSON(cmd, operatorCommandPlan{
-				Command:	"faucet send",
+				Command: "faucet send",
 				Equivalent: []string{
 					"scripts/localnet/fund.ps1",
 					"-ChainId", chainID,
@@ -73,7 +78,8 @@ func newFaucetSendCmd() *cobra.Command {
 					"-Amount", amount,
 					"-Fees", fees,
 				},
-				Denom:	appparams.BaseDenom,
+				Denom:            appparams.BaseDenom,
+				RecipientAddress: &recipientDisplay,
 				Notes: []string{
 					"local-only",
 					"uses normal bank send from genesis-funded localnet key",
@@ -88,14 +94,15 @@ func newFaucetSendCmd() *cobra.Command {
 	cmd.Flags().String(flagFaucetFees, "1000000"+appparams.BaseDenom, "bank send fees")
 	cmd.Flags().String(flagFaucetFromKey, "node0", "localnet key name that funds faucet sends")
 	cmd.Flags().String(flagFaucetFromHome, ".localnet/node0/aetrad", "localnet key home")
+	addAddressRiskFlags(cmd)
 	return cmd
 }
 
 func NewBalancesCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:	"balances [AE-address]",
-		Short:	"Convenience alias for querying naet account balances",
-		Args:	cobra.ExactArgs(1),
+		Use:   "balances [AE-address]",
+		Short: "Convenience alias for querying naet account balances",
+		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			address := strings.TrimSpace(args[0])
 			if err := addressing.ValidateUserAddress("balance address", address); err != nil {
@@ -103,10 +110,10 @@ func NewBalancesCmd() *cobra.Command {
 			}
 			node, _ := cmd.Flags().GetString(flags.FlagNode)
 			return writeCommandJSON(cmd, operatorCommandPlan{
-				Command:	"balances",
-				Equivalent:	[]string{"query", "bank", "balances", address, "--denom", appparams.BaseDenom, "--node", node, "--output", "json"},
-				RPCPath:	"/cosmos.bank.v1beta1.Query/AllBalances",
-				Denom:		appparams.BaseDenom,
+				Command:    "balances",
+				Equivalent: []string{"query", "bank", "balances", address, "--denom", appparams.BaseDenom, "--node", node, "--output", "json"},
+				RPCPath:    "/cosmos.bank.v1beta1.Query/AllBalances",
+				Denom:      appparams.BaseDenom,
 			})
 		},
 	}
@@ -116,16 +123,16 @@ func NewBalancesCmd() *cobra.Command {
 
 func NewValidatorsCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:	"validators",
-		Short:	"Convenience alias for querying active validators",
-		Args:	cobra.NoArgs,
+		Use:   "validators",
+		Short: "Convenience alias for querying active validators",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			node, _ := cmd.Flags().GetString(flags.FlagNode)
 			return writeCommandJSON(cmd, operatorCommandPlan{
-				Command:	"validators",
-				Equivalent:	[]string{"query", "staking", "validators", "--node", node, "--output", "json"},
-				RPCPath:	"/cosmos.staking.v1beta1.Query/Validators",
-				Denom:		appparams.BaseDenom,
+				Command:    "validators",
+				Equivalent: []string{"query", "staking", "validators", "--node", node, "--output", "json"},
+				RPCPath:    "/cosmos.staking.v1beta1.Query/Validators",
+				Denom:      appparams.BaseDenom,
 			})
 		},
 	}
@@ -135,18 +142,18 @@ func NewValidatorsCmd() *cobra.Command {
 
 func NewSystemAddressesCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:	"system-addresses",
-		Short:	"List reserved Aetra system addresses",
-		Args:	cobra.NoArgs,
+		Use:   "system-addresses",
+		Short: "List reserved Aetra system addresses",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return writeCommandJSON(cmd, struct {
-				Command		string				`json:"command"`
-				Count		int				`json:"count"`
-				Addresses	[]addressing.SystemAddress	`json:"addresses"`
+				Command   string                     `json:"command"`
+				Count     int                        `json:"count"`
+				Addresses []addressing.SystemAddress `json:"addresses"`
 			}{
-				Command:	"system-addresses",
-				Count:		len(addressing.AllSystemAddresses()),
-				Addresses:	addressing.AllSystemAddresses(),
+				Command:   "system-addresses",
+				Count:     len(addressing.AllSystemAddresses()),
+				Addresses: addressing.AllSystemAddresses(),
 			})
 		},
 	}
@@ -179,10 +186,10 @@ func NewSystemTxCmd() *cobra.Command {
 }
 
 type systemModuleSpec struct {
-	module	string
-	short	string
-	queries	[]string
-	txs	[]string
+	module  string
+	short   string
+	queries []string
+	txs     []string
 }
 
 func systemModuleSpecs() []systemModuleSpec {
@@ -199,14 +206,14 @@ func systemModuleSpecs() []systemModuleSpec {
 
 func newSystemPlanLeaf(name, kind, module string) *cobra.Command {
 	return &cobra.Command{
-		Use:	name,
-		Short:	fmt.Sprintf("Build %s %s/%s request", kind, module, name),
-		Args:	cobra.ArbitraryArgs,
+		Use:   name,
+		Short: fmt.Sprintf("Build %s %s/%s request", kind, module, name),
+		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return writeCommandJSON(cmd, operatorCommandPlan{
-				Command:	kind + " system " + module + " " + name,
-				Equivalent:	append([]string{kind, module, name}, args...),
-				Notes:		[]string{"system module command surface", "use module proto tx/query service when wired"},
+				Command:    kind + " system " + module + " " + name,
+				Equivalent: append([]string{kind, module, name}, args...),
+				Notes:      []string{"system module command surface", "use module proto tx/query service when wired"},
 			})
 		},
 	}
@@ -245,4 +252,21 @@ func rpcPortHint(node string) string {
 		return "26657"
 	}
 	return strings.TrimRight(node[idx+1:], "/")
+}
+
+func faucetRecipientDisplay(cmd *cobra.Command, recipient string, chainID string) (addressing.AddressDisplay, error) {
+	bookFile, _ := cmd.Flags().GetString(flagAddressBookFile)
+	currentHeight, _ := cmd.Flags().GetUint64(flagAddressCurrentHeight)
+	recentWindow, _ := cmd.Flags().GetUint64(flagAddressRecentWindow)
+	book, err := readAddressBookFile(bookFile)
+	if err != nil {
+		return addressing.AddressDisplay{}, err
+	}
+	return addressing.InspectAddress(recipient, addressing.AddressInspectionContext{
+		ChainID:               chainID,
+		CurrentHeight:         currentHeight,
+		RecentAddressWindow:   recentWindow,
+		AddressBook:           book,
+		IncludeSystemContacts: true,
+	})
 }

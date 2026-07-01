@@ -58,6 +58,10 @@ func normalizeAccount(account Account) Account {
 	account.PubKeys = cloneStrings(account.PubKeys)
 	account.FeatureFlags = cloneStrings(account.FeatureFlags)
 	account.AuthPolicy = account.AuthPolicy.Normalize()
+	if account.AuthPolicy.StepUp != nil {
+		stepUp := account.AuthPolicy.StepUp.Normalize()
+		account.AuthPolicy.StepUp = &stepUp
+	}
 	sort.Strings(account.PubKeys)
 	sort.Strings(account.FeatureFlags)
 	return account
@@ -67,6 +71,10 @@ func cloneAccount(account Account) Account {
 	account.PubKeys = cloneStrings(account.PubKeys)
 	account.FeatureFlags = cloneStrings(account.FeatureFlags)
 	account.AuthPolicy = account.AuthPolicy.Normalize()
+	if account.AuthPolicy.StepUp != nil {
+		stepUp := account.AuthPolicy.StepUp.Normalize()
+		account.AuthPolicy.StepUp = &stepUp
+	}
 	return account
 }
 

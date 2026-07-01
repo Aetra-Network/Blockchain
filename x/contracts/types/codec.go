@@ -14,6 +14,8 @@ func RegisterLegacyAminoCodec(cdc *codec.LegacyAmino) {
 	cdc.RegisterConcrete(&MsgExecuteInternal{}, "l1/contracts/MsgExecuteInternal", nil)
 	cdc.RegisterConcrete(&MsgSendInternalMessage{}, "l1/contracts/MsgSendInternalMessage", nil)
 	cdc.RegisterConcrete(&MsgUpdateContractParams{}, "l1/contracts/MsgUpdateContractParams", nil)
+	cdc.RegisterConcrete(&MsgSubmitSecurityAttestation{}, "l1/contracts/MsgSubmitSecurityAttestation", nil)
+	cdc.RegisterConcrete(&MsgRevokeSecurityAttestation{}, "l1/contracts/MsgRevokeSecurityAttestation", nil)
 }
 
 func RegisterInterfaces(registry codectypes.InterfaceRegistry) {
@@ -25,6 +27,8 @@ func RegisterInterfaces(registry codectypes.InterfaceRegistry) {
 		&MsgExecuteInternal{},
 		&MsgSendInternalMessage{},
 		&MsgUpdateContractParams{},
+		&MsgSubmitSecurityAttestation{},
+		&MsgRevokeSecurityAttestation{},
 	)
 	registry.RegisterImplementations(
 		(*txtypes.MsgResponse)(nil),
@@ -33,5 +37,7 @@ func RegisterInterfaces(registry codectypes.InterfaceRegistry) {
 		&ExecuteContractResponse{},
 		&InternalMessage{},
 		&MsgUpdateContractParamsResponse{},
+		&MsgSubmitSecurityAttestationResponse{},
+		&MsgRevokeSecurityAttestationResponse{},
 	)
 }

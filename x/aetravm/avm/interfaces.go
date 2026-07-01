@@ -10,144 +10,166 @@ import (
 )
 
 const (
-	MaxInterfaceNameLength		= 64
-	MaxInterfaceDescriptionLength	= 256
-	MaxInterfaceBindingTextLength	= 256
-	MaxInterfacePayloadBytes	= 1 << 20
-	MaxInterfaceMethods		= 128
-	MaxInterfaceEvents		= 128
-	MaxInterfaceAsyncHandlers	= 128
-	MaxInterfaceGetMethods		= 128
-	MaxInterfaceBindings		= 128
-	MaxInterfaceFields		= 64
-	MaxInterfaceAliases		= 16
-	MaxInterfaceExamples		= 16
+	MaxInterfaceNameLength        = 64
+	MaxInterfaceDescriptionLength = 256
+	MaxInterfaceBindingTextLength = 256
+	MaxInterfacePayloadBytes      = 1 << 20
+	MaxInterfaceMethods           = 128
+	MaxInterfaceEvents            = 128
+	MaxInterfaceAsyncHandlers     = 128
+	MaxInterfaceGetMethods        = 128
+	MaxInterfaceBindings          = 128
+	MaxInterfaceFields            = 64
+	MaxInterfaceAliases           = 16
+	MaxInterfaceExamples          = 16
 )
 
 type InterfaceValueKind string
 
 const (
-	InterfaceValueBool	InterfaceValueKind	= "bool"
-	InterfaceValueU64	InterfaceValueKind	= "u64"
-	InterfaceValueBytes	InterfaceValueKind	= "bytes"
-	InterfaceValueString	InterfaceValueKind	= "string"
-	InterfaceValueAddress	InterfaceValueKind	= "address"
-	InterfaceValueCoin	InterfaceValueKind	= "coin"
+	InterfaceValueBool    InterfaceValueKind = "bool"
+	InterfaceValueU64     InterfaceValueKind = "u64"
+	InterfaceValueBytes   InterfaceValueKind = "bytes"
+	InterfaceValueString  InterfaceValueKind = "string"
+	InterfaceValueAddress InterfaceValueKind = "address"
+	InterfaceValueCoin    InterfaceValueKind = "coin"
 )
 
 type InterfaceWalletRisk string
 
 const (
-	InterfaceWalletRiskLow		InterfaceWalletRisk	= "low"
-	InterfaceWalletRiskMedium	InterfaceWalletRisk	= "medium"
-	InterfaceWalletRiskHigh		InterfaceWalletRisk	= "high"
-	InterfaceWalletRiskCritical	InterfaceWalletRisk	= "critical"
+	InterfaceWalletRiskLow      InterfaceWalletRisk = "low"
+	InterfaceWalletRiskMedium   InterfaceWalletRisk = "medium"
+	InterfaceWalletRiskHigh     InterfaceWalletRisk = "high"
+	InterfaceWalletRiskCritical InterfaceWalletRisk = "critical"
+)
+
+type InterfaceWalletWarningLevel string
+
+const (
+	InterfaceWalletWarningInfo   InterfaceWalletWarningLevel = "info"
+	InterfaceWalletWarningReview InterfaceWalletWarningLevel = "review"
+	InterfaceWalletWarningWarn   InterfaceWalletWarningLevel = "warn"
+	InterfaceWalletWarningBlock  InterfaceWalletWarningLevel = "block"
+)
+
+type InterfaceWalletApprovalSemantics string
+
+const (
+	InterfaceWalletApprovalGrant   InterfaceWalletApprovalSemantics = "grant"
+	InterfaceWalletApprovalRevoke  InterfaceWalletApprovalSemantics = "revoke"
+	InterfaceWalletApprovalSpend   InterfaceWalletApprovalSemantics = "spend"
+	InterfaceWalletApprovalRequest InterfaceWalletApprovalSemantics = "request"
 )
 
 type InterfaceManifest struct {
-	Name		string
-	Version		uint16
-	Methods		[]InterfaceMethod
-	Events		[]InterfaceEvent
-	AsyncHandlers	[]InterfaceAsyncHandler
-	GetMethods	[]InterfaceGetMethod
-	CLIBindings	[]InterfaceCLIBinding
-	SDKBindings	[]InterfaceSDKBinding
-	WalletActions	[]InterfaceWalletAction
+	Name          string
+	Version       uint16
+	Methods       []InterfaceMethod
+	Events        []InterfaceEvent
+	AsyncHandlers []InterfaceAsyncHandler
+	GetMethods    []InterfaceGetMethod
+	CLIBindings   []InterfaceCLIBinding
+	SDKBindings   []InterfaceSDKBinding
+	WalletActions []InterfaceWalletAction
 }
 
 type InterfaceMethod struct {
-	Name		string
-	Entrypoint	Entrypoint
-	Opcode		uint32
-	Async		bool
-	Params		[]InterfaceParamDescriptor
-	Results		[]InterfaceResultDescriptor
-	Description	string
+	Name        string
+	Entrypoint  Entrypoint
+	Opcode      uint32
+	Async       bool
+	Params      []InterfaceParamDescriptor
+	Results     []InterfaceResultDescriptor
+	Description string
 }
 
 type InterfaceEvent struct {
-	Name	string
-	Opcode	uint32
-	Fields	[]InterfaceParamDescriptor
+	Name   string
+	Opcode uint32
+	Fields []InterfaceParamDescriptor
 }
 
 type InterfaceAsyncHandler struct {
-	Name		string
-	Entrypoint	Entrypoint
-	Opcode		uint32
-	MessageType	string
-	Bounced		bool
-	Idempotent	bool
-	Params		[]InterfaceParamDescriptor
-	Results		[]InterfaceResultDescriptor
-	Description	string
+	Name        string
+	Entrypoint  Entrypoint
+	Opcode      uint32
+	MessageType string
+	Bounced     bool
+	Idempotent  bool
+	Params      []InterfaceParamDescriptor
+	Results     []InterfaceResultDescriptor
+	Description string
 }
 
 type InterfaceGetMethod struct {
-	Name			string
-	Entrypoint		Entrypoint
-	Selector		uint32
-	Params			[]InterfaceParamDescriptor
-	Results			[]InterfaceResultDescriptor
-	Cacheable		bool
-	MaxResponseBytes	uint32
-	Description		string
+	Name             string
+	Entrypoint       Entrypoint
+	Selector         uint32
+	Params           []InterfaceParamDescriptor
+	Results          []InterfaceResultDescriptor
+	Cacheable        bool
+	MaxResponseBytes uint32
+	Description      string
 }
 
 type InterfaceParamDescriptor struct {
-	Name		string
-	Kind		InterfaceValueKind
-	Required	bool
-	MaxBytes	uint32
-	Description	string
+	Name        string
+	Kind        InterfaceValueKind
+	Required    bool
+	MaxBytes    uint32
+	Description string
 }
 
 type InterfaceResultDescriptor = InterfaceParamDescriptor
 
 type InterfaceCLIBinding struct {
-	Method		string
-	Command		string
-	Use		string
-	Aliases		[]string
-	Examples	[]string
-	InputFormat	string
-	OutputFormat	string
+	Method       string
+	Command      string
+	Use          string
+	Aliases      []string
+	Examples     []string
+	InputFormat  string
+	OutputFormat string
 }
 
 type InterfaceSDKBinding struct {
-	Method		string
-	Package		string
-	Service		string
-	MethodName	string
-	RequestType	string
-	ResponseType	string
-	Async		bool
+	Method       string
+	Package      string
+	Service      string
+	MethodName   string
+	RequestType  string
+	ResponseType string
+	Async        bool
 }
 
 type InterfaceWalletAction struct {
-	Method		string
-	Title		string
-	Description	string
-	Category	string
-	Icon		string
-	Risk		InterfaceWalletRisk
-	ConfirmLabel	string
-	Inputs		[]InterfaceParamDescriptor
-	Outputs		[]InterfaceResultDescriptor
+	Method              string
+	Title               string
+	Description         string
+	Category            string
+	Icon                string
+	Risk                InterfaceWalletRisk
+	ConfirmLabel        string
+	WarningLevel        InterfaceWalletWarningLevel
+	ExpectedSideEffects []string
+	FundAccess          bool
+	ApprovalSemantics   InterfaceWalletApprovalSemantics
+	Inputs              []InterfaceParamDescriptor
+	Outputs             []InterfaceResultDescriptor
 }
 
 type InterfaceDeveloperMetadata struct {
-	Name		string
-	Version		uint16
-	MetadataHash	[MetadataHashLength]byte
-	Methods		[]InterfaceMethod
-	Events		[]InterfaceEvent
-	AsyncHandlers	[]InterfaceAsyncHandler
-	GetMethods	[]InterfaceGetMethod
-	CLIBindings	[]InterfaceCLIBinding
-	SDKBindings	[]InterfaceSDKBinding
-	WalletActions	[]InterfaceWalletAction
+	Name          string
+	Version       uint16
+	MetadataHash  [MetadataHashLength]byte
+	Methods       []InterfaceMethod
+	Events        []InterfaceEvent
+	AsyncHandlers []InterfaceAsyncHandler
+	GetMethods    []InterfaceGetMethod
+	CLIBindings   []InterfaceCLIBinding
+	SDKBindings   []InterfaceSDKBinding
+	WalletActions []InterfaceWalletAction
 }
 
 func (m InterfaceManifest) Validate() error {
@@ -321,8 +343,8 @@ func (m InterfaceManifest) Validate() error {
 			return err
 		}
 		for _, descriptor := range []struct {
-			kind	string
-			value	string
+			kind  string
+			value string
 		}{
 			{kind: "interface SDK package", value: binding.Package},
 			{kind: "interface SDK service", value: binding.Service},
@@ -358,6 +380,18 @@ func (m InterfaceManifest) Validate() error {
 		}
 		if !IsValidInterfaceWalletRisk(action.Risk) {
 			return fmt.Errorf("AVM interface wallet action %q has invalid risk %q", method, action.Risk)
+		}
+		if !IsValidInterfaceWalletWarningLevel(action.WarningLevel) {
+			return fmt.Errorf("AVM interface wallet action %q has invalid warning level %q", method, action.WarningLevel)
+		}
+		if !IsValidInterfaceWalletApprovalSemantics(action.ApprovalSemantics) {
+			return fmt.Errorf("AVM interface wallet action %q has invalid approval semantics %q", method, action.ApprovalSemantics)
+		}
+		if err := validateStringList("interface wallet action expected side effect", action.ExpectedSideEffects, MaxInterfaceExamples, MaxInterfaceBindingTextLength); err != nil {
+			return err
+		}
+		if !action.FundAccess && action.ApprovalSemantics == InterfaceWalletApprovalSpend {
+			return fmt.Errorf("AVM interface wallet action %q cannot use spend approval without fund access", method)
 		}
 		if err := validateParamDescriptors("interface wallet input", action.Inputs); err != nil {
 			return err
@@ -451,16 +485,16 @@ func BuildInterfaceDeveloperMetadata(manifest InterfaceManifest) (InterfaceDevel
 	}
 	manifest = canonicalInterfaceManifest(manifest)
 	return InterfaceDeveloperMetadata{
-		Name:		manifest.Name,
-		Version:	manifest.Version,
-		MetadataHash:	hash,
-		Methods:	manifest.Methods,
-		Events:		manifest.Events,
-		AsyncHandlers:	manifest.AsyncHandlers,
-		GetMethods:	manifest.GetMethods,
-		CLIBindings:	manifest.CLIBindings,
-		SDKBindings:	manifest.SDKBindings,
-		WalletActions:	manifest.WalletActions,
+		Name:          manifest.Name,
+		Version:       manifest.Version,
+		MetadataHash:  hash,
+		Methods:       manifest.Methods,
+		Events:        manifest.Events,
+		AsyncHandlers: manifest.AsyncHandlers,
+		GetMethods:    manifest.GetMethods,
+		CLIBindings:   manifest.CLIBindings,
+		SDKBindings:   manifest.SDKBindings,
+		WalletActions: manifest.WalletActions,
 	}, nil
 }
 
@@ -484,6 +518,30 @@ func IsValidInterfaceWalletRisk(risk InterfaceWalletRisk) bool {
 		InterfaceWalletRiskMedium,
 		InterfaceWalletRiskHigh,
 		InterfaceWalletRiskCritical:
+		return true
+	default:
+		return false
+	}
+}
+
+func IsValidInterfaceWalletWarningLevel(level InterfaceWalletWarningLevel) bool {
+	switch level {
+	case InterfaceWalletWarningInfo,
+		InterfaceWalletWarningReview,
+		InterfaceWalletWarningWarn,
+		InterfaceWalletWarningBlock:
+		return true
+	default:
+		return false
+	}
+}
+
+func IsValidInterfaceWalletApprovalSemantics(semantics InterfaceWalletApprovalSemantics) bool {
+	switch semantics {
+	case InterfaceWalletApprovalGrant,
+		InterfaceWalletApprovalRevoke,
+		InterfaceWalletApprovalSpend,
+		InterfaceWalletApprovalRequest:
 		return true
 	default:
 		return false
@@ -769,6 +827,10 @@ func writeWalletAction(buf *bytes.Buffer, action InterfaceWalletAction) {
 	writeString(buf, action.Icon)
 	writeString(buf, string(action.Risk))
 	writeString(buf, action.ConfirmLabel)
+	writeString(buf, string(action.WarningLevel))
+	writeStringList(buf, action.ExpectedSideEffects)
+	writeBool(buf, action.FundAccess)
+	writeString(buf, string(action.ApprovalSemantics))
 	writeParamDescriptors(buf, action.Inputs)
 	writeParamDescriptors(buf, action.Outputs)
 }
@@ -874,6 +936,7 @@ func cloneInterfaceWalletActions(actions []InterfaceWalletAction) []InterfaceWal
 		out[i].Category = strings.TrimSpace(action.Category)
 		out[i].Icon = strings.TrimSpace(action.Icon)
 		out[i].ConfirmLabel = strings.TrimSpace(action.ConfirmLabel)
+		out[i].ExpectedSideEffects = cloneSortedStringList(action.ExpectedSideEffects)
 		out[i].Inputs = cloneParamDescriptors(action.Inputs)
 		out[i].Outputs = cloneResultDescriptors(action.Outputs)
 	}

@@ -11,17 +11,17 @@ import (
 )
 
 const (
-	MaxInitDataSize		uint32	= 1 << 20
-	MaxSaltSize		uint32	= 64
-	MaxDependencyCount	uint32	= 256
-	MaxStateInitSize	uint32	= 2 << 20
-	StateInitABIVersion	uint32	= 1
+	MaxInitDataSize     uint32 = 1 << 20
+	MaxSaltSize         uint32 = 64
+	MaxDependencyCount  uint32 = 256
+	MaxStateInitSize    uint32 = 2 << 20
+	StateInitABIVersion uint32 = 1
 )
 
 type DeployCapFlag uint64
 
 const (
-	DeployCapStorage	DeployCapFlag	= 1 << iota
+	DeployCapStorage DeployCapFlag = 1 << iota
 	DeployCapMessaging
 	DeployCapHostFunc
 	DeployCapQueryOnly
@@ -46,7 +46,7 @@ var AllDeployCapabilities = DeployCapabilityMask{Flags: ^uint64(0)}
 type ContractDeployState uint8
 
 const (
-	ContractNotDeployed	ContractDeployState	= iota
+	ContractNotDeployed ContractDeployState = iota
 	ContractDeployed
 	ContractInitialized
 )
@@ -69,29 +69,29 @@ func (s ContractDeployState) String() string {
 // ---------------
 // Any change in ANY field MUST change StateInitHash and ContractAddress.
 type StateInit struct {
-	ABIVersion		uint32
-	CodeHash		[32]byte
-	InitData		[]byte
-	Salt			[]byte
-	DeployerAddress		string
-	ChainID			string
-	Namespace		string
-	DependencyHashes	[][32]byte
-	InitialStateRoot	*chunk.Chunk
-	InitialBalance		uint64
-	Capabilities		DeployCapabilityMask
+	ABIVersion       uint32
+	CodeHash         [32]byte
+	InitData         []byte
+	Salt             []byte
+	DeployerAddress  string
+	ChainID          string
+	Namespace        string
+	DependencyHashes [][32]byte
+	InitialStateRoot *chunk.Chunk
+	InitialBalance   uint64
+	Capabilities     DeployCapabilityMask
 }
 
 var (
-	ErrZeroDeployer		= errors.New("AVM: deployer address must not be zero/empty")
-	ErrEmptyCodeHash	= errors.New("AVM: code hash must not be empty")
-	ErrInitDataTooLarge	= errors.New("AVM: init data exceeds maximum size")
-	ErrSaltTooLarge		= errors.New("AVM: salt exceeds maximum size")
-	ErrTooManyDeps		= errors.New("AVM: too many dependencies")
-	ErrInvalidABI		= errors.New("AVM: invalid ABI version")
-	ErrEmptyChainID		= errors.New("AVM: chain ID must not be empty")
-	ErrStateInitTooLarge	= errors.New("AVM: StateInit encoded size exceeds maximum")
-	ErrDuplicateDeployment	= errors.New("AVM: duplicate deployment")
+	ErrZeroDeployer        = errors.New("AVM: deployer address must not be zero/empty")
+	ErrEmptyCodeHash       = errors.New("AVM: code hash must not be empty")
+	ErrInitDataTooLarge    = errors.New("AVM: init data exceeds maximum size")
+	ErrSaltTooLarge        = errors.New("AVM: salt exceeds maximum size")
+	ErrTooManyDeps         = errors.New("AVM: too many dependencies")
+	ErrInvalidABI          = errors.New("AVM: invalid ABI version")
+	ErrEmptyChainID        = errors.New("AVM: chain ID must not be empty")
+	ErrStateInitTooLarge   = errors.New("AVM: StateInit encoded size exceeds maximum")
+	ErrDuplicateDeployment = errors.New("AVM: duplicate deployment")
 )
 
 // Validate performs validation before deployment.
@@ -177,12 +177,12 @@ func HashStateInit(si *StateInit) ([32]byte, error) {
 }
 
 type ContractAddress struct {
-	Internal	string
-	External	string
-	rawHash		[32]byte
+	Internal string
+	External string
+	rawHash  [32]byte
 }
 
-func (a ContractAddress) RawHash() [32]byte	{ return a.rawHash }
+func (a ContractAddress) RawHash() [32]byte { return a.rawHash }
 
 func DeriveContractAddress(si *StateInit) (*ContractAddress, error) {
 	if err := si.Validate(); err != nil {
@@ -212,16 +212,16 @@ func DeriveContractAddress(si *StateInit) (*ContractAddress, error) {
 	external := fmt.Sprintf("AE:%s", base58Encode(rawHash[:]))
 
 	return &ContractAddress{
-		Internal:	internal,
-		External:	external,
-		rawHash:	rawHash,
+		Internal: internal,
+		External: external,
+		rawHash:  rawHash,
 	}, nil
 }
 
 type CounterfactualState struct {
-	Address		ContractAddress
-	State		ContractDeployState
-	InitData	*StateInit
+	Address  ContractAddress
+	State    ContractDeployState
+	InitData *StateInit
 }
 
 func QueryContractState(addr ContractAddress, deployed bool, initialized bool) CounterfactualState {
@@ -232,16 +232,16 @@ func QueryContractState(addr ContractAddress, deployed bool, initialized bool) C
 		state = ContractDeployed
 	}
 	return CounterfactualState{
-		Address:	addr,
-		State:		state,
+		Address: addr,
+		State:   state,
 	}
 }
 
 type DeploymentResult struct {
-	Address		ContractAddress
-	StateInitHash	[32]byte
-	State		ContractDeployState
-	Error		error
+	Address       ContractAddress
+	StateInitHash [32]byte
+	State         ContractDeployState
+	Error         error
 }
 
 func DeployContract(si *StateInit, existingAddresses map[string]ContractDeployState) (*DeploymentResult, error) {
@@ -257,9 +257,9 @@ func DeployContract(si *StateInit, existingAddresses map[string]ContractDeploySt
 	if state, ok := existingAddresses[addr.Internal]; ok {
 		if state == ContractDeployed || state == ContractInitialized {
 			return &DeploymentResult{
-				Address:	*addr,
-				State:		state,
-				Error:		ErrDuplicateDeployment,
+				Address: *addr,
+				State:   state,
+				Error:   ErrDuplicateDeployment,
 			}, nil
 		}
 	}
@@ -274,9 +274,9 @@ func DeployContract(si *StateInit, existingAddresses map[string]ContractDeploySt
 	}
 
 	return &DeploymentResult{
-		Address:	*addr,
-		StateInitHash:	stateInitHash,
-		State:		ContractDeployed,
+		Address:       *addr,
+		StateInitHash: stateInitHash,
+		State:         ContractDeployed,
 	}, nil
 }
 
@@ -301,79 +301,127 @@ func ImportStateInit(data []byte) (*StateInit, error) {
 	}
 
 	offset := 0
+	consume := func(n int, label string) ([]byte, error) {
+		if n < 0 {
+			return nil, fmt.Errorf("AVM: invalid StateInit field size for %s", label)
+		}
+		if offset+n > len(data) {
+			return nil, fmt.Errorf("AVM: truncated %s", label)
+		}
+		out := data[offset : offset+n]
+		offset += n
+		return out, nil
+	}
 
-	abiVersion := binary.BigEndian.Uint32(data[offset : offset+4])
-	offset += 4
+	abiBytes, err := consume(4, "ABI version")
+	if err != nil {
+		return nil, err
+	}
+	abiVersion := binary.BigEndian.Uint32(abiBytes)
 
 	var codeHash [32]byte
-	copy(codeHash[:], data[offset:offset+32])
-	offset += 32
+	codeBytes, err := consume(32, "code hash")
+	if err != nil {
+		return nil, err
+	}
+	copy(codeHash[:], codeBytes)
 
-	initDataLen := binary.BigEndian.Uint32(data[offset : offset+4])
-	offset += 4
-	if uint32(len(data)-offset) < initDataLen {
-		return nil, fmt.Errorf("AVM: truncated init data")
+	initDataLenBytes, err := consume(4, "init data length")
+	if err != nil {
+		return nil, err
+	}
+	initDataLen := binary.BigEndian.Uint32(initDataLenBytes)
+	initDataBytes, err := consume(int(initDataLen), "init data")
+	if err != nil {
+		return nil, err
 	}
 	initData := make([]byte, initDataLen)
-	copy(initData, data[offset:offset+int(initDataLen)])
-	offset += int(initDataLen)
+	copy(initData, initDataBytes)
 
-	saltLen := binary.BigEndian.Uint32(data[offset : offset+4])
-	offset += 4
-	if uint32(len(data)-offset) < saltLen {
-		return nil, fmt.Errorf("AVM: truncated salt")
+	saltLenBytes, err := consume(4, "salt length")
+	if err != nil {
+		return nil, err
+	}
+	saltLen := binary.BigEndian.Uint32(saltLenBytes)
+	saltBytes, err := consume(int(saltLen), "salt")
+	if err != nil {
+		return nil, err
 	}
 	salt := make([]byte, saltLen)
-	copy(salt, data[offset:offset+int(saltLen)])
-	offset += int(saltLen)
+	copy(salt, saltBytes)
 
-	deployerLen := binary.BigEndian.Uint32(data[offset : offset+4])
-	offset += 4
-	if uint32(len(data)-offset) < deployerLen {
-		return nil, fmt.Errorf("AVM: truncated deployer address")
+	deployerLenBytes, err := consume(4, "deployer address length")
+	if err != nil {
+		return nil, err
 	}
-	deployer := string(data[offset : offset+int(deployerLen)])
-	offset += int(deployerLen)
-
-	chainIDLen := binary.BigEndian.Uint32(data[offset : offset+4])
-	offset += 4
-	if uint32(len(data)-offset) < chainIDLen {
-		return nil, fmt.Errorf("AVM: truncated chain ID")
+	deployerLen := binary.BigEndian.Uint32(deployerLenBytes)
+	deployerBytes, err := consume(int(deployerLen), "deployer address")
+	if err != nil {
+		return nil, err
 	}
-	chainID := string(data[offset : offset+int(chainIDLen)])
-	offset += int(chainIDLen)
+	deployer := string(deployerBytes)
 
-	nsLen := binary.BigEndian.Uint32(data[offset : offset+4])
-	offset += 4
-	if uint32(len(data)-offset) < nsLen {
-		return nil, fmt.Errorf("AVM: truncated namespace")
+	chainIDLenBytes, err := consume(4, "chain ID length")
+	if err != nil {
+		return nil, err
 	}
-	namespace := string(data[offset : offset+int(nsLen)])
-	offset += int(nsLen)
+	chainIDLen := binary.BigEndian.Uint32(chainIDLenBytes)
+	chainIDBytes, err := consume(int(chainIDLen), "chain ID")
+	if err != nil {
+		return nil, err
+	}
+	chainID := string(chainIDBytes)
 
-	depCount := binary.BigEndian.Uint32(data[offset : offset+4])
-	offset += 4
+	nsLenBytes, err := consume(4, "namespace length")
+	if err != nil {
+		return nil, err
+	}
+	nsLen := binary.BigEndian.Uint32(nsLenBytes)
+	namespaceBytes, err := consume(int(nsLen), "namespace")
+	if err != nil {
+		return nil, err
+	}
+	namespace := string(namespaceBytes)
+
+	depCountBytes, err := consume(4, "dependency count")
+	if err != nil {
+		return nil, err
+	}
+	depCount := binary.BigEndian.Uint32(depCountBytes)
 	if depCount > MaxDependencyCount {
 		return nil, fmt.Errorf("AVM: too many dependencies in import: %d", depCount)
 	}
 	deps := make([][32]byte, depCount)
 	for i := uint32(0); i < depCount; i++ {
-		if len(data)-offset < 32 {
-			return nil, fmt.Errorf("AVM: truncated dependency hash %d", i)
+		depBytes, err := consume(32, fmt.Sprintf("dependency hash %d", i))
+		if err != nil {
+			return nil, err
 		}
-		copy(deps[i][:], data[offset:offset+32])
-		offset += 32
+		copy(deps[i][:], depBytes)
 	}
 
 	var stateRootHash [32]byte
-	copy(stateRootHash[:], data[offset:offset+32])
-	offset += 32
+	stateRootBytes, err := consume(32, "initial state root")
+	if err != nil {
+		return nil, err
+	}
+	copy(stateRootHash[:], stateRootBytes)
 
-	initialBalance := binary.BigEndian.Uint64(data[offset : offset+8])
-	offset += 8
+	initialBalanceBytes, err := consume(8, "initial balance")
+	if err != nil {
+		return nil, err
+	}
+	initialBalance := binary.BigEndian.Uint64(initialBalanceBytes)
 
-	capFlags := binary.BigEndian.Uint64(data[offset : offset+8])
-	offset += 8
+	capFlagsBytes, err := consume(8, "capability flags")
+	if err != nil {
+		return nil, err
+	}
+	capFlags := binary.BigEndian.Uint64(capFlagsBytes)
+
+	if offset != len(data) {
+		return nil, fmt.Errorf("AVM: trailing data in StateInit import")
+	}
 
 	var initialStateRoot *chunk.Chunk
 	if stateRootHash != [32]byte{} {
@@ -384,17 +432,17 @@ func ImportStateInit(data []byte) (*StateInit, error) {
 	}
 
 	return &StateInit{
-		ABIVersion:		abiVersion,
-		CodeHash:		codeHash,
-		InitData:		initData,
-		Salt:			salt,
-		DeployerAddress:	deployer,
-		ChainID:		chainID,
-		Namespace:		namespace,
-		DependencyHashes:	deps,
-		InitialStateRoot:	initialStateRoot,
-		InitialBalance:		initialBalance,
-		Capabilities:		DeployCapabilityMask{Flags: capFlags},
+		ABIVersion:       abiVersion,
+		CodeHash:         codeHash,
+		InitData:         initData,
+		Salt:             salt,
+		DeployerAddress:  deployer,
+		ChainID:          chainID,
+		Namespace:        namespace,
+		DependencyHashes: deps,
+		InitialStateRoot: initialStateRoot,
+		InitialBalance:   initialBalance,
+		Capabilities:     DeployCapabilityMask{Flags: capFlags},
 	}, nil
 }
 

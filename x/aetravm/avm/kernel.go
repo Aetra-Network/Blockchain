@@ -254,9 +254,17 @@ func (q *ActionQueueChunk) Finalize() []byte {
 		h.Write([]byte(a.Target))
 		if a.Payload != nil {
 			h.Write(a.Payload.Hash())
+		} else {
+			h.Write(make([]byte, 32))
 		}
-		h.Write(make([]byte, 8))
-		binary.BigEndian.PutUint64(h.Sum(nil)[:8], a.Value)
+		var value [8]byte
+		binary.BigEndian.PutUint64(value[:], a.Value)
+		h.Write(value[:])
+		if a.SystemBounce {
+			h.Write([]byte{1})
+		} else {
+			h.Write([]byte{0})
+		}
 	}
 	q.Hash = h.Sum(nil)
 	return q.Hash
@@ -1011,6 +1019,9 @@ func ISAGasCost(op ISAOpcode) uint64 {
 //   - All failures produce deterministic receipt
 //   - Only SUCCESS reaches commit phase
 func ExecuteKernelSemantics(frame *KernelExecutionFrame) (*StateRootChunk, *ActionQueueChunk, StructuredExitCode, AVMReceipt, error) {
+	if err := ValidateMessageSemantics(&frame.Message); err != nil {
+		return nil, nil, ExitValidationFailed, AVMReceipt{}, err
+	}
 
 	frame.Phase = PhaseStorage
 	if !frame.ChargeGas(500) {

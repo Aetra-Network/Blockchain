@@ -31,7 +31,7 @@ import (
 type Phase uint8
 
 const (
-	PhaseStorage	Phase	= iota
+	PhaseStorage Phase = iota
 	PhaseCredit
 	PhaseCompute
 	PhaseAction
@@ -59,7 +59,7 @@ func (p Phase) String() string {
 type ActionType uint8
 
 const (
-	ActionInternal	ActionType	= iota
+	ActionInternal ActionType = iota
 	ActionExternal
 	ActionSystem
 	ActionEvent
@@ -69,38 +69,38 @@ const (
 type MessageType uint8
 
 const (
-	MessageExternal	MessageType	= iota
+	MessageExternal MessageType = iota
 	MessageInternal
 	MessageSystem
 )
 
 // Message represents an input to the AVM state transition.
 type Message struct {
-	Type		MessageType
-	Sender		string
-	Target		string
-	Value		uint64
-	GasLimit	uint64
-	Payload		*chunk.Chunk
-	Height		int64
-	Hash		[]byte
+	Type     MessageType
+	Sender   string
+	Target   string
+	Value    uint64
+	GasLimit uint64
+	Payload  *chunk.Chunk
+	Height   int64
+	Hash     []byte
 }
 
 // Action represents an output generated during execution.
 type Action struct {
-	Type		ActionType
-	Target		string
-	Payload		*chunk.Chunk
-	Value		uint64
-	SystemBounce	bool
+	Type         ActionType
+	Target       string
+	Payload      *chunk.Chunk
+	Value        uint64
+	SystemBounce bool
 }
 
 // TraceStep records a single step of VM execution.
 type TraceStep struct {
-	Instruction	string
-	StackDelta	int
-	GasConsumed	uint64
-	Phase		Phase
+	Instruction string
+	StackDelta  int
+	GasConsumed uint64
+	Phase       Phase
 }
 
 // ExecutionTrace holds the deterministic trace of execution.
@@ -112,69 +112,69 @@ type ExecutionTrace struct {
 type HostFunctionClass uint8
 
 const (
-	ClassPure	HostFunctionClass	= iota
+	ClassPure HostFunctionClass = iota
 	ClassEffectful
 )
 
 // CapabilityMask defines the set of allowed host function groups.
 type CapabilityMask struct {
-	Crypto		bool
-	Chain		bool
-	Messaging	bool
-	Storage		bool
+	Crypto    bool
+	Chain     bool
+	Messaging bool
+	Storage   bool
 }
 
 var AllowAllCapabilities = CapabilityMask{
-	Crypto:		true,
-	Chain:		true,
-	Messaging:	true,
-	Storage:	true,
+	Crypto:    true,
+	Chain:     true,
+	Messaging: true,
+	Storage:   true,
 }
 
 // BlockContext carries immutable consensus-based information.
 type BlockContext struct {
-	Height		int64
-	ChainID		string
-	BlockHash	[]byte
-	Timestamp	int64
-	Entropy		[]byte
+	Height    int64
+	ChainID   string
+	BlockHash []byte
+	Timestamp int64
+	Entropy   []byte
 }
 
 // ExecutionFrame holds the context and state for a single message execution.
 type ExecutionFrame struct {
-	Phase		Phase
-	Message		Message
-	StateSnapshot	*chunk.Chunk
-	WorkingState	*chunk.Chunk
-	Stack		[]types.Value
-	PendingActions	[]Action
-	Trace		ExecutionTrace
+	Phase          Phase
+	Message        Message
+	StateSnapshot  *chunk.Chunk
+	WorkingState   *chunk.Chunk
+	Stack          []types.Value
+	PendingActions []Action
+	Trace          ExecutionTrace
 
 	// New fields for sandboxing and security
-	Capabilities	CapabilityMask
-	BlockCtx	BlockContext
+	Capabilities CapabilityMask
+	BlockCtx     BlockContext
 
-	GasLimit	uint64
-	GasUsed		uint64
-	PhaseGas	map[Phase]uint64
-	ExitCode	uint32
-	Aborted		bool
+	GasLimit uint64
+	GasUsed  uint64
+	PhaseGas map[Phase]uint64
+	ExitCode uint32
+	Aborted  bool
 
-	ActionBudget	uint32
-	ActionsUsed	uint32
+	ActionBudget uint32
+	ActionsUsed  uint32
 
-	HostCallTrace	[]HostCallRecord
+	HostCallTrace []HostCallRecord
 }
 
 func NewExecutionFrame(state *chunk.Chunk, msg Message, maxActions uint32) *ExecutionFrame {
 	return &ExecutionFrame{
-		Phase:		PhaseStorage,
-		Message:	msg,
-		StateSnapshot:	state,
-		WorkingState:	state,
-		GasLimit:	msg.GasLimit,
-		PhaseGas:	make(map[Phase]uint64),
-		ActionBudget:	maxActions,
+		Phase:         PhaseStorage,
+		Message:       msg,
+		StateSnapshot: state,
+		WorkingState:  state,
+		GasLimit:      msg.GasLimit,
+		PhaseGas:      make(map[Phase]uint64),
+		ActionBudget:  maxActions,
 	}
 }
 
@@ -195,14 +195,14 @@ func (f *ExecutionFrame) ChargeGas(amount uint64) bool {
 
 // AVMReceipt matches the formal receipt structure requirements.
 type AVMReceipt struct {
-	ExitCode		uint32
-	GasUsed			uint64
-	GasLimit		uint64
-	PhaseGas		map[Phase]uint64
-	StateRootBefore		string
-	StateRootAfter		string
-	EmittedActionsHash	string
-	ExecutionTraceHash	string
+	ExitCode           uint32
+	GasUsed            uint64
+	GasLimit           uint64
+	PhaseGas           map[Phase]uint64
+	StateRootBefore    string
+	StateRootAfter     string
+	EmittedActionsHash string
+	ExecutionTraceHash string
 }
 
 // QueryFrame holds the context for a read-only query execution.
@@ -213,11 +213,11 @@ type AVMReceipt struct {
 //   - Only read-only execution frame is created
 //   - Effectful host functions are forbidden
 type QueryFrame struct {
-	Snapshot	QuerySnapshot
-	Stack		[]types.Value
-	GasLimit	uint64
-	GasUsed		uint64
-	ExitCode	uint32
+	Snapshot QuerySnapshot
+	Stack    []types.Value
+	GasLimit uint64
+	GasUsed  uint64
+	ExitCode uint32
 }
 
 // QuerySnapshot represents an immutable execution snapshot for get methods.
@@ -230,9 +230,9 @@ type QueryFrame struct {
 //   - ContractCodeChunk is frozen at deployment time
 //   - Snapshot is a pure value — no references to mutable state
 type QuerySnapshot struct {
-	StateRootChunk	*chunk.Chunk
-	Code		[]byte
-	BlockCtx	BlockContext
+	StateRootChunk *chunk.Chunk
+	Code           []byte
+	BlockCtx       BlockContext
 }
 
 // AsQueryExecutionDomainSnapshot converts a QuerySnapshot to a read-only execution domain.
@@ -243,29 +243,29 @@ func (s QuerySnapshot) AsQueryExecutionDomainSnapshot() QuerySnapshot {
 
 // QueryReceipt matches the formal query receipt structure.
 type QueryReceipt struct {
-	ExitCode	uint32
-	GasUsed		uint64
-	Response	[]byte
-	TraceHash	string
+	ExitCode  uint32
+	GasUsed   uint64
+	Response  []byte
+	TraceHash string
 }
 
 // FailureKind classifies execution failures for error handling.
 type FailureKind uint8
 
 const (
-	FailureNone		FailureKind	= iota	// success
-	FailureRecoverable				// retryable (e.g. queue congestion)
-	FailureNonRecoverable				// contract abort, no retry
-	FailureSystemFatal				// node-level error, halt processing
+	FailureNone           FailureKind = iota // success
+	FailureRecoverable                       // retryable (e.g. queue congestion)
+	FailureNonRecoverable                    // contract abort, no retry
+	FailureSystemFatal                       // node-level error, halt processing
 )
 
 // HostCallRecord captures an auditable host function invocation.
 type HostCallRecord struct {
-	FunctionID	uint32
-	InputHash	string
-	OutputHash	string
-	GasUsed		uint64
-	Phase		Phase
+	FunctionID uint32
+	InputHash  string
+	OutputHash string
+	GasUsed    uint64
+	Phase      Phase
 }
 
 // SortMessagesByDeterministicOrder sorts messages for deterministic execution.
@@ -338,14 +338,22 @@ func ApplyEffectfulActions(frame *ExecutionFrame) error {
 //   - Messages must be stored as Chunk objects before emission
 //   - Message emission is NOT execution, it is a queued effect
 func ValidateMessageSemantics(msg *Message) error {
-	if msg.Payload == nil {
-		return errors.New("message payload cannot be nil")
+	if msg == nil {
+		return errors.New("message must not be nil")
 	}
 
-	if msg.Type == MessageInternal {
+	switch msg.Type {
+	case MessageExternal, MessageInternal, MessageSystem:
+	default:
+		return fmt.Errorf("invalid message type %d", msg.Type)
+	}
 
-		if len(msg.Hash) == 0 {
-			return errors.New("internal message must have content hash")
+	if msg.Payload != nil {
+		if msg.Payload.TypeTag() == chunk.TypePruned {
+			return errors.New("message payload cannot use pruned chunk")
+		}
+		if _, err := FlattenChunkPayload(msg.Payload); err != nil {
+			return err
 		}
 	}
 

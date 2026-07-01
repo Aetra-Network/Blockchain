@@ -153,8 +153,14 @@ Required AVM toolchain components:
 - state snapshot inspector
 
 The current pure Go package includes the verifier, deterministic encoder and
-decoder, local runner, storage snapshot encoder, and async handler adapter.
-Disassembler, gas profiler CLI, and snapshot inspector CLI remain future work.
+decoder, local runner, storage snapshot encoder, async handler adapter,
+disassembler, and gas profiler. The developer CLI exposes `avm compile`,
+`avm inspect`, `avm disasm`, `avm gas`, `avm test`, `avm selectors`, and
+`avm lsp` as non-production tooling.
+
+Developer tooling is not the same as production wiring: the runtime is still
+gated until keeper wiring, adversarial tests, export/import, and release gates
+are complete.
 
 ## Keeper Gate
 
@@ -194,6 +200,17 @@ The current package tests cover:
 - bounce failed message
 - preserve state across runner calls
 - preserve queue across export/import
+
+## Language And ABI References
+
+The source-language and ABI specs live alongside this document:
+
+- [language-spec.md](language-spec.md)
+- [abi-spec.md](abi-spec.md)
+- [serialization-spec.md](serialization-spec.md)
+- [message-model.md](message-model.md)
+- [storage-model.md](storage-model.md)
+- [selector-registry.md](selector-registry.md)
 
 Fuzz tests, differential tests, keeper tests, and adversarial audit are required
 before AVM can be enabled beyond the executable specification.

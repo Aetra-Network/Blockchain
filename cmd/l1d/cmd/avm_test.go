@@ -7,6 +7,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 
 	sdkmath "cosmossdk.io/math"
@@ -20,13 +22,22 @@ import (
 
 func TestAVMCLICommandConstruction(t *testing.T) {
 	for _, tc := range []struct {
-		name	string
-		root	*cobraCommandShim
-		path	[]string
+		name string
+		root *cobraCommandShim
+		path []string
 	}{
 		{name: "tx store-code", root: shimCommand(NewAVMTxCmd()), path: []string{"store-code"}},
 		{name: "tx deploy", root: shimCommand(NewAVMTxCmd()), path: []string{"deploy"}},
 		{name: "tx execute", root: shimCommand(NewAVMTxCmd()), path: []string{"execute"}},
+		{name: "avm compile", root: shimCommand(NewAVMCmd()), path: []string{"compile"}},
+		{name: "avm fmt", root: shimCommand(NewAVMCmd()), path: []string{"fmt"}},
+		{name: "avm lint", root: shimCommand(NewAVMCmd()), path: []string{"lint"}},
+		{name: "avm disasm", root: shimCommand(NewAVMCmd()), path: []string{"disasm"}},
+		{name: "avm gas", root: shimCommand(NewAVMCmd()), path: []string{"gas"}},
+		{name: "avm inspect", root: shimCommand(NewAVMCmd()), path: []string{"inspect"}},
+		{name: "avm test", root: shimCommand(NewAVMCmd()), path: []string{"test"}},
+		{name: "avm selectors", root: shimCommand(NewAVMCmd()), path: []string{"selectors"}},
+		{name: "avm lsp", root: shimCommand(NewAVMCmd()), path: []string{"lsp"}},
 		{name: "query code", root: shimCommand(NewAVMQueryCmd()), path: []string{"code"}},
 		{name: "query contract", root: shimCommand(NewAVMQueryCmd()), path: []string{"contract"}},
 		{name: "query storage", root: shimCommand(NewAVMQueryCmd()), path: []string{"storage"}},
@@ -69,19 +80,19 @@ func TestAVMCLIE2ESmokeDeployExecuteQuery(t *testing.T) {
 	)
 	require.NoError(t, err)
 	var deploy struct {
-		Service	string	`json:"service"`
-		Method	string	`json:"method"`
-		TypeURL	string	`json:"type_url"`
-		Request	struct {
-			Creator		string	`json:"creator"`
-			CodeID		string	`json:"code_id"`
-			InitPayload	string	`json:"init_payload_base64"`
-			Height		uint64	`json:"height"`
-		}	`json:"request"`
-		Expected	struct {
-			ContractAddressUser	string	`json:"contract_address_user"`
-			ContractAddressRaw	string	`json:"contract_address_raw"`
-		}	`json:"expected_response_fields"`
+		Service string `json:"service"`
+		Method  string `json:"method"`
+		TypeURL string `json:"type_url"`
+		Request struct {
+			Creator     string `json:"creator"`
+			CodeID      string `json:"code_id"`
+			InitPayload string `json:"init_payload_base64"`
+			Height      uint64 `json:"height"`
+		} `json:"request"`
+		Expected struct {
+			ContractAddressUser string `json:"contract_address_user"`
+			ContractAddressRaw  string `json:"contract_address_raw"`
+		} `json:"expected_response_fields"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(deployOut), &deploy), deployOut)
 	require.Equal(t, "l1.contracts.v1.Msg", deploy.Service)
@@ -121,15 +132,62 @@ func TestAVMCLIE2ESmokeDeployExecuteQuery(t *testing.T) {
 	require.Contains(t, storageOut, `"limit": 5`)
 }
 
+func TestAVMCLIToolingArtifactsAndSmokeTest(t *testing.T) {
+	sourcePath := filepath.Clean(filepath.Join("..", "..", "..", "examples", "avm", "treasury.avm"))
+	compileDir := t.TempDir()
+
+	compileOut, err := executeAVMCommand(NewAVMCmd(), "compile", sourcePath, "--out", compileDir)
+	require.NoError(t, err, compileOut)
+	require.Contains(t, compileOut, `"module_hash"`)
+	for _, name := range []string{
+		"module.bin",
+		"module.chunk",
+		"interface.json",
+		"stateinit.json",
+		"storage-layout.json",
+		"selector-registry.json",
+		"codecs.json",
+		"diagnostics.json",
+		"ir.json",
+		"dependency-lock.json",
+	} {
+		_, statErr := os.Stat(filepath.Join(compileDir, name))
+		require.NoErrorf(t, statErr, "missing compile artifact %s", name)
+	}
+
+	disasmOut, err := executeAVMCommand(NewAVMCmd(), "disasm", filepath.Join(compileDir, "module.bin"))
+	require.NoError(t, err, disasmOut)
+	require.Contains(t, disasmOut, `"module_hash"`)
+	require.Contains(t, disasmOut, `"code"`)
+
+	gasOut, err := executeAVMCommand(NewAVMCmd(), "gas", filepath.Join(compileDir, "module.bin"))
+	require.NoError(t, err, gasOut)
+	require.Contains(t, gasOut, `"gas_total"`)
+	require.Contains(t, gasOut, `"gas_schedule"`)
+
+	inspectOut, err := executeAVMCommand(NewAVMCmd(), "inspect", sourcePath)
+	require.NoError(t, err, inspectOut)
+	require.Contains(t, inspectOut, `"storage_layout"`)
+	require.Contains(t, inspectOut, `"selectors"`)
+
+	testDir := t.TempDir()
+	testOut, err := executeAVMCommand(NewAVMCmd(), "test", sourcePath, "--out", testDir)
+	require.NoError(t, err, testOut)
+	require.Contains(t, testOut, `"passed": true`)
+	require.Contains(t, testOut, `"executions"`)
+	_, statErr := os.Stat(filepath.Join(testDir, "test-report.json"))
+	require.NoError(t, statErr)
+}
+
 func TestAVMCLIDecodeReceiptStableJSON(t *testing.T) {
 	receipt := async.ExecutionReceipt{
-		Sequence:	7,
-		Opcode:		99,
-		QueryID:	42,
-		ResultCode:	async.ResultOK,
-		GasUsed:	1234,
-		StorageFeeNaet:	sdkmath.NewInt(5),
-		ForwardFeeNaet:	sdkmath.NewInt(3),
+		Sequence:       7,
+		Opcode:         99,
+		QueryID:        42,
+		ResultCode:     async.ResultOK,
+		GasUsed:        1234,
+		StorageFeeNaet: sdkmath.NewInt(5),
+		ForwardFeeNaet: sdkmath.NewInt(3),
 	}
 	bz, err := json.Marshal(receipt)
 	require.NoError(t, err)
@@ -141,12 +199,12 @@ func TestAVMCLIDecodeReceiptStableJSON(t *testing.T) {
 	require.Equal(t, first, second)
 
 	var decoded struct {
-		ReceiptID	string	`json:"receipt_id"`
-		ExitCode	uint32	`json:"exit_code"`
-		GasUsed		uint64	`json:"gas_used"`
-		StorageFeeNaet	string	`json:"storage_fee_naet"`
-		ForwardFeeNaet	string	`json:"forward_fee_naet"`
-		RetryScheduled	bool	`json:"retry_scheduled"`
+		ReceiptID      string `json:"receipt_id"`
+		ExitCode       uint32 `json:"exit_code"`
+		GasUsed        uint64 `json:"gas_used"`
+		StorageFeeNaet string `json:"storage_fee_naet"`
+		ForwardFeeNaet string `json:"forward_fee_naet"`
+		RetryScheduled bool   `json:"retry_scheduled"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(first), &decoded), first)
 	require.NotEmpty(t, decoded.ReceiptID)
@@ -162,9 +220,9 @@ func TestAVMCLIEncodeMessageCanonicalizesJSON(t *testing.T) {
 	require.NoError(t, err)
 
 	var decoded struct {
-		BodyBase64	string	`json:"body_base64"`
-		Opcode		uint32	`json:"opcode"`
-		QueryID		uint64	`json:"query_id"`
+		BodyBase64 string `json:"body_base64"`
+		Opcode     uint32 `json:"opcode"`
+		QueryID    uint64 `json:"query_id"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(out), &decoded), out)
 	body, err := base64.StdEncoding.DecodeString(decoded.BodyBase64)
