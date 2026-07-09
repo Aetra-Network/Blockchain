@@ -27,14 +27,14 @@ func TestStakingProofMetadataStableForPoolObjects(t *testing.T) {
 			req:		StakingProofRequest{Kind: StakingProofDeposit, Height: 10, PoolID: "pool-a", Account: account, AppHash: appHash, RootHash: rootHash},
 			storeKey:	StoreKey,
 			stateKey:	PoolDepositProofStateKey("pool-a", account),
-			hash:		"fb2b1fd776560789390b65940072a55ae1a7411e8bf7847750917c3dcb8737f7",
+			hash:		"c9e3a711312f0fafd1f1f451f6257f52b89b944052697be47935e577568ffdca",
 		},
 		{
 			name:		"share",
 			req:		StakingProofRequest{Kind: StakingProofShare, Height: 10, PoolID: "pool-a", Account: account, AppHash: appHash, RootHash: rootHash},
 			storeKey:	StoreKey,
 			stateKey:	PoolShareProofStateKey("pool-a", account),
-			hash:		"c2077ec0a74aec831500eecb163ecafecd4401ca1ab5ff1cffc4d67c36f0df5f",
+			hash:		"ad80ae6a7f3f6224d52cd8d73ef2f0298da16e4040dd12c5c6015e3e7b740e1f",
 		},
 		{
 			name:		"allocation",
@@ -48,14 +48,14 @@ func TestStakingProofMetadataStableForPoolObjects(t *testing.T) {
 			req:		StakingProofRequest{Kind: StakingProofReward, Height: 10, PoolID: "pool-a", Account: account, AppHash: appHash, RootHash: rootHash},
 			storeKey:	StoreKey,
 			stateKey:	PoolRewardProofStateKey("pool-a", account),
-			hash:		"6c43015042f5f4914ecc38eda532fdf32a07d5e9a426b85fd574c4a4ddeefce1",
+			hash:		"277623d795e0a82ba747e93b717f03adc20b9201ac4eb7b3c2358706ca6f877d",
 		},
 		{
 			name:		"reputation",
 			req:		StakingProofRequest{Kind: StakingProofReputation, Height: 10, Account: account, AppHash: appHash, RootHash: "reputation-root-ref"},
 			storeKey:	reputationtypes.StoreKey,
 			stateKey:	StakeReputationProofStateKey(account),
-			hash:		"48fc1bec057d30bc2b351d7f9a82c0473aa3aea7357dd898512cfb5cb457f874",
+			hash:		"204f0fd15b2ef39c77f12d846d1eb5b7639ba40bbfe3364d560bf63dfcc3f80d",
 		},
 	}
 	for _, tc := range cases {

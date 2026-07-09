@@ -37,38 +37,38 @@ type State struct {
 }
 
 type CodeRecord struct {
-	CodeID    string
-	CodeHash  string
-	CodeBytes uint64
-	Bytecode  []byte
-	Owner     string
+	CodeID    string `protobuf:"bytes,1,opt,name=code_id,json=codeId,proto3" json:"code_id,omitempty"`
+	CodeHash  string `protobuf:"bytes,2,opt,name=code_hash,json=codeHash,proto3" json:"code_hash,omitempty"`
+	CodeBytes uint64 `protobuf:"varint,3,opt,name=code_bytes,json=codeBytes,proto3" json:"code_bytes,omitempty"`
+	Bytecode  []byte `protobuf:"bytes,4,opt,name=bytecode,proto3" json:"bytecode,omitempty"`
+	Owner     string `protobuf:"bytes,5,opt,name=owner,proto3" json:"owner,omitempty"`
 }
 
 type Contract struct {
-	AddressUser             string
-	AddressRaw              string
-	CodeID                  string
-	CodeHash                string
-	StateInitHash           string
-	StateInit               StateInit
-	Creator                 string
-	Owner                   string
-	Admin                   string
-	Upgradeable             bool
-	UpgradesDisabled        bool
-	SystemOwned             bool
-	StorageSchemaVersion    uint64
-	InitMsg                 []byte
-	Data                    []byte
-	Balance                 uint64
-	StateRoot               string
-	Status                  string
-	StorageBytes            uint64
-	LastStorageChargeHeight uint64
-	StorageRentDebt         uint64
-	LogicalTime             uint64
-	CreatedHeight           uint64
-	UpdatedHeight           uint64
+	AddressUser             string    `protobuf:"bytes,1,opt,name=address_user,json=addressUser,proto3" json:"address_user,omitempty"`
+	AddressRaw              string    `protobuf:"bytes,2,opt,name=address_raw,json=addressRaw,proto3" json:"address_raw,omitempty"`
+	CodeID                  string    `protobuf:"bytes,3,opt,name=code_id,json=codeId,proto3" json:"code_id,omitempty"`
+	CodeHash                string    `protobuf:"bytes,4,opt,name=code_hash,json=codeHash,proto3" json:"code_hash,omitempty"`
+	StateInitHash           string    `protobuf:"bytes,5,opt,name=state_init_hash,json=stateInitHash,proto3" json:"state_init_hash,omitempty"`
+	StateInit               StateInit `protobuf:"bytes,6,opt,name=state_init,json=stateInit,proto3" json:"state_init"`
+	Creator                 string    `protobuf:"bytes,7,opt,name=creator,proto3" json:"creator,omitempty"`
+	Owner                   string    `protobuf:"bytes,8,opt,name=owner,proto3" json:"owner,omitempty"`
+	Admin                   string    `protobuf:"bytes,9,opt,name=admin,proto3" json:"admin,omitempty"`
+	Upgradeable             bool      `protobuf:"varint,10,opt,name=upgradeable,proto3" json:"upgradeable,omitempty"`
+	UpgradesDisabled        bool      `protobuf:"varint,11,opt,name=upgrades_disabled,json=upgradesDisabled,proto3" json:"upgrades_disabled,omitempty"`
+	SystemOwned             bool      `protobuf:"varint,12,opt,name=system_owned,json=systemOwned,proto3" json:"system_owned,omitempty"`
+	StorageSchemaVersion    uint64    `protobuf:"varint,13,opt,name=storage_schema_version,json=storageSchemaVersion,proto3" json:"storage_schema_version,omitempty"`
+	InitMsg                 []byte    `protobuf:"bytes,14,opt,name=init_msg,json=initMsg,proto3" json:"init_msg,omitempty"`
+	Data                    []byte    `protobuf:"bytes,15,opt,name=data,proto3" json:"data,omitempty"`
+	Balance                 uint64    `protobuf:"varint,16,opt,name=balance,proto3" json:"balance,omitempty"`
+	StateRoot               string    `protobuf:"bytes,17,opt,name=state_root,json=stateRoot,proto3" json:"state_root,omitempty"`
+	Status                  string    `protobuf:"bytes,18,opt,name=status,proto3" json:"status,omitempty"`
+	StorageBytes            uint64    `protobuf:"varint,19,opt,name=storage_bytes,json=storageBytes,proto3" json:"storage_bytes,omitempty"`
+	LastStorageChargeHeight uint64    `protobuf:"varint,20,opt,name=last_storage_charge_height,json=lastStorageChargeHeight,proto3" json:"last_storage_charge_height,omitempty"`
+	StorageRentDebt         uint64    `protobuf:"varint,21,opt,name=storage_rent_debt,json=storageRentDebt,proto3" json:"storage_rent_debt,omitempty"`
+	LogicalTime             uint64    `protobuf:"varint,22,opt,name=logical_time,json=logicalTime,proto3" json:"logical_time,omitempty"`
+	CreatedHeight           uint64    `protobuf:"varint,23,opt,name=created_height,json=createdHeight,proto3" json:"created_height,omitempty"`
+	UpdatedHeight           uint64    `protobuf:"varint,24,opt,name=updated_height,json=updatedHeight,proto3" json:"updated_height,omitempty"`
 }
 
 type ContractCapability struct {
@@ -80,19 +80,20 @@ type ContractCapability struct {
 }
 
 type InternalMessage struct {
-	SourceContractUser string
-	DestinationAccount string
-	Funds              uint64
-	Opcode             uint32
-	QueryID            uint64
-	Body               []byte
-	Bounce             bool
-	Deadline           uint64
-	GasLimit           uint64
-	LogicalTime        uint64
-	MessageID          string
-	Refunded           bool
-	Height             uint64
+	SourceContractUser string     `protobuf:"bytes,1,opt,name=source_contract_user,json=sourceContractUser,proto3" json:"source_contract_user,omitempty"`
+	DestinationAccount string     `protobuf:"bytes,2,opt,name=destination_account,json=destinationAccount,proto3" json:"destination_account,omitempty"`
+	Funds              uint64     `protobuf:"varint,3,opt,name=funds,proto3" json:"funds,omitempty"`
+	Opcode             uint32     `protobuf:"varint,4,opt,name=opcode,proto3" json:"opcode,omitempty"`
+	QueryID            uint64     `protobuf:"varint,5,opt,name=query_id,json=queryId,proto3" json:"query_id,omitempty"`
+	Body               []byte     `protobuf:"bytes,6,opt,name=body,proto3" json:"body,omitempty"`
+	StateInit          *StateInit `protobuf:"bytes,7,opt,name=state_init,json=stateInit,proto3" json:"state_init,omitempty"`
+	Bounce             bool       `protobuf:"varint,8,opt,name=bounce,proto3" json:"bounce,omitempty"`
+	Deadline           uint64     `protobuf:"varint,9,opt,name=deadline,proto3" json:"deadline,omitempty"`
+	GasLimit           uint64     `protobuf:"varint,10,opt,name=gas_limit,json=gasLimit,proto3" json:"gas_limit,omitempty"`
+	LogicalTime        uint64     `protobuf:"varint,11,opt,name=logical_time,json=logicalTime,proto3" json:"logical_time,omitempty"`
+	MessageID          string     `protobuf:"bytes,12,opt,name=message_id,json=messageId,proto3" json:"message_id,omitempty"`
+	Refunded           bool       `protobuf:"varint,13,opt,name=refunded,proto3" json:"refunded,omitempty"`
+	Height             uint64     `protobuf:"varint,14,opt,name=height,proto3" json:"height,omitempty"`
 }
 
 type AssetOwnershipRecord struct {
@@ -111,21 +112,21 @@ type NativeStakingInjectionRecord struct {
 }
 
 type ContractStorageEntry struct {
-	ContractAddress string
-	Key             []byte
-	Value           []byte
+	ContractAddress string `protobuf:"bytes,1,opt,name=contract_address,json=contractAddress,proto3" json:"contract_address,omitempty"`
+	Key             []byte `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
+	Value           []byte `protobuf:"bytes,3,opt,name=value,proto3" json:"value,omitempty"`
 }
 
 type ContractReceipt struct {
-	ReceiptID       string
-	ContractAddress string
-	Actor           string
-	Operation       string
-	ExitCode        uint32
-	Amount          uint64
-	GasUsed         uint64
-	LogicalTime     uint64
-	Height          uint64
+	ReceiptID       string `protobuf:"bytes,1,opt,name=receipt_id,json=receiptId,proto3" json:"receipt_id,omitempty"`
+	ContractAddress string `protobuf:"bytes,2,opt,name=contract_address,json=contractAddress,proto3" json:"contract_address,omitempty"`
+	Actor           string `protobuf:"bytes,3,opt,name=actor,proto3" json:"actor,omitempty"`
+	Operation       string `protobuf:"bytes,4,opt,name=operation,proto3" json:"operation,omitempty"`
+	ExitCode        uint32 `protobuf:"varint,5,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"`
+	Amount          uint64 `protobuf:"varint,6,opt,name=amount,proto3" json:"amount,omitempty"`
+	GasUsed         uint64 `protobuf:"varint,7,opt,name=gas_used,json=gasUsed,proto3" json:"gas_used,omitempty"`
+	LogicalTime     uint64 `protobuf:"varint,8,opt,name=logical_time,json=logicalTime,proto3" json:"logical_time,omitempty"`
+	Height          uint64 `protobuf:"varint,9,opt,name=height,proto3" json:"height,omitempty"`
 }
 
 type MsgInstantiateContract struct {
@@ -146,12 +147,12 @@ type MsgInstantiateContract struct {
 }
 
 type InstantiateContractResponse struct {
-	ContractAddressUser string
-	ContractAddressRaw  string
-	Owner               string
-	Admin               string
-	Balance             uint64
-	Events              []ContractEvent
+	ContractAddressUser string          `protobuf:"bytes,1,opt,name=contract_address_user,json=contractAddressUser,proto3" json:"contract_address_user,omitempty"`
+	ContractAddressRaw  string          `protobuf:"bytes,2,opt,name=contract_address_raw,json=contractAddressRaw,proto3" json:"contract_address_raw,omitempty"`
+	Owner               string          `protobuf:"bytes,3,opt,name=owner,proto3" json:"owner,omitempty"`
+	Admin               string          `protobuf:"bytes,4,opt,name=admin,proto3" json:"admin,omitempty"`
+	Balance             uint64          `protobuf:"varint,5,opt,name=balance,proto3" json:"balance,omitempty"`
+	Events              []ContractEvent `protobuf:"bytes,6,rep,name=events,proto3" json:"events"`
 }
 
 type MsgExecuteContract struct {
@@ -163,10 +164,10 @@ type MsgExecuteContract struct {
 }
 
 type ExecuteContractResponse struct {
-	ContractAddressUser string
-	Owner               string
-	Balance             uint64
-	Events              []ContractEvent
+	ContractAddressUser string          `protobuf:"bytes,1,opt,name=contract_address_user,json=contractAddressUser,proto3" json:"contract_address_user,omitempty"`
+	Owner               string          `protobuf:"bytes,2,opt,name=owner,proto3" json:"owner,omitempty"`
+	Balance             uint64          `protobuf:"varint,3,opt,name=balance,proto3" json:"balance,omitempty"`
+	Events              []ContractEvent `protobuf:"bytes,4,rep,name=events,proto3" json:"events"`
 }
 
 type MsgUpgradeContractCode struct {
@@ -243,6 +244,7 @@ type MsgReceiveInternalMessage struct {
 	Opcode             uint32
 	QueryID            uint64
 	Body               []byte
+	StateInit          *StateInit
 	Bounce             bool
 	Deadline           uint64
 	GasLimit           uint64
@@ -263,11 +265,11 @@ type QueryAssetOwnerResponse struct {
 }
 
 type ContractEvent struct {
-	Type        string
-	Actor       string
-	Contract    string
-	Amount      uint64
-	InternalRaw string
+	Type        string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
+	Actor       string `protobuf:"bytes,2,opt,name=actor,proto3" json:"actor,omitempty"`
+	Contract    string `protobuf:"bytes,3,opt,name=contract,proto3" json:"contract,omitempty"`
+	Amount      uint64 `protobuf:"varint,4,opt,name=amount,proto3" json:"amount,omitempty"`
+	InternalRaw string `protobuf:"bytes,5,opt,name=internal_raw,json=internalRaw,proto3" json:"internal_raw,omitempty"`
 }
 
 func (s State) Normalize() State {
@@ -534,6 +536,11 @@ func (m InternalMessage) Validate() error {
 	if len(m.Body) > MaxContractPayloadBytes {
 		return errors.New("internal message body exceeds maximum size")
 	}
+	if m.StateInit != nil {
+		if err := m.StateInit.Validate(DefaultParams()); err != nil {
+			return err
+		}
+	}
 	if m.Deadline != 0 && m.Deadline < m.Height {
 		return errors.New("internal message is expired")
 	}
@@ -770,8 +777,17 @@ func ComputeContractStateRoot(contract Contract) string {
 }
 
 func ComputeInternalMessageID(msg InternalMessage) string {
+	stateInitHash := ""
+	if msg.StateInit != nil {
+		h, err := HashStateInit(*msg.StateInit)
+		if err != nil {
+			stateInitHash = "invalid-state-init"
+		} else {
+			stateInitHash = h
+		}
+	}
 	sum := sha256Sum([]byte(fmt.Sprintf(
-		"aetra-internal-message-v1/%s/%s/%020d/%010d/%020d/%020d/%t/%020d/%020d/%x",
+		"aetra-internal-message-v2/%s/%s/%020d/%010d/%020d/%020d/%t/%020d/%020d/%s/%x",
 		msg.SourceContractUser,
 		msg.DestinationAccount,
 		msg.Funds,
@@ -781,6 +797,7 @@ func ComputeInternalMessageID(msg InternalMessage) string {
 		msg.Bounce,
 		msg.Deadline,
 		msg.LogicalTime,
+		stateInitHash,
 		msg.Body,
 	)))
 	return hex.EncodeToString(sum)
@@ -803,8 +820,24 @@ func ComputeContractReceiptID(receipt ContractReceipt) string {
 
 func RefreshStateRoot(gs GenesisState) GenesisState {
 	gs.State = gs.State.Normalize()
+	gs.State.Receipts = pruneReceipts(gs.State.Receipts)
 	gs.StateRoot = ComputeContractsStateRoot(gs)
 	return gs
+}
+
+// pruneReceipts bounds the contract receipt log to the most recent
+// MaxRetainedReceipts entries. Normalize has already ordered receipts
+// deterministically (ascending by Height, LogicalTime, ContractAddress,
+// ReceiptID), so retaining the tail yields the identical most-recent set on
+// every node — keeping the in-memory genesis and the persisted store in sync
+// without a consensus-diverging prune. See SEC-HIGH: bound receipt log.
+func pruneReceipts(receipts []ContractReceipt) []ContractReceipt {
+	if len(receipts) <= MaxRetainedReceipts {
+		return receipts
+	}
+	trimmed := make([]ContractReceipt, MaxRetainedReceipts)
+	copy(trimmed, receipts[len(receipts)-MaxRetainedReceipts:])
+	return trimmed
 }
 
 func cloneState(s State) State {
@@ -842,6 +875,10 @@ func cloneInternalMessages(values []InternalMessage) []InternalMessage {
 	out := append([]InternalMessage(nil), values...)
 	for i := range out {
 		out[i].Body = append([]byte(nil), out[i].Body...)
+		if out[i].StateInit != nil {
+			stateInit := out[i].StateInit.Normalize()
+			out[i].StateInit = &stateInit
+		}
 	}
 	return out
 }

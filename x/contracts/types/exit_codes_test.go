@@ -122,11 +122,11 @@ func TestAllExitCodesUnder100(t *testing.T) {
 // TestExitCodeDomains verifies domain classification functions
 func TestExitCodeDomains(t *testing.T) {
 	tests := []struct {
-		code		uint32
-		isVM		bool
-		isAction	bool
-		isState		bool
-		isSystem	bool
+		code     uint32
+		isVM     bool
+		isAction bool
+		isState  bool
+		isSystem bool
 	}{
 		{0, true, false, false, false},
 		{14, true, false, false, false},

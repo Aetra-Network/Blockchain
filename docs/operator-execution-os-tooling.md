@@ -2,8 +2,7 @@
 
 Phase 10 exposes modular execution prototypes through localnet profiles and
 off-chain simulator diagnostics. These profiles are for local/testnet operator
-validation only. They do not make production sharding, Mesh settlement, or
-`.aet` identity keeper state live on mainnet.
+validation only. They do not make Mesh settlement live on mainnet.
 
 ## Profiles
 
@@ -13,7 +12,6 @@ validation only. They do not make production sharding, Mesh settlement, or
 | `execution-os-sim` | Pure simulator commands plus load/routing genesis metadata | `load`, `routing` |
 | `zones-prototype` | Feature-gated zones prototype metadata | `load`, `routing`, `zones` |
 | `mesh-prototype` | Feature-gated Mesh prototype metadata | `load`, `routing`, `zones`, `mesh` |
-| `identity-prototype` | `.aet` executable spec readiness | `load`, `routing`, `zones`, `identity-spec` |
 
 ## CLI
 
@@ -27,9 +25,8 @@ The smoke command runs deterministic executable specs for:
 
 - load score update;
 - tx routing to an execution zone;
-- load-driven shard activation;
-- cross-zone Mesh message and receipt processing;
-- `.aet` domain registration and resolution.
+- zone registry activation and commitments;
+- cross-zone Mesh message and receipt processing.
 
 ## Localnet
 
@@ -67,7 +64,6 @@ Diagnostics do not copy keyring data, mnemonics, private validator keys,
 .\tests\e2e\execution_os_smoke.ps1 -SkipBuild
 .\tests\e2e\zones_smoke.ps1 -SkipBuild
 .\tests\e2e\mesh_smoke.ps1 -SkipBuild
-.\tests\e2e\identity_smoke.ps1 -SkipBuild
 ```
 
 Each smoke initializes a profile-specific localnet, validates genesis, starts

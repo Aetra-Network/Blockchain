@@ -1,0 +1,236 @@
+﻿const ERR_NOT_OWNER = 1001
+const ERR_NO_TARGET = 1002
+const ERR_BAD_NONCE = 1003
+const ERR_BAD_MSG = 0xFFFF
+
+type CounterValue = int64
+type Ticket = uint32
+type PackedState = Packed
+
+@storage
+struct Leaf {
+    note: uint32
+}
+
+@storage
+struct Branch {
+    leaf: Chunk<Leaf>?
+}
+
+@storage
+struct Box {
+    branch: Chunk<Branch>?
+}
+
+@storage
+struct Packed {
+    counter: CounterValue
+    at: int64
+}
+
+@storage
+struct Storage {
+    counter: CounterValue
+    owner: address
+    target: address?
+    nonce: uint32
+    lastNow: int64
+    lastBalance: coins
+    lastRandom: uint256
+    pingTicket: Ticket?
+    box: Chunk<Box>?
+    packed: Chunk<PackedState>?
+}
+
+@message(0x1001)
+struct Inc {
+    by: uint32
+    ticket: Ticket
+}
+
+@message(0x1002)
+struct Dec {
+    by: uint32
+}
+
+@message(0x1003)
+struct Withdraw {}
+
+@message(0x1004)
+struct SetTarget {
+    target: address
+}
+
+@message(0x2001)
+struct Touch {
+    nonce: uint32
+}
+
+@message(0x3001)
+struct Ping {
+    ticket: Ticket
+    counter: CounterValue
+}
+
+type InternalMsg = Inc | Dec | Withdraw | SetTarget
+type ExternalMsg = Touch
+
+contract Counter {
+    author: "some author" // необязательно
+    description: "some text" // необязательно
+    version: "0.01.2" // необязательно
+
+    // необязательно нужен сторадж в контракте, но нужен либо extenral либо internal, могут быть оба либо кто-то один, то есть стордж может отсутсвовать но для сообщений либо оба либо internal либо external.
+    storage: Storage 
+    incomingMessages: InternalMsg
+    incomingExternal: ExternalMsg
+
+    @store
+    func Storage.load() {
+        return Storage.fromChunk(contract.getData())
+    }
+
+    @store
+    func Storage.save(self) {
+        contract.setData(self.toChunk())
+    }
+    @impure
+    func Storage.touch(mutate self) {
+        self.lastNow = now()
+        self.lastBalance = getBalance()
+        self.lastRandom = random()
+    }
+    @pure
+    func Packed.fromState(counter: CounterValue, at: int64) {
+        return Packed {
+            counter: counter,
+            at: at,
+        }
+    }
+
+
+    @internal
+    func onInternalMessage(in: InMessage) {
+        const msg = lazy InternalMsg.fromSegment(in.body)
+
+        match (msg) {
+            Inc => {
+                var st = lazy Storage.load()
+                st.counter += msg.by
+                st.pingTicket = msg.ticket
+                st.touch()
+
+                if (st.target != null) {
+                    const ping = buildMessage({
+                        bounce: BounceMode.Only256BitsOfBody,
+                        amount: 0,
+                        receiver: st.target!,
+                        body: Ping {
+                            ticket: msg.ticket,
+                            counter: st.counter,
+                        }
+                    })
+
+                    ping.send(SEND_BOUNCE_ON_FAIL)
+                } else if (st.owner == in.senderAddress) {
+                    // example else-if branch
+                    st.nonce += 1
+                } else {
+                    st.nonce += 0
+                }
+
+                st.save()
+            }
+
+            Dec => {
+                var st = lazy Storage.load()
+                st.counter -= msg.by
+                st.touch()
+                st.save()
+            }
+
+            SetTarget => {
+                var st = lazy Storage.load()
+                assert (in.senderAddress == st.owner) throw ERR_NOT_OWNER
+
+                st.target = msg.target
+                st.touch()
+                st.save()
+            }
+
+            Withdraw => {
+                var st = lazy Storage.load()
+                assert (in.senderAddress == st.owner) throw ERR_NOT_OWNER
+
+                const payout = buildMessage({
+                    bounce: BounceMode.NoBounce,
+                    amount: getBalance(),
+                    receiver: st.owner,
+                    body: Withdraw {}
+                })
+
+                payout.send(SEND_FEE_FROM_BALANCE)
+            }
+
+            else => {
+                assert (in.body.isEmpty()) throw ERR_BAD_MSG
+            }
+        }
+    }
+
+    @bounced
+    func onBouncedMessage(in: InMessageBounced) {
+        in.bouncedBody.skipBouncedPrefix()
+
+        const bounced = lazy Ping.fromSegment(in.bouncedBody)
+
+        var st = lazy Storage.load()
+        if (st.pingTicket != null && st.pingTicket == bounced.ticket) {
+            st.pingTicket = null
+            st.save()
+        }
+    }
+
+    @external(inMsg: Segment)
+    func onExternalMessage(inMsg: Segment) {
+        const msg = lazy ExternalMsg.fromSegment(inMsg)
+
+        match (msg) {
+            Touch => {
+                var st = lazy Storage.load()
+
+                if (msg.nonce == st.nonce + 1) {
+                    st.nonce = msg.nonce
+                } else if (msg.nonce == st.nonce + 2) {
+                    st.nonce = msg.nonce
+                } else {
+                    throw ERR_BAD_NONCE
+                }
+
+                st.touch()
+                st.save()
+            }
+
+            else => {
+                assert (inMsg.isEmpty()) throw ERR_BAD_MSG
+            }
+        }
+    }
+
+    @get
+    func currentCounter(): CounterValue {
+        const st = lazy Storage.load()
+        return st.counter
+    }
+
+    @get
+    func snapshot(): PackedState? {
+        const st = lazy Storage.load()
+
+        if (st.packed == null) {
+            return null
+        }
+
+        return Packed.fromChunk(st.packed!)
+    }
+}

@@ -7,33 +7,17 @@ Machine-readable launch inventory: `app/launch_module_inventory.json`.
 Generated launch scope doc: `docs/TESTNET.md`.
 
 Classification counts:
-- `disabled`: 2
-- `future_avm_standard`: 15
+- `disabled`: 1
+- `future_avm_standard`: 2
 - `launch_core`: 14
 - `launch_support`: 28
-- `prototype_only`: 7
+- `prototype_only`: 1
 
 Public testnet profile rejects `prototype_only` and `disabled` modules in app wiring, rejects memory-only consensus keepers, and rejects native application-asset modules.
 
 Core SDK module responsibilities and Aetra-specific wrappers are documented
 in [Core Module Architecture](architecture/core-module-architecture.md). This
-file focuses on custom modules and readiness packages. Economy and interop
-boundaries are documented in
-[Economy And Interop Module Architecture](architecture/economy-interop-architecture.md).
-Application module architecture is documented in
-[Application Module Architecture](architecture/application-module-architecture.md).
-Additional support modules are documented in
-[Additional Modules](architecture/additional-modules.md).
-
-Core SDK module responsibilities and Aetra-specific wrappers are documented
-in [Core Module Architecture](architecture/core-module-architecture.md). This
-file focuses on custom modules and readiness packages. Economy and interop
-boundaries are documented in
-[Economy And Interop Module Architecture](architecture/economy-interop-architecture.md).
-Application module architecture is documented in
-[Application Module Architecture](architecture/application-module-architecture.md).
-Additional support modules are documented in
-[Additional Modules](architecture/additional-modules.md).
+file focuses on custom modules and readiness packages.
 
 ## Historical `x/tokenfactory` Prototype Boundary
 
@@ -105,49 +89,6 @@ Security invariants:
 - Recorded reserves must match module account balances, and LP supply must
   match pool shares after every pool state transition.
 
-## `x/identity`
-
-Purpose: future `.aet` domain registry and resolver ownership surface.
-
-Current status:
-- Pure validation helpers only.
-- No SDK stores, keepers, module accounts, genesis, or CLI tx surface are
-  registered yet.
-- Registry records are the source of truth; UI/wallet proof layers are not a
-  replacement for registry ownership checks.
-
-State:
-- Domain record keyed by normalized name.
-- Owner address.
-- Optional resolver address.
-- Expiry and renewal state.
-- Auction status.
-- Contract item reference for wallet/UI representation.
-
-Security invariants:
-- Domain names are normalized and restricted to lowercase ASCII `a-z`, digits
-  `0-9`, `-`, and `_`.
-- Whitespace, invisible Unicode, mixed-script spoofing, unsupported symbols,
-  and non-`.aet` TLDs are rejected.
-- Owner and resolver addresses use central address validation and reject zero
-  addresses by default.
-- Resolver updates require current owner authorization.
-- Expiry, renewal, and auction transitions must emit deterministic events.
-- Domain lifecycle is `available -> auction -> active -> expired ->
-  available/auction`.
-- Auctions run for `24h`, use a `5%` minimum bid increment, apply bounded
-  `10m` anti-snipe extensions, and assign ownership only during finalization.
-- Auction proceeds split `40%` burn, `40%` treasury, and `20%` rewards.
-- Renewal extends expiry and uses the deterministic start-price discount rule.
-- Resolver records support domain-to-address resolution, reverse resolution,
-  multi-address records, delegated manager grants, bounded metadata, and
-  deterministic resolver update events.
-- Resolver payment routing fails before funds move when `primary` is unset,
-  the resolver target is zero, the registry owner does not match, or the domain
-  is expired.
-- Subdomains such as `app.alice.aet`, `bot.alice.aet`, and `pool.alice.aet`
-  resolve through the base `.aet` registry owner.
-
 ## `x/workflow`
 
 Purpose: future bounded multi-step orchestration for application flows that need
@@ -171,38 +112,6 @@ Security invariants:
 - Step IDs are unique inside one workflow.
 - Orchestration must not bypass signer checks, replay protection, `naet` fee
   policy, zero-address rejection, or module-specific invariants.
-
-## `x/memo`
-
-Purpose: optional human-readable transaction metadata for notes, receipts, and
-UI context.
-
-Current status:
-- Pure validation and fee helpers only.
-- No SDK stores, keepers, module accounts, genesis, CLI, or ABCI hooks are
-  registered yet.
-
-State:
-- No execution state.
-- Future indexed transaction metadata may include `memo`, `memo_hash`, and
-  `memo_visible`, but it must be immutable after block inclusion.
-
-Security invariants:
-- Memo text is optional and UTF-8 only.
-- Memo length is governed within a hard protocol bound.
-- Prohibited control characters are rejected.
-- Memo metadata does not affect execution state transitions.
-- Memo data is stored as transaction metadata, not keeper execution input.
-- Memo fees are paid only in `naet`.
-- Empty memo can have zero memo fee.
-- Memo byte cost can scale by reputation and congestion so memo text cannot
-  become cheap spam storage.
-- Memo projection may index by tx hash, sender, receiver, domain, contract,
-  asset, and event type.
-- Full memo on-chain and hash-only on-chain storage policies are explicit.
-- Consensus does not depend on search index results.
-- `EventMemoAttached` is deterministic and includes tx hash, from, to, domain,
-  memo hash, and memo according to storage policy.
 
 ## `x/execution`
 
@@ -229,28 +138,6 @@ Security invariants:
   routing must not bypass signatures, `naet` fee validation, zero-address
   rejection, or module authorization.
 - Event collection is deterministic and sorted where needed.
-
-## `x/vm`
-
-Purpose: AVM and gated CosmWasm runtime facade for execution routing.
-
-Current status:
-- Pure validation facade only.
-- No SDK stores, keepers, module accounts, genesis, CLI, or ABCI hooks are
-  registered yet.
-
-State:
-- Runtime policy for AVM params and CosmWasm feature gate.
-- VM call descriptor for deploy, external call, internal call, bounced call,
-  and query/getter.
-
-Security invariants:
-- AVM is the primary VM and AVM action-to-entrypoint mapping is deterministic.
-- CosmWasm remains disabled by default as an optional compatibility layer.
-- Runtime routing validates code size, gas, query response/depth, and feature
-  gates before keeper wiring.
-- VM routing cannot bypass base-chain signer, fee, denom, zero-address,
-  transaction, or genesis validation.
 
 ## `x/messaging`
 
@@ -377,33 +264,6 @@ Security invariants:
 - DAG scheduler and safe concurrent state access are future production work.
 - Scheduler output must fall back to sequential on conflict and must not
   introduce nondeterministic state writes.
-
-## `x/storage`
-
-Purpose: future KV state engine for versioned contract storage, snapshots, state
-sync, and bounded iteration.
-
-Current status:
-- Pure executable specification only.
-- No SDK stores, keepers, module accounts, genesis, CLI, ABCI hooks, snapshots,
-  or state-sync integration are registered yet.
-
-State:
-- Contract namespace.
-- Storage key format.
-- Versioned key/value entry.
-- Max state size.
-- Storage rent/deposit accounting.
-- Deterministic snapshot and state root.
-
-Security invariants:
-- Contract storage is namespaced.
-- Storage keys and namespace lengths are bounded.
-- Max state size is enforced before accepting a write.
-- Bounded iteration requires an explicit positive limit.
-- Export/import exact state must preserve version, entries, and state root.
-- Snapshot/state-sync tests must prove imported state roots match exported
-  roots before production wiring.
 
 ## `x/compute`
 
@@ -669,42 +529,6 @@ Security invariants:
   bounded before keeper wiring.
 - AVM must not bypass address validation, zero-address rejection, `naet` fee
   policy, signer checks, malformed transaction handling, or genesis validation.
-
-## `x/sharding/sim`
-
-Purpose: provide the sharding R&D simulator before any production sharding or
-partitioning implementation.
-
-State:
-- In-memory masterchain state model.
-- In-memory workchain registry.
-- In-memory shardchain registry.
-- Cross-shard message and receipt model.
-- Equivocation evidence model.
-
-Current status:
-- Pure Go simulator only.
-- No SDK stores, keepers, module accounts, genesis, ABCI hooks, consensus
-  changes, or network partitioning are registered.
-- No production sharding claim is allowed.
-
-Security invariants:
-- The simulator must not register SDK stores or mutate production chain state.
-- Public wording must say sharding R&D or experimental sharding until the
-  production gate passes.
-- Masterchain state must commit validator set, staking snapshot, workchain
-  registry, shard headers, cross-shard receipt roots, config updates, and
-  equivocation evidence.
-- Workchains must keep explicit VM set, address format, genesis hash, upgrade
-  policy, and native `naet` fee policy.
-- Shardchains must commit state root, message queue root, receipt root,
-  validator subset, data availability status, and split/merge references.
-- Cross-shard messages must reject duplicate receipts, missing receipts,
-  invalid shard proofs, stale shard headers, wrong destination shards, replayed
-  messages, validator equivocation, and data-unavailable shard blocks.
-- Prototype keepers may begin only after simulator tests, fuzz tests,
-  adversarial tests, long-run testnet, independent audit, and
-  consensus-safety proof are complete.
 
 ## `app/wasmconfig`
 

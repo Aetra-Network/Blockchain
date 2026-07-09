@@ -91,16 +91,19 @@ func (p Params) Validate() error {
 }
 
 func (a TreasuryAllocations) Validate(params Params) error {
-	for name, coins := range map[string]sdk.Coins{
-		"reserve_balance":		a.ReserveBalance,
-		"ecosystem_balance":		a.EcosystemBalance,
-		"validator_incentive_balance":	a.ValidatorIncentiveBalance,
-		"burn_balance":			a.BurnBalance,
-		"total_received":		a.TotalReceived,
-		"total_spent":			a.TotalSpent,
+	for _, entry := range []struct {
+		name  string
+		coins sdk.Coins
+	}{
+		{name: "reserve_balance", coins: a.ReserveBalance},
+		{name: "ecosystem_balance", coins: a.EcosystemBalance},
+		{name: "validator_incentive_balance", coins: a.ValidatorIncentiveBalance},
+		{name: "burn_balance", coins: a.BurnBalance},
+		{name: "total_received", coins: a.TotalReceived},
+		{name: "total_spent", coins: a.TotalSpent},
 	} {
-		if err := ValidateTreasuryCoins(params, coins, true); err != nil {
-			return fmt.Errorf("%s: %w", name, err)
+		if err := ValidateTreasuryCoins(params, entry.coins, true); err != nil {
+			return fmt.Errorf("%s: %w", entry.name, err)
 		}
 	}
 	return nil

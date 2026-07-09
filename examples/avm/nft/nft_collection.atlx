@@ -1,0 +1,213 @@
+// NFT collection example for ATLX / AVM.
+//
+// Model:
+// - NftCollection owns minting and the item code.
+// - Each item lives in its own NftItem contract keyed by item index, so
+//   the collection never stores a dictionary of items.
+// - Item addresses are derived deterministically from:
+//   item code + init data { collection, index }.
+
+const ERR_NOT_OWNER = 1001
+const ERR_BAD_MSG = 0xFFFF
+const ERR_BAD_SENDER = 1004
+const ERR_MINT_CLOSED = 1020
+
+// Outbound internal messages must fund the destination's gas/storage rent —
+// a freshly auto-deployed item contract created with amount: 0 would have
+// no balance and get frozen for unpaid storage rent immediately.
+const MSG_FORWARD_VALUE = aet("0.0001")
+
+@storage
+struct NftCollectionStorage {
+    owner: address
+    nextIndex: uint64
+    burnedCount: uint64
+    itemCode: Code
+    mintOpen: uint32
+}
+
+@storage
+struct NftItemStorage {
+    collection: address
+    index: uint64
+    owner: address
+    content: string
+    initialized: uint32
+}
+
+@message(0x8101)
+struct MintItem {
+    to: address
+    content: string
+}
+
+@message(0x8102)
+struct ItemSeed {
+    index: uint64
+    owner: address
+    content: string
+}
+
+@message(0x8103)
+struct TransferItem {
+    to: address
+    responseTo: address?
+}
+
+@message(0x8104)
+struct ItemTransferred {
+    index: uint64
+    from: address
+    to: address
+}
+
+@message(0x8105)
+struct SetMintOpen {
+    mintOpen: uint32
+}
+
+@message(0x8107)
+struct ItemBurned {
+    index: uint64
+    owner: address
+}
+
+type CollectionInternalMsg = MintItem | SetMintOpen | ItemBurned
+type ItemInternalMsg = ItemSeed | TransferItem
+
+contract NftCollection {
+    author: "Aetralis example"
+    description: "NFT collection with one item contract per token"
+    version: "0.01.0"
+
+    storage: NftCollectionStorage
+    incomingMessages: CollectionInternalMsg
+
+    @store
+    func NftCollectionStorage.load() {
+        return NftCollectionStorage.fromChunk(contract.getData())
+    }
+
+    @store
+    func NftCollectionStorage.save(self) {
+        contract.setData(self.toChunk())
+    }
+
+    @pure
+    func itemInitFor(collection: address, index: uint64) {
+        return NftItemStorage {
+            collection: collection,
+            index: index,
+            owner: collection,
+            content: "",
+            initialized: 0,
+        }
+    }
+
+    @pure
+    func itemAddressFor(index: uint64): address {
+        const st = lazy NftCollectionStorage.load()
+        return counterfactualAddress({
+            code: st.itemCode,
+            data: itemInitFor(getAddress(), index),
+        })
+    }
+
+    @pure
+    func autoDeployItemAddress(index: uint64): address {
+        const st = lazy NftCollectionStorage.load()
+        return autoDeployAddress({
+            code: st.itemCode,
+            data: itemInitFor(getAddress(), index),
+        })
+    }
+
+    @internal
+    func onInternalMessage(in: InMessage) {
+        const msg = lazy CollectionInternalMsg.fromSegment(in.body)
+
+        match (msg) {
+            MintItem => {
+                var st = lazy NftCollectionStorage.load()
+                assert (st.mintOpen == 1) throw ERR_MINT_CLOSED
+                assert (in.senderAddress == st.owner) throw ERR_NOT_OWNER
+
+                const index = st.nextIndex
+                st.nextIndex += 1
+
+                const item = autoDeployItemAddress(index)
+                const seed = buildMessage({
+                    bounce: BounceMode.Only256BitsOfBody,
+                    amount: MSG_FORWARD_VALUE,
+                    receiver: item,
+                    body: ItemSeed {
+                        index: index,
+                        owner: msg.to,
+                        content: msg.content,
+                    }
+                })
+
+                seed.send(SEND_BOUNCE_ON_FAIL)
+                st.save()
+            }
+
+            SetMintOpen => {
+                var st = lazy NftCollectionStorage.load()
+                assert (in.senderAddress == st.owner) throw ERR_NOT_OWNER
+
+                st.mintOpen = msg.mintOpen
+                st.save()
+            }
+
+            ItemBurned => {
+                var st = lazy NftCollectionStorage.load()
+                const expectedItem = itemAddressFor(msg.index)
+                assert (in.senderAddress == expectedItem) throw ERR_BAD_SENDER
+
+                st.burnedCount += 1
+                st.save()
+            }
+
+            else => {
+                assert (in.body.isEmpty()) throw ERR_BAD_MSG
+            }
+        }
+    }
+
+    @bounced
+    func onBouncedMessage(in: InMessageBounced) {
+        in.bouncedBody.skipBouncedPrefix()
+
+        const bounced = lazy ItemSeed.fromSegment(in.bouncedBody)
+
+        var st = lazy NftCollectionStorage.load()
+        if (st.nextIndex == bounced.index + 1) {
+            // Seed bounced for the most recent mint: reclaim the index.
+            st.nextIndex = bounced.index
+            st.save()
+        }
+    }
+
+    @get
+    func nextIndex(): uint64 {
+        const st = lazy NftCollectionStorage.load()
+        return st.nextIndex
+    }
+
+    @get
+    func itemAddressOf(index: uint64): address {
+        return itemAddressFor(index)
+    }
+
+    @get
+    func isMintOpen(): uint32 {
+        const st = lazy NftCollectionStorage.load()
+        return st.mintOpen
+    }
+
+    @get
+    func burnedCount(): uint64 {
+        const st = lazy NftCollectionStorage.load()
+        return st.burnedCount
+    }
+}

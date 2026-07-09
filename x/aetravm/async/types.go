@@ -3,6 +3,8 @@ package async
 import (
 	sdkmath "cosmossdk.io/math"
 	sdk "github.com/cosmos/cosmos-sdk/types"
+
+	contracttypes "github.com/sovereign-l1/l1/x/contracts/types"
 )
 
 const (
@@ -122,8 +124,15 @@ type MessageEnvelope struct {
 	Destination		sdk.AccAddress
 	Value			sdk.Coin
 	Opcode			uint32
+	// OriginalOpcode carries the opcode of the message that was bounced, so a
+	// bounced handler's match() can dispatch on the original message type. The
+	// envelope Opcode itself stays BounceOpcode (the bounce marker used for
+	// observability); Bounced==true is the routing marker. Zero for
+	// non-bounce messages.
+	OriginalOpcode		uint32
 	QueryID			uint64
 	Body			[]byte
+	StateInit		*contracttypes.StateInit
 	Bounce			bool
 	Bounced			bool
 	CreatedLogicalTime	uint64

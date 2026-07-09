@@ -1,0 +1,143 @@
+// Per-name record for the DNS registry example.
+//
+// One DnsRecord exists per name, deployed deterministically by the
+// registry from { record code + init data { registry, name } }. The first
+// RecordSeed from the registry claims the record for its real owner; after
+// that only the owner may update or release it.
+
+const ERR_NOT_OWNER = 1001
+const ERR_BAD_MSG = 0xFFFF
+const ERR_BAD_SENDER = 1004
+const ERR_ALREADY_CLAIMED = 1012
+const ERR_NO_TARGET = 1002
+
+// See dns_registry.atlx: outbound internal messages must fund the
+// destination's gas/storage rent, never amount: 0.
+const MSG_FORWARD_VALUE = aet("0.0001")
+
+@storage
+struct DnsRecordStorage {
+    registry: address
+    name: string
+    owner: address
+    target: address?
+    updatedAt: int64
+}
+
+@message(0x7102)
+struct RecordSeed {
+    name: string
+    owner: address
+    target: address
+}
+
+@message(0x7103)
+struct UpdateTarget {
+    target: address
+}
+
+@message(0x7104)
+struct ReleaseName {}
+
+@message(0x7105)
+struct RecordReleased {
+    name: string
+}
+
+type RecordInternalMsg = RecordSeed | UpdateTarget | ReleaseName
+
+contract DnsRecord {
+    author: "Aetralis example"
+    description: "Single-name record owned by its registrant"
+    version: "0.01.0"
+
+    storage: DnsRecordStorage
+    incomingMessages: RecordInternalMsg
+
+    @store
+    func DnsRecordStorage.load() {
+        return DnsRecordStorage.fromChunk(contract.getData())
+    }
+
+    @store
+    func DnsRecordStorage.save(self) {
+        contract.setData(self.toChunk())
+    }
+
+    @internal
+    func onInternalMessage(in: InMessage) {
+        const msg = lazy RecordInternalMsg.fromSegment(in.body)
+
+        match (msg) {
+            RecordSeed => {
+                var st = lazy DnsRecordStorage.load()
+                assert (in.senderAddress == st.registry) throw ERR_BAD_SENDER
+                // The record starts owned by the registry; the first seed
+                // hands it to the registrant and later seeds must fail.
+                assert (st.owner == st.registry) throw ERR_ALREADY_CLAIMED
+
+                st.owner = msg.owner
+                st.target = msg.target
+                st.updatedAt = now()
+                st.save()
+            }
+
+            UpdateTarget => {
+                var st = lazy DnsRecordStorage.load()
+                assert (in.senderAddress == st.owner) throw ERR_NOT_OWNER
+
+                st.target = msg.target
+                st.updatedAt = now()
+                st.save()
+            }
+
+            ReleaseName => {
+                var st = lazy DnsRecordStorage.load()
+                assert (in.senderAddress == st.owner) throw ERR_NOT_OWNER
+
+                st.owner = st.registry
+                st.target = null
+                st.updatedAt = now()
+                st.save()
+
+                const released = buildMessage({
+                    bounce: BounceMode.NoBounce,
+                    amount: MSG_FORWARD_VALUE,
+                    receiver: st.registry,
+                    body: RecordReleased {
+                        name: st.name,
+                    }
+                })
+
+                released.send(SEND_DEFAULT)
+            }
+
+            else => {
+                assert (in.body.isEmpty()) throw ERR_BAD_MSG
+            }
+        }
+    }
+
+    @bounced
+    func onBouncedMessage(in: InMessageBounced) {
+        in.bouncedBody.skipBouncedPrefix()
+    }
+
+    @get
+    func resolve(): address? {
+        const st = lazy DnsRecordStorage.load()
+        return st.target
+    }
+
+    @get
+    func nameOf(): string {
+        const st = lazy DnsRecordStorage.load()
+        return st.name
+    }
+
+    @get
+    func ownerOf(): address {
+        const st = lazy DnsRecordStorage.load()
+        return st.owner
+    }
+}

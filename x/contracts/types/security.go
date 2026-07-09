@@ -27,87 +27,87 @@ const (
 )
 
 type SecurityGraphEdge struct {
-	From     string
-	To       string
-	Relation string
+	From     string `protobuf:"bytes,1,opt,name=from,proto3" json:"from,omitempty"`
+	To       string `protobuf:"bytes,2,opt,name=to,proto3" json:"to,omitempty"`
+	Relation string `protobuf:"bytes,3,opt,name=relation,proto3" json:"relation,omitempty"`
 }
 
 type ContractSecurityAttestation struct {
-	AttestationID       string
-	ContractAddressUser string
-	ContractAddressRaw  string
-	Source              string
-	SourceURL           string
-	CommitHash          string
-	CodeHash            string
-	EvidenceHash        string
-	CheckedHeight       uint64
-	UpdatedHeight       uint64
-	RiskScoreBps        uint32
-	Categories          []string
-	Flags               []string
-	RelatedAddresses    []string
-	GraphEdges          []SecurityGraphEdge
-	Status              string
-	RevokedReason       string
-	SignedBy            string
+	AttestationID       string              `protobuf:"bytes,1,opt,name=attestation_id,json=attestationId,proto3" json:"attestation_id,omitempty"`
+	ContractAddressUser string              `protobuf:"bytes,2,opt,name=contract_address_user,json=contractAddressUser,proto3" json:"contract_address_user,omitempty"`
+	ContractAddressRaw  string              `protobuf:"bytes,3,opt,name=contract_address_raw,json=contractAddressRaw,proto3" json:"contract_address_raw,omitempty"`
+	Source              string              `protobuf:"bytes,4,opt,name=source,proto3" json:"source,omitempty"`
+	SourceURL           string              `protobuf:"bytes,5,opt,name=source_url,json=sourceUrl,proto3" json:"source_url,omitempty"`
+	CommitHash          string              `protobuf:"bytes,6,opt,name=commit_hash,json=commitHash,proto3" json:"commit_hash,omitempty"`
+	CodeHash            string              `protobuf:"bytes,7,opt,name=code_hash,json=codeHash,proto3" json:"code_hash,omitempty"`
+	EvidenceHash        string              `protobuf:"bytes,8,opt,name=evidence_hash,json=evidenceHash,proto3" json:"evidence_hash,omitempty"`
+	CheckedHeight       uint64              `protobuf:"varint,9,opt,name=checked_height,json=checkedHeight,proto3" json:"checked_height,omitempty"`
+	UpdatedHeight       uint64              `protobuf:"varint,10,opt,name=updated_height,json=updatedHeight,proto3" json:"updated_height,omitempty"`
+	RiskScoreBps        uint32              `protobuf:"varint,11,opt,name=risk_score_bps,json=riskScoreBps,proto3" json:"risk_score_bps,omitempty"`
+	Categories          []string            `protobuf:"bytes,12,rep,name=categories,proto3" json:"categories,omitempty"`
+	Flags               []string            `protobuf:"bytes,13,rep,name=flags,proto3" json:"flags,omitempty"`
+	RelatedAddresses    []string            `protobuf:"bytes,14,rep,name=related_addresses,json=relatedAddresses,proto3" json:"related_addresses,omitempty"`
+	GraphEdges          []SecurityGraphEdge `protobuf:"bytes,15,rep,name=graph_edges,json=graphEdges,proto3" json:"graph_edges,omitempty"`
+	Status              string              `protobuf:"bytes,16,opt,name=status,proto3" json:"status,omitempty"`
+	RevokedReason       string              `protobuf:"bytes,17,opt,name=revoked_reason,json=revokedReason,proto3" json:"revoked_reason,omitempty"`
+	SignedBy            string              `protobuf:"bytes,18,opt,name=signed_by,json=signedBy,proto3" json:"signed_by,omitempty"`
 }
 
 type ContractSecurityBadge struct {
-	ContractAddress         string
-	Badge                   string
-	Verified                bool
-	RiskScoreBps            uint32
-	Categories              []string
-	Flags                   []string
-	RelatedAddresses        []string
-	GraphEdges              []SecurityGraphEdge
-	AttestationCount        uint32
-	ActiveAttestationCount  uint32
-	RevokedAttestationCount uint32
-	LatestUpdatedHeight     uint64
-	AttestationIDs          []string
+	ContractAddress         string              `protobuf:"bytes,1,opt,name=contract_address,json=contractAddress,proto3" json:"contract_address,omitempty"`
+	Badge                   string              `protobuf:"bytes,2,opt,name=badge,proto3" json:"badge,omitempty"`
+	Verified                bool                `protobuf:"varint,3,opt,name=verified,proto3" json:"verified,omitempty"`
+	RiskScoreBps            uint32              `protobuf:"varint,4,opt,name=risk_score_bps,json=riskScoreBps,proto3" json:"risk_score_bps,omitempty"`
+	Categories              []string            `protobuf:"bytes,5,rep,name=categories,proto3" json:"categories,omitempty"`
+	Flags                   []string            `protobuf:"bytes,6,rep,name=flags,proto3" json:"flags,omitempty"`
+	RelatedAddresses        []string            `protobuf:"bytes,7,rep,name=related_addresses,json=relatedAddresses,proto3" json:"related_addresses,omitempty"`
+	GraphEdges              []SecurityGraphEdge `protobuf:"bytes,8,rep,name=graph_edges,json=graphEdges,proto3" json:"graph_edges,omitempty"`
+	AttestationCount        uint32              `protobuf:"varint,9,opt,name=attestation_count,json=attestationCount,proto3" json:"attestation_count,omitempty"`
+	ActiveAttestationCount  uint32              `protobuf:"varint,10,opt,name=active_attestation_count,json=activeAttestationCount,proto3" json:"active_attestation_count,omitempty"`
+	RevokedAttestationCount uint32              `protobuf:"varint,11,opt,name=revoked_attestation_count,json=revokedAttestationCount,proto3" json:"revoked_attestation_count,omitempty"`
+	LatestUpdatedHeight     uint64              `protobuf:"varint,12,opt,name=latest_updated_height,json=latestUpdatedHeight,proto3" json:"latest_updated_height,omitempty"`
+	AttestationIDs          []string            `protobuf:"bytes,13,rep,name=attestation_ids,json=attestationIds,proto3" json:"attestation_ids,omitempty"`
 }
 
 type MsgSubmitSecurityAttestation struct {
-	Authority   string
-	Attestation ContractSecurityAttestation
+	Authority   string                      `protobuf:"bytes,1,opt,name=authority,proto3" json:"authority,omitempty"`
+	Attestation ContractSecurityAttestation `protobuf:"bytes,2,opt,name=attestation,proto3" json:"attestation"`
 }
 
 type MsgSubmitSecurityAttestationResponse struct {
-	Attestation ContractSecurityAttestation
-	StateRoot   string
+	Attestation ContractSecurityAttestation `protobuf:"bytes,1,opt,name=attestation,proto3" json:"attestation"`
+	StateRoot   string                      `protobuf:"bytes,2,opt,name=state_root,json=stateRoot,proto3" json:"state_root,omitempty"`
 }
 
 type MsgRevokeSecurityAttestation struct {
-	Authority     string
-	AttestationID string
-	RevokedReason string
-	Height        uint64
+	Authority     string `protobuf:"bytes,1,opt,name=authority,proto3" json:"authority,omitempty"`
+	AttestationID string `protobuf:"bytes,2,opt,name=attestation_id,json=attestationId,proto3" json:"attestation_id,omitempty"`
+	RevokedReason string `protobuf:"bytes,3,opt,name=revoked_reason,json=revokedReason,proto3" json:"revoked_reason,omitempty"`
+	Height        uint64 `protobuf:"varint,4,opt,name=height,proto3" json:"height,omitempty"`
 }
 
 type MsgRevokeSecurityAttestationResponse struct {
-	Attestation ContractSecurityAttestation
-	StateRoot   string
+	Attestation ContractSecurityAttestation `protobuf:"bytes,1,opt,name=attestation,proto3" json:"attestation"`
+	StateRoot   string                      `protobuf:"bytes,2,opt,name=state_root,json=stateRoot,proto3" json:"state_root,omitempty"`
 }
 
 type QuerySecurityAttestationsRequest struct {
-	ContractAddress string
-	IncludeRevoked  bool
-	Pagination      PageRequest
+	ContractAddress string      `protobuf:"bytes,1,opt,name=contract_address,json=contractAddress,proto3" json:"contract_address,omitempty"`
+	IncludeRevoked  bool        `protobuf:"varint,2,opt,name=include_revoked,json=includeRevoked,proto3" json:"include_revoked,omitempty"`
+	Pagination      PageRequest `protobuf:"bytes,3,opt,name=pagination,proto3" json:"pagination"`
 }
 
 type QuerySecurityAttestationsResponse struct {
-	Attestations []ContractSecurityAttestation
+	Attestations []ContractSecurityAttestation `protobuf:"bytes,1,rep,name=attestations,proto3" json:"attestations"`
 }
 
 type QuerySecurityBadgeRequest struct {
-	ContractAddress string
+	ContractAddress string `protobuf:"bytes,1,opt,name=contract_address,json=contractAddress,proto3" json:"contract_address,omitempty"`
 }
 
 type QuerySecurityBadgeResponse struct {
-	Badge ContractSecurityBadge
-	Found bool
+	Badge ContractSecurityBadge `protobuf:"bytes,1,opt,name=badge,proto3" json:"badge"`
+	Found bool                  `protobuf:"varint,2,opt,name=found,proto3" json:"found,omitempty"`
 }
 
 func (a ContractSecurityAttestation) Normalize() ContractSecurityAttestation {

@@ -1791,11 +1791,15 @@ func SortUnbonding(values []UnbondingEntry) []UnbondingEntry {
 	return out
 }
 
-func ShareValue(pool NominatorPool, shares uint64) uint64 {
+// ShareValue returns the principal value of the given number of pool shares.
+// The multiplication is done through MulDivUint64 (big.Int) so a large
+// shares*TotalBondedStake product cannot silently wrap uint64 and underpay a
+// withdrawal. See SEC-HIGH: unchecked uint64 mul in ShareValue/AccruedReward.
+func ShareValue(pool NominatorPool, shares uint64) (uint64, error) {
 	if pool.TotalShares == 0 {
-		return 0
+		return 0, nil
 	}
-	return shares * pool.TotalBondedStake / pool.TotalShares
+	return MulDivUint64(shares, pool.TotalBondedStake, pool.TotalShares)
 }
 
 func SharesForDeposit(pool NominatorPool, amount uint64) uint64 {
@@ -1928,25 +1932,33 @@ func RawAddressForUserAddress(userAddress string) (string, error) {
 	return addressing.Format(bz), nil
 }
 
-func RewardDelta(amount uint64, totalShares uint64) uint64 {
+func RewardDelta(amount uint64, totalShares uint64) (uint64, error) {
 	if amount == 0 || totalShares == 0 {
-		return 0
+		return 0, nil
 	}
-	return amount * IndexScale / totalShares
+	return MulDivUint64(amount, IndexScale, totalShares)
 }
 
-func IndexedRewardAmount(delta uint64, totalShares uint64) uint64 {
+func IndexedRewardAmount(delta uint64, totalShares uint64) (uint64, error) {
 	if delta == 0 || totalShares == 0 {
-		return 0
+		return 0, nil
 	}
-	return delta * totalShares / IndexScale
+	return MulDivUint64(delta, totalShares, IndexScale)
 }
 
-func AccruedReward(delegator DelegatorShare, rewardIndex uint64) uint64 {
+// AccruedReward returns the delegator's total claimable reward. The
+// shares*(index delta) product is computed through MulDivUint64 (big.Int) to
+// avoid a silent uint64 wrap that would misreport the reward. See SEC-HIGH:
+// unchecked uint64 mul in ShareValue/AccruedReward.
+func AccruedReward(delegator DelegatorShare, rewardIndex uint64) (uint64, error) {
 	if rewardIndex <= delegator.RewardIndexCheckpoint {
-		return delegator.PendingRewards
+		return delegator.PendingRewards, nil
 	}
-	return delegator.PendingRewards + delegator.Shares*(rewardIndex-delegator.RewardIndexCheckpoint)/IndexScale
+	earned, err := MulDivUint64(delegator.Shares, rewardIndex-delegator.RewardIndexCheckpoint, IndexScale)
+	if err != nil {
+		return 0, err
+	}
+	return CheckedAddUint64(delegator.PendingRewards, earned)
 }
 
 func SyncPoolRewards(params Params, pool NominatorPool, msg MsgSyncPoolRewards) (NominatorPool, PoolRewardSummary, error) {
@@ -2048,12 +2060,18 @@ func SyncPoolRewards(params Params, pool NominatorPool, msg MsgSyncPoolRewards) 
 			return NominatorPool{}, PoolRewardSummary{}, errors.New("nominator pool rewards exceed emissions and fee allocation cap")
 		}
 
-		delta := RewardDelta(netPoolRewards, pool.TotalShares)
+		delta, err := RewardDelta(netPoolRewards, pool.TotalShares)
+		if err != nil {
+			return NominatorPool{}, PoolRewardSummary{}, err
+		}
 		index, err = CheckedAddUint64(index, delta)
 		if err != nil {
 			return NominatorPool{}, PoolRewardSummary{}, err
 		}
-		distributed := IndexedRewardAmount(delta, pool.TotalShares)
+		distributed, err := IndexedRewardAmount(delta, pool.TotalShares)
+		if err != nil {
+			return NominatorPool{}, PoolRewardSummary{}, err
+		}
 		if netPoolRewards >= distributed {
 			remainder, err = CheckedAddUint64(remainder, netPoolRewards-distributed)
 			if err != nil {
@@ -2151,15 +2169,22 @@ func SyncPoolRewards(params Params, pool NominatorPool, msg MsgSyncPoolRewards) 
 	if err != nil {
 		return NominatorPool{}, PoolRewardSummary{}, err
 	}
-	next.TotalBondedStake, err = CheckedAddUint64(next.TotalBondedStake, summary.PoolUserRewards)
-	if err != nil {
-		return NominatorPool{}, PoolRewardSummary{}, err
-	}
+	// Net user rewards are distributed solely through the per-share RewardIndex
+	// (accumulated above and claimed via AccruedReward/ClaimPoolRewards). They
+	// must NOT also be folded into TotalBondedStake, which is the share
+	// exchange-rate (principal) pool: doing so credits every reward twice —
+	// once via the index and once via appreciated share value on withdrawal —
+	// making the pool insolvent. TotalBondedStake changes only on
+	// deposit/withdraw/slash. See SEC-CRIT: pool reward double-credit.
 	if summary.SlashingLosses > next.TotalBondedStake {
 		summary.SlashingLosses = next.TotalBondedStake
 	}
 	next.TotalBondedStake -= summary.SlashingLosses
-	next.SlashIndex, err = CheckedAddUint64(next.SlashIndex, RewardDelta(summary.SlashingLosses, pool.TotalShares))
+	slashDelta, err := RewardDelta(summary.SlashingLosses, pool.TotalShares)
+	if err != nil {
+		return NominatorPool{}, PoolRewardSummary{}, err
+	}
+	next.SlashIndex, err = CheckedAddUint64(next.SlashIndex, slashDelta)
 	if err != nil {
 		return NominatorPool{}, PoolRewardSummary{}, err
 	}

@@ -14,12 +14,9 @@ func TestActivateAccountSuccessInitializesDeterministicState(t *testing.T) {
 	store := newTestAccountStore()
 	service := newTestActivationService(t, store, 100)
 
-	result, err := service.ActivateAccount(MsgActivateAccount{
-		AddressUser:	pair.User,
-		AddressRaw:	pair.Raw,
-		PublicKey:	pubKey,
-		FeePaid:	100,
-	}, 77)
+	msg, err := NewMsgActivateAccountFromPubKey(pubKey, 100)
+	require.NoError(t, err)
+	result, err := service.ActivateAccount(msg, 77)
 
 	require.NoError(t, err)
 	require.Equal(t, CurrentAccountVersion, result.Account.Version)
@@ -42,15 +39,14 @@ func TestActivateAccountSuccessInitializesDeterministicState(t *testing.T) {
 
 func TestActivateAccountDuplicateRejected(t *testing.T) {
 	pubKey := activationTestPubKey()
-	pair, err := ActivationAddressPair(pubKey)
-	require.NoError(t, err)
 	store := newTestAccountStore()
 	service := newTestActivationService(t, store, 1)
 
-	_, err = service.ActivateAccount(MsgActivateAccount{AddressUser: pair.User, PublicKey: pubKey, FeePaid: 1}, 10)
+	msg, err := NewMsgActivateAccountFromPubKey(pubKey, 1)
 	require.NoError(t, err)
-	_, err = service.ActivateAccount(MsgActivateAccount{AddressUser: pair.User, PublicKey: pubKey, FeePaid: 1}, 11)
-
+	_, err = service.ActivateAccount(msg, 10)
+	require.NoError(t, err)
+	_, err = service.ActivateAccount(msg, 11)
 	require.ErrorContains(t, err, "already active")
 }
 
@@ -59,62 +55,63 @@ func TestActivateAccountRejectsAddressNotDerivedFromPubKey(t *testing.T) {
 	other := completeActiveAccount(t, 0xa1, 1, 0)
 	service := newTestActivationService(t, newTestAccountStore(), 1)
 
-	_, err := service.ActivateAccount(MsgActivateAccount{AddressUser: other.AddressUser, PublicKey: pubKey, FeePaid: 1}, 10)
+	msg, err := NewMsgActivateAccountFromPubKey(pubKey, 1)
+	require.NoError(t, err)
+	msg.AddressUser = other.AddressUser
+	_, err = service.ActivateAccount(msg, 10)
 
 	require.ErrorContains(t, err, "must equal derived")
 }
 
 func TestActivateAccountRejectsMalformedAEAndRawAddress(t *testing.T) {
 	pubKey := activationTestPubKey()
-	pair, err := ActivationAddressPair(pubKey)
-	require.NoError(t, err)
 	service := newTestActivationService(t, newTestAccountStore(), 1)
 
-	_, err = service.ActivateAccount(MsgActivateAccount{AddressUser: "AE-not-valid", PublicKey: pubKey, FeePaid: 1}, 10)
+	badUser, err := NewMsgActivateAccountFromPubKey(pubKey, 1)
+	require.NoError(t, err)
+	badUser.AddressUser = "AE-not-valid"
+	_, err = service.ActivateAccount(badUser, 10)
 	require.Error(t, err)
 
-	_, err = service.ActivateAccount(MsgActivateAccount{
-		AddressUser:	pair.User,
-		AddressRaw:	"4:abcdef",
-		PublicKey:	pubKey,
-		FeePaid:	1,
-	}, 10)
+	badRaw, err := NewMsgActivateAccountFromPubKey(pubKey, 1)
+	require.NoError(t, err)
+	badRaw.AddressRaw = "4:abcdef"
+	_, err = service.ActivateAccount(badRaw, 10)
 	require.ErrorContains(t, err, "invalid activation raw address")
 
-	_, err = service.ActivateAccount(MsgActivateAccount{
-		AddressUser:	pair.User,
-		AddressRaw:	completeActiveAccount(t, 0xa2, 2, 0).AddressRaw,
-		PublicKey:	pubKey,
-		FeePaid:	1,
-	}, 10)
+	mismatchedRaw, err := NewMsgActivateAccountFromPubKey(pubKey, 1)
+	require.NoError(t, err)
+	mismatchedRaw.AddressRaw = completeActiveAccount(t, 0xa2, 2, 0).AddressRaw
+	_, err = service.ActivateAccount(mismatchedRaw, 10)
 	require.ErrorContains(t, err, "raw address must equal derived")
 }
 
 func TestActivateAccountRejectsFeeUnderMinimum(t *testing.T) {
 	pubKey := activationTestPubKey()
-	pair, err := ActivationAddressPair(pubKey)
-	require.NoError(t, err)
 	service := newTestActivationService(t, newTestAccountStore(), 100)
 
-	_, err = service.ActivateAccount(MsgActivateAccount{AddressUser: pair.User, PublicKey: pubKey, FeePaid: 99}, 10)
+	msg, err := NewMsgActivateAccountFromPubKey(pubKey, 99)
+	require.NoError(t, err)
+	_, err = service.ActivateAccount(msg, 10)
 
 	require.ErrorContains(t, err, "below minimum")
 }
 
 func TestActivateAccountNumberAssignmentDeterministic(t *testing.T) {
 	pubKey := activationTestPubKey()
-	pair, err := ActivationAddressPair(pubKey)
-	require.NoError(t, err)
 	existing := completeActiveAccount(t, 0xa3, 41, 7)
+
+	msg, err := NewMsgActivateAccountFromPubKey(pubKey, 1)
+	require.NoError(t, err)
 
 	firstStore := newTestAccountStore(existing)
 	first := newTestActivationService(t, firstStore, 1)
-	firstResult, err := first.ActivateAccount(MsgActivateAccount{AddressUser: pair.User, PublicKey: pubKey, FeePaid: 1}, 20)
+	firstResult, err := first.ActivateAccount(msg, 20)
 	require.NoError(t, err)
 
 	secondStore := newTestAccountStore(existing)
 	second := newTestActivationService(t, secondStore, 1)
-	secondResult, err := second.ActivateAccount(MsgActivateAccount{AddressUser: pair.User, PublicKey: pubKey, FeePaid: 1}, 20)
+	secondResult, err := second.ActivateAccount(msg, 20)
 	require.NoError(t, err)
 
 	require.Equal(t, uint64(42), firstResult.Account.AccountNumber)
@@ -124,16 +121,16 @@ func TestActivateAccountNumberAssignmentDeterministic(t *testing.T) {
 
 func TestAccountActivatedEventGolden(t *testing.T) {
 	pubKey := activationTestPubKey()
-	pair, err := ActivationAddressPair(pubKey)
-	require.NoError(t, err)
 	service := newTestActivationService(t, newTestAccountStore(), 100)
 
-	result, err := service.ActivateAccount(MsgActivateAccount{AddressUser: pair.User, PublicKey: pubKey, FeePaid: 123}, 55)
+	msg, err := NewMsgActivateAccountFromPubKey(pubKey, 123)
+	require.NoError(t, err)
+	result, err := service.ActivateAccount(msg, 55)
 	require.NoError(t, err)
 	bz, err := json.Marshal(result.Event)
 	require.NoError(t, err)
 
-	require.Equal(t, `{"type":"AccountActivated","address_user":"AEAAAQAAAAAAAAAAAAAAAHUedugZkZbUVJQcRdGzoyPxQzvW","address_raw":"4:000000000000000000000000751e76e8199196d454941c45d1b3a323f1433bd6","account_number":1,"sequence":0,"pubkey_hash":"0f715baf5d4c2ed329785cef29e562f73488c8a2bb9dbc5700b361d54b9b0554","height":55,"fee_paid":123}`, string(bz))
+	require.Equal(t, `{"type":"AccountActivated","address_user":"AEJkAmWJMy8C610WXuOHXy8gau5U1YrjvPUXF70Dm-xQ4Pt8t-Y4NkVtpC-wIA","address_raw":"4:875f2f206aee54d58ae3bcf51717bd039bec50e0fb7cb7e63836456da42fb020","account_number":1,"sequence":0,"pubkey_hash":"0f715baf5d4c2ed329785cef29e562f73488c8a2bb9dbc5700b361d54b9b0554","height":55,"fee_paid":123}`, string(bz))
 }
 
 func TestActivatedAccountExportImportPreservesState(t *testing.T) {
@@ -142,7 +139,9 @@ func TestActivatedAccountExportImportPreservesState(t *testing.T) {
 	require.NoError(t, err)
 	source := newTestAccountStore()
 	service := newTestActivationService(t, source, 1)
-	result, err := service.ActivateAccount(MsgActivateAccount{AddressUser: pair.User, PublicKey: pubKey, FeePaid: 1}, 99)
+	msg, err := NewMsgActivateAccountFromPubKey(pubKey, 1)
+	require.NoError(t, err)
+	result, err := service.ActivateAccount(msg, 99)
 	require.NoError(t, err)
 
 	exported, err := ExportGenesis(source)

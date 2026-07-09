@@ -10,9 +10,13 @@ import (
 )
 
 const (
-	BasisPoints			= uint64(10_000)
-	DefaultBaseFeeAmount		= MinDefaultFeeAmount
-	DefaultMaxFeeAmount		= "5000000"
+	BasisPoints	= uint64(10_000)
+	// DefaultBaseFeeAmount is the flat transfer anchor: 0.4 AET. Together with
+	// the per-gas/per-byte/per-message components a typical transfer averages
+	// the 0.5 AET target (see DefaultTargetTransferFeeAmount in keys.go).
+	DefaultBaseFeeAmount	= "400000000"
+	// DefaultMaxFeeAmount is the hard cap: 5 AET.
+	DefaultMaxFeeAmount	= "5000000000"
 	DefaultTargetUtilizationBps	= uint32(5_000)
 	DefaultCongestionBps		= uint32(8_000)
 	DefaultMaxTxGas			= uint64(1_000_000)
@@ -219,7 +223,14 @@ func BlockUtilizationBps(blockGasConsumed, txGasLimit, maxBlockGas uint64) uint3
 	if used < blockGasConsumed || used >= maxBlockGas {
 		return uint32(BasisPoints)
 	}
-	return uint32((used * BasisPoints) / maxBlockGas)
+	return saturatingUint32((used * BasisPoints) / maxBlockGas)
+}
+
+func saturatingUint32(value uint64) uint32 {
+	if value > uint64(^uint32(0)) {
+		return ^uint32(0)
+	}
+	return uint32(value)
 }
 
 func SenderTxLimit(params Params, stake sdkmath.Int) (uint64, error) {

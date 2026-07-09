@@ -1,0 +1,175 @@
+// Per-proposal contract for the DAO example.
+//
+// One DaoProposal exists per proposal id, deployed deterministically by
+// the DAO core. The first ProposalSeed from the core opens the proposal;
+// votes arrive as internal messages; when the threshold is reached the
+// proposal closes itself and reports ProposalPassed back to the core.
+//
+// Voting weight here is intentionally simple: one message, one vote. Vote
+// deduplication per address is the job of a per-voter ballot contract in a
+// production design; this example keeps the surface minimal.
+
+const ERR_BAD_MSG = 0xFFFF
+const ERR_BAD_SENDER = 1004
+const ERR_ALREADY_OPEN = 1031
+const ERR_NOT_OPEN = 1032
+
+// See dao_core.atlx: outbound internal messages must fund the destination's
+// gas/storage rent, never amount: 0.
+const MSG_FORWARD_VALUE = aet("0.0001")
+
+@storage
+struct DaoProposalStorage {
+    dao: address
+    id: uint64
+    author: address
+    beneficiary: address
+    amount: coins
+    description: string
+    votesFor: uint64
+    votesAgainst: uint64
+    threshold: uint64
+    open: uint32
+}
+
+@message(0x9102)
+struct ProposalSeed {
+    id: uint64
+    author: address
+    beneficiary: address
+    amount: coins
+    description: string
+    threshold: uint64
+}
+
+@message(0x9103)
+struct CastVote {
+    support: uint32
+}
+
+@message(0x9104)
+struct ProposalPassed {
+    id: uint64
+    beneficiary: address
+    amount: coins
+}
+
+type ProposalInternalMsg = ProposalSeed | CastVote
+
+contract DaoProposal {
+    author: "Aetralis example"
+    description: "Single DAO proposal accepting votes until threshold"
+    version: "0.01.0"
+
+    storage: DaoProposalStorage
+    incomingMessages: ProposalInternalMsg
+
+    @store
+    func DaoProposalStorage.load() {
+        return DaoProposalStorage.fromChunk(contract.getData())
+    }
+
+    @store
+    func DaoProposalStorage.save(self) {
+        contract.setData(self.toChunk())
+    }
+
+    @internal
+    func onInternalMessage(in: InMessage) {
+        const msg = lazy ProposalInternalMsg.fromSegment(in.body)
+
+        match (msg) {
+            ProposalSeed => {
+                var st = lazy DaoProposalStorage.load()
+                assert (in.senderAddress == st.dao) throw ERR_BAD_SENDER
+                assert (st.open == 0) throw ERR_ALREADY_OPEN
+
+                st.author = msg.author
+                st.beneficiary = msg.beneficiary
+                st.amount = msg.amount
+                st.description = msg.description
+                st.threshold = msg.threshold
+                st.open = 1
+                st.save()
+            }
+
+            CastVote => {
+                var st = lazy DaoProposalStorage.load()
+                assert (st.open == 1) throw ERR_NOT_OPEN
+
+                if (msg.support == 1) {
+                    st.votesFor += 1
+                } else {
+                    st.votesAgainst += 1
+                }
+
+                if (st.votesFor >= st.threshold) {
+                    st.open = 0
+
+                    const passed = buildMessage({
+                        bounce: BounceMode.Only256BitsOfBody,
+                        amount: MSG_FORWARD_VALUE,
+                        receiver: st.dao,
+                        body: ProposalPassed {
+                            id: st.id,
+                            beneficiary: st.beneficiary,
+                            amount: st.amount,
+                        }
+                    })
+
+                    passed.send(SEND_BOUNCE_ON_FAIL)
+                }
+
+                st.save()
+            }
+
+            else => {
+                assert (in.body.isEmpty()) throw ERR_BAD_MSG
+            }
+        }
+    }
+
+    @bounced
+    func onBouncedMessage(in: InMessageBounced) {
+        in.bouncedBody.skipBouncedPrefix()
+
+        const bounced = lazy ProposalPassed.fromSegment(in.bouncedBody)
+
+        var st = lazy DaoProposalStorage.load()
+        if (st.id == bounced.id && st.open == 0) {
+            // Report bounced at the core: reopen so voting can retry.
+            st.open = 1
+            st.save()
+        }
+    }
+
+    @get
+    func votes(): uint64 {
+        const st = lazy DaoProposalStorage.load()
+        return st.votesFor
+    }
+
+    @get
+    func votesAgainst(): uint64 {
+        const st = lazy DaoProposalStorage.load()
+        return st.votesAgainst
+    }
+
+    @get
+    func isOpen(): uint32 {
+        const st = lazy DaoProposalStorage.load()
+        return st.open
+    }
+
+    @get
+    func beneficiaryOf(): address {
+        const st = lazy DaoProposalStorage.load()
+        return st.beneficiary
+    }
+
+    @get
+    func amountOf(): coins {
+        const st = lazy DaoProposalStorage.load()
+        return st.amount
+    }
+}

@@ -165,8 +165,8 @@ func TestAddressConvertCommandOutputsRawAndUserFriendly(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(out.Bytes(), &res), out.String())
 	require.Regexp(t, `^4:[0-9a-f]{64}$`, res.Raw)
-	require.Regexp(t, `^AE[A-Za-z0-9_-]{46}$`, res.UserFriendly)
-	require.Len(t, res.UserFriendly, 48)
+	require.Regexp(t, `^AE[A-Za-z0-9_-]{44}$`, res.UserFriendly)
+	require.Len(t, res.UserFriendly, 46)
 }
 
 func TestOperatorTxCommandsExposeCommonFlags(t *testing.T) {

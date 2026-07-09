@@ -28,8 +28,8 @@ func DefaultParams() Params {
 		MaxAnnualInflationBps:		uint32(appparams.MaxInflationBps),
 		ConstitutionalMaxInflationBps:	uint32(appparams.MaxInflationBps),
 		ResponsivenessBps:		uint32(appparams.DefaultResponsivenessBps),
-		AnnualReferenceSupply:		sdk.NewInt64Coin(BaseDenom, 365_000_000_000),
-		EpochsPerYear:			365,
+		AnnualReferenceSupply:		sdk.NewInt64Coin(BaseDenom, appparams.AnnualReferenceSupplyNaet),
+		EpochsPerYear:			uint64(appparams.EpochsPerYear),
 		DistributionWeights:		DefaultDistributionWeights(),
 	}
 }
@@ -65,10 +65,10 @@ func NormalizeParams(params Params) Params {
 		params.ResponsivenessBps = uint32(appparams.DefaultResponsivenessBps)
 	}
 	if params.AnnualReferenceSupply.Denom == "" && params.AnnualReferenceSupply.Amount.IsNil() {
-		params.AnnualReferenceSupply = sdk.NewInt64Coin(params.BaseDenom, 365_000_000_000)
+		params.AnnualReferenceSupply = sdk.NewInt64Coin(params.BaseDenom, appparams.AnnualReferenceSupplyNaet)
 	}
 	if params.EpochsPerYear == 0 {
-		params.EpochsPerYear = 365
+		params.EpochsPerYear = uint64(appparams.EpochsPerYear)
 	}
 	if params.DistributionWeights == (DistributionWeights{}) {
 		params.DistributionWeights = DefaultDistributionWeights()
@@ -122,17 +122,20 @@ func (e EmissionEpoch) Validate(params Params) error {
 	if e.InflationBps > params.ConstitutionalMaxInflationBps {
 		return fmt.Errorf("inflation cannot exceed constitutional maximum")
 	}
-	for name, coin := range map[string]sdk.Coin{
-		"emission_amount":	e.EmissionAmount,
-		"validator_reward":	e.ValidatorReward,
-		"treasury":		e.Treasury,
-		"protection_fund":	e.ProtectionFund,
-		"burn":			e.Burn,
-		"ecosystem":		e.Ecosystem,
-		"rounding_remainder":	e.RoundingRemainder,
+	for _, entry := range []struct {
+		name string
+		coin sdk.Coin
+	}{
+		{name: "emission_amount", coin: e.EmissionAmount},
+		{name: "validator_reward", coin: e.ValidatorReward},
+		{name: "treasury", coin: e.Treasury},
+		{name: "protection_fund", coin: e.ProtectionFund},
+		{name: "burn", coin: e.Burn},
+		{name: "ecosystem", coin: e.Ecosystem},
+		{name: "rounding_remainder", coin: e.RoundingRemainder},
 	} {
-		if err := validateCoin(params.BaseDenom, coin, false); err != nil {
-			return fmt.Errorf("%s: %w", name, err)
+		if err := validateCoin(params.BaseDenom, entry.coin, false); err != nil {
+			return fmt.Errorf("%s: %w", entry.name, err)
 		}
 	}
 	sum := e.ValidatorReward.Amount.Add(e.Treasury.Amount).Add(e.ProtectionFund.Amount).Add(e.Burn.Amount).Add(e.Ecosystem.Amount).Add(e.RoundingRemainder.Amount)

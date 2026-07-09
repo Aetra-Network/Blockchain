@@ -34,6 +34,9 @@ func (m grpcMsgServer) StoreCode(ctx context.Context, msg *types.MsgStoreCode) (
 	if msg == nil {
 		return nil, errors.New("empty contracts store code request")
 	}
+	if err := m.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	res, err := m.keeper.StoreCodeState(ctx, *msg)
 	return &res, err
 }
@@ -41,6 +44,9 @@ func (m grpcMsgServer) StoreCode(ctx context.Context, msg *types.MsgStoreCode) (
 func (m grpcMsgServer) DeployContract(ctx context.Context, msg *types.MsgDeployContract) (*types.InstantiateContractResponse, error) {
 	if msg == nil {
 		return nil, errors.New("empty contracts deploy request")
+	}
+	if err := m.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
 	}
 	res, err := m.keeper.DeployContractState(ctx, *msg)
 	return &res, err
@@ -50,6 +56,9 @@ func (m grpcMsgServer) ExecuteExternal(ctx context.Context, msg *types.MsgExecut
 	if msg == nil {
 		return nil, errors.New("empty contracts external execution request")
 	}
+	if err := m.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	res, err := m.keeper.ExecuteExternalState(ctx, *msg)
 	return &res, err
 }
@@ -57,6 +66,9 @@ func (m grpcMsgServer) ExecuteExternal(ctx context.Context, msg *types.MsgExecut
 func (m grpcMsgServer) ExecuteInternal(ctx context.Context, msg *types.MsgExecuteInternal) (*types.InternalMessage, error) {
 	if msg == nil {
 		return nil, errors.New("empty contracts internal execution request")
+	}
+	if err := m.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
 	}
 	res, err := m.keeper.ExecuteInternal(*msg)
 	if err != nil {
@@ -72,6 +84,9 @@ func (m grpcMsgServer) SendInternalMessage(ctx context.Context, msg *types.MsgSe
 	if msg == nil {
 		return nil, errors.New("empty contracts internal send request")
 	}
+	if err := m.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	res, err := m.keeper.SendInternalMessage(*msg)
 	if err != nil {
 		return nil, err
@@ -86,6 +101,9 @@ func (m grpcMsgServer) UpdateContractParams(ctx context.Context, msg *types.MsgU
 	if msg == nil {
 		return nil, errors.New("empty contracts params update request")
 	}
+	if err := m.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	if err := m.keeper.UpdateContractParams(*msg); err != nil {
 		return nil, err
 	}
@@ -98,6 +116,9 @@ func (m grpcMsgServer) UpdateContractParams(ctx context.Context, msg *types.MsgU
 func (m grpcMsgServer) SubmitSecurityAttestation(ctx context.Context, msg *types.MsgSubmitSecurityAttestation) (*types.MsgSubmitSecurityAttestationResponse, error) {
 	if msg == nil {
 		return nil, errors.New("empty contracts security attestation submit request")
+	}
+	if err := m.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
 	}
 	res, err := m.keeper.SubmitSecurityAttestation(*msg)
 	if err != nil {
@@ -112,6 +133,9 @@ func (m grpcMsgServer) SubmitSecurityAttestation(ctx context.Context, msg *types
 func (m grpcMsgServer) RevokeSecurityAttestation(ctx context.Context, msg *types.MsgRevokeSecurityAttestation) (*types.MsgRevokeSecurityAttestationResponse, error) {
 	if msg == nil {
 		return nil, errors.New("empty contracts security attestation revoke request")
+	}
+	if err := m.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
 	}
 	res, err := m.keeper.RevokeSecurityAttestation(*msg)
 	if err != nil {

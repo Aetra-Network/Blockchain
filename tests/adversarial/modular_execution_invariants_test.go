@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"testing"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
@@ -12,11 +11,9 @@ import (
 
 	appparams "github.com/sovereign-l1/l1/app/params"
 	feestypes "github.com/sovereign-l1/l1/x/fees/types"
-	identitytypes "github.com/sovereign-l1/l1/x/identity/types"
 	loadtypes "github.com/sovereign-l1/l1/x/load/types"
 	meshtypes "github.com/sovereign-l1/l1/x/mesh/types"
 	routingtypes "github.com/sovereign-l1/l1/x/routing/types"
-	shardsim "github.com/sovereign-l1/l1/x/sharding/sim"
 	zonestypes "github.com/sovereign-l1/l1/x/zones/types"
 )
 
@@ -36,15 +33,6 @@ func TestPhase11ModularExecutionInvariants(t *testing.T) {
 		exported := next.Export()
 		require.Len(t, exported.ReplayMarkers, 1)
 		require.Equal(t, msg.MessageID, exported.ReplayMarkers[0].MessageID)
-	})
-
-	t.Run("identity rejects zero address ownership", func(t *testing.T) {
-		state := identitytypes.EmptyIdentityState(identitytypes.DefaultIdentityParams())
-		commitment, err := identitytypes.ComputeRegistrationCommitment("zero.aet", adversarialAddress(1), "salt")
-		require.NoError(t, err)
-
-		_, err = identitytypes.CommitDomainRegistration(state, "zero.aet", sdk.AccAddress(make([]byte, 20)), commitment, 1)
-		require.ErrorContains(t, err, "zero")
 	})
 
 	t.Run("protocol fee denom remains naet only", func(t *testing.T) {
@@ -85,36 +73,6 @@ func TestPhase11ModularExecutionInvariants(t *testing.T) {
 		tampered := next.Export()
 		tampered.Commitments[0].StateRoot = hashString("tampered")
 		require.ErrorContains(t, tampered.Validate(), "hash mismatch")
-	})
-
-	t.Run("shard split merge preserves every message once", func(t *testing.T) {
-		sim := adversarialSimulator(t)
-		root := shardsim.ShardID{WorkchainID: shardsim.BaseWorkchain, Prefix: shardsim.BaseShardID}
-		require.NoError(t, sim.SplitShard(root))
-		left := shardsim.ShardID{WorkchainID: shardsim.BaseWorkchain, Prefix: "0"}
-		right := shardsim.ShardID{WorkchainID: shardsim.BaseWorkchain, Prefix: "1"}
-		for i := 0; i < 16; i++ {
-			require.NoError(t, sim.EnqueueMessage(shardsim.CrossShardMessage{
-				Source:		left,
-				Destination:	right,
-				Nonce:		uint64(i + 1),
-				Payload:	[]byte(fmt.Sprintf("payload-%02d", i)),
-				RoutingKey:	[]byte(fmt.Sprintf("route-%02d", i)),
-				Timeout:	100,
-			}))
-		}
-		before := queueMessageIDs(sim.Export(), left)
-		require.Len(t, before, 16)
-
-		require.NoError(t, sim.SplitShard(left))
-		afterSplit := append(queueMessageIDs(sim.Export(), shardsim.ShardID{WorkchainID: shardsim.BaseWorkchain, Prefix: "00"}), queueMessageIDs(sim.Export(), shardsim.ShardID{WorkchainID: shardsim.BaseWorkchain, Prefix: "01"})...)
-		require.ElementsMatch(t, before, afterSplit)
-
-		require.NoError(t, sim.MergeShards(
-			shardsim.ShardID{WorkchainID: shardsim.BaseWorkchain, Prefix: "00"},
-			shardsim.ShardID{WorkchainID: shardsim.BaseWorkchain, Prefix: "01"},
-		))
-		require.ElementsMatch(t, before, queueMessageIDs(sim.Export(), left))
 	})
 
 	t.Run("load score max delta and routing determinism", func(t *testing.T) {
@@ -164,20 +122,6 @@ func FuzzMalformedMeshMessagesFailSafely(f *testing.F) {
 	})
 }
 
-func FuzzMalformedDomainLabelsFailSafely(f *testing.F) {
-	for _, seed := range []string{"alice", "ALICE.AET", "", ".aet", "bad..aet", "xn--bad.aet"} {
-		f.Add(seed)
-	}
-	f.Fuzz(func(t *testing.T, name string) {
-		normalized, err := identitytypes.NormalizeAETDomain(name)
-		if err != nil {
-			return
-		}
-		require.NotEmpty(t, normalized)
-		require.Contains(t, normalized, ".aet")
-	})
-}
-
 func FuzzMalformedZoneCommitmentsFailSafely(f *testing.F) {
 	f.Add("FINANCIAL_ZONE", uint64(1), hashString("state"), hashString("receipt"), hashString("message"), hashString("execution"))
 	f.Add("", uint64(0), "bad", "bad", "bad", "bad")
@@ -187,64 +131,6 @@ func FuzzMalformedZoneCommitmentsFailSafely(f *testing.F) {
 			return
 		}
 		require.NoError(t, commitment.ValidateHash())
-	})
-}
-
-func FuzzShardSplitMergeSequencesFailSafely(f *testing.F) {
-	f.Add([]byte{0, 1, 0, 1})
-	f.Add([]byte{1, 1, 1, 0})
-	f.Fuzz(func(t *testing.T, ops []byte) {
-		if len(ops) > 32 {
-			ops = ops[:32]
-		}
-		sim := adversarialSimulator(t)
-		root := shardsim.ShardID{WorkchainID: shardsim.BaseWorkchain, Prefix: shardsim.BaseShardID}
-		for _, op := range ops {
-			switch op % 2 {
-			case 0:
-				_ = sim.SetActiveShardCount(shardsim.BaseWorkchain, 2)
-			default:
-				_ = sim.SetActiveShardCount(shardsim.BaseWorkchain, 1)
-			}
-		}
-		exported := sim.Export()
-		require.NotEmpty(t, exported.Shards)
-		require.NoError(t, shardsim.ValidateState(exported))
-		_, _ = root, exported
-	})
-}
-
-func FuzzExportImportCorruptionFailSafely(f *testing.F) {
-	f.Add([]byte{0})
-	f.Add([]byte{1})
-	f.Add([]byte{2})
-	f.Fuzz(func(t *testing.T, selector []byte) {
-		if len(selector) == 0 {
-			return
-		}
-		sim := adversarialSimulator(t)
-		require.NoError(t, sim.SetActiveShardCount(shardsim.BaseWorkchain, 2))
-		state := sim.Export()
-		switch selector[0] % 4 {
-		case 0:
-			state.Validators = nil
-		case 1:
-			for key := range state.Headers {
-				delete(state.Headers, key)
-				break
-			}
-		case 2:
-			for key, shard := range state.Shards {
-				shard.StateRoot = "corrupted"
-				state.Shards[key] = shard
-				break
-			}
-		case 3:
-			state.LoadStates[999] = shardsim.WorkchainLoadState{WorkchainID: 999, ActiveShardCount: 1}
-		}
-		if imported, err := shardsim.Import(state); err == nil {
-			require.NoError(t, shardsim.ValidateState(imported.Export()))
-		}
 	})
 }
 
@@ -326,40 +212,6 @@ func adversarialZone(id zonestypes.ZoneID, kind zonestypes.ZoneKind, vm zonestyp
 		AuditStatus:		zonestypes.AuditStatusExperimental,
 		ActivationHeight:	1,
 	}
-}
-
-func adversarialSimulator(t *testing.T) *shardsim.Simulator {
-	t.Helper()
-	sim, err := shardsim.New([]shardsim.Validator{
-		{Address: "val-a", Power: 100},
-		{Address: "val-b", Power: 100},
-		{Address: "val-c", Power: 100},
-	}, "phase11-adversarial")
-	require.NoError(t, err)
-	require.NoError(t, sim.AddWorkchain(shardsim.WorkchainConfig{
-		ID:			shardsim.BaseWorkchain,
-		AllowedVMs:		[]string{"AVM", "COSMWASM_GATED", "NATIVE_MODULE"},
-		FeeDenom:		shardsim.FeeDenomNaet,
-		AddressFormat:		"ae",
-		GenesisStateHash:	hashString("base-workchain-genesis"),
-		UpgradePolicy:		"GOVERNANCE",
-	}))
-	return sim
-}
-
-func queueMessageIDs(state shardsim.MasterchainState, shardID shardsim.ShardID) []string {
-	shard := state.Shards[shardID.Key()]
-	out := make([]string, len(shard.Queue))
-	for i, msg := range shard.Queue {
-		out[i] = msg.MessageID
-	}
-	return out
-}
-
-func adversarialAddress(seed byte) sdk.AccAddress {
-	out := make([]byte, 20)
-	out[19] = seed
-	return sdk.AccAddress(out)
 }
 
 func hashJSON(t *testing.T, value any) string {

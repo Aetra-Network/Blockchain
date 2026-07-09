@@ -29,6 +29,11 @@ The canonical language and ABI documents are:
 - [docs/architecture/storage-model.md](architecture/storage-model.md)
 - [docs/architecture/selector-registry.md](architecture/selector-registry.md)
 
+Aetralis v1 is the public contract-language track for AVM, and `.atlx` is the
+canonical source extension. Legacy terminology such as `Ref` is transitional
+compatibility only and should not appear in new public language, ABI, or
+documentation surfaces.
+
 ## Verifier
 
 Every module must pass verification before deployment or execution. The

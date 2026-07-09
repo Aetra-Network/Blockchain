@@ -1,0 +1,202 @@
+// DNS registry example for ATLX / AVM.
+//
+// Model:
+// - DnsRegistry owns registration policy and record code.
+// - Each name lives in its own DnsRecord contract, so the registry never
+//   stores a dictionary of names.
+// - Record addresses are derived deterministically from:
+//   record code + init data { registry, name }, which makes resolving a
+//   name a pure address computation.
+
+const ERR_NOT_OWNER = 1001
+const ERR_BAD_MSG = 0xFFFF
+const ERR_BAD_SENDER = 1004
+const ERR_BAD_NAME = 1010
+const ERR_REGISTRY_PAUSED = 1011
+
+// Outbound internal messages must fund the destination's gas/storage rent —
+// a freshly auto-deployed record contract created with amount: 0 would have
+// no balance and get frozen for unpaid storage rent immediately.
+const MSG_FORWARD_VALUE = aet("0.0001")
+
+@storage
+struct DnsRegistryStorage {
+    owner: address
+    recordCount: uint64
+    recordCode: Code
+    paused: uint32
+}
+
+@storage
+struct DnsRecordStorage {
+    registry: address
+    name: string
+    owner: address
+    target: address?
+    updatedAt: int64
+}
+
+@message(0x7101)
+struct RegisterName {
+    name: string
+    target: address
+}
+
+@message(0x7102)
+struct RecordSeed {
+    name: string
+    owner: address
+    target: address
+}
+
+@message(0x7103)
+struct UpdateTarget {
+    target: address
+}
+
+@message(0x7104)
+struct ReleaseName {}
+
+@message(0x7105)
+struct RecordReleased {
+    name: string
+}
+
+@message(0x7106)
+struct SetPaused {
+    paused: uint32
+}
+
+type RegistryInternalMsg = RegisterName | RecordReleased | SetPaused
+type RecordInternalMsg = RecordSeed | UpdateTarget | ReleaseName
+
+contract DnsRegistry {
+    author: "Aetralis example"
+    description: "Name registry with one record contract per name"
+    version: "0.01.0"
+
+    storage: DnsRegistryStorage
+    incomingMessages: RegistryInternalMsg
+
+    @store
+    func DnsRegistryStorage.load() {
+        return DnsRegistryStorage.fromChunk(contract.getData())
+    }
+
+    @store
+    func DnsRegistryStorage.save(self) {
+        contract.setData(self.toChunk())
+    }
+
+    @pure
+    func recordInitFor(registry: address, name: string) {
+        return DnsRecordStorage {
+            registry: registry,
+            name: name,
+            owner: registry,
+            target: null,
+            updatedAt: 0,
+        }
+    }
+
+    @pure
+    func recordAddressFor(name: string): address {
+        const st = lazy DnsRegistryStorage.load()
+        return counterfactualAddress({
+            code: st.recordCode,
+            data: recordInitFor(getAddress(), name),
+        })
+    }
+
+    @pure
+    func autoDeployRecordAddress(name: string): address {
+        const st = lazy DnsRegistryStorage.load()
+        return autoDeployAddress({
+            code: st.recordCode,
+            data: recordInitFor(getAddress(), name),
+        })
+    }
+
+    @internal
+    func onInternalMessage(in: InMessage) {
+        const msg = lazy RegistryInternalMsg.fromSegment(in.body)
+
+        match (msg) {
+            RegisterName => {
+                var st = lazy DnsRegistryStorage.load()
+                assert (st.paused == 0) throw ERR_REGISTRY_PAUSED
+
+                st.recordCount += 1
+
+                const record = autoDeployRecordAddress(msg.name)
+                const seed = buildMessage({
+                    bounce: BounceMode.Only256BitsOfBody,
+                    amount: MSG_FORWARD_VALUE,
+                    receiver: record,
+                    body: RecordSeed {
+                        name: msg.name,
+                        owner: in.senderAddress,
+                        target: msg.target,
+                    }
+                })
+
+                seed.send(SEND_BOUNCE_ON_FAIL)
+                st.save()
+            }
+
+            RecordReleased => {
+                var st = lazy DnsRegistryStorage.load()
+                const expectedRecord = recordAddressFor(msg.name)
+                assert (in.senderAddress == expectedRecord) throw ERR_BAD_SENDER
+
+                if (st.recordCount > 0) {
+                    st.recordCount -= 1
+                }
+                st.save()
+            }
+
+            SetPaused => {
+                var st = lazy DnsRegistryStorage.load()
+                assert (in.senderAddress == st.owner) throw ERR_NOT_OWNER
+
+                st.paused = msg.paused
+                st.save()
+            }
+
+            else => {
+                assert (in.body.isEmpty()) throw ERR_BAD_MSG
+            }
+        }
+    }
+
+    @bounced
+    func onBouncedMessage(in: InMessageBounced) {
+        in.bouncedBody.skipBouncedPrefix()
+
+        const bounced = lazy RecordSeed.fromSegment(in.bouncedBody)
+
+        var st = lazy DnsRegistryStorage.load()
+        if (st.recordCount > 0) {
+            // Seed bounced: the record was not created, revert the count.
+            st.recordCount -= 1
+            st.save()
+        }
+    }
+
+    @get
+    func recordAddressOf(name: string): address {
+        return recordAddressFor(name)
+    }
+
+    @get
+    func recordCount(): uint64 {
+        const st = lazy DnsRegistryStorage.load()
+        return st.recordCount
+    }
+
+    @get
+    func isPaused(): uint32 {
+        const st = lazy DnsRegistryStorage.load()
+        return st.paused
+    }
+}

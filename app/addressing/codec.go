@@ -1,10 +1,12 @@
 package addressing
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"crypto/sha256"
 	"regexp"
 	"strings"
 
@@ -17,18 +19,22 @@ const (
 	SystemRawPrefix		= "-7:"
 	RawAddressLength	= 66
 	SystemRawAddressLength	= 67
-	UserFriendlyLength	= 48
+	UserFriendlyLength	= 46
+	UserFriendlyLegacyLength	= 48
 	UserFriendlyPrefix	= "AE"
 	ZeroRawAddress		= "4:0000000000000000000000000000000000000000000000000000000000000000"
 	ZeroUserFriendly	= "AEAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 	rawPayloadLength	= 32
 	shortAddressLength	= 20
 	longAddressPadLength	= rawPayloadLength - shortAddressLength
-	userFriendlyVersion	= byte(1)
+	userFriendlyChecksumLength	= 10
+	userFriendlyLegacyVersion	= byte(1)
+	userFriendlyCanonicalVersion	= byte(2)
 )
 
 var (
-	userFriendlyMagic	= [3]byte{0x00, 0x40, 0x00}
+	userFriendlyLegacyMagic	= [3]byte{0x00, 0x40, 0x00}
+	userFriendlyCanonicalMagic	= [3]byte{0x00, 0x42, 0x64}
 	rawAddressRe		= regexp.MustCompile(`^4:[0-9a-f]{64}$`)
 	systemRawAddressRe	= regexp.MustCompile(`^-7:[0-9a-f]{64}$`)
 )
@@ -114,10 +120,25 @@ func FormatUserFriendly(bz []byte) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	payload := make([]byte, 0, 36)
-	payload = append(payload, userFriendlyMagic[:]...)
-	payload = append(payload, userFriendlyVersion)
-	payload = append(payload, raw...)
+	if IsZero(raw) {
+		return ZeroUserFriendly, nil
+	}
+	canonical := FromRawPayload(raw)
+	if len(canonical) == shortAddressLength {
+		sum := sha256.Sum256(canonical)
+		payload := make([]byte, 0, 4+userFriendlyChecksumLength+shortAddressLength)
+		payload = append(payload, userFriendlyCanonicalMagic[:]...)
+		payload = append(payload, userFriendlyCanonicalVersion)
+		payload = append(payload, sum[:userFriendlyChecksumLength]...)
+		payload = append(payload, canonical...)
+		return base64.RawURLEncoding.EncodeToString(payload), nil
+	}
+	sum := sha256.Sum256(canonical)
+	payload := make([]byte, 0, 4+userFriendlyChecksumLength+rawPayloadLength)
+	payload = append(payload, userFriendlyCanonicalMagic[:]...)
+	payload = append(payload, userFriendlyCanonicalVersion)
+	payload = append(payload, sum[:userFriendlyChecksumLength]...)
+	payload = append(payload, canonical...)
 	return base64.RawURLEncoding.EncodeToString(payload), nil
 }
 
@@ -166,19 +187,40 @@ func Parse(text string) ([]byte, error) {
 			}
 		}
 	}
-	if len(text) == UserFriendlyLength && strings.HasPrefix(text, UserFriendlyPrefix) {
+	if strings.HasPrefix(text, UserFriendlyPrefix) {
 		payload, err := base64.RawURLEncoding.DecodeString(text)
 		if err != nil {
 			return nil, err
 		}
-		if len(payload) != 36 ||
-			payload[0] != userFriendlyMagic[0] ||
-			payload[1] != userFriendlyMagic[1] ||
-			payload[2] != userFriendlyMagic[2] ||
-			payload[3] != userFriendlyVersion {
-			return nil, fmt.Errorf("invalid AE userfriendly address header")
+		switch len(payload) {
+		case 34:
+			if !hasUserFriendlyHeader(payload, userFriendlyCanonicalVersion) {
+				return nil, fmt.Errorf("invalid AE userfriendly address header")
+			}
+			checksum := sha256.Sum256(payload[14:])
+			if !bytes.Equal(payload[4:14], checksum[:userFriendlyChecksumLength]) {
+				return nil, fmt.Errorf("invalid AE userfriendly address checksum")
+			}
+			out := make([]byte, shortAddressLength)
+			copy(out, payload[14:])
+			return out, nil
+		case 36:
+			if !hasLegacyOrCanonicalUserFriendlyHeader(payload) {
+				return nil, fmt.Errorf("invalid AE userfriendly address header")
+			}
+			return FromRawPayload(payload[4:]), nil
+		case 46:
+			if !hasUserFriendlyHeader(payload, userFriendlyCanonicalVersion) {
+				return nil, fmt.Errorf("invalid AE userfriendly address header")
+			}
+			checksum := sha256.Sum256(payload[14:])
+			if !bytes.Equal(payload[4:14], checksum[:userFriendlyChecksumLength]) {
+				return nil, fmt.Errorf("invalid AE userfriendly address checksum")
+			}
+			return FromRawPayload(payload[14:]), nil
+		default:
+			return nil, fmt.Errorf("invalid AE userfriendly address length")
 		}
-		return FromRawPayload(payload[4:]), nil
 	}
 	for _, prefix := range []string{
 		sdk.GetConfig().GetBech32AccountAddrPrefix(),
@@ -196,7 +238,31 @@ func Parse(text string) ([]byte, error) {
 			return bz, nil
 		}
 	}
-	return nil, fmt.Errorf("invalid address format: expected 4:<64 lowercase hex>, -7:<64 lowercase hex>, or 48-char AE userfriendly address")
+	return nil, fmt.Errorf("invalid address format: expected 4:<64 lowercase hex>, -7:<64 lowercase hex>, or AE userfriendly address")
+}
+
+func hasUserFriendlyHeader(payload []byte, version byte) bool {
+	if len(payload) < 4 {
+		return false
+	}
+	return payload[0] == userFriendlyCanonicalMagic[0] &&
+		payload[1] == userFriendlyCanonicalMagic[1] &&
+		payload[2] == userFriendlyCanonicalMagic[2] &&
+		payload[3] == version
+}
+
+func hasLegacyOrCanonicalUserFriendlyHeader(payload []byte) bool {
+	if len(payload) < 4 {
+		return false
+	}
+	return (payload[0] == userFriendlyLegacyMagic[0] &&
+		payload[1] == userFriendlyLegacyMagic[1] &&
+		payload[2] == userFriendlyLegacyMagic[2] &&
+		payload[3] == userFriendlyLegacyVersion) ||
+		(payload[0] == userFriendlyCanonicalMagic[0] &&
+			payload[1] == userFriendlyCanonicalMagic[1] &&
+			payload[2] == userFriendlyCanonicalMagic[2] &&
+			payload[3] == userFriendlyCanonicalVersion)
 }
 
 func ToRawPayload(bz []byte) ([]byte, error) {

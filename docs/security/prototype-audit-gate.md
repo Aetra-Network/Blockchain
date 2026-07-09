@@ -141,7 +141,7 @@ Each release candidate needs a reviewer to mark every item `PASS`, `FINDING`, or
 
 | Finding | Source | Severity | Triage |
 | --- | --- | --- | --- |
-| `go mod verify` reports modified global CometBFT module cache | Local `C:\Users\Ryzen\go\pkg\mod\github.com\cometbft\cometbft@v0.39.3` | Medium | Environment cache issue. Clean module cache or run in CI before release. Do not commit vendored or modified module cache. |
+| `go mod verify` reports modified CometBFT module cache even in isolated Windows cache | Local `github.com/cometbft/cometbft@v0.39.3` extracted into `GOMODCACHE` | Medium | Windows cache/environment issue. Run `go mod verify` in CI, keep the cache outside the repo tree, and do not commit vendored or modified module cache. |
 | `GO-2026-5026` in `golang.org/x/net@v0.53.0` | `govulncheck -scan=package` | Medium/High by advisory | Fixed in `v0.55.0`. Upgrade when dependency graph permits; run symbol scan before release to confirm reachability. |
 | `GO-2026-5024` in `golang.org/x/sys@v0.43.0` | `govulncheck -scan=package`, Windows | Medium/High by advisory | Fixed in `v0.44.0`. Upgrade when dependency graph permits; Windows prototype builds should keep this visible. |
 | `GO-2026-4479` in `github.com/pion/dtls/v2@v2.2.12` | `govulncheck -scan=package` | Medium/High by advisory | No fixed version reported. Track upstream; confirm whether the vulnerable path is reachable from Aetra node/runtime before release. |
@@ -151,6 +151,22 @@ Each release candidate needs a reviewer to mark every item `PASS`, `FINDING`, or
 | `crypto/rand` in vote extension handler | `app/abci.go` determinism scan | Low/Medium | Current handler creates dummy vote-extension bytes and does not write consensus state. It is not production-ready and must be replaced or disabled before any public validator network. |
 | `cmttime.Now()` in local genesis generation | `cmd/l1d/cmd/testnet_genesis.go` determinism scan | Low | Genesis time differs per initialization by design; local profile requires identical `genesis.json` across nodes in one init run, not byte-identical fresh runs. |
 | `time.Now()`/`math/rand` in speedtest | `cmd/l1d/cmd/speedtest.go` determinism scan | Low | CLI benchmarking only; not in consensus tx/ABCI state path. |
+
+## Govulncheck Triage Ledger
+
+The PR gate allowlist in `.github/security/govulncheck-triage.txt` mirrors the
+current owner-triaged package advisories below. The entries are package-level
+or dependency-graph findings, not unreviewed release blockers.
+
+| Finding IDs | Package | Severity | Owner | Mitigation | Target milestone |
+| --- | --- | --- | --- | --- | --- |
+| `GO-2023-1821`, `GO-2023-1881`, `GO-2024-2584` | `github.com/cosmos/cosmos-sdk v0.54.3` | High | Platform security / Cosmos SDK owner | Keep the staking and slashing smoke suite mandatory, track upstream Cosmos SDK patch guidance, and upgrade once a validated fixed line is available. | Next Cosmos SDK dependency refresh before public testnet launch. |
+| `GO-2025-3442` | `github.com/cometbft/cometbft v0.39.3` | High | Consensus / release engineering | Track the CometBFT fixed line and validate consensus, restart, and state-sync behavior after any bump. | CometBFT upgrade window before public testnet launch. |
+| `GO-2026-4479` | `github.com/pion/dtls/v2 v2.2.12` | High | Networking / security | Keep DTLS usage documented, confirm the reachable path before release, and revisit once upstream provides a fixed release or the dependency is removed. | Pre-public-testnet network-hardening review. |
+| `GO-2026-5005`, `GO-2026-5006`, `GO-2026-5013`, `GO-2026-5014`, `GO-2026-5015`, `GO-2026-5016`, `GO-2026-5017`, `GO-2026-5018`, `GO-2026-5019`, `GO-2026-5020`, `GO-2026-5021`, `GO-2026-5023`, `GO-2026-5033` | `golang.org/x/crypto v0.51.0` | High | Go toolchain / platform security | Upgrade the module graph to `golang.org/x/crypto v0.52.0+` and keep the package-only advisories owner-triaged until the dependency refresh lands. | Dependency refresh before public testnet launch. |
+
+The allowlist also retains the older Windows/package triage IDs
+`GO-2026-5024` and `GO-2026-5026` from the previous gate review.
 
 ## CI
 

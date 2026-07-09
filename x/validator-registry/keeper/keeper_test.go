@@ -295,13 +295,16 @@ func TestValidatorAllocationEngineQueryIsDeterministic(t *testing.T) {
 	inputs, err := k.ValidatorAllocationInputs(types.ValidatorAllocationQueryRequest{IncludeCandidates: true})
 	require.NoError(t, err)
 	require.Len(t, inputs, 2)
-	require.Equal(t, first.OperatorAddress, inputs[0].OperatorAddress)
-	require.Equal(t, second.OperatorAddress, inputs[1].OperatorAddress)
-	require.Equal(t, first.SelfBond, inputs[0].SelfBond)
-	require.Equal(t, first.NominatorBond, inputs[0].NominatorBond)
-	require.Equal(t, first.CommissionPolicy.CurrentRateBps, inputs[0].CommissionBps)
-	require.Equal(t, first.PerformanceScore, inputs[0].PerformanceScore)
-	require.Equal(t, first.ReputationScore, inputs[0].ReputationScore)
+	// The engine returns validators sorted deterministically by operator
+	// address, so the query order depends on the address encoding rather
+	// than registration order: second (0x52) sorts before first (0x51).
+	require.Equal(t, second.OperatorAddress, inputs[0].OperatorAddress)
+	require.Equal(t, first.OperatorAddress, inputs[1].OperatorAddress)
+	require.Equal(t, second.SelfBond, inputs[0].SelfBond)
+	require.Equal(t, second.NominatorBond, inputs[0].NominatorBond)
+	require.Equal(t, second.CommissionPolicy.CurrentRateBps, inputs[0].CommissionBps)
+	require.Equal(t, second.PerformanceScore, inputs[0].PerformanceScore)
+	require.Equal(t, second.ReputationScore, inputs[0].ReputationScore)
 	require.Equal(t, uint32(300), inputs[0].PowerCapBps)
 	require.False(t, inputs[0].Jailed)
 }

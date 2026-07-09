@@ -830,14 +830,17 @@ func (v PaymentRoadmapVirtualVector) Validate() error {
 			return err
 		}
 	}
-	for name, value := range map[string]string{
-		"activation proof":	vector.ActivationProofHash,
-		"close proof":		vector.CloseProofHash,
-		"dispute evidence":	vector.DisputeEvidenceHash,
-		"endpoint update":	vector.EndpointUpdateHash,
-		"virtual evidence":	vector.EvidenceHash,
+	for _, entry := range []struct {
+		name  string
+		value string
+	}{
+		{name: "activation proof", value: vector.ActivationProofHash},
+		{name: "close proof", value: vector.CloseProofHash},
+		{name: "dispute evidence", value: vector.DisputeEvidenceHash},
+		{name: "endpoint update", value: vector.EndpointUpdateHash},
+		{name: "virtual evidence", value: vector.EvidenceHash},
 	} {
-		if err := ValidateHash("payments roadmap virtual "+name, value); err != nil {
+		if err := ValidateHash("payments roadmap virtual "+entry.name, entry.value); err != nil {
 			return err
 		}
 	}
@@ -891,16 +894,19 @@ func (v PaymentRoadmapOperationsVector) Normalize() PaymentRoadmapOperationsVect
 
 func (v PaymentRoadmapOperationsVector) Validate() error {
 	vector := v.Normalize()
-	for name, value := range map[string]string{
-		"vector id":		vector.VectorID,
-		"store v2 layout":	vector.StoreV2LayoutHash,
-		"blockstm plan":	vector.BlockSTMPlanHash,
-		"adaptive snapshot":	vector.AdaptiveSnapshotHash,
-		"recovery":		vector.RecoveryHash,
-		"metrics":		vector.MetricsHash,
-		"evidence":		vector.EvidenceHash,
+	for _, entry := range []struct {
+		name  string
+		value string
+	}{
+		{name: "vector id", value: vector.VectorID},
+		{name: "store v2 layout", value: vector.StoreV2LayoutHash},
+		{name: "blockstm plan", value: vector.BlockSTMPlanHash},
+		{name: "adaptive snapshot", value: vector.AdaptiveSnapshotHash},
+		{name: "recovery", value: vector.RecoveryHash},
+		{name: "metrics", value: vector.MetricsHash},
+		{name: "evidence", value: vector.EvidenceHash},
 	} {
-		if err := ValidateHash("payments roadmap operations "+name, value); err != nil {
+		if err := ValidateHash("payments roadmap operations "+entry.name, entry.value); err != nil {
 			return err
 		}
 	}

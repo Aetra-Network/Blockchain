@@ -297,6 +297,23 @@ func contractFrozenEvent(contract ContractAccount, height uint64) AVMEvent {
 	)
 }
 
+func rentPaidEvent(contract ContractAccount, height uint64, elapsedBlocks uint64, amountNaet sdkmath.Int) AVMEvent {
+	return NewAVMEvent(EventRentPaid,
+		EventAttr("contract", queueAddressKey(contract.Address)),
+		EventAttr("amount", normalizeReceiptInt(amountNaet).String()),
+		EventAttr("elapsed_blocks", fmt.Sprintf("%d", elapsedBlocks)),
+		EventAttr("height", fmt.Sprintf("%d", height)),
+	)
+}
+
+func contractUnfrozenEvent(contract ContractAccount, height uint64) AVMEvent {
+	return NewAVMEvent(EventContractUnfrozen,
+		EventAttr("contract", queueAddressKey(contract.Address)),
+		EventAttr("balance", normalizeReceiptInt(contract.BalanceNaet).String()),
+		EventAttr("height", fmt.Sprintf("%d", height)),
+	)
+}
+
 func ContractStateRoot(contract ContractAccount) string {
 	var buf bytes.Buffer
 	buf.WriteString("aetra-avm-contract-state-v1")

@@ -1,0 +1,176 @@
+// Per-token item for the NFT collection example.
+//
+// One NftItem exists per token index, deployed deterministically by the
+// collection. The first ItemSeed from the collection assigns the owner and
+// content; after that only the current owner may transfer the item.
+
+const ERR_NOT_OWNER = 1001
+const ERR_BAD_MSG = 0xFFFF
+const ERR_BAD_SENDER = 1004
+const ERR_ALREADY_INITIALIZED = 1021
+const ERR_NOT_INITIALIZED = 1022
+
+// See nft_collection.atlx: outbound internal messages must fund the
+// destination's gas/storage rent, never amount: 0.
+const MSG_FORWARD_VALUE = aet("0.0001")
+
+@storage
+struct NftItemStorage {
+    collection: address
+    index: uint64
+    owner: address
+    content: string
+    initialized: uint32
+}
+
+@message(0x8102)
+struct ItemSeed {
+    index: uint64
+    owner: address
+    content: string
+}
+
+@message(0x8103)
+struct TransferItem {
+    to: address
+    responseTo: address?
+}
+
+@message(0x8104)
+struct ItemTransferred {
+    index: uint64
+    from: address
+    to: address
+}
+
+@message(0x8106)
+struct BurnItem {}
+
+@message(0x8107)
+struct ItemBurned {
+    index: uint64
+    owner: address
+}
+
+type ItemInternalMsg = ItemSeed | TransferItem | BurnItem
+
+contract NftItem {
+    author: "Aetralis example"
+    description: "Single NFT item owned by its holder"
+    version: "0.01.0"
+
+    storage: NftItemStorage
+    incomingMessages: ItemInternalMsg
+
+    @store
+    func NftItemStorage.load() {
+        return NftItemStorage.fromChunk(contract.getData())
+    }
+
+    @store
+    func NftItemStorage.save(self) {
+        contract.setData(self.toChunk())
+    }
+
+    @internal
+    func onInternalMessage(in: InMessage) {
+        const msg = lazy ItemInternalMsg.fromSegment(in.body)
+
+        match (msg) {
+            ItemSeed => {
+                var st = lazy NftItemStorage.load()
+                assert (in.senderAddress == st.collection) throw ERR_BAD_SENDER
+                assert (st.initialized == 0) throw ERR_ALREADY_INITIALIZED
+
+                st.owner = msg.owner
+                st.content = msg.content
+                st.initialized = 1
+                st.save()
+            }
+
+            TransferItem => {
+                var st = lazy NftItemStorage.load()
+                assert (st.initialized == 1) throw ERR_NOT_INITIALIZED
+                assert (in.senderAddress == st.owner) throw ERR_NOT_OWNER
+
+                const previousOwner = st.owner
+                st.owner = msg.to
+                st.save()
+
+                if (msg.responseTo != null) {
+                    const notice = buildMessage({
+                        bounce: BounceMode.NoBounce,
+                        amount: MSG_FORWARD_VALUE,
+                        receiver: msg.responseTo!,
+                        body: ItemTransferred {
+                            index: st.index,
+                            from: previousOwner,
+                            to: msg.to,
+                        }
+                    })
+
+                    notice.send(SEND_DEFAULT)
+                }
+            }
+
+            BurnItem => {
+                var st = lazy NftItemStorage.load()
+                assert (st.initialized == 1) throw ERR_NOT_INITIALIZED
+                assert (in.senderAddress == st.owner) throw ERR_NOT_OWNER
+
+                const previousOwner = st.owner
+                // A burned item returns to the collection and can never be
+                // seeded, transferred, or burned again (initialized == 2).
+                st.owner = st.collection
+                st.content = ""
+                st.initialized = 2
+                st.save()
+
+                const burned = buildMessage({
+                    bounce: BounceMode.NoBounce,
+                    amount: MSG_FORWARD_VALUE,
+                    receiver: st.collection,
+                    body: ItemBurned {
+                        index: st.index,
+                        owner: previousOwner,
+                    }
+                })
+
+                burned.send(SEND_DEFAULT)
+            }
+
+            else => {
+                assert (in.body.isEmpty()) throw ERR_BAD_MSG
+            }
+        }
+    }
+
+    @bounced
+    func onBouncedMessage(in: InMessageBounced) {
+        in.bouncedBody.skipBouncedPrefix()
+    }
+
+    @get
+    func ownerOf(): address {
+        const st = lazy NftItemStorage.load()
+        return st.owner
+    }
+
+    @get
+    func contentOf(): string {
+        const st = lazy NftItemStorage.load()
+        return st.content
+    }
+
+    @get
+    func indexOf(): uint64 {
+        const st = lazy NftItemStorage.load()
+        return st.index
+    }
+
+    @get
+    func isInitialized(): uint32 {
+        const st = lazy NftItemStorage.load()
+        return st.initialized
+    }
+}

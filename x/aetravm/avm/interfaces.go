@@ -65,6 +65,7 @@ const (
 type InterfaceManifest struct {
 	Name          string
 	Version       uint16
+	UnknownMessagePolicy string
 	Methods       []InterfaceMethod
 	Events        []InterfaceEvent
 	AsyncHandlers []InterfaceAsyncHandler
@@ -162,6 +163,7 @@ type InterfaceWalletAction struct {
 type InterfaceDeveloperMetadata struct {
 	Name          string
 	Version       uint16
+	UnknownMessagePolicy string
 	MetadataHash  [MetadataHashLength]byte
 	Methods       []InterfaceMethod
 	Events        []InterfaceEvent
@@ -178,6 +180,9 @@ func (m InterfaceManifest) Validate() error {
 	}
 	if m.Version == 0 {
 		return errors.New("AVM interface version must be positive")
+	}
+	if !IsValidUnknownMessagePolicy(m.UnknownMessagePolicy) {
+		return fmt.Errorf("AVM interface unknown-message policy %q is invalid", m.UnknownMessagePolicy)
 	}
 	if len(m.Methods)+len(m.AsyncHandlers)+len(m.GetMethods) == 0 {
 		return errors.New("AVM interface must declare at least one callable descriptor")
@@ -419,6 +424,7 @@ func InterfaceHash(manifest InterfaceManifest) ([MetadataHashLength]byte, error)
 	writeString(buf, "AVM_INTERFACE_V2")
 	writeString(buf, manifest.Name)
 	writeU16(buf, manifest.Version)
+	writeString(buf, manifest.UnknownMessagePolicy)
 	writeU16(buf, uint16(len(manifest.Methods)))
 	for _, method := range manifest.Methods {
 		writeMethodDescriptor(buf, method)
@@ -487,6 +493,7 @@ func BuildInterfaceDeveloperMetadata(manifest InterfaceManifest) (InterfaceDevel
 	return InterfaceDeveloperMetadata{
 		Name:          manifest.Name,
 		Version:       manifest.Version,
+		UnknownMessagePolicy: manifest.UnknownMessagePolicy,
 		MetadataHash:  hash,
 		Methods:       manifest.Methods,
 		Events:        manifest.Events,
@@ -548,8 +555,20 @@ func IsValidInterfaceWalletApprovalSemantics(semantics InterfaceWalletApprovalSe
 	}
 }
 
+func IsValidUnknownMessagePolicy(policy string) bool {
+	switch strings.TrimSpace(policy) {
+	case "", "reject", "explicit_noop":
+		return true
+	default:
+		return false
+	}
+}
+
 func canonicalInterfaceManifest(manifest InterfaceManifest) InterfaceManifest {
 	manifest.Name = strings.TrimSpace(manifest.Name)
+	if strings.TrimSpace(manifest.UnknownMessagePolicy) == "" {
+		manifest.UnknownMessagePolicy = "reject"
+	}
 	manifest.Methods = cloneInterfaceMethods(manifest.Methods)
 	manifest.Events = cloneInterfaceEvents(manifest.Events)
 	manifest.AsyncHandlers = cloneInterfaceAsyncHandlers(manifest.AsyncHandlers)

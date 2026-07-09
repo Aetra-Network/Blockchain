@@ -46,7 +46,8 @@ func TestExecutionReceiptGeneratedForSuccess(t *testing.T) {
 	require.NotEqual(t, receipt.StateRootBefore, receipt.StateRootAfter)
 	require.Len(t, receipt.EmittedMessageIDs, 1)
 	require.Equal(t, EventInternalExecuted, receipt.Events[0].Type)
-	require.Equal(t, EventMessageQueued, receipt.Events[1].Type)
+	require.Equal(t, EventRentPaid, receipt.Events[1].Type)
+	require.Equal(t, EventMessageQueued, receipt.Events[2].Type)
 }
 
 func TestExecutionReceiptGeneratedForFailedExecutionAndRollback(t *testing.T) {

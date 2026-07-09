@@ -13,6 +13,7 @@ permissions:
 env:
   GOFLAGS: "-p=1"
   AETRA_BINARY: build/aetrad.exe
+  BUF_VERSION: "1.70.0"
 
 jobs:
   go-test-all:
@@ -39,7 +40,11 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - uses: bufbuild/buf-setup-action@v1
+      - name: Install buf
+        shell: pwsh
+        run: |
+          .\scripts\tooling\ensure-buf.ps1 -Version $env:BUF_VERSION | Out-Null
+          "$PWD\.work\tools\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       - name: go vet ./... && buf lint
         shell: pwsh
         run: |
@@ -136,6 +141,20 @@ jobs:
         shell: pwsh
         run: go test ./app -run Invariant -count=1
 
+  avm-gates:
+    name: AVM gates
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: tests/e2e/avm_contract_smoke.ps1
+        shell: pwsh
+        run: ./tests/e2e/avm_contract_smoke.ps1
+
   localnet-smoke:
     name: localnet smoke
     runs-on: windows-latest
@@ -199,7 +218,11 @@ jobs:
       - linter
       - chain-id-validation
       - invariants
+      - genesis-validate
+      - localnet-smoke
+      - export-import-roundtrip
       - validator-docs
+      - avm-gates
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -209,6 +232,9 @@ jobs:
       - name: scripts/release/prototype-package.ps1
         shell: pwsh
         run: ./scripts/release/prototype-package.ps1 -Version testnet-readiness-${{ github.sha }} -TargetOS windows -TargetArch amd64
+      - name: launch-evidence-bundle.ps1 reference
+        shell: pwsh
+        run: Write-Host "Bundle script: .\scripts\testnet\launch-evidence-bundle.ps1"
       - name: Upload release artifact
         uses: actions/upload-artifact@v4
         with:

@@ -102,6 +102,31 @@ func (k *Keeper) saveGenesis(next GenesisState) error {
 	return prefixgenesis.Save(k.runtimeCtx, k.storeService, genesisKey, next)
 }
 
+// loadForBlock refreshes the in-memory genesis from the committed store using
+// the live block context and points runtimeCtx at that same context. It MUST be
+// called at the start of every consensus entry point (EndBlocker and each Msg
+// handler) so a restarted or state-synced node — where InitChain/InitGenesis is
+// not re-run — operates on the same committed state as a continuously-running
+// node, and so writes persist through the current block rather than a stale
+// InitChain-era context. Reading through the block context observes writes made
+// earlier in the same block. See SEC-HIGH: election EndBlocker drives consensus
+// off in-memory genesis never restored on restart/state-sync.
+func (k *Keeper) loadForBlock(ctx context.Context) error {
+	k.runtimeCtx = ctx
+	if k.storeService == nil {
+		return nil
+	}
+	gs, _, err := prefixgenesis.Load(ctx, k.storeService, genesisKey, DefaultGenesis())
+	if err != nil {
+		return err
+	}
+	if err := gs.Validate(); err != nil {
+		return err
+	}
+	k.genesis = cloneGenesis(gs)
+	return nil
+}
+
 func (k *Keeper) ApplyForValidatorSet(msg types.MsgApplyForValidatorSet) (types.CandidateApplication, error) {
 	if err := k.genesis.Params.Authorize(msg.Authority); err != nil {
 		return types.CandidateApplication{}, err
@@ -343,6 +368,9 @@ func (k Keeper) Migrate1to2State(ctx context.Context) error {
 }
 
 func (k *Keeper) EndBlocker(ctx sdk.Context) error {
+	if err := k.loadForBlock(ctx); err != nil {
+		return err
+	}
 	height := uint64(ctx.BlockHeight())
 	if height == 0 {
 		return nil

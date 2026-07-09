@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -322,6 +323,38 @@ func RandomBeacon(previousStateRoot, blockEntropy, messageHash, domain []byte) [
 	h.Write(messageHash)
 	h.Write(domain)
 	return h.Sum(nil)
+}
+
+// messageBeaconHash derives a per-message discriminator for the randomness
+// beacon from stable, consensus-visible envelope fields only. It must never
+// fold in process, wall-clock, or delivery-ordering state, so that all
+// validators computing the same message derive the same hash.
+func messageBeaconHash(msg async.MessageEnvelope) []byte {
+	h := sha256.New()
+	h.Write(msg.Source)
+	h.Write(msg.Destination)
+	var scratch [8]byte
+	binary.BigEndian.PutUint64(scratch[:], uint64(msg.Opcode))
+	h.Write(scratch[:])
+	binary.BigEndian.PutUint64(scratch[:], msg.QueryID)
+	h.Write(scratch[:])
+	binary.BigEndian.PutUint64(scratch[:], msg.CreatedLogicalTime)
+	h.Write(scratch[:])
+	h.Write(msg.Body)
+	return h.Sum(nil)
+}
+
+// BeaconRandomU64 derives a deterministic uint64 for a single random() read
+// from the block randomness beacon. callIndex domain-separates successive reads
+// within one execution so each yields an independent value. Every input is
+// consensus state, so all validators compute the identical result. This is the
+// only sanctioned randomness source in the AVM; the OpRandom process-entropy
+// opcode stays forbidden. Unpredictability rests on blockEntropy carrying the
+// current block hash, which is not known when a transaction is submitted.
+func BeaconRandomU64(prevStateRoot, blockEntropy []byte, msg async.MessageEnvelope, callIndex uint64) uint64 {
+	var call [8]byte
+	binary.BigEndian.PutUint64(call[:], callIndex)
+	return SeedCryptoRand(RandomBeacon(prevStateRoot, blockEntropy, messageBeaconHash(msg), call[:]))
 }
 
 // ExecutionIsolationBoundary defines the isolation guarantees for ExecutionFrame.

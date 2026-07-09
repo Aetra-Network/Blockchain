@@ -513,15 +513,18 @@ func (v ValidatorRecord) Validate(params Params) error {
 	if strings.TrimSpace(v.ConsensusPublicKey) == strings.TrimSpace(v.OperatorAddress) {
 		return errors.New("validator registry operator and consensus keys must be distinct roles")
 	}
-	for label, value := range map[string]string{
-		"validator treasury address":   v.TreasuryAddress,
-		"validator withdrawal address": v.WithdrawalAddress,
-		"validator emergency address":  v.EmergencyAddress,
+	for _, entry := range []struct {
+		label string
+		value string
+	}{
+		{label: "validator treasury address", value: v.TreasuryAddress},
+		{label: "validator withdrawal address", value: v.WithdrawalAddress},
+		{label: "validator emergency address", value: v.EmergencyAddress},
 	} {
-		if err := addressing.ValidateAuthorityAddress(label, value); err != nil {
+		if err := addressing.ValidateAuthorityAddress(entry.label, entry.value); err != nil {
 			return err
 		}
-		if strings.TrimSpace(v.ConsensusPublicKey) == strings.TrimSpace(value) {
+		if strings.TrimSpace(v.ConsensusPublicKey) == strings.TrimSpace(entry.value) {
 			return errors.New("validator registry consensus key must not reuse account address")
 		}
 	}

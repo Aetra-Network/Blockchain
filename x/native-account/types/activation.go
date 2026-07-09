@@ -13,12 +13,33 @@ import (
 )
 
 type MsgActivateAccount struct {
-	AddressUser	string			`protobuf:"bytes,1,opt,name=address_user,json=addressUser,proto3" json:"address_user,omitempty"`
-	AddressRaw	string			`protobuf:"bytes,2,opt,name=address_raw,json=addressRaw,proto3" json:"address_raw,omitempty"`
-	PublicKeyType	string			`protobuf:"bytes,3,opt,name=public_key_type,json=publicKeyType,proto3" json:"public_key_type,omitempty"`
-	PublicKeyHex	string			`protobuf:"bytes,4,opt,name=public_key_hex,json=publicKeyHex,proto3" json:"public_key_hex,omitempty"`
-	FeePaid		uint64			`protobuf:"varint,5,opt,name=fee_paid,json=feePaid,proto3" json:"fee_paid,omitempty"`
-	PublicKey	cryptotypes.PubKey	`json:"-"`
+	AddressUser	string	`protobuf:"bytes,1,opt,name=address_user,json=addressUser,proto3" json:"address_user,omitempty"`
+	AddressRaw	string	`protobuf:"bytes,2,opt,name=address_raw,json=addressRaw,proto3" json:"address_raw,omitempty"`
+	PublicKeyType	string	`protobuf:"bytes,3,opt,name=public_key_type,json=publicKeyType,proto3" json:"public_key_type,omitempty"`
+	PublicKeyHex	string	`protobuf:"bytes,4,opt,name=public_key_hex,json=publicKeyHex,proto3" json:"public_key_hex,omitempty"`
+	FeePaid		uint64	`protobuf:"varint,5,opt,name=fee_paid,json=feePaid,proto3" json:"fee_paid,omitempty"`
+}
+
+// NewMsgActivateAccountFromPubKey builds an activation message from an
+// in-memory public key, deriving AddressUser/AddressRaw and encoding the key
+// into PublicKeyType/PublicKeyHex. This message type has no field for the raw
+// cryptotypes.PubKey interface itself: gogoproto's reflection-based
+// marshal/unmarshal requires every exported struct field to carry a
+// "protobuf:..." tag (an interface type can't be tagged that way), so a
+// polymorphic PubKey field can never appear on the wire and must be reduced
+// to type+hex before construction.
+func NewMsgActivateAccountFromPubKey(pubKey cryptotypes.PubKey, feePaid uint64) (MsgActivateAccount, error) {
+	pair, err := addressing.DeriveAccountAddress(pubKey)
+	if err != nil {
+		return MsgActivateAccount{}, err
+	}
+	return MsgActivateAccount{
+		AddressUser:	pair.User,
+		AddressRaw:	pair.Raw,
+		PublicKeyType:	pubKey.Type(),
+		PublicKeyHex:	hex.EncodeToString(pubKey.Bytes()),
+		FeePaid:	feePaid,
+	}, nil
 }
 
 func (m MsgActivateAccount) ValidateBasic() error {
@@ -48,9 +69,6 @@ func (m MsgActivateAccount) ValidateBasic() error {
 }
 
 func (m MsgActivateAccount) EffectivePublicKey() (cryptotypes.PubKey, error) {
-	if m.PublicKey != nil {
-		return m.PublicKey, nil
-	}
 	publicKeyType := strings.TrimSpace(m.PublicKeyType)
 	publicKeyHex := strings.TrimSpace(m.PublicKeyHex)
 	if publicKeyType == "" || publicKeyHex == "" {

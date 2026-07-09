@@ -14,7 +14,7 @@ func TestLaunchModuleInventoryCoversEveryXDirectory(t *testing.T) {
 	entries := DefaultLaunchModuleInventory()
 
 	require.NoError(t, ValidateLaunchModuleInventory(entries, readXModuleDirs(t)))
-	require.Contains(t, launchInventoryEntryByXDir(entries), "x/market")
+	require.Contains(t, launchInventoryEntryByXDir(entries), "x/burn")
 	require.Contains(t, launchInventoryEntryByXDir(entries), "x/aetravm")
 	require.Contains(t, launchInventoryEntryByXDir(entries), "x/contracts")
 }

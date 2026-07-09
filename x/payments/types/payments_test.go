@@ -2,6 +2,7 @@ package types
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"testing"
 
@@ -6930,8 +6931,31 @@ func signedState(t *testing.T, channel ChannelRecord, nonce uint64, previous str
 	return state
 }
 
-func signedReserveState(t *testing.T, channel ChannelRecord, nonce uint64, previous, reserveA, reserveB string, balances []Balance) ChannelState {
+// signedReserveState builds a signed channel state that reserves
+// reserveForFirstBalance for balances[0].Participant and reserveForSecondBalance
+// for balances[1].Participant. The underlying ChannelState.ReserveA/ReserveB
+// fields are keyed to the channel's canonical (sorted) participant order
+// (ParticipantA/ParticipantB), which does not necessarily match the order the
+// caller lists balances in -- ChannelRecord.Participants and
+// normalizeBalances() both sort participants canonically, so whichever
+// address sorts first becomes ParticipantA regardless of the order the
+// channel was opened with. We resolve that here so callers can keep
+// reasoning about "the reserve for this balance entry" instead of the
+// physical A/B slot it ends up stored in.
+func signedReserveState(t *testing.T, channel ChannelRecord, nonce uint64, previous, reserveForFirstBalance, reserveForSecondBalance string, balances []Balance) ChannelState {
 	t.Helper()
+	require.Len(t, balances, 2)
+
+	reserveByParticipant := map[string]string{
+		balances[0].Participant: reserveForFirstBalance,
+		balances[1].Participant: reserveForSecondBalance,
+	}
+	canonicalOrder := append([]Balance(nil), balances...)
+	sort.SliceStable(canonicalOrder, func(i, j int) bool {
+		return canonicalOrder[i].Participant < canonicalOrder[j].Participant
+	})
+	reserveA := reserveByParticipant[canonicalOrder[0].Participant]
+	reserveB := reserveByParticipant[canonicalOrder[1].Participant]
 
 	state, err := BuildState(ChannelState{
 		ChainID:		channel.ChainID,

@@ -7,8 +7,8 @@ param(
   [string]$FromKey = "node0",
   [string[]]$Recipients = @(),
   [string[]]$Transfers = @(),
-  [string]$Amount = "1000000naet",
-  [string]$Fees = "1000000naet",
+  [string]$Amount = "5000000000naet",
+  [string]$Fees = "600000000naet",
   [int]$TimeoutSeconds = 60,
   [switch]$Json
 )

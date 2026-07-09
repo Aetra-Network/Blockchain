@@ -1,0 +1,137 @@
+// Per-staker account for the staking pool example.
+//
+// One StakeAccount exists per staker, deployed deterministically by the
+// pool from { account code + init data { pool, owner } }. The account only
+// trusts credit messages from its pool and unstake requests from its owner.
+
+const ERR_NOT_OWNER = 1001
+const ERR_BAD_MSG = 0xFFFF
+const ERR_BAD_SENDER = 1004
+const ERR_BAD_AMOUNT = 1005
+
+// See stake_pool.atlx: outbound internal messages must fund the
+// destination's gas/storage rent, never amount: 0.
+const MSG_FORWARD_VALUE = aet("0.0001")
+
+@storage
+struct StakeAccountStorage {
+    pool: address
+    owner: address
+    accountCode: Code
+    staked: coins
+    lastStakeAt: int64
+}
+
+@message(0x6103)
+struct AccountCredit {
+    owner: address
+    amount: coins
+    isNew: uint32
+}
+
+@message(0x6102)
+struct Unstake {
+    amount: coins
+}
+
+@message(0x6104)
+struct AccountDebit {
+    owner: address
+    amount: coins
+}
+
+type AccountInternalMsg = AccountCredit | Unstake
+
+contract StakeAccount {
+    author: "Aetralis example"
+    description: "Per-staker position of the staking pool"
+    version: "0.01.0"
+
+    storage: StakeAccountStorage
+    incomingMessages: AccountInternalMsg
+
+    @store
+    func StakeAccountStorage.load() {
+        return StakeAccountStorage.fromChunk(contract.getData())
+    }
+
+    @store
+    func StakeAccountStorage.save(self) {
+        contract.setData(self.toChunk())
+    }
+
+    @internal
+    func onInternalMessage(in: InMessage) {
+        const msg = lazy AccountInternalMsg.fromSegment(in.body)
+
+        match (msg) {
+            AccountCredit => {
+                var st = lazy StakeAccountStorage.load()
+                assert (in.senderAddress == st.pool) throw ERR_BAD_SENDER
+                assert (msg.amount > 0) throw ERR_BAD_AMOUNT
+
+                st.staked += msg.amount
+                st.lastStakeAt = now()
+                st.save()
+            }
+
+            Unstake => {
+                var st = lazy StakeAccountStorage.load()
+                assert (in.senderAddress == st.owner) throw ERR_NOT_OWNER
+                assert (msg.amount > 0) throw ERR_BAD_AMOUNT
+                assert (st.staked >= msg.amount) throw ERR_BAD_AMOUNT
+
+                st.staked -= msg.amount
+                st.save()
+
+                const debit = buildMessage({
+                    bounce: BounceMode.Only256BitsOfBody,
+                    amount: MSG_FORWARD_VALUE,
+                    receiver: st.pool,
+                    body: AccountDebit {
+                        owner: st.owner,
+                        amount: msg.amount,
+                    }
+                })
+
+                debit.send(SEND_BOUNCE_ON_FAIL)
+            }
+
+            else => {
+                assert (in.body.isEmpty()) throw ERR_BAD_MSG
+            }
+        }
+    }
+
+    @bounced
+    func onBouncedMessage(in: InMessageBounced) {
+        in.bouncedBody.skipBouncedPrefix()
+
+        const bounced = lazy AccountDebit.fromSegment(in.bouncedBody)
+
+        var st = lazy StakeAccountStorage.load()
+        if (bounced.owner == st.owner) {
+            // Debit bounced at the pool: restore the local position.
+            st.staked += bounced.amount
+            st.save()
+        }
+    }
+
+    @get
+    func staked(): coins {
+        const st = lazy StakeAccountStorage.load()
+        return st.staked
+    }
+
+    @get
+    func ownerOf(): address {
+        const st = lazy StakeAccountStorage.load()
+        return st.owner
+    }
+
+    @get
+    func poolOf(): address {
+        const st = lazy StakeAccountStorage.load()
+        return st.pool
+    }
+}

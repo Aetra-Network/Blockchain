@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
+	authtypes "github.com/cosmos/cosmos-sdk/x/auth/types"
+	minttypes "github.com/cosmos/cosmos-sdk/x/mint/types"
 	"github.com/stretchr/testify/require"
 
 	l1app "github.com/sovereign-l1/l1/app"
@@ -14,7 +16,10 @@ import (
 func TestGenesisExportImportRoundTrip(t *testing.T) {
 	sourceApp := l1app.Setup(t, false)
 	sourceCtx := sourceApp.NewContext(false)
-	require.NoError(t, sourceApp.FeesKeeper.RecordCollectedFees(sourceCtx, sdk.NewCoins(sdk.NewInt64Coin(types.BondDenom, 1_000))))
+	fees := sdk.NewCoins(sdk.NewInt64Coin(types.BondDenom, 1_000))
+	require.NoError(t, sourceApp.BankKeeper.MintCoins(sourceCtx, minttypes.ModuleName, fees))
+	require.NoError(t, sourceApp.BankKeeper.SendCoinsFromModuleToModule(sourceCtx, minttypes.ModuleName, authtypes.FeeCollectorName, fees))
+	require.NoError(t, sourceApp.FeesKeeper.RecordCollectedFees(sourceCtx, fees))
 
 	exported, err := sourceApp.FeesKeeper.ExportGenesis(sourceCtx)
 	require.NoError(t, err)

@@ -9,7 +9,7 @@ remains a later R&D track and must not be claimed until a separate consensus
 architecture exists.
 
 Production partitioning or sharding remains a later R&D track. The current
-R&D boundary is documented in `docs/architecture/sharding-rd.md`; no
+Sharding R&D was removed from the repo (out of launch scope); no
 production sharding claim is allowed until the simulator, prototype,
 adversarial tests, long-run testnet, independent audit, and consensus-safety
 proof are complete.

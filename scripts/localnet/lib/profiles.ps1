@@ -5,8 +5,7 @@ $script:LocalnetProfiles = @(
   "localnet-5",
   "execution-os-sim",
   "zones-prototype",
-  "mesh-prototype",
-  "identity-prototype"
+  "mesh-prototype"
 )
 
 function Assert-LocalnetProfile {
@@ -153,14 +152,14 @@ function Set-LocalnetProfileGenesis {
     $doc = Get-Content -Raw -LiteralPath $genesisPath | ConvertFrom-Json
     $appState = $doc.app_state
 
-    if ($Profile -in @("execution-os-sim", "zones-prototype", "mesh-prototype", "identity-prototype")) {
+    if ($Profile -in @("execution-os-sim", "zones-prototype", "mesh-prototype")) {
       Set-PrototypeParamsEnabled -Params $appState.load.Params
       Set-PrototypeParamsEnabled -Params $appState.routing.Params
       $appState.routing.RoutingEpoch = 1
       $appState.routing.Shards = New-LocalnetRoutingShardProfile
     }
 
-    if ($Profile -in @("zones-prototype", "mesh-prototype", "identity-prototype")) {
+    if ($Profile -in @("zones-prototype", "mesh-prototype")) {
       Set-PrototypeParamsEnabled -Params $appState.zones.Params
       $appState.zones.State = New-LocalnetZoneProfileState
     }
@@ -193,7 +192,6 @@ function Write-LocalnetProfileManifest {
     "execution-os-sim" { @("load", "routing") }
     "zones-prototype" { @("load", "routing", "zones") }
     "mesh-prototype" { @("load", "routing", "zones", "mesh") }
-    "identity-prototype" { @("load", "routing", "zones", "identity-spec") }
   }
   $manifest = [ordered]@{
     profile          = $Profile

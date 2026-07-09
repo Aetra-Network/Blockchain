@@ -1,7 +1,7 @@
 param(
   [string]$OutputDir = "",
   [string]$Binary = "",
-  [ValidateSet("base", "execution-os-sim", "zones-prototype", "mesh-prototype", "identity-prototype")]
+  [ValidateSet("base", "execution-os-sim", "zones-prototype", "mesh-prototype")]
   [string]$Profile = "base",
   [int]$NodeIndex = 0,
   [switch]$Json

@@ -126,7 +126,7 @@ type StringType struct {
 	MaxLength	uint32
 }
 
-// BytesType represents a bounded byte slice.
+// BytesType represents a bounded byte sequence.
 type BytesType struct {
 	BaseType
 	MaxLength	uint32

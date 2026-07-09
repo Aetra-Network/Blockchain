@@ -31,6 +31,34 @@ func TestSingleKeyPolicyAuthorizesNormalTx(t *testing.T) {
 	require.Equal(t, account.Sequence+1, next.Sequence)
 }
 
+// TestStepUpNotSatisfiedByCallerControllingOnlyPrimaryKey is the regression
+// guard for SEC-HIGH #7: multi-key auth was decided by string-matching the
+// unverified msg.Signers body field against public on-chain key IDs/pubkeys, so
+// a caller holding only the primary key could name the guardian's public key
+// and pass a step-up. The fix credits only the one cryptographically-verified
+// account_user key, so the bypass fails closed.
+func TestStepUpNotSatisfiedByCallerControllingOnlyPrimaryKey(t *testing.T) {
+	account := accountWithPolicy(t, AuthPolicy{
+		Version: 1,
+		Mode:    AuthModeSingleKey,
+		Keys: []AuthKey{
+			{ID: "primary", PublicKey: authKeyPrimaryPub, Role: AuthKeyRolePrimary},
+			{ID: "guardian", PublicKey: authKeyBackupPub, Role: AuthKeyRoleGuardian},
+		},
+		StepUp: &StepUpPolicy{Mode: "guardian"},
+	})
+
+	// Attacker controls only the primary key but names the guardian pubkey
+	// (readable public state) to try to satisfy the guardian step-up.
+	_, err := AuthorizeAuthPolicy(account, ExternalMessage{
+		AccountUser: account.AddressUser,
+		Sequence:    account.Sequence,
+		Signers:     []string{authKeyPrimaryPub, authKeyBackupPub},
+		Operation:   AuthOperationAuthPolicyUpdate,
+	})
+	require.Error(t, err, "guardian step-up must not be satisfiable by naming a public key the caller does not control")
+}
+
 func TestMultisigThresholdPolicyRejectsInsufficientSignatures(t *testing.T) {
 	account := accountWithPolicy(t, AuthPolicy{
 		Version:   1,
@@ -47,14 +75,18 @@ func TestMultisigThresholdPolicyRejectsInsufficientSignatures(t *testing.T) {
 	})
 	require.ErrorContains(t, err, "below threshold")
 
-	next, err := ApplyExternalMessage(account, ExternalMessage{
+	// SEC-HIGH #7: only the one cryptographically-verified account_user key
+	// ("primary") counts toward the threshold; naming "device" (public on-chain
+	// state) in the unverified Signers body no longer helps, so a threshold-2
+	// policy now fails closed. Real N-of-M needs multi-party signature
+	// verification (a proto/tx/ante redesign).
+	_, err = ApplyExternalMessage(account, ExternalMessage{
 		AccountUser: account.AddressUser,
 		Sequence:    account.Sequence,
 		Signers:     []string{"primary", "device"},
 		Operation:   AuthOperationTransfer,
 	})
-	require.NoError(t, err)
-	require.Equal(t, account.Sequence+1, next.Sequence)
+	require.ErrorContains(t, err, "below threshold")
 }
 
 func TestWeightedMultisigSumsWeightsDeterministically(t *testing.T) {
@@ -78,14 +110,15 @@ func TestWeightedMultisigSumsWeightsDeterministically(t *testing.T) {
 	})
 	require.ErrorContains(t, err, "below threshold")
 
-	result, err := AuthorizeAuthPolicy(account, ExternalMessage{
+	// SEC-HIGH #7: only the verified "primary" key (weight 5) is credited; the
+	// named "device" weight is dropped, leaving 5 < threshold 7 -> fails closed.
+	_, err = AuthorizeAuthPolicy(account, ExternalMessage{
 		AccountUser: account.AddressUser,
 		Sequence:    account.Sequence,
 		Signers:     []string{"device", "primary"},
 		Operation:   AuthOperationTransfer,
 	})
-	require.NoError(t, err)
-	require.Equal(t, uint64(8), result.Weight)
+	require.ErrorContains(t, err, "below threshold")
 
 	normalized := account.AuthPolicy.Normalize()
 	require.Equal(t, []AuthWeight{
@@ -111,14 +144,15 @@ func TestTwoDevicePolicyRequiresBothKeysForProtectedOperations(t *testing.T) {
 	})
 	require.ErrorContains(t, err, "primary and device")
 
-	next, err := ApplyExternalMessage(account, ExternalMessage{
+	// SEC-HIGH #7: naming "device" (public state) no longer satisfies two-device;
+	// only the verified "primary" key counts, so it fails closed.
+	_, err = ApplyExternalMessage(account, ExternalMessage{
 		AccountUser: account.AddressUser,
 		Sequence:    account.Sequence,
 		Signers:     []string{"primary", "device"},
 		Operation:   AuthOperationStakingChange,
 	})
-	require.NoError(t, err)
-	require.Equal(t, account.Sequence+1, next.Sequence)
+	require.ErrorContains(t, err, "primary and device")
 }
 
 func TestSpendingLimitAllowsSmallTransferAndRejectsLargeTransfer(t *testing.T) {
@@ -174,14 +208,15 @@ func TestHighRiskOperationRequiresSecondFactorWhenStepUpPolicyIsConfigured(t *te
 	})
 	require.ErrorContains(t, err, "second factor")
 
-	next, err := ApplyExternalMessage(account, ExternalMessage{
+	// SEC-HIGH #7: naming the guardian pubkey (public state) no longer supplies a
+	// second factor; only the verified primary key counts, so step-up fails closed.
+	_, err = ApplyExternalMessage(account, ExternalMessage{
 		AccountUser: account.AddressUser,
 		Sequence:    account.Sequence,
 		Signers:     []string{authKeyPrimaryPub, authKeyBackupPub},
 		Operation:   AuthOperationAuthPolicyUpdate,
 	})
-	require.NoError(t, err)
-	require.Equal(t, account.Sequence+1, next.Sequence)
+	require.ErrorContains(t, err, "second factor")
 }
 
 func TestLowRiskOperationStillUsesSingleSeedSignatureWithSpendingLimit(t *testing.T) {
@@ -231,12 +266,21 @@ func TestTimelockPreventsEarlyRecoveryAndAuthChange(t *testing.T) {
 }
 
 func TestRecoveryPolicyChangesStatusAfterValidAuthorization(t *testing.T) {
-	account := accountWithPolicy(t, recoveryPolicy(10))
+	// Recovery signers must PROVE possession with a co-signature over the
+	// canonical recovery digest; naming a public recovery key is not enough.
+	guardian := newCoSigTestKey(t, "guardian", AuthKeyRoleGuardian, 0x77)
+	policy := recoveryPolicy(10)
+	policy.RecoveryPolicy.Keys = []string{guardian.pub, authKeyBackupPub}
+	account := accountWithPolicy(t, policy)
 	account.Status = AccountStatusFrozen
+
+	digest := ExternalMessageSigningBytes(account.AddressUser, account.Sequence, AuthOperationRecoverAccount, 0, nil)
+	coSig := guardian.coSign(digest)
+	coSig.KeyID = guardian.pub // recovery co-signatures are keyed by the registered public key
 
 	recovered, err := ApplyMsgRecoverAccount(account, MsgRecoverAccount{
 		AccountUser:   account.AddressUser,
-		Signers:       []string{authKeyRecoveryPub},
+		CoSignatures:  []AuthCoSignature{coSig},
 		CurrentHeight: 10,
 	})
 
@@ -247,9 +291,11 @@ func TestRecoveryPolicyChangesStatusAfterValidAuthorization(t *testing.T) {
 }
 
 func TestKeyRotationPreservesAEAndRawAddresses(t *testing.T) {
+	// SEC-HIGH #7: single-key mode is authorized by the one verified primary key.
+	// (Multi-key modes fail closed until multi-party signing exists.)
 	account := accountWithPolicy(t, AuthPolicy{
 		Version: 1,
-		Mode:    AuthModeTwoDevice,
+		Mode:    AuthModeSingleKey,
 		Keys:    authKeys(),
 	})
 
@@ -257,7 +303,7 @@ func TestKeyRotationPreservesAEAndRawAddresses(t *testing.T) {
 		AccountUser: account.AddressUser,
 		OldKeyID:    "device",
 		NewKey:      AuthKey{ID: "device", PublicKey: "ed25519:new-device", Role: AuthKeyRoleDevice},
-		Signers:     []string{"primary", "device"},
+		Signers:     []string{"primary"},
 	})
 
 	require.NoError(t, err)
@@ -267,32 +313,34 @@ func TestKeyRotationPreservesAEAndRawAddresses(t *testing.T) {
 }
 
 func TestAuthPolicyUpdateRequiresAuthorization(t *testing.T) {
+	// SEC-HIGH #7: single-key mode; only the verified "primary" key authorizes a
+	// policy update. Naming an unverified key ("device") is dropped and cannot
+	// authorize. (Multi-key modes fail closed until multi-party signing exists.)
 	account := accountWithPolicy(t, AuthPolicy{
 		Version: 1,
-		Mode:    AuthModeTwoDevice,
+		Mode:    AuthModeSingleKey,
 		Keys:    authKeys(),
 	})
 	nextPolicy := AuthPolicy{
-		Version:   1,
-		Mode:      AuthModeThreshold,
-		Keys:      authKeys(),
-		Threshold: 2,
+		Version: 1,
+		Mode:    AuthModeSingleKey,
+		Keys:    authKeys(),
 	}
 
 	_, err := ApplyMsgUpdateAuthPolicy(account, MsgUpdateAuthPolicy{
 		AccountUser:   account.AddressUser,
 		NewAuthPolicy: nextPolicy,
-		Signers:       []string{"primary"},
+		Signers:       []string{"device"},
 	})
-	require.ErrorContains(t, err, "primary and device")
+	require.Error(t, err)
 
 	updated, err := ApplyMsgUpdateAuthPolicy(account, MsgUpdateAuthPolicy{
 		AccountUser:   account.AddressUser,
 		NewAuthPolicy: nextPolicy,
-		Signers:       []string{"primary", "device"},
+		Signers:       []string{"primary"},
 	})
 	require.NoError(t, err)
-	require.Equal(t, AuthModeThreshold, updated.AuthPolicy.Mode)
+	require.Equal(t, AuthModeSingleKey, updated.AuthPolicy.Mode)
 	require.Equal(t, account.AddressUser, updated.AddressUser)
 	require.Equal(t, account.AddressRaw, updated.AddressRaw)
 }

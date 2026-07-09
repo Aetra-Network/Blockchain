@@ -16,6 +16,8 @@ import (
 	simtestutil "github.com/cosmos/cosmos-sdk/testutil/sims"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
+
+	contractstypes "github.com/sovereign-l1/l1/x/contracts/types"
 )
 
 func BenchmarkEmptyBlockFinalizeCommit(b *testing.B) {
@@ -28,9 +30,9 @@ func BenchmarkEmptyBlockFinalizeCommit(b *testing.B) {
 	app := NewL1App(log.NewNopLogger(), dbm.NewMemDB(), true, appOptions)
 
 	_, err = app.InitChain(&abci.RequestInitChain{
-		Validators:		[]abci.ValidatorUpdate{},
-		ConsensusParams:	simtestutil.DefaultConsensusParams,
-		AppStateBytes:		genesisBytes,
+		Validators:      []abci.ValidatorUpdate{},
+		ConsensusParams: simtestutil.DefaultConsensusParams,
+		AppStateBytes:   genesisBytes,
 	})
 	require.NoError(b, err)
 
@@ -38,9 +40,9 @@ func BenchmarkEmptyBlockFinalizeCommit(b *testing.B) {
 	b.ResetTimer()
 	for height := int64(1); height <= int64(b.N); height++ {
 		_, err = app.FinalizeBlock(&abci.RequestFinalizeBlock{
-			Height:			height,
-			Hash:			app.LastCommitID().Hash,
-			NextValidatorsHash:	nextValidatorsHash,
+			Height:             height,
+			Hash:               app.LastCommitID().Hash,
+			NextValidatorsHash: nextValidatorsHash,
 		})
 		require.NoError(b, err)
 		_, err = app.Commit()
@@ -60,9 +62,9 @@ func BenchmarkTPS(b *testing.B) {
 	app := NewL1App(log.NewNopLogger(), dbm.NewMemDB(), true, appOptions)
 
 	_, err = app.InitChain(&abci.RequestInitChain{
-		Validators:		[]abci.ValidatorUpdate{},
-		ConsensusParams:	simtestutil.DefaultConsensusParams,
-		AppStateBytes:		genesisBytes,
+		Validators:      []abci.ValidatorUpdate{},
+		ConsensusParams: simtestutil.DefaultConsensusParams,
+		AppStateBytes:   genesisBytes,
 	})
 	require.NoError(b, err)
 
@@ -106,10 +108,10 @@ func BenchmarkTPS(b *testing.B) {
 		b.StartTimer()
 
 		_, err = app.FinalizeBlock(&abci.RequestFinalizeBlock{
-			Height:			height,
-			Hash:			app.LastCommitID().Hash,
-			NextValidatorsHash:	nextValidatorsHash,
-			Txs:			txs,
+			Height:             height,
+			Hash:               app.LastCommitID().Hash,
+			NextValidatorsHash: nextValidatorsHash,
+			Txs:                txs,
 		})
 		require.NoError(b, err)
 		_, err = app.Commit()
@@ -121,4 +123,46 @@ func BenchmarkTPS(b *testing.B) {
 	b.ReportMetric(totalTxs/elapsed, "tx/sec")
 	blockTimeMs := elapsed / float64(b.N) * 1000
 	b.ReportMetric(blockTimeMs, "block/ms")
+}
+
+func BenchmarkAVMRuntimeRepeatedActivityBoundedGrowth(b *testing.B) {
+	const rounds = 24
+
+	var fixture avmRuntimeGrowthFixture
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		b.StopTimer()
+		fixture = newAVMRuntimeGrowthFixture(b)
+		b.StartTimer()
+		for step := 0; step < rounds; step++ {
+			runAVMRuntimeGrowthStep(b, fixture, step)
+		}
+	}
+	b.StopTimer()
+
+	storage, err := fixture.app.ContractsKeeper.ContractStorage(contractstypes.QueryContractStorageRequest{
+		ContractAddress: fixture.contract.ContractAddressUser,
+		Pagination:      contractstypes.PageRequest{Limit: 10},
+	})
+	require.NoError(b, err)
+	queue, err := fixture.app.ContractsKeeper.ContractQueue(contractstypes.QueryContractQueueRequest{
+		ContractAddress: fixture.contract.ContractAddressUser,
+		Pagination:      contractstypes.PageRequest{Limit: contractstypes.MaxContractQueryLimit},
+	})
+	require.NoError(b, err)
+	receipts, err := fixture.app.ContractsKeeper.ContractReceipts(contractstypes.QueryContractReceiptsRequest{
+		ContractAddress: fixture.contract.ContractAddressUser,
+		Pagination:      contractstypes.PageRequest{Limit: contractstypes.MaxContractQueryLimit},
+	})
+	require.NoError(b, err)
+	exported, err := fixture.app.ContractsKeeper.ExportGenesisState(fixture.ctx)
+	require.NoError(b, err)
+
+	b.ReportMetric(float64(rounds), "rounds")
+	b.ReportMetric(float64(len(storage)), "storage_entries")
+	b.ReportMetric(float64(len(queue)), "queue_entries")
+	b.ReportMetric(float64(len(receipts)), "receipt_entries")
+	b.ReportMetric(float64(len(exported.State.Contracts)), "contracts")
+	b.ReportMetric(float64(len(exported.State.InternalMessages)), "internal_messages")
+	b.ReportMetric(float64(len(exported.State.Receipts)), "exported_receipts")
 }

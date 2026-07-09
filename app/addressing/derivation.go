@@ -22,6 +22,8 @@ type AddressPair struct {
 	Raw	string
 }
 
+const pubKeyAddressV2Domain = "aetra-pubkey-address-v1"
+
 func DeriveAccountAddress(pubKey cryptotypes.PubKey) (AddressPair, error) {
 	return deriveAddressPair(AddressRoleAccount, pubKey)
 }
@@ -80,7 +82,11 @@ func deriveAddressPair(role AddressRole, pubKey cryptotypes.PubKey) (AddressPair
 	if pubKey == nil {
 		return AddressPair{}, errors.New("public key is required")
 	}
-	return addressPairFromBytes(role, []byte(pubKey.Address()))
+	v2, err := NormalizeV2RawAddress(pubKeyAddressV2Domain, []byte(pubKey.Address()))
+	if err != nil {
+		return AddressPair{}, err
+	}
+	return addressPairFromBytes(role, v2)
 }
 
 func addressPairFromBytes(role AddressRole, bz []byte) (AddressPair, error) {

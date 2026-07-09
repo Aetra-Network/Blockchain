@@ -1120,7 +1120,7 @@ func (f *KernelExecutionFrame) ChargeGas(amount uint64) bool {
 
 // PushValue pushes a typed value onto the evaluation stack.
 func (f *KernelExecutionFrame) PushValue(val StackValue) error {
-	if len(f.Stack) >= 1024 {
+	if len(f.Stack) >= DefaultMaxStackDepth {
 		f.ErrorState = ExitStackOverflow
 		f.Aborted = true
 		return fmt.Errorf("AVM kernel stack overflow: depth %d", len(f.Stack))

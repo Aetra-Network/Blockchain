@@ -56,7 +56,6 @@ func TestPhase31DocsDoNotShowUserFacingValidatorChoiceExamples(t *testing.T) {
 	for _, path := range [][]string{
 		{"docs", "official-liquid-staking.md"},
 		{"docs", "native-account-staking-reputation.md"},
-		{"docs", "test-matrix.md"},
 	} {
 		text := readRepoFile(t, path...)
 		for lineNo, line := range strings.Split(text, "\n") {

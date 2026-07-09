@@ -1,6 +1,7 @@
 package addressing_test
 
 import (
+	"encoding/binary"
 	"strings"
 	"testing"
 
@@ -48,8 +49,15 @@ func TestInspectAddressOnlyVerifiesOnChainOrSignedLabels(t *testing.T) {
 }
 
 func TestInspectAddressDetectsShortCollisionAndLookalike(t *testing.T) {
-	known := addressing.FormatAccAddress(bytes20(0x44))
-	collidingAddr := oneCharAddressLookalike(t, known)
+	// SEC-MED #13: a valid address can no longer be manufactured by mutating a
+	// single character of another (the checksum rejects it), so the old
+	// one-char-lookalike construction is gone. We instead find two GENUINELY
+	// valid v2 addresses that share the same shortened (prefix+suffix) form and
+	// assert the prefix/suffix collision warning still fires. The edit-distance
+	// AddressWarningLookalike for addresses can no longer be triggered — that is
+	// precisely the guarantee this fix provides; the Lookalike heuristic remains
+	// exercised for confusable LABELS in TestInspectAddressDetectsRecentAndConfusableLabels.
+	known, collidingAddr := collidingShortFormPair(t)
 	require.Equal(t, addressing.ShortenAddress(known), addressing.ShortenAddress(collidingAddr))
 
 	display, err := addressing.InspectAddress(collidingAddr, addressing.AddressInspectionContext{
@@ -61,16 +69,6 @@ func TestInspectAddressDetectsShortCollisionAndLookalike(t *testing.T) {
 	})
 	require.NoError(t, err)
 	requireWarning(t, display.Warnings, addressing.AddressWarningPrefixSuffixMatch)
-
-	display, err = addressing.InspectAddress(collidingAddr, addressing.AddressInspectionContext{
-		AddressBook: []addressing.AddressBookEntry{{
-			Address:     known,
-			Label:       "Known Receiver",
-			LabelSource: addressing.LabelSourceOnChain,
-		}},
-	})
-	require.NoError(t, err)
-	requireWarning(t, display.Warnings, addressing.AddressWarningLookalike)
 }
 
 func TestInspectAddressDetectsRecentAndConfusableLabels(t *testing.T) {
@@ -103,23 +101,30 @@ func TestAddressBookEntryRequiresAttestationForSignedLabel(t *testing.T) {
 	require.Equal(t, addressing.LabelSourceSignedAttestation, entry.LabelSource)
 }
 
-func oneCharAddressLookalike(t *testing.T, address string) string {
+// collidingShortFormPair finds two distinct, genuinely-valid v2 user-friendly
+// addresses that share the same ShortenAddress (first-10 + last-8) form. The
+// last-8 chars come from a fixed payload suffix; the first-10 chars vary only by
+// the checksum prefix, so a short birthday search over the leading payload bytes
+// yields a collision on the checksum prefix.
+func collidingShortFormPair(t *testing.T) (string, string) {
 	t.Helper()
-	alphabet := "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
-	for i := 12; i < len(address)-8; i++ {
-		original := address[i]
-		for j := 0; j < len(alphabet); j++ {
-			if alphabet[j] == original {
-				continue
-			}
-			candidate := address[:i] + string(alphabet[j]) + address[i+1:]
-			if _, err := addressing.Parse(candidate); err == nil {
-				return candidate
-			}
+	seen := make(map[string]string)
+	raw := make([]byte, 32)
+	copy(raw[26:], []byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}) // fix suffix -> shortened tail is constant
+	for n := uint64(1); n < 10_000_000; n++ {
+		binary.BigEndian.PutUint64(raw[0:8], n)
+		binary.BigEndian.PutUint64(raw[8:16], n*0x9E3779B97F4A7C15)
+		binary.BigEndian.PutUint64(raw[16:24], n*0xC2B2AE3D27D4EB4F)
+		user, err := addressing.FormatUserFriendly(raw)
+		require.NoError(t, err)
+		short := addressing.ShortenAddress(user)
+		if prev, ok := seen[short]; ok && prev != user {
+			return prev, user
 		}
+		seen[short] = user
 	}
-	t.Fatalf("failed to build address lookalike for %s", address)
-	return ""
+	t.Fatalf("failed to find short-form collision")
+	return "", ""
 }
 
 func requireWarning(t *testing.T, warnings []addressing.AddressWarning, code string) {

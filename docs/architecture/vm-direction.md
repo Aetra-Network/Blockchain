@@ -1,15 +1,24 @@
 # VM Direction
 
-Phase 11 defines the VM decision boundary for Aetra. Aetra uses AVM as the genesis smart contract runtime.
+Phase 11 defines the VM decision boundary for Aetra. The current project
+status is:
+
+- AVM language, compiler, executable spec, and developer tooling are ready for
+  contract developers;
+- AVM production runtime is enabled through the `x/contracts` keeper/module
+  path and must still satisfy the same security, determinism, and adversarial
+  evidence requirements.
+
 AVM means Aetra Virtual Machine. CosmWasm is not a genesis requirement; it is
 an optional gated compatibility layer that may be added only after explicit
 security, gas, state-growth, export/import, and adversarial evidence.
 
 ## Genesis AVM Runtime
 
-AVM is the native Aetra smart contract runtime. It is the first production VM
-target because it matches Aetra's async execution model, native `naet` fee
-model, contract standards, and bounded execution requirements.
+AVM is the native Aetra smart contract runtime target and is production-
+enabled through the `x/contracts` keeper/module path. It matches Aetra's async
+execution model, native `naet` fee model, contract standards, and bounded
+execution requirements, which is why it remains the primary runtime surface.
 
 Required genesis rules:
 
@@ -26,13 +35,18 @@ Required genesis rules:
   are export/import safe.
 - AVM fees use native `naet` and must interact correctly with fee burn,
   storage pricing, forwarding fees, and staking reward accounting.
-- AVM production enablement requires complete security review, complete gas model review, state growth benchmarks, interaction tests with fee burn, interaction tests with staking rewards, export/import tests, and adversarial contract tests.
+- AVM production enablement requires the security review, gas model review,
+  state growth benchmarks, interaction tests with fee burn, interaction tests
+  with staking rewards, export/import tests, and adversarial contract tests to
+  remain green.
 
 Current AVM implementation surface:
 
-- `x/aetravm/avm`: bytecode encoding, verifier, local runner, storage snapshot
-  ABI, gas schedule, host function allowlist, forbidden opcode checks, and
-  async handler adapter.
+- `x/contracts`: production keeper/module wiring for store code, instantiate,
+  execute, query, migrate, and export/import.
+- `x/aetravm/avm`: executable bytecode spec, verifier, local runner, storage
+  snapshot ABI, gas schedule, host function allowlist, forbidden opcode
+  checks, and async handler adapter.
 - `x/aetravm/async`: deterministic queue behavior, bounce behavior, fee/value
   denomination, limits, observability, and export/import.
 
@@ -103,12 +117,41 @@ No additional future VM may be implemented before the R&D spec defines:
 - upgrade/migration policy
 - adversarial audit
 
-Production sharding is separate sharding R&D and remains experimental until
-`docs/architecture/sharding-rd.md`, `x/sharding/sim`, prototype keepers,
-adversarial tests, long-run testnet, independent audit, and consensus-safety
-proof are complete.
+Production sharding is out of launch scope; the earlier sharding R&D
+simulator was removed from the repo. Any future sharding work restarts from a
+new R&D gate (spec, simulator, prototype keepers, adversarial tests, long-run
+testnet, independent audit, consensus-safety proof) before production claims.
 
 ## Compatibility Boundaries
+
+Supported program class:
+
+- any deterministic smart contract that does not depend on filesystem access,
+  network access, process spawning, wall-clock time, random host entropy, or
+  other nondeterministic host state;
+- contract families such as token, NFT, wallet, DNS/domain registry, DEX,
+  staking-pool, farm, registry, bridge-like application logic, and other
+  deterministic application-layer systems that can be lowered into the AVM
+  execution model.
+
+Unsupported program class:
+
+- general-purpose programs that require OS behavior, random external I/O,
+  process management, or nondeterministic timing;
+- programs that require ambient host state as an input to consensus behavior;
+- protocol-layer staking, validator set management, voting power, or slashing
+  logic, which remain native protocol responsibilities outside AVM.
+
+In AVM, staking means application-layer contract logic only:
+
+- staking pool contracts;
+- vesting and vault contracts;
+- farms and reward accounting contracts;
+- related reward distribution and share accounting logic.
+
+It does not mean protocol staking or consensus staking. Validator set changes,
+voting power, and slashing remain consensus-layer responsibilities and must not
+be redefined as contract behavior inside AVM.
 
 Contract standards are AVM-native first, but their message schemas must remain
 explicit enough for future gated adapters.
@@ -131,14 +174,16 @@ become the default path silently.
 
 ## Acceptance Gates
 
-- AVM is the primary VM.
-- AVM production execution has security review, gas review, state growth
-  benchmarks, fee burn tests, staking reward tests, export/import tests, and
-  adversarial contract tests.
+- AVM language/tooling is contract-developer ready.
+- AVM production execution is enabled through the real keeper/module path and
+  must keep security review, gas review, state growth benchmarks, fee burn
+  tests, staking reward tests, export/import tests, and adversarial contract
+  tests green.
 - CosmWasm readiness does not weaken base chain security.
 - CosmWasm remains disabled by default unless an explicit compatibility gate is
   enabled.
-- Contract standards can be tested independent of optional compatibility layers.
+- Contract standards can be tested independent of optional compatibility
+  layers.
 - `go test ./app/wasmconfig`
 - `go test ./x/aetravm/async`
 - `go test ./x/aetravm/avm`

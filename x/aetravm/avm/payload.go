@@ -9,15 +9,20 @@ import (
 
 const maxPayloadChunkDepth = 4096
 
-// BuildChunkPayload constructs a canonical chunk tree for an arbitrary payload.
+// ToChunkPayload constructs a canonical chunk tree for an arbitrary payload.
 // Small payloads stay in a single chunk. Larger payloads are split into a stable
 // 8-way tree so code/state/message bodies can spill over without changing hash
 // determinism.
-func BuildChunkPayload(data []byte, typeTag chunk.TypeTag) (*chunk.Chunk, error) {
+func ToChunkPayload(data []byte, typeTag chunk.TypeTag) (*chunk.Chunk, error) {
 	if typeTag == chunk.TypePruned {
 		return nil, errors.New("AVM chunk payload cannot use pruned chunk type")
 	}
 	return buildChunkPayload(data, typeTag, 0)
+}
+
+// BuildChunkPayload is the legacy name for ToChunkPayload.
+func BuildChunkPayload(data []byte, typeTag chunk.TypeTag) (*chunk.Chunk, error) {
+	return ToChunkPayload(data, typeTag)
 }
 
 func buildChunkPayload(data []byte, typeTag chunk.TypeTag, depth int) (*chunk.Chunk, error) {
@@ -56,9 +61,9 @@ func buildChunkPayload(data []byte, typeTag chunk.TypeTag, depth int) (*chunk.Ch
 	return builder.Build()
 }
 
-// FlattenChunkPayload reconstructs payload bytes from a canonical chunk tree.
+// FromChunkPayload reconstructs payload bytes from a canonical chunk tree.
 // It accepts both leaf chunks and spillover trees and rejects pruned chunks.
-func FlattenChunkPayload(root *chunk.Chunk) ([]byte, error) {
+func FromChunkPayload(root *chunk.Chunk) ([]byte, error) {
 	if root == nil {
 		return nil, errors.New("AVM chunk payload must not be nil")
 	}
@@ -66,6 +71,11 @@ func FlattenChunkPayload(root *chunk.Chunk) ([]byte, error) {
 		return nil, errors.New("AVM chunk payload cannot be a pruned chunk")
 	}
 	return flattenChunkPayload(root, 0)
+}
+
+// FlattenChunkPayload is the legacy name for FromChunkPayload.
+func FlattenChunkPayload(root *chunk.Chunk) ([]byte, error) {
+	return FromChunkPayload(root)
 }
 
 func flattenChunkPayload(root *chunk.Chunk, depth int) ([]byte, error) {

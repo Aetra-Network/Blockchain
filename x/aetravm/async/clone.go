@@ -19,6 +19,10 @@ func cloneMessage(msg MessageEnvelope) MessageEnvelope {
 	msg.Source = append(sdk.AccAddress(nil), msg.Source...)
 	msg.Destination = append(sdk.AccAddress(nil), msg.Destination...)
 	msg.Body = append([]byte(nil), msg.Body...)
+	if msg.StateInit != nil {
+		stateInit := msg.StateInit.Normalize()
+		msg.StateInit = &stateInit
+	}
 	return msg
 }
 

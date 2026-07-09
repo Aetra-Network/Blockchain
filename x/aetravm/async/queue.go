@@ -64,6 +64,42 @@ func (e *Executor) enqueueMessageWithOrder(msg MessageEnvelope, txHeight, txInde
 	return queued, nil
 }
 
+// removeFromMailboxes prunes a message from the per-destination inbox and
+// per-source outbox once it has been dequeued from the live queue. Without this
+// the inbox/outbox maps accumulate every message for the life of the chain
+// (unbounded exported state) and each enqueue re-sorts an ever-growing slice.
+// Pruning keeps both mailboxes bounded to the set of still-pending messages.
+func (e *Executor) removeFromMailboxes(queued QueuedMessage) {
+	destKey := inboxKey(queued.Envelope.Destination)
+	if list, ok := e.inbox[destKey]; ok {
+		filtered := removeQueuedBySequence(list, queued.Sequence)
+		if len(filtered) == 0 {
+			delete(e.inbox, destKey)
+		} else {
+			e.inbox[destKey] = filtered
+		}
+	}
+	sourceKey := outboxKey(queued.Envelope.Source)
+	if list, ok := e.outbox[sourceKey]; ok {
+		filtered := removeQueuedBySequence(list, queued.Sequence)
+		if len(filtered) == 0 {
+			delete(e.outbox, sourceKey)
+		} else {
+			e.outbox[sourceKey] = filtered
+		}
+	}
+}
+
+func removeQueuedBySequence(list []QueuedMessage, seq uint64) []QueuedMessage {
+	out := make([]QueuedMessage, 0, len(list))
+	for _, m := range list {
+		if m.Sequence != seq {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
 func (e *Executor) validateQueueCapacity(messages []MessageEnvelope) error {
 	counts := make(map[string]uint32)
 	for _, queued := range e.queue {

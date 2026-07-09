@@ -1,0 +1,249 @@
+// Token master example for ATLX / AVM.
+//
+// Model:
+// - TokenMaster owns mint, burn accounting, and admin transfer.
+// - Each holder balance lives in its own TokenWallet contract.
+// - TokenMaster does not store a dictionary of holders.
+// - Wallet addresses are derived deterministically from:
+//   wallet code + init data { master, owner }.
+// - For sends, the intended runtime flow is:
+//   autoDeployAddress({ code, data }) -> counterfactual wallet address
+//   plus StateInit attachment on first send when the wallet is not yet deployed.
+
+import "token_shared.atlx"
+
+const ERR_BAD_WALLET = 1006
+const ERR_NO_PENDING_OWNER = 1007
+
+@storage
+struct TokenMetadata {
+    name: string
+    symbol: string
+    decimals: uint32
+}
+
+@storage
+struct TokenMasterStorage {
+    owner: address
+    pendingOwner: address?
+    totalSupply: uint64
+    tokenWalletCode: Code
+    metadata: Chunk<TokenMetadata>?
+}
+
+@message(0x5101)
+struct Mint {
+    owner: address
+    amount: uint64
+    responseTo: address?
+}
+
+@message(0x5104)
+struct ChangeOwner {
+    newOwner: address
+}
+
+@message(0x5105)
+struct AcceptOwner {}
+
+@message(0x5106)
+struct WalletAddressRequest {
+    owner: address
+    replyTo: address
+}
+
+@message(0x5107)
+struct WalletAddressResponse {
+    owner: address
+    wallet: address
+}
+
+type TokenMasterInternalMsg =
+    Mint
+    | WalletBurnNotification
+    | ChangeOwner
+    | AcceptOwner
+    | WalletAddressRequest
+
+contract TokenMaster {
+    author: "Token Master Example"
+    description: "Master contract without holder dictionary"
+    version: "1.0.0"
+
+    storage: TokenMasterStorage
+    incomingMessages: TokenMasterInternalMsg
+
+    @store
+    func TokenMasterStorage.load() {
+        return TokenMasterStorage.fromChunk(contract.getData())
+    }
+
+    @store
+    func TokenMasterStorage.save(self) {
+        contract.setData(self.toChunk())
+    }
+
+    @pure
+    func TokenWalletStorage.zeroFor(master: address, owner: address, walletCode: Code) {
+        return TokenWalletStorage {
+            master: master,
+            owner: owner,
+            walletCode: walletCode,
+            balance: 0,
+        }
+    }
+
+    @pure
+    func walletAddressFor(owner: address): address {
+        const st = lazy TokenMasterStorage.load()
+        
+        
+        return counterfactualAddress({
+            code: st.tokenWalletCode,
+            data: TokenWalletStorage.zeroFor(getAddress(), owner, st.tokenWalletCode),
+        })
+    }
+    
+    @pure
+    func autoDeployWalletAddress(owner: address): address {
+        const st = lazy TokenMasterStorage.load()
+        return autoDeployAddress({
+            code: st.tokenWalletCode,
+            data: TokenWalletStorage.zeroFor(getAddress(), owner, st.tokenWalletCode),
+        })
+    }
+
+    @internal
+    func onInternalMessage(in: InMessage) {
+        const msg = lazy TokenMasterInternalMsg.fromSegment(in.body)
+        
+        match (msg) {
+            Mint ⇒ {
+                var st = lazy TokenMasterStorage.load()
+                assert (in.senderAddress == st.owner) throw ERR_NOT_OWNER
+                assert (msg.amount > 0) throw ERR_BAD_AMOUNT
+
+                st.totalSupply += msg.amount
+
+                const wallet = autoDeployWalletAddress(msg.owner)
+                const transfer = buildMessage({
+                    bounce: BounceMode.Only256BitsOfBody,
+                    amount: MSG_FORWARD_VALUE,
+                    receiver: wallet,
+                    body: WalletInternalTransfer {
+                        from: getAddress(),
+                        amount: msg.amount,
+                        responseTo: msg.responseTo,
+                    }
+                })
+
+                transfer.send(SEND_BOUNCE_ON_FAIL)
+                st.save()
+            }
+
+            WalletBurnNotification ⇒ {
+                var st = lazy TokenMasterStorage.load()
+                const expectedWallet = walletAddressFor(msg.owner)
+
+                assert (in.senderAddress == expectedWallet) throw ERR_BAD_WALLET
+                assert (msg.amount > 0) throw ERR_BAD_AMOUNT
+                assert (st.totalSupply >= msg.amount) throw ERR_BAD_AMOUNT
+
+                st.totalSupply -= msg.amount
+                st.save()
+
+                if (msg.responseTo != null) {
+                    const reply = buildMessage({
+                        bounce: BounceMode.NoBounce,
+                        amount: MSG_FORWARD_VALUE,
+                        receiver: msg.responseTo!,
+                        body: WalletBurnNotification {
+                            owner: msg.owner,
+                            amount: msg.amount,
+                            responseTo: null,
+                        }
+                    })
+
+                    reply.send(SEND_DEFAULT)
+                }
+            } 
+
+            ChangeOwner => {
+                var st = lazy TokenMasterStorage.load()
+                assert (in.senderAddress == st.owner) throw ERR_NOT_OWNER
+
+                st.pendingOwner = msg.newOwner
+                st.save()
+            }
+
+            
+            AcceptOwner => {
+                var st = lazy TokenMasterStorage.load()
+                assert (st.pendingOwner != null) throw ERR_NO_PENDING_OWNER
+                assert (in.senderAddress == st.pendingOwner!) throw ERR_NOT_OWNER
+
+                st.owner = st.pendingOwner!
+                st.pendingOwner = null
+                st.save()
+            }
+            
+            WalletAddressRequest => {
+                const wallet = walletAddressFor(msg.owner)
+                const reply = buildMessage({
+                    bounce: BounceMode.NoBounce,
+                    amount: MSG_FORWARD_VALUE,
+                    receiver: msg.replyTo,
+                    body: WalletAddressResponse {
+                        owner: msg.owner,
+                        wallet: wallet,
+                    }
+                })
+
+                reply.send(SEND_DEFAULT)
+            }
+
+            else => {
+                assert (in.body.isEmpty()) throw ERR_BAD_MSG
+            }
+        }
+
+    }
+
+    @bounced
+    func onBouncedMessage(in: InMessageBounced) {
+        in.bouncedBody.skipBouncedPrefix()
+
+        const bounced = lazy WalletInternalTransfer.fromSegment(in.bouncedBody)
+
+        var st = lazy TokenMasterStorage.load()
+        if (bounced.from == getAddress() && st.totalSupply >= bounced.amount) {
+            // Wallet mint bounced: revert the optimistic totalSupply increment.
+            st.totalSupply -= bounced.amount
+            st.save()
+        }
+    }
+
+    @get
+    func owner(): address {
+        const st = lazy TokenMasterStorage.load()
+        return st.owner
+    }
+
+    @get
+    func pendingOwner(): address? {
+        const st = lazy TokenMasterStorage.load()
+        return st.pendingOwner
+    }
+
+    @get
+    func totalSupply(): uint64 {
+        const st = lazy TokenMasterStorage.load()
+        return st.totalSupply
+    }
+
+    @get
+    func walletAddressOf(owner: address): address {
+        return walletAddressFor(owner)
+    }
+
+}

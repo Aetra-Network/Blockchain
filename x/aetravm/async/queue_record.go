@@ -10,6 +10,7 @@ import (
 	sdk "github.com/cosmos/cosmos-sdk/types"
 
 	"github.com/sovereign-l1/l1/app/addressing"
+	contracttypes "github.com/sovereign-l1/l1/x/contracts/types"
 )
 
 const MessageIDLength = 32
@@ -53,6 +54,16 @@ func QueueMessageID(queued QueuedMessage) []byte {
 	writeU32(&buf, msg.Opcode)
 	writeU64(&buf, msg.QueryID)
 	writeBytes(&buf, msg.Body)
+	if msg.StateInit != nil {
+		hash, err := contracttypes.HashStateInit(*msg.StateInit)
+		if err == nil {
+			writeString(&buf, hash)
+		} else {
+			writeString(&buf, "")
+		}
+	} else {
+		writeString(&buf, "")
+	}
 	writeBool(&buf, msg.Bounce)
 	writeBool(&buf, msg.Bounced)
 	writeU64(&buf, msg.DeadlineBlock)

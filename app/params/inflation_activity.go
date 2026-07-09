@@ -327,16 +327,19 @@ func (p ActivityInflationControllerParams) Validate() error {
 	if totalWeight != BasisPoints {
 		return fmt.Errorf("inflation controller weights must sum to %d", BasisPoints)
 	}
-	for name, value := range map[string]int64{
-		"stake_weight_bps":		p.StakeWeightBps,
-		"operating_cost_weight_bps":	p.OperatingCostWeightBps,
-		"fee_revenue_weight_bps":	p.FeeRevenueWeightBps,
-		"validator_count_weight_bps":	p.ValidatorCountWeightBps,
-		"slashing_risk_weight_bps":	p.SlashingRiskWeightBps,
-		"network_activity_weight_bps":	p.NetworkActivityWeightBps,
-		"treasury_reserve_weight_bps":	p.TreasuryReserveWeightBps,
+	for _, entry := range []struct {
+		name  string
+		value int64
+	}{
+		{name: "stake_weight_bps", value: p.StakeWeightBps},
+		{name: "operating_cost_weight_bps", value: p.OperatingCostWeightBps},
+		{name: "fee_revenue_weight_bps", value: p.FeeRevenueWeightBps},
+		{name: "validator_count_weight_bps", value: p.ValidatorCountWeightBps},
+		{name: "slashing_risk_weight_bps", value: p.SlashingRiskWeightBps},
+		{name: "network_activity_weight_bps", value: p.NetworkActivityWeightBps},
+		{name: "treasury_reserve_weight_bps", value: p.TreasuryReserveWeightBps},
 	} {
-		if err := validateBps(name, value, 0, BasisPoints); err != nil {
+		if err := validateBps(entry.name, entry.value, 0, BasisPoints); err != nil {
 			return err
 		}
 	}

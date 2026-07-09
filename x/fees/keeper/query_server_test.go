@@ -85,16 +85,18 @@ func TestEstimateFeeQueryReturnsBoundedQuote(t *testing.T) {
 
 	res, err := app.FeesKeeper.EstimateFee(ctx, &types.QueryEstimateFeeRequest{GasLimit: types.DefaultParams().MaxTxGas})
 	require.NoError(t, err)
-	require.Equal(t, "10naet", res.RequiredFee)
-	require.Equal(t, "1naet", res.BaseFee)
-	require.Equal(t, "5000000naet", res.MaxFee)
+	// Under target utilization the quote sits at the 0.4 AET flat transfer anchor.
+	require.Equal(t, types.DefaultBaseFeeAmount+types.BondDenom, res.RequiredFee)
+	require.Equal(t, types.DefaultBaseFeeAmount+types.BondDenom, res.BaseFee)
+	require.Equal(t, types.DefaultMaxFeeAmount+types.BondDenom, res.MaxFee)
 	require.False(t, res.Congested)
 	require.False(t, res.AtHardCap)
 
 	ctx.BlockGasMeter().ConsumeGas(types.DefaultParams().MaxBlockGas-types.DefaultParams().MaxTxGas, "test congestion")
 	res, err = app.FeesKeeper.EstimateFee(ctx, &types.QueryEstimateFeeRequest{GasLimit: types.DefaultParams().MaxTxGas})
 	require.NoError(t, err)
-	require.Equal(t, "5000000naet", res.RequiredFee)
+	// At full utilization the quote is bounded by the 5 AET hard cap.
+	require.Equal(t, types.DefaultMaxFeeAmount+types.BondDenom, res.RequiredFee)
 	require.True(t, res.Congested)
 	require.True(t, res.AtHardCap)
 }

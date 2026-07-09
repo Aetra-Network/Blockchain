@@ -9,9 +9,11 @@ import (
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/stretchr/testify/require"
 
+	"github.com/sovereign-l1/l1/app/addressing"
 	appparams "github.com/sovereign-l1/l1/app/params"
 	"github.com/sovereign-l1/l1/x/aetravm/async"
 	"github.com/sovereign-l1/l1/x/aetravm/chunk"
+	contracttypes "github.com/sovereign-l1/l1/x/contracts/types"
 )
 
 func TestDeployValidModuleAndRejectMalformedBytecode(t *testing.T) {
@@ -31,6 +33,15 @@ func TestDeployValidModuleAndRejectMalformedBytecode(t *testing.T) {
 	require.ErrorContains(t, err, "malformed")
 	_, err = DecodeModule(append([]byte("BAD!"), encoded[4:]...))
 	require.ErrorContains(t, err, "module header")
+}
+
+func TestRuntimeMessageFieldValueParsesSegmentBody(t *testing.T) {
+	body := []byte(`[{"name":"nonce","type":"uint32","value":"1"}]`)
+	segment, err := runtimeMessageFieldValue(body, "nonce")
+	require.NoError(t, err)
+	nonce, err := segment.AsUint64()
+	require.NoError(t, err)
+	require.Equal(t, uint64(1), nonce)
 }
 
 func TestBytecodeEncodeDecodeDifferentialRoundTrip(t *testing.T) {
@@ -72,6 +83,19 @@ func TestVerifierRejectsOversizedCodeAndNondeterministicOpcode(t *testing.T) {
 	missingImport := counterModule()
 	missingImport.Imports = []HostFunction{HostReadStorage, HostReturn}
 	require.ErrorContains(t, verifier.Verify(missingImport), "requires host function")
+}
+
+func TestVerifierRejectsNarrowingOpcodeArguments(t *testing.T) {
+	verifier := newTestVerifier(t)
+	maxUint32PlusOne := uint64(^uint32(0)) + 1
+
+	badEmit := emitterModule()
+	badEmit.Code[0].Arg = maxUint32PlusOne
+	require.ErrorContains(t, verifier.Verify(badEmit), "emit opcode argument")
+
+	badReturn := counterModule()
+	badReturn.Code[len(badReturn.Code)-1].Arg = maxUint32PlusOne
+	require.ErrorContains(t, verifier.Verify(badReturn), "return code argument")
 }
 
 func TestRunSimpleCounterDeterministicallyAndBoundsGas(t *testing.T) {
@@ -192,6 +216,57 @@ func TestStorageSnapshotIsDeterministicAndBounded(t *testing.T) {
 	result, err := runner.Run(module, nil, runtimeCtx(EntryReceiveInternal))
 	require.NoError(t, err)
 	require.Equal(t, async.ResultLimitExceeded, result.ResultCode)
+}
+
+func TestDeleteStorageOpcodeClearsKeyAndWholeSnapshot(t *testing.T) {
+	runner := newTestRunner(t)
+
+	keyDeleteModule := Module{
+		Version: Version,
+		Imports: []HostFunction{
+			HostReadStorage,
+			HostWriteStorage,
+			HostDeleteStorage,
+			HostReturn,
+		},
+		Exports: map[Entrypoint]uint32{EntryReceiveInternal: 0},
+		Code: []Instruction{
+			{Op: OpDeleteStorage, Data: []byte("counter")},
+			{Op: OpReadStorage, Data: []byte("counter")},
+			{Op: OpReturn, Arg: uint64(async.ResultOK)},
+		},
+	}
+	keyExec, err := runner.Run(keyDeleteModule, Storage{"counter": EncodeU64(42)}, runtimeCtx(EntryReceiveInternal))
+	require.NoError(t, err)
+	require.Equal(t, async.ResultOK, keyExec.ResultCode)
+	deletedValue, err := keyExec.ReturnValue.AsUint64()
+	require.NoError(t, err)
+	require.Equal(t, uint64(0), deletedValue)
+	_, exists := keyExec.State["counter"]
+	require.False(t, exists)
+
+	snapshotDeleteModule := Module{
+		Version: Version,
+		Imports: []HostFunction{
+			HostReadStorage,
+			HostWriteStorage,
+			HostDeleteStorage,
+			HostReturn,
+		},
+		Exports: map[Entrypoint]uint32{EntryReceiveInternal: 0},
+		Code: []Instruction{
+			{Op: OpDeleteStorage},
+			{Op: OpReadStorage},
+			{Op: OpReturn, Arg: uint64(async.ResultOK)},
+		},
+	}
+	snapshotExec, err := runner.Run(snapshotDeleteModule, Storage{"counter": EncodeU64(7), "note": EncodeU64(11)}, runtimeCtx(EntryReceiveInternal))
+	require.NoError(t, err)
+	require.Equal(t, async.ResultOK, snapshotExec.ResultCode)
+	require.Empty(t, snapshotExec.State)
+	mapValue, err := snapshotExec.ReturnValue.AsMap()
+	require.NoError(t, err)
+	require.Len(t, mapValue, 0)
 }
 
 func TestSnapshotDecodeRoundTripRejectsNonCanonicalInput(t *testing.T) {
@@ -330,6 +405,40 @@ func TestHostContextOpcodesReadEnvelopeBlockAndChargeGas(t *testing.T) {
 	require.Equal(t, async.ResultLimitExceeded, limited.ResultCode)
 }
 
+func TestSubOpcodeExecutesDeterministicallyAndRejectsUnderflow(t *testing.T) {
+	runner := newTestRunner(t)
+	module := Module{
+		Version: Version,
+		Imports: []HostFunction{
+			HostWriteStorage,
+			HostReturn,
+		},
+		Exports: map[Entrypoint]uint32{EntryReceiveInternal: 0},
+		Code: []Instruction{
+			{Op: OpPushU64, Arg: 9},
+			{Op: OpPushU64, Arg: 4},
+			{Op: OpSub},
+			{Op: OpWriteStorage, Data: []byte("delta")},
+			{Op: OpReturn, Arg: uint64(async.ResultOK)},
+		},
+	}
+	result, err := runner.Run(module, nil, runtimeCtx(EntryReceiveInternal))
+	require.NoError(t, err)
+	require.Equal(t, async.ResultOK, result.ResultCode)
+	require.Equal(t, uint64(5), DecodeU64(result.State["delta"]))
+
+	underflow := module
+	underflow.Code = []Instruction{
+		{Op: OpPushU64, Arg: 1},
+		{Op: OpPushU64, Arg: 2},
+		{Op: OpSub},
+		{Op: OpReturn, Arg: uint64(async.ResultOK)},
+	}
+	failed, err := runner.Run(underflow, nil, runtimeCtx(EntryReceiveInternal))
+	require.ErrorContains(t, err, "underflow")
+	require.Equal(t, async.ResultExecutionFailed, failed.ResultCode)
+}
+
 func TestGasAccountingIsDeterministicAcrossEntrypointsAndLimits(t *testing.T) {
 	runner := newTestRunner(t)
 	module := counterModule()
@@ -451,11 +560,11 @@ func TestAVMSchedulesSelfContinuationAtFutureBlock(t *testing.T) {
 
 func TestChunkPayloadSpilloverRoundTrip(t *testing.T) {
 	data := bytes.Repeat([]byte("payload"), 128)
-	root, err := BuildChunkPayload(data, chunk.TypeSystem)
+	root, err := ToChunkPayload(data, chunk.TypeSystem)
 	require.NoError(t, err)
 	require.NotNil(t, root)
 
-	flattened, err := FlattenChunkPayload(root)
+	flattened, err := FromChunkPayload(root)
 	require.NoError(t, err)
 	require.Equal(t, data, flattened)
 }
@@ -523,6 +632,78 @@ func TestAVMAsyncFailedSendBouncesAndQueueSurvivesExportImport(t *testing.T) {
 	imported, err := async.ImportState(exported)
 	require.NoError(t, err)
 	require.True(t, reflect.DeepEqual(exported, imported.ExportState()))
+}
+
+func TestStateInitBackedMessageDestinationMustMatchDerivedChildAddress(t *testing.T) {
+	ctx := runtimeCtx(EntryReceiveInternal)
+	ctx.ContractAddress = testAddr(0x44)
+
+	stateInitValue := ValueMap([]runtimeMapEntry{
+		mustRuntimeMapEntryAVM(t, ValueString("code"), ValueBytes([]byte("child-code"))),
+		mustRuntimeMapEntryAVM(t, ValueString("data"), ValueBytes([]byte("child-data"))),
+		mustRuntimeMapEntryAVM(t, ValueString("salt"), ValueBytes([]byte("child-salt"))),
+	})
+
+	derivedInit, err := runtimeStateInitFromValue(ctx, stateInitValue)
+	require.NoError(t, err)
+	derivedDest, _, err := contracttypes.DeriveContractAddressFromStateInit(contracttypes.DefaultContractChainID, contracttypes.DefaultContractNamespace, addressing.FormatAccAddress(ctx.ContractAddress), *derivedInit, contracttypes.DefaultParams())
+	require.NoError(t, err)
+	derivedDestAddr, err := addressing.ParseAccAddress(derivedDest)
+	require.NoError(t, err)
+
+	receiver := testAddr(0x55)
+	mismatchedEnvelope := ValueMap([]runtimeMapEntry{
+		mustRuntimeMapEntryAVM(t, ValueString("receiver"), ValueAddress(receiver.String())),
+		mustRuntimeMapEntryAVM(t, ValueString("amount"), ValueUint64(0)),
+		mustRuntimeMapEntryAVM(t, ValueString("body"), ValueBytes([]byte("boot"))),
+		mustRuntimeMapEntryAVM(t, ValueString("stateInit"), stateInitValue),
+	})
+
+	_, err = runtimeMessageEnvelopeFromValue(mismatchedEnvelope, ctx, 77)
+	require.ErrorContains(t, err, "does not match derived state init address")
+
+	matchingEnvelope := ValueMap([]runtimeMapEntry{
+		mustRuntimeMapEntryAVM(t, ValueString("receiver"), ValueAddress(derivedDest)),
+		mustRuntimeMapEntryAVM(t, ValueString("amount"), ValueUint64(0)),
+		mustRuntimeMapEntryAVM(t, ValueString("body"), ValueBytes([]byte("boot"))),
+		mustRuntimeMapEntryAVM(t, ValueString("stateInit"), stateInitValue),
+	})
+
+	msg, err := runtimeMessageEnvelopeFromValue(matchingEnvelope, ctx, 77)
+	require.NoError(t, err)
+	require.Equal(t, derivedDestAddr, msg.Destination)
+	require.NotNil(t, msg.StateInit)
+	require.Equal(t, []byte("boot"), msg.Body)
+}
+
+func mustRuntimeMapEntryAVM(t *testing.T, key, value RuntimeValue) runtimeMapEntry {
+	t.Helper()
+	entry, err := runtimeMapEntryFrom(key, value)
+	require.NoError(t, err)
+	return entry
+}
+
+func TestAVMCompareOpcodeReturnsSignedOrdering(t *testing.T) {
+	runner, err := NewRunner(DefaultParams())
+	require.NoError(t, err)
+
+	module := Module{
+		Version: Version,
+		Exports: map[Entrypoint]uint32{
+			EntryQuery: 0,
+		},
+		Code: []Instruction{
+			{Op: OpPushU64, Arg: 1},
+			{Op: OpPushU64, Arg: 2},
+			{Op: OpCmp},
+		},
+	}
+
+	exec, err := runner.Run(module, nil, runtimeCtx(EntryQuery))
+	require.NoError(t, err)
+	got, err := exec.ReturnValue.AsInt64()
+	require.NoError(t, err)
+	require.Equal(t, int64(-1), got)
 }
 
 func counterModule() Module {

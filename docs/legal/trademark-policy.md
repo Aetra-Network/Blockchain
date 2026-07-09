@@ -14,7 +14,7 @@ marks associated with the project.
 ## Restricted Uses
 
 - Presenting a fork, rebrand, or downstream distribution as the official
-  Aetra project.
+  Aetra Network.
 - Using the Aetra name or logo in a way that implies endorsement, sponsorship,
   or official status without permission.
 - Replacing the upstream project identity with a near-identical name, logo, or
@@ -30,6 +30,6 @@ marks associated with the project.
 
 ## Notes
 
-- This policy does not replace the Apache License 2.0.
+- This policy does not replace the Aetra Network Source-Available License (see LICENSE).
 - Copyright covers the code.
 - Trademark policy covers the name, logo, and source-identifying branding.

@@ -233,12 +233,12 @@ func CheckForbiddenCapabilities(frame *KernelExecutionFrame) DeterminismGateResu
 }
 
 func CheckStackBounds(frame *KernelExecutionFrame) DeterminismGateResult {
-	if len(frame.Stack) > 1024 {
+	if len(frame.Stack) > DefaultMaxStackDepth {
 		return DeterminismGateResult{
 			Passed:			false,
 			Layer:			LayerRuntime,
 			CheckName:		"stack_bounds",
-			ViolationDetail:	fmt.Sprintf("stack depth %d exceeds maximum 1024", len(frame.Stack)),
+			ViolationDetail:	fmt.Sprintf("stack depth %d exceeds maximum %d", len(frame.Stack), DefaultMaxStackDepth),
 		}
 	}
 	return DeterminismGateResult{

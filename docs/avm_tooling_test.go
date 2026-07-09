@@ -8,6 +8,35 @@ import (
 )
 
 func TestAVMToolingDocsStaySynchronizedWithImplementation(t *testing.T) {
+	languagePath := filepath.Join("architecture", "language-spec.md")
+	language, err := os.ReadFile(languagePath)
+	if err != nil {
+		t.Fatalf("read language-spec.md: %v", err)
+	}
+	languageText := string(language)
+	for _, want := range []string{
+		"Canonical Surface Grammar",
+		"getter selectors are derived from the canonical getter name",
+		"@storage struct",
+		"@message(0x",
+		"type InternalMsg =",
+		"union matching MUST be exhaustive",
+		"MUST reject those legacy declaration forms as parse errors",
+		"stable contract language track",
+		"grammar and ABI rules",
+		"Symbol Resolution",
+		"@impure",
+		"Top-level helper functions",
+		"wallet action",
+		"local bindings MUST use one of these two forms only in stable-track source",
+		"canonical serialization MUST be deterministic across compiler runs",
+		"wallet action MUST remain stable across compilation",
+	} {
+		if !strings.Contains(languageText, want) {
+			t.Fatalf("language-spec.md should contain %q", want)
+		}
+	}
+
 	matrixPath := filepath.Join("architecture", "avm-tooling.md")
 	matrix, err := os.ReadFile(matrixPath)
 	if err != nil {
@@ -21,9 +50,12 @@ func TestAVMToolingDocsStaySynchronizedWithImplementation(t *testing.T) {
 		"avm disasm",
 		"avm gas",
 		"avm test",
-		"examples/avm/counter.avm",
-		"examples/avm/treasury.avm",
+		"avm selectors",
+		"avm lsp",
+		"examples/avm/counter_should_be.atlx",
+		"examples/avm/token/token_master.atlx",
 		"test-report.json",
+		"Top-level JSON keys",
 	} {
 		if !strings.Contains(matrixText, want) {
 			t.Fatalf("avm-tooling.md should contain %q", want)

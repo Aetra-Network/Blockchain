@@ -26,6 +26,17 @@ const (
 	BasisPoints                         = uint32(10_000)
 )
 
+var (
+	// ErrEpochCapExceeded is returned by ApplyMintProtocolCoins when a mint
+	// would push the per-epoch minted total above the configured epoch cap.
+	// Callers driving emission from consensus (EndBlock) must treat this as a
+	// policy limit and degrade gracefully rather than aborting the block.
+	ErrEpochCapExceeded = errors.New("mint authority minted amount exceeds epoch cap")
+	// ErrLifetimeCapExceeded is returned by ApplyMintProtocolCoins when a mint
+	// would push the lifetime minted total above the configured lifetime cap.
+	ErrLifetimeCapExceeded = errors.New("mint authority minted amount exceeds lifetime cap")
+)
+
 type MintAuthorityParams struct {
 	Authority                      string
 	BaseDenom                      string
@@ -185,10 +196,13 @@ func NewMintAuthorityState(params MintAuthorityParams, registration SystemAccoun
 		registration = DefaultMintAuthorityRegistration()
 	}
 	if len(caps) == 0 {
+		// Caps are safety ceilings derived from the emission schedule so normal
+		// per-epoch/lifetime emission never trips them (which would abort the
+		// EndBlock emission and halt the chain). See app/params/mint.go.
 		caps = []MintCap{{
 			Denom:       params.BaseDenom,
-			EpochCap:    sdkmath.NewInt(1_000_000),
-			LifetimeCap: sdkmath.NewInt(100_000_000),
+			EpochCap:    appparams.MintAuthorityEpochCapNaet(),
+			LifetimeCap: appparams.MintAuthorityLifetimeCapNaet(),
 		}}
 	}
 	state := MintAuthorityState{
@@ -405,8 +419,14 @@ func (state MintAuthorityState) Validate() error {
 		seenEvents[event.EventID] = struct{}{}
 		sum = sum.Add(event.Amount)
 	}
-	if !sum.Equal(lifetime.Amount) {
-		return errors.New("mint authority lifetime minted counter must equal mint events")
+	// The retained Events list is a bounded, most-recent window (see
+	// pruneMintHistory), not the full lifetime history, so its sum is a subset
+	// of the authoritative lifetime counter rather than exactly equal. Requiring
+	// exact equality would force retaining every event forever and halt the
+	// chain once MaxMintEvents is reached. See SEC-MED: mint-authority Events
+	// grow unbounded.
+	if sum.GT(lifetime.Amount) {
+		return errors.New("mint authority retained mint events exceed lifetime minted counter")
 	}
 	return nil
 }
@@ -445,10 +465,10 @@ func ApplyMintProtocolCoins(state MintAuthorityState, msg MsgMintProtocolCoins, 
 	epochCounter := next.epochCounter(msg.Epoch)
 	lifetimeCounter := next.lifetimeCounter()
 	if epochCounter.Amount.Add(msg.Amount).GT(next.baseCap().EpochCap) {
-		return MintAuthorityState{}, MintEvent{}, errors.New("mint authority minted amount exceeds epoch cap")
+		return MintAuthorityState{}, MintEvent{}, ErrEpochCapExceeded
 	}
 	if lifetimeCounter.Amount.Add(msg.Amount).GT(next.baseCap().LifetimeCap) {
-		return MintAuthorityState{}, MintEvent{}, errors.New("mint authority minted amount exceeds lifetime cap")
+		return MintAuthorityState{}, MintEvent{}, ErrLifetimeCapExceeded
 	}
 	event := MintEvent{
 		Caller:                   msg.Caller,
@@ -474,10 +494,34 @@ func ApplyMintProtocolCoins(state MintAuthorityState, msg MsgMintProtocolCoins, 
 		Amount: lifetimeCounter.Amount.Add(msg.Amount),
 	})
 	next = NormalizeMintAuthorityState(next)
+	next = pruneMintHistory(next)
 	if err := next.Validate(); err != nil {
 		return MintAuthorityState{}, MintEvent{}, err
 	}
 	return next, event, nil
+}
+
+// pruneMintHistory bounds the retained per-event and per-epoch history to the
+// most recent MaxMintEvents entries. Without this the Events / MintedByEpoch
+// slices grow one entry per emission epoch forever, and Validate (called from
+// the EndBlock emission path) rejects the state once len(Events) exceeds
+// MaxMintEvents — halting the chain. The lifetime counter remains the
+// authoritative running total. Callers must run this AFTER
+// NormalizeMintAuthorityState so both slices are in canonical chronological
+// order (oldest first), making the suffix the most recent window and the prune
+// deterministic across nodes. See SEC-MED: mint-authority Events grow unbounded.
+func pruneMintHistory(state MintAuthorityState) MintAuthorityState {
+	max := int(state.Params.MaxMintEvents)
+	if max <= 0 {
+		return state
+	}
+	if len(state.Events) > max {
+		state.Events = append([]MintEvent(nil), state.Events[len(state.Events)-max:]...)
+	}
+	if len(state.MintedByEpoch) > max {
+		state.MintedByEpoch = append([]MintedByEpoch(nil), state.MintedByEpoch[len(state.MintedByEpoch)-max:]...)
+	}
+	return state
 }
 
 func ApplyUpdateMintAuthorityParams(state MintAuthorityState, msg MsgUpdateMintAuthorityParams) (MintAuthorityState, error) {

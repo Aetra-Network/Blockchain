@@ -12,9 +12,10 @@ wallet.
 Rules:
 
 - external messages MAY carry value;
-- external messages MAY deploy a contract;
+- external messages MAY create a contract from attached StateInit;
 - external messages MUST be authenticated by the transaction layer;
-- external messages are not bounced as external traffic.
+- external messages are not bounced as external traffic;
+- unknown external selectors MUST be rejected deterministically.
 
 ### Internal
 
@@ -25,12 +26,42 @@ Rules:
 - internal messages MAY transfer value;
 - internal messages MAY call another contract;
 - internal messages MAY carry a bounce flag;
-- internal messages MUST be deterministic and ordered by consensus rules.
+- internal messages MUST be deterministic and ordered by consensus rules;
+- internal messages MUST be matched by kind first and only then decoded
+  against their canonical opcode or selector binding;
+- if the canonical opcode or selector does not map to a declared typed
+  payload, the runtime MUST reject the message before any handler body runs;
+- unknown internal selectors MUST be rejected deterministically if there is no
+  explicitly declared handler;
+- empty top-up or no-op behavior MUST be explicit in source and ABI metadata.
+
+Implementations MAY expose decoded envelope fields such as `value`,
+`bounce`, `bounced`, `flags`, `opcode`, and `body` to internal handlers where
+those fields exist in the canonical envelope, but the canonical ABI binding
+for the message MUST be the source of truth for typed decoding.
+
+Typed message-body schemas are declared as `@message(opcode) struct Name {
+... }` in source. The compiler MUST use those bindings to build typed opcode ->
+schema decode metadata, and tools MAY match decoded values through unions or
+`match msg { ... }` rather than forcing raw segment parsing as the only path.
+Named unions such as `type InternalMsg = Inc | Dec | Withdraw | SetTarget`
+are the canonical way to group message-body schemas into a closed dispatch
+family; exhaustive matching on that union MUST be enforced at compile time.
+
+Message-handler names are fixed and reserved:
+
+- `@external` handlers MUST use `onExternalMessage`;
+- `@internal` handlers MUST use `onInternalMessage`;
+- `@bounced` handlers MUST use `onBouncedMessage`;
+- the reserved handler names MUST NOT be reused for ordinary helper functions
+  or for handlers carrying a different annotation;
+- compiler diagnostics MUST explain the required name when a handler annotation
+  and function name do not match.
 
 ### Bounced
 
 A bounced message is a synthetic inbound message created after a failed
-bounceable internal or deploy message.
+bounceable internal message.
 
 Rules:
 
@@ -38,19 +69,35 @@ Rules:
 - bounced messages MUST not request another bounce;
 - bounced messages MUST preserve the original message identity in payload form;
 - bounced messages MUST be clearly marked so wallets and explorers can show
-  failure provenance.
+  failure provenance;
+- bounced messages without a handler MUST terminate without creating a new
+  bounce loop.
 
-### Deploy
+Bounced dispatch is a separate synthetic entrypoint domain and MUST NOT be
+treated as a fallback branch of ordinary internal dispatch.
 
-A deploy message is the canonical initial message for contract creation.
+### Contract Creation
+
+A contract-creation message is the canonical initial message for contract
+creation.
 
 Rules:
 
-- deploy messages MUST include code identity and initial state data;
-- deploy messages MAY be external or internal depending on the sender;
-- deploy messages MUST compute the deployed address from StateInit;
-- deploy messages MUST fail if the address already exists or the init is
-  invalid.
+- contract-creation messages MUST include code identity and initial state data;
+- contract-creation messages MAY be external or internal depending on the sender;
+- contract-creation messages MUST compute the created address from StateInit;
+- contract-creation messages MUST fail if the address already exists or the init is invalid.
+
+In Aetralis source, contract creation is expressed through the canonical
+example style rather than a dedicated keyword. The example contracts are the
+canonical working syntax. Message body schemas are ordinary source symbols as
+well; the canonical authoring style is to define them outside the contract
+shell and bind them into the ABI by name, rather than treating the contract as
+the only namespace.
+
+Implementations MAY expose creation entrypoints through the conventional
+`onCreate` or `init` naming style, but the ABI binding remains the source of
+truth.
 
 ### Query / Getter
 
@@ -62,6 +109,10 @@ Rules:
 - they MUST NOT emit consensus messages;
 - they SHOULD be repeatable from the same state root and input;
 - they MAY be served off-chain by SDK, explorer, or wallet tooling.
+
+Getters are declared as `@get func name(): T`; the selector is derived from
+the canonical getter name and cannot be pinned explicitly. The getter kind in
+the ABI remains the source of truth.
 
 ## 2. Outbound Message Classes
 
@@ -79,14 +130,40 @@ A bounced reply is the canonical failure reply for a bounceable message.
 A refund returns remaining value to the sender or fee payer after a failure or
 partial execution path.
 
-### Deploy Message
+### Contract Creation Message
 
-A deploy message creates a new contract or account from a StateInit binding.
+A contract-creation message creates a new contract or account from a StateInit binding.
 
 ### Self-Message
 
 A self-message is addressed to the same contract and is used for deferred work,
 timeouts, or continuation handling.
+
+### Builder DSL
+
+`buildMessage({ ... })` is the canonical surface builder for outbound
+messages.
+
+Rules:
+
+- it MUST be lowered by the compiler into the canonical ABI/runtime message
+  envelope;
+- it MUST support `bounce`, `amount`, `receiver`, `body`, and typed body payloads;
+- typed body payloads MUST lower through the canonical message-body codec;
+- it MUST NOT exist as an only-runtime API that bypasses compiler lowering;
+- the lowered result MUST be ABI-stable and identical to the canonical runtime
+  envelope representation.
+
+Send mode semantics:
+
+- `SEND_DEFAULT`, `SEND_CARRY_REMAINDER`, `SEND_DRAIN_BALANCE`,
+  `SEND_ESTIMATE_ONLY`, `SEND_FEE_FROM_BALANCE`, `SEND_IGNORE_ERRORS`,
+  `SEND_BOUNCE_ON_FAIL`, and `SEND_DESTROY_IF_EMPTY` are the canonical mode
+  constants for send lowering;
+- they are typed surface constants, not an ad hoc enum namespace;
+- the compiler MUST translate the selected mode into the runtime send flags
+  before ABI hashing and execution;
+- message sends without an explicit mode default to `SEND_DEFAULT`.
 
 ## 3. Bounce Semantics
 
@@ -95,13 +172,17 @@ Rules:
 - A message is bounceable only if its envelope sets `bounce = true`.
 - External messages are never bounced.
 - A bounced message MUST be generated only after a failed bounceable inbound
-  internal or deploy message.
+  internal message.
 - If the target contract defines a bounced handler, the runtime MUST dispatch
   the bounced payload to that handler.
 - If no bounced handler exists, the runtime MUST stop after emitting the
   failure receipt and any eligible refund.
 - Bounce processing MUST not recurse forever.
 - Bounce handling MUST not create a new bounceable message for the same failure.
+
+If the contract defines a dedicated bounced handler, implementations MAY map
+it to a conventional `onBounced` entrypoint name, but the bounced kind in the
+ABI remains authoritative.
 
 ## 4. Canonical Bounced Payload
 
@@ -124,14 +205,14 @@ The bounced envelope MUST set:
 
 ## 5. Examples
 
-### Deploy
+### Contract Creation
 
 ```text
-external deploy:
+external creation:
   sender = AEwallet
   destination = contract address derived from StateInit
   state_init = { code_hash, init_data, salt, chain_id, namespace }
-  result = deploy contract, run init, emit deploy receipt
+  result = create contract, run init, emit creation receipt
 ```
 
 ### Internal Message
@@ -184,7 +265,7 @@ Wallets and explorers MUST display:
 - sender and destination;
 - bounce flag;
 - bounced provenance;
-- deploy state init summary;
+- contract creation state init summary;
 - getter read-only status;
 - refund reason and amount.
 

@@ -19,6 +19,7 @@ import (
 	"github.com/cosmos/cosmos-sdk/x/genutil"
 	genutiltypes "github.com/cosmos/cosmos-sdk/x/genutil/types"
 	minttypes "github.com/cosmos/cosmos-sdk/x/mint/types"
+	stakingtypes "github.com/cosmos/cosmos-sdk/x/staking/types"
 	appparams "github.com/sovereign-l1/l1/app/params"
 )
 
@@ -50,6 +51,16 @@ func initGenFiles(
 	bankGenState.DenomMetadata = appparams.EnsureNativeTokenMetadata(bankGenState.DenomMetadata)
 	appGenState[banktypes.ModuleName] = clientCtx.Codec.MustMarshalJSON(&bankGenState)
 	appGenState[minttypes.ModuleName] = clientCtx.Codec.MustMarshalJSON(appparams.AetraMintGenesisState())
+
+	// The cosmos-sdk staking default MaxValidators (100) is below the Aetra
+	// genesis-phase ceiling and would silently block the documented validator
+	// growth plan (100/128 genesis -> 150/200 growth -> 250/300 mature; see
+	// app/params/network_profile.go). Genesis starts at the genesis-phase
+	// ceiling; later phases raise it via governance MsgUpdateParams.
+	var stakingGenState stakingtypes.GenesisState
+	clientCtx.Codec.MustUnmarshalJSON(appGenState[stakingtypes.ModuleName], &stakingGenState)
+	stakingGenState.Params.MaxValidators = appparams.AetraValidatorSetGenesisMax
+	appGenState[stakingtypes.ModuleName] = clientCtx.Codec.MustMarshalJSON(&stakingGenState)
 
 	appGenStateJSON, err := json.MarshalIndent(appGenState, "", "  ")
 	if err != nil {

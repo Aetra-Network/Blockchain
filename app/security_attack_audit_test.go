@@ -52,7 +52,7 @@ func TestConsensusCriticalSourceRejectsNondeterminismAndExternalNetworkCalls(t *
 			}
 			body := string(bz)
 			for _, item := range forbidden {
-				if strings.Contains(body, item.token) {
+				if hasForbiddenToken(body, item.token) {
 					rel, _ := filepath.Rel(repoRoot, path)
 					findings = append(findings, rel+": "+item.risk+" via "+item.token)
 				}
@@ -61,6 +61,33 @@ func TestConsensusCriticalSourceRejectsNondeterminismAndExternalNetworkCalls(t *
 		}))
 	}
 	require.Empty(t, findings)
+}
+
+// hasForbiddenToken reports whether body contains token at an identifier word
+// boundary, i.e. the byte before the match is not part of a longer identifier.
+// This avoids false positives such as "operand.Name" matching the "rand." token
+// or "runtime.Now(" matching "time.Now(", while still catching real package
+// calls like "rand.Intn" or "time.Now(".
+func hasForbiddenToken(body, token string) bool {
+	from := 0
+	for {
+		idx := strings.Index(body[from:], token)
+		if idx < 0 {
+			return false
+		}
+		pos := from + idx
+		if pos == 0 || !isConsensusIdentByte(body[pos-1]) {
+			return true
+		}
+		from = pos + 1
+	}
+}
+
+func isConsensusIdentByte(b byte) bool {
+	return b == '_' ||
+		(b >= 'a' && b <= 'z') ||
+		(b >= 'A' && b <= 'Z') ||
+		(b >= '0' && b <= '9')
 }
 
 func TestFinalizeBlockMalformedTxAttackDoesNotPanicOrSucceed(t *testing.T) {

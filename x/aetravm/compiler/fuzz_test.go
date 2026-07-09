@@ -24,16 +24,30 @@ struct CounterState {
   count: u64 = 0
 }
 
+@message(%d)
+struct MsgA {
+  a: u64
+}
+
+@message(%d)
+struct MsgB {
+  b: u64
+}
+
+type ExternalMsg = MsgA | MsgB
+
 contract Counter {
-  storage CounterState
-  message external First() selector = %d {
-    return 0
-  }
-  message bounced Refund() selector = 98 {
-    return 0
-  }
-  getter GetCount() -> u64 selector = %d {
-    return state.count
+  storage: CounterState
+  incomingExternal: ExternalMsg
+
+  @external(inMsg: Segment)
+  func onExternalMessage(inMsg: Segment) {
+    const msg = ExternalMsg.fromSegment(inMsg)
+    match (msg) {
+      MsgA => { set state.count = msg.a }
+      MsgB => { set state.count = msg.b }
+      else => { assert (inMsg.isEmpty()) throw 0xFFFF }
+    }
   }
 }
 `, left, right)
@@ -43,8 +57,10 @@ contract Counter {
 
 		res, err := c.Compile([]byte(src))
 		if left == right {
+			// Two message schemas bound to the same opcode must be rejected as a
+			// collision (the successor to the removed selector-collision check).
 			require.Error(t, err)
-			require.ErrorContains(t, err, "selector")
+			require.ErrorContains(t, err, "opcode")
 			return
 		}
 		if err != nil {

@@ -26,7 +26,10 @@ func ClaimPoolRewardShare(input PoolRewardClaimInput) (DelegatorShare, PoolRewar
 	if input.RewardIndex < input.Share.RewardIndexCheckpoint {
 		return DelegatorShare{}, PoolRewardClaimReceipt{}, errors.New("pool reward claim index cannot go backwards")
 	}
-	amount := AccruedReward(input.Share, input.RewardIndex)
+	amount, err := AccruedReward(input.Share, input.RewardIndex)
+	if err != nil {
+		return DelegatorShare{}, PoolRewardClaimReceipt{}, err
+	}
 	if amount == 0 {
 		return DelegatorShare{}, PoolRewardClaimReceipt{}, errors.New("pool reward claim has no claimable rewards")
 	}

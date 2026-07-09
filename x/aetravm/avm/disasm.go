@@ -31,12 +31,16 @@ func OpcodeName(op Opcode) string {
 		return "nop"
 	case OpPushU64:
 		return "push_u64"
+	case OpPushNull:
+		return "push_null"
 	case OpReadStorage:
 		return "read_storage"
 	case OpWriteStorage:
 		return "write_storage"
 	case OpAdd:
 		return "add"
+	case OpSub:
+		return "sub"
 	case OpEmitInternal:
 		return "emit_internal"
 	case OpReturn:
@@ -51,6 +55,98 @@ func OpcodeName(op Opcode) string {
 		return "charge_gas"
 	case OpScheduleSelf:
 		return "schedule_self"
+	case OpEq:
+		return "eq"
+	case OpNe:
+		return "ne"
+	case OpLt:
+		return "lt"
+	case OpLe:
+		return "le"
+	case OpGt:
+		return "gt"
+	case OpGe:
+		return "ge"
+	case OpCmp:
+		return "cmp"
+	case OpAnd:
+		return "and"
+	case OpOr:
+		return "or"
+	case OpNot:
+		return "not"
+	case OpJump:
+		return "jump"
+	case OpJumpIfZero:
+		return "jump_if_zero"
+	case OpAbort:
+		return "abort"
+	case OpDup:
+		return "dup"
+	case OpDrop:
+		return "drop"
+	case OpLoadLocal:
+		return "load_local"
+	case OpStoreLocal:
+		return "store_local"
+	case OpReadMsgSender:
+		return "read_msg_sender"
+	case OpReadMsgValue:
+		return "read_msg_value"
+	case OpReadMsgBody:
+		return "read_msg_body"
+	case OpIsEmpty:
+		return "is_empty"
+	case OpReadMsgField:
+		return "read_msg_field"
+	case OpReadField:
+		return "read_field"
+	case OpLen:
+		return "len"
+	case OpMapEmpty:
+		return "map_empty"
+	case OpMapGet:
+		return "map_get"
+	case OpMapSet:
+		return "map_set"
+	case OpMapHas:
+		return "map_has"
+	case OpMapDelete:
+		return "map_delete"
+	case OpMapKeys:
+		return "map_keys"
+	case OpMapEntries:
+		return "map_entries"
+	case OpPushString:
+		return "push_string"
+	case OpPushAddress:
+		return "push_address"
+	case OpPushBytes:
+		return "push_bytes"
+	case OpHash:
+		return "hash"
+	case OpReadContractAddress:
+		return "read_contract_address"
+	case OpReadOriginalBalance:
+		return "read_original_balance"
+	case OpReadAttachedValue:
+		return "read_attached_value"
+	case OpReadLogicalTime:
+		return "read_logical_time"
+	case OpReadBlockTimestamp:
+		return "read_block_timestamp"
+	case OpReadRandom:
+		return "read_random"
+	case OpReadCurrentBlockLogicalTime:
+		return "read_current_block_logical_time"
+	case OpCounterfactualAddress:
+		return "counterfactual_address"
+	case OpAutoDeployAddress:
+		return "auto_deploy_address"
+	case OpVerifySignature:
+		return "verify_signature"
+	case OpCastCoins:
+		return "cast_coins"
 	case OpWallClock:
 		return "wall_clock"
 	case OpRandom:
@@ -122,4 +218,3 @@ func (p GasProfile) SortedLines() []GasProfileLine {
 	})
 	return lines
 }
-

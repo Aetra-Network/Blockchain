@@ -45,6 +45,31 @@ func TestReleaseWorkflowHasGoTest(t *testing.T) {
 	}
 }
 
+func TestReleaseWorkflowHasLaunchAndAVMGates(t *testing.T) {
+	workflowPath := filepath.Join(repoRoot(), ".github", "workflows", "testnet-readiness.yml")
+	content, err := os.ReadFile(workflowPath)
+	if os.IsNotExist(err) {
+		t.Skip("testnet-readiness.yml not found")
+	}
+	if err != nil {
+		t.Fatalf("error reading testnet-readiness.yml: %v", err)
+	}
+
+	text := string(content)
+	for _, want := range []string{
+		"avm-gates",
+		"tests/e2e/avm_contract_smoke.ps1",
+		"genesis-validate",
+		"localnet-smoke",
+		"export-import-roundtrip",
+		"launch-evidence-bundle.ps1",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("testnet-readiness.yml should contain %q", want)
+		}
+	}
+}
+
 func TestSecurityWorkflowReadsGovulncheckTriageFromProtectedBaseBranch(t *testing.T) {
 	workflowPath := filepath.Join(repoRoot(), ".github", "workflows", "security.yml")
 	content, err := os.ReadFile(workflowPath)
@@ -71,6 +96,32 @@ func TestSecurityWorkflowReadsGovulncheckTriageFromProtectedBaseBranch(t *testin
 	}
 	if strings.Contains(text, `grep -E '^GO-[0-9]+-[0-9]+' .github/security/govulncheck-triage.txt`) {
 		t.Error("security.yml should not read govulncheck triage from the checkout tree on PRs")
+	}
+}
+
+func TestSecurityWorkflowRunsDeterminismGateOnPullRequests(t *testing.T) {
+	workflowPath := filepath.Join(repoRoot(), ".github", "workflows", "security.yml")
+	content, err := os.ReadFile(workflowPath)
+	if os.IsNotExist(err) {
+		t.Skip("security.yml not found")
+	}
+	if err != nil {
+		t.Fatalf("error reading security.yml: %v", err)
+	}
+
+	text := string(content)
+	// The Security Gate runs on pull_request and push-to-main; the determinism
+	// gate job must be part of it so nondeterministic AVM/contracts changes are
+	// blocked before merge (TESTNET-P0 #19).
+	for _, want := range []string{
+		"determinism-gate:",
+		"go test ./tests/avm_determinism_gate/...",
+		"TestAVMRuntimeDeterminismGateRejectsNondeterminismAndKeepsStableRoots",
+		"TestConsensusCriticalSourceRejectsNondeterminismAndExternalNetworkCalls",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("security.yml should contain %q so the determinism gate runs on PRs", want)
+		}
 	}
 }
 
@@ -119,6 +170,8 @@ func TestPrototypeReleaseUsesProtectedGitleaksConfig(t *testing.T) {
 		`GITLEAKS_CONFIG=$GitleaksConfig`,
 		`--config $env:GITLEAKS_CONFIG`,
 		`-GitleaksConfig $env:GITLEAKS_CONFIG`,
+		`scripts\tooling\ensure-buf.ps1`,
+		`BUF_VERSION`,
 		`-Strict`,
 	} {
 		if !strings.Contains(text, want) {
@@ -186,6 +239,12 @@ func TestReleaseWorkflowHasBufLint(t *testing.T) {
 	text := string(content)
 	if !strings.Contains(text, "buf lint") {
 		t.Error("testnet-readiness.yml should run 'buf lint'")
+	}
+	if !strings.Contains(text, "scripts\\tooling\\ensure-buf.ps1") {
+		t.Error("testnet-readiness.yml should install buf through the pinned helper")
+	}
+	if !strings.Contains(text, "BUF_VERSION") {
+		t.Error("testnet-readiness.yml should pin buf version")
 	}
 }
 

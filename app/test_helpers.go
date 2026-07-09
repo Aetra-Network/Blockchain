@@ -33,9 +33,9 @@ import (
 
 // SetupOptions defines arguments that are passed into `Simapp` constructor.
 type SetupOptions struct {
-	Logger	log.Logger
-	DB	*dbm.MemDB
-	AppOpts	servertypes.AppOptions
+	Logger  log.Logger
+	DB      *dbm.MemDB
+	AppOpts servertypes.AppOptions
 }
 
 func setup(withGenesis bool, invCheckPeriod uint) (*L1App, GenesisState) {
@@ -65,8 +65,8 @@ func NewSimappWithCustomOptions(t *testing.T, isCheckTx bool, options SetupOptio
 	senderPrivKey := secp256k1.GenPrivKey()
 	acc := authtypes.NewBaseAccount(senderPrivKey.PubKey().Address().Bytes(), senderPrivKey.PubKey(), 0, 0)
 	balance := banktypes.Balance{
-		Address:	acc.GetAddress().String(),
-		Coins:		sdk.NewCoins(sdk.NewCoin(sdk.DefaultBondDenom, sdkmath.NewInt(100000000000000))),
+		Address: acc.GetAddress().String(),
+		Coins:   sdk.NewCoins(sdk.NewCoin(sdk.DefaultBondDenom, sdkmath.NewInt(100000000000000))),
 	}
 
 	app := NewL1App(options.Logger, options.DB, true, options.AppOpts)
@@ -81,9 +81,9 @@ func NewSimappWithCustomOptions(t *testing.T, isCheckTx bool, options SetupOptio
 		require.NoError(t, err)
 
 		_, err = app.InitChain(&abci.RequestInitChain{
-			Validators:		[]abci.ValidatorUpdate{},
-			ConsensusParams:	simtestutil.DefaultConsensusParams,
-			AppStateBytes:		stateBytes,
+			Validators:      []abci.ValidatorUpdate{},
+			ConsensusParams: simtestutil.DefaultConsensusParams,
+			AppStateBytes:   stateBytes,
 		})
 		require.NoError(t, err)
 	}
@@ -105,8 +105,8 @@ func Setup(t testing.TB, isCheckTx bool) *L1App {
 	senderPrivKey := secp256k1.GenPrivKey()
 	acc := authtypes.NewBaseAccount(senderPrivKey.PubKey().Address().Bytes(), senderPrivKey.PubKey(), 0, 0)
 	balance := banktypes.Balance{
-		Address:	acc.GetAddress().String(),
-		Coins:		sdk.NewCoins(sdk.NewCoin(sdk.DefaultBondDenom, sdkmath.NewInt(100000000000000))),
+		Address: acc.GetAddress().String(),
+		Coins:   sdk.NewCoins(sdk.NewCoin(sdk.DefaultBondDenom, sdkmath.NewInt(100000000000000))),
 	}
 
 	app := SetupWithGenesisValSet(t, valSet, []authtypes.GenesisAccount{acc}, balance)
@@ -130,18 +130,18 @@ func SetupWithGenesisValSet(t testing.TB, valSet *cmttypes.ValidatorSet, genAccs
 	require.NoError(t, err)
 
 	_, err = app.InitChain(&abci.RequestInitChain{
-		Validators:		[]abci.ValidatorUpdate{},
-		ConsensusParams:	simtestutil.DefaultConsensusParams,
-		AppStateBytes:		stateBytes,
+		Validators:      []abci.ValidatorUpdate{},
+		ConsensusParams: simtestutil.DefaultConsensusParams,
+		AppStateBytes:   stateBytes,
 	},
 	)
 	require.NoError(t, err)
 
 	require.NoError(t, err)
 	_, err = app.FinalizeBlock(&abci.RequestFinalizeBlock{
-		Height:			app.LastBlockHeight() + 1,
-		Hash:			app.LastCommitID().Hash,
-		NextValidatorsHash:	valSet.Hash(),
+		Height:             app.LastBlockHeight() + 1,
+		Hash:               app.LastCommitID().Hash,
+		NextValidatorsHash: valSet.Hash(),
 	})
 	require.NoError(t, err)
 
@@ -164,8 +164,8 @@ func GenesisStateWithSingleValidator(t *testing.T, app *L1App) GenesisState {
 	acc := authtypes.NewBaseAccount(senderPrivKey.PubKey().Address().Bytes(), senderPrivKey.PubKey(), 0, 0)
 	balances := []banktypes.Balance{
 		{
-			Address:	acc.GetAddress().String(),
-			Coins:		sdk.NewCoins(sdk.NewCoin(sdk.DefaultBondDenom, sdkmath.NewInt(100000000000000))),
+			Address: acc.GetAddress().String(),
+			Coins:   sdk.NewCoins(sdk.NewCoin(sdk.DefaultBondDenom, sdkmath.NewInt(100000000000000))),
 		},
 	}
 
@@ -197,7 +197,7 @@ func GetBondedTestValidator(t *testing.T, app *L1App, ctx sdk.Context) stakingty
 	return stakingtypes.Validator{}
 }
 
-func AddTestAddrsWithCoins(t *testing.T, app *L1App, ctx sdk.Context, accNum int, coins sdk.Coins) []sdk.AccAddress {
+func AddTestAddrsWithCoins(t testing.TB, app *L1App, ctx sdk.Context, accNum int, coins sdk.Coins) []sdk.AccAddress {
 	t.Helper()
 
 	testAddrs := simtestutil.CreateIncrementalAccounts(accNum)
@@ -208,7 +208,7 @@ func AddTestAddrsWithCoins(t *testing.T, app *L1App, ctx sdk.Context, accNum int
 	return testAddrs
 }
 
-func FundTestAddr(t *testing.T, app *L1App, ctx sdk.Context, addr sdk.AccAddress, coins sdk.Coins) {
+func FundTestAddr(t testing.TB, app *L1App, ctx sdk.Context, addr sdk.AccAddress, coins sdk.Coins) {
 	t.Helper()
 
 	require.NoError(t, app.BankKeeper.MintCoins(ctx, minttypes.ModuleName, coins))
@@ -264,13 +264,13 @@ func NewTestNetworkFixture() network.TestFixture {
 	}
 
 	return network.TestFixture{
-		AppConstructor:	appCtr,
-		GenesisState:	app.DefaultGenesis(),
+		AppConstructor: appCtr,
+		GenesisState:   app.DefaultGenesis(),
 		EncodingConfig: testutil.TestEncodingConfig{
-			InterfaceRegistry:	app.InterfaceRegistry(),
-			Codec:			app.AppCodec(),
-			TxConfig:		app.TxConfig(),
-			Amino:			app.LegacyAmino(),
+			InterfaceRegistry: app.InterfaceRegistry(),
+			Codec:             app.AppCodec(),
+			TxConfig:          app.TxConfig(),
+			Amino:             app.LegacyAmino(),
 		},
 	}
 }

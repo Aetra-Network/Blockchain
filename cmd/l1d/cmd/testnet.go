@@ -412,8 +412,12 @@ func initTestnetFiles(
 			return err
 		}
 
+		// One consensus-power unit is 1e6 naet (0.001 AET), so fund each
+		// bootstrap account with 1,000 AET and self-bond 100 AET below: with
+		// the 0.5 AET average transfer fee, the old 500-power (0.5 AET)
+		// funding could not pay for even a single transaction.
 		accTokens := sdk.TokensFromConsensusPower(1000, sdk.DefaultPowerReduction)
-		accStakingTokens := sdk.TokensFromConsensusPower(500, sdk.DefaultPowerReduction)
+		accStakingTokens := sdk.TokensFromConsensusPower(1_000_000, sdk.DefaultPowerReduction)
 		coins := sdk.Coins{
 			sdk.NewCoin(bootstrapTestAssetDenom, accTokens),
 			sdk.NewCoin(args.bondTokenDenom, accStakingTokens),
@@ -427,7 +431,7 @@ func initTestnetFiles(
 		if err != nil {
 			return err
 		}
-		valTokens := sdk.TokensFromConsensusPower(100, sdk.DefaultPowerReduction)
+		valTokens := sdk.TokensFromConsensusPower(100_000, sdk.DefaultPowerReduction)
 		createValMsg, err := stakingtypes.NewMsgCreateValidator(
 			valStr,
 			valPubKeys[i],

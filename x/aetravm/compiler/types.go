@@ -24,10 +24,24 @@ func (p Position) String() string {
 type SourceFile struct {
 	Package   string
 	Imports   []ImportDecl
+	Consts    []*ConstDecl
 	Structs   []*StructDecl
 	Enums     []*EnumDecl
+	Types     []*TypeDecl
 	Functions []*FunctionDecl
 	Contracts []*ContractDecl
+}
+
+type ConstDecl struct {
+	Name  string
+	Value Expr
+	Pos   Position
+}
+
+type Annotation struct {
+	Name  string
+	Value *uint32
+	Pos   Position
 }
 
 type ImportDecl struct {
@@ -38,9 +52,16 @@ type ImportDecl struct {
 }
 
 type StructDecl struct {
-	Name   string
-	Fields []FieldDecl
-	Pos    Position
+	Annotations []Annotation
+	Name        string
+	Fields      []FieldDecl
+	Pos         Position
+}
+
+type TypeDecl struct {
+	Name    string
+	Members []TypeRef
+	Pos     Position
 }
 
 type EnumDecl struct {
@@ -50,27 +71,35 @@ type EnumDecl struct {
 }
 
 type ContractDecl struct {
-	Name            string
-	StorageTypeName string
-	Namespace       string
-	ChainID         string
-	DeployerAddress string
-	Salt            string
-	InitialBalance  uint64
-	StorageDefaults map[string]Expr
-	Messages        []*MessageDecl
-	Getters         []*GetterDecl
-	Events          []*EventDecl
-	WalletActions   []*WalletActionDecl
-	Pos             Position
+	Name                 string
+	StorageTypeName      string
+	Author               string
+	Description          string
+	Version              string
+	IncomingMessagesType string
+	IncomingExternalType string
+	Namespace            string
+	ChainID              string
+	DeployerAddress      string
+	Salt                 string
+	InitialBalance       uint64
+	StorageDefaults      map[string]Expr
+	Functions            []*FunctionDecl
+	Messages             []*MessageDecl
+	Getters              []*GetterDecl
+	Events               []*EventDecl
+	WalletActions        []*WalletActionDecl
+	Pos                  Position
 }
 
 type FunctionDecl struct {
-	Name       string
-	Params     []ParamDecl
-	ReturnType TypeRef
-	Body       []Statement
-	Pos        Position
+	Annotations []Annotation
+	Pure        bool
+	Name        string
+	Params      []ParamDecl
+	ReturnType  TypeRef
+	Body        []Statement
+	Pos         Position
 }
 
 type MessageKind string
@@ -87,6 +116,7 @@ func (k MessageKind) String() string { return string(k) }
 
 type FieldDecl struct {
 	Name    string
+	Lazy    bool
 	Type    TypeRef
 	Default Expr
 	Pos     Position
@@ -99,12 +129,14 @@ type VariantDecl struct {
 }
 
 type ParamDecl struct {
-	Name string
-	Type TypeRef
-	Pos  Position
+	Name   string
+	Type   TypeRef
+	Mutate bool
+	Pos    Position
 }
 
 type MessageDecl struct {
+	Annotations []Annotation
 	Name        string
 	Kind        MessageKind
 	Params      []ParamDecl
@@ -115,6 +147,7 @@ type MessageDecl struct {
 }
 
 type GetterDecl struct {
+	Annotations []Annotation
 	Name        string
 	Params      []ParamDecl
 	ReturnType  TypeRef
@@ -130,17 +163,24 @@ type EventDecl struct {
 }
 
 type WalletActionDecl struct {
-	Name                string
-	Title               string
-	Risk                string
-	ConfirmLabel        string
-	WarningLevel        string
-	ExpectedSideEffects []string
-	FundAccess          bool
-	ApprovalSemantics   string
-	Inputs              []ParamDecl
-	Outputs             []ParamDecl
-	Pos                 Position
+	Name                   string
+	Title                  string
+	HasTitle               bool
+	Risk                   string
+	HasRisk                bool
+	ConfirmLabel           string
+	HasConfirmLabel        bool
+	WarningLevel           string
+	HasWarningLevel        bool
+	ExpectedSideEffects    []string
+	HasExpectedSideEffects bool
+	FundAccess             bool
+	HasFundAccess          bool
+	ApprovalSemantics      string
+	HasApprovalSemantics   bool
+	Inputs                 []ParamDecl
+	Outputs                []ParamDecl
+	Pos                    Position
 }
 
 type TypeRef struct {
@@ -171,32 +211,41 @@ func (t TypeRef) String() string {
 type StatementKind string
 
 const (
-	StatementLet    StatementKind = "let"
-	StatementSet    StatementKind = "set"
-	StatementEmit   StatementKind = "emit"
-	StatementReturn StatementKind = "return"
-	StatementRefund StatementKind = "refund"
-	StatementSend   StatementKind = "send"
-	StatementSelf   StatementKind = "self"
-	StatementIf     StatementKind = "if"
-	StatementMatch  StatementKind = "match"
-	StatementFor    StatementKind = "for"
+	StatementBinding  StatementKind = "binding"
+	StatementSet      StatementKind = "set"
+	StatementEmit     StatementKind = "emit"
+	StatementReturn   StatementKind = "return"
+	StatementRefund   StatementKind = "refund"
+	StatementSend     StatementKind = "send"
+	StatementSelf     StatementKind = "self"
+	StatementExpr     StatementKind = "expr"
+	StatementAssert   StatementKind = "assert"
+	StatementThrow    StatementKind = "throw"
+	StatementBreak    StatementKind = "break"
+	StatementContinue StatementKind = "continue"
+	StatementIf       StatementKind = "if"
+	StatementWhile    StatementKind = "while"
+	StatementDo       StatementKind = "do"
+	StatementRepeat   StatementKind = "repeat"
+	StatementMatch    StatementKind = "match"
+	StatementFor      StatementKind = "for"
 )
 
 type Statement struct {
-	Kind  StatementKind
-	Name  string
-	Path  []string
-	Args  []Expr
-	Value Expr
-	Extra map[string]Expr
-	Then  []Statement
-	Else  []Statement
-	Arms  []MatchArm
-	Start Expr
-	End   Expr
-	Index string
-	Pos   Position
+	Kind    StatementKind
+	Name    string
+	Path    []string
+	Args    []Expr
+	Value   Expr
+	Extra   map[string]Expr
+	Then    []Statement
+	Else    []Statement
+	Arms    []MatchArm
+	Start   Expr
+	End     Expr
+	Index   string
+	Mutable bool
+	Pos     Position
 }
 
 type MatchArm struct {
@@ -228,6 +277,7 @@ const (
 	ExprString  ExprKind = "string"
 	ExprBool    ExprKind = "bool"
 	ExprBytes   ExprKind = "bytes"
+	ExprUnary   ExprKind = "unary"
 	ExprBinary  ExprKind = "binary"
 	ExprCall    ExprKind = "call"
 	ExprPath    ExprKind = "path"
@@ -235,20 +285,31 @@ const (
 	ExprTry     ExprKind = "try"
 	ExprCompare ExprKind = "compare"
 	ExprLogic   ExprKind = "logic"
+	ExprTernary ExprKind = "ternary"
+	ExprStruct  ExprKind = "struct"
 )
 
-type Expr struct {
-	Kind  ExprKind
-	Text  string
-	Bool  bool
-	Bytes []byte
-	Left  *Expr
-	Right *Expr
-	Op    string
-	Args  []Expr
-	Path  []string
-	Else  *Expr
+type ExprField struct {
+	Name  string
+	Value Expr
 	Pos   Position
+}
+
+type Expr struct {
+	Kind   ExprKind
+	Text   string
+	Bool   bool
+	Bytes  []byte
+	Left   *Expr
+	Right  *Expr
+	Cond   *Expr
+	Op     string
+	Args   []Expr
+	Path   []string
+	Else   *Expr
+	Fields []ExprField
+	Unwrap bool
+	Pos    Position
 }
 
 type DiagnosticSeverity string
@@ -256,6 +317,13 @@ type DiagnosticSeverity string
 const (
 	SeverityError   DiagnosticSeverity = "error"
 	SeverityWarning DiagnosticSeverity = "warning"
+)
+
+type SurfaceCompatibilityMode string
+
+const (
+	SurfaceCompatibilityWarnings SurfaceCompatibilityMode = "warnings"
+	SurfaceCompatibilityStrict   SurfaceCompatibilityMode = "strict"
 )
 
 type Diagnostic struct {

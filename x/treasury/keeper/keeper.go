@@ -222,10 +222,26 @@ func (k Keeper) CancelSpend(ctx context.Context, id uint64, actor, metadata stri
 	return spend, k.SetSpend(ctx, spend)
 }
 
-func (k Keeper) ExecuteSpend(ctx context.Context, id, epoch uint64) (types.TreasurySpend, error) {
-	if epoch == 0 {
-		return types.TreasurySpend{}, types.ErrInvalidSpend.Wrap("epoch must be positive")
+// currentSpendEpoch derives the treasury spend epoch from the block height.
+// Epochs are 1-based, so height 0 maps to epoch 1 and the epoch is always
+// positive.
+func currentSpendEpoch(height int64) uint64 {
+	if height < 0 {
+		height = 0
 	}
+	return uint64(height)/types.SpendEpochLengthBlocks + 1
+}
+
+func (k Keeper) ExecuteSpend(ctx context.Context, id, callerEpoch uint64) (types.TreasurySpend, error) {
+	// Derive the enforcement epoch from chain state instead of trusting the
+	// caller. The epoch drives BOTH the vesting timelock and the per-epoch spend
+	// cap accumulator, so a caller-supplied value lets the authority release
+	// vested funds early (by passing epoch >= VestingEndEpoch) or reset the cap
+	// (by passing a fresh, never-used epoch each call). The callerEpoch argument
+	// is retained for API compatibility but is not trusted. See SEC-LOW:
+	// treasury spend epoch is caller-supplied and unbound to chain epoch.
+	_ = callerEpoch
+	epoch := currentSpendEpoch(sdk.UnwrapSDKContext(ctx).BlockHeight())
 	if err := k.SyncIncomingFunds(ctx); err != nil {
 		return types.TreasurySpend{}, err
 	}

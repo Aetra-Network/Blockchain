@@ -536,7 +536,7 @@ func (k *Keeper) collectRentPayment(ctx context.Context, payer string, amount ui
 	if err != nil {
 		return err
 	}
-	coin := sdk.NewCoins(sdk.NewCoin(storageRentBaseDenom, sdkmath.NewInt(int64(amount))))
+	coin := sdk.NewCoins(sdk.NewCoin(storageRentBaseDenom, sdkmath.NewIntFromUint64(amount)))
 	return k.bankKeeper.SendCoinsFromAccountToModule(ctx, payerAddr, storageRentReserveModule, coin)
 }
 

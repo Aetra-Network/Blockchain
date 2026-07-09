@@ -14,42 +14,42 @@ import (
 )
 
 const (
-	DefaultContractChainID		= "aetra"
-	DefaultContractNamespace	= "contracts"
-	DefaultInitialStorageRoot	= "0000000000000000000000000000000000000000000000000000000000000000"
-	MaxContractSaltBytes		= 256
-	MaxContractDependencies		= 32
+	DefaultContractChainID    = "aetra"
+	DefaultContractNamespace  = "contracts"
+	DefaultInitialStorageRoot = "0000000000000000000000000000000000000000000000000000000000000000"
+	MaxContractSaltBytes      = 256
+	MaxContractDependencies   = 32
 )
 
 type StateInit struct {
-	ABIVersion		uint32
-	CodeID			string
-	CodeHash		string
-	InitData		[]byte
-	Salt			string
-	SaltBytes		[]byte
-	Owner			string
-	Libraries		[]CodeDependency
-	InitialStorageRoot	string
-	InitialBalanceNAET	uint64
-	Capabilities		[]string
+	ABIVersion         uint32           `protobuf:"varint,1,opt,name=abi_version,json=abiVersion,proto3" json:"abi_version,omitempty"`
+	CodeID             string           `protobuf:"bytes,2,opt,name=code_id,json=codeId,proto3" json:"code_id,omitempty"`
+	CodeHash           string           `protobuf:"bytes,3,opt,name=code_hash,json=codeHash,proto3" json:"code_hash,omitempty"`
+	InitData           []byte           `protobuf:"bytes,4,opt,name=init_data,json=initData,proto3" json:"init_data,omitempty"`
+	Salt               string           `protobuf:"bytes,5,opt,name=salt,proto3" json:"salt,omitempty"`
+	SaltBytes          []byte           `protobuf:"bytes,6,opt,name=salt_bytes,json=saltBytes,proto3" json:"salt_bytes,omitempty"`
+	Owner              string           `protobuf:"bytes,7,opt,name=owner,proto3" json:"owner,omitempty"`
+	Libraries          []CodeDependency `protobuf:"bytes,8,rep,name=libraries,proto3" json:"libraries"`
+	InitialStorageRoot string           `protobuf:"bytes,9,opt,name=initial_storage_root,json=initialStorageRoot,proto3" json:"initial_storage_root,omitempty"`
+	InitialBalanceNAET uint64           `protobuf:"varint,10,opt,name=initial_balance_naet,json=initialBalanceNaet,proto3" json:"initial_balance_naet,omitempty"`
+	Capabilities       []string         `protobuf:"bytes,11,rep,name=capabilities,proto3" json:"capabilities,omitempty"`
 }
 
 type CodeDependency struct {
-	CodeID		string
-	CodeHash	string
+	CodeID   string `protobuf:"bytes,1,opt,name=code_id,json=codeId,proto3" json:"code_id,omitempty"`
+	CodeHash string `protobuf:"bytes,2,opt,name=code_hash,json=codeHash,proto3" json:"code_hash,omitempty"`
 }
 
 func NewStateInit(owner, codeHash string, initData []byte, salt string, initialBalance uint64) StateInit {
 	return StateInit{
-		ABIVersion:		1,
-		CodeID:			codeHash,
-		CodeHash:		codeHash,
-		InitData:		append([]byte(nil), initData...),
-		Salt:			salt,
-		Owner:			owner,
-		InitialStorageRoot:	DefaultInitialStorageRoot,
-		InitialBalanceNAET:	initialBalance,
+		ABIVersion:         1,
+		CodeID:             codeHash,
+		CodeHash:           codeHash,
+		InitData:           append([]byte(nil), initData...),
+		Salt:               salt,
+		Owner:              owner,
+		InitialStorageRoot: DefaultInitialStorageRoot,
+		InitialBalanceNAET: initialBalance,
 	}
 }
 

@@ -25,6 +25,12 @@ func (m msgServer) ApplyForValidatorSet(ctx context.Context, msg *v1.MsgApplyFor
 	if msg == nil {
 		return nil, v1.ErrInvalidParams.Wrap("empty request")
 	}
+	// Refresh in-memory state from the committed store on the live block context
+	// so restarted/state-synced nodes act on the same state as continuously
+	// running ones. See SEC-HIGH: election EndBlocker off in-memory genesis.
+	if err := m.Keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
 	}
@@ -52,6 +58,12 @@ func (m msgServer) WithdrawApplication(ctx context.Context, msg *v1.MsgWithdrawA
 	if msg == nil {
 		return nil, v1.ErrInvalidParams.Wrap("empty request")
 	}
+	// Refresh in-memory state from the committed store on the live block context
+	// so restarted/state-synced nodes act on the same state as continuously
+	// running ones. See SEC-HIGH: election EndBlocker off in-memory genesis.
+	if err := m.Keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
 	}
@@ -77,6 +89,12 @@ func (m msgServer) WithdrawApplication(ctx context.Context, msg *v1.MsgWithdrawA
 func (m msgServer) CommitElection(ctx context.Context, msg *v1.MsgCommitElection) (*v1.MsgCommitElectionResponse, error) {
 	if msg == nil {
 		return nil, v1.ErrInvalidParams.Wrap("empty request")
+	}
+	// Refresh in-memory state from the committed store on the live block context
+	// so restarted/state-synced nodes act on the same state as continuously
+	// running ones. See SEC-HIGH: election EndBlocker off in-memory genesis.
+	if err := m.Keeper.loadForBlock(ctx); err != nil {
+		return nil, err
 	}
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
@@ -104,6 +122,12 @@ func (m msgServer) FinalizeElection(ctx context.Context, msg *v1.MsgFinalizeElec
 	if msg == nil {
 		return nil, v1.ErrInvalidParams.Wrap("empty request")
 	}
+	// Refresh in-memory state from the committed store on the live block context
+	// so restarted/state-synced nodes act on the same state as continuously
+	// running ones. See SEC-HIGH: election EndBlocker off in-memory genesis.
+	if err := m.Keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
 	}
@@ -130,6 +154,12 @@ func (m msgServer) RequestValidatorExit(ctx context.Context, msg *v1.MsgRequestV
 	if msg == nil {
 		return nil, v1.ErrInvalidParams.Wrap("empty request")
 	}
+	// Refresh in-memory state from the committed store on the live block context
+	// so restarted/state-synced nodes act on the same state as continuously
+	// running ones. See SEC-HIGH: election EndBlocker off in-memory genesis.
+	if err := m.Keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
 	}
@@ -155,6 +185,12 @@ func (m msgServer) RequestValidatorExit(ctx context.Context, msg *v1.MsgRequestV
 func (m msgServer) CancelValidatorExit(ctx context.Context, msg *v1.MsgCancelValidatorExit) (*v1.MsgCancelValidatorExitResponse, error) {
 	if msg == nil {
 		return nil, v1.ErrInvalidParams.Wrap("empty request")
+	}
+	// Refresh in-memory state from the committed store on the live block context
+	// so restarted/state-synced nodes act on the same state as continuously
+	// running ones. See SEC-HIGH: election EndBlocker off in-memory genesis.
+	if err := m.Keeper.loadForBlock(ctx); err != nil {
+		return nil, err
 	}
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err

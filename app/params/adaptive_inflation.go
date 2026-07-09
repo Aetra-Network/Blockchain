@@ -317,19 +317,22 @@ func (p AdaptiveInflationParams) Validate() error {
 	if err := validateBps("activity_clamp_delta_bps", p.ActivityClampDeltaBps, 0, BasisPoints); err != nil {
 		return err
 	}
-	for name, value := range map[string]int64{
-		"stake_weight_bps":		p.StakeWeightBps,
-		"fee_revenue_weight_bps":	p.FeeRevenueWeightBps,
-		"validator_count_weight_bps":	p.ValidatorCountWeightBps,
-		"reward_floor_weight_bps":	p.RewardFloorWeightBps,
-		"activity_weight_bps":		p.ActivityWeightBps,
-		"reserve_health_weight_bps":	p.ReserveHealthWeightBps,
+	for _, entry := range []struct {
+		name  string
+		value int64
+	}{
+		{name: "stake_weight_bps", value: p.StakeWeightBps},
+		{name: "fee_revenue_weight_bps", value: p.FeeRevenueWeightBps},
+		{name: "validator_count_weight_bps", value: p.ValidatorCountWeightBps},
+		{name: "reward_floor_weight_bps", value: p.RewardFloorWeightBps},
+		{name: "activity_weight_bps", value: p.ActivityWeightBps},
+		{name: "reserve_health_weight_bps", value: p.ReserveHealthWeightBps},
 	} {
-		if value < 0 {
-			return fmt.Errorf("%s must not be negative", name)
+		if entry.value < 0 {
+			return fmt.Errorf("%s must not be negative", entry.name)
 		}
-		if value > DefaultMaxLoadMultiplierBps {
-			return fmt.Errorf("%s exceeds maximum", name)
+		if entry.value > DefaultMaxLoadMultiplierBps {
+			return fmt.Errorf("%s exceeds maximum", entry.name)
 		}
 	}
 	return nil

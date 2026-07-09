@@ -2,6 +2,9 @@ package cmd
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -15,13 +18,14 @@ import (
 
 	"github.com/sovereign-l1/l1/x/aetravm/async"
 	"github.com/sovereign-l1/l1/x/aetravm/avm"
+	"github.com/sovereign-l1/l1/x/aetravm/chunk"
 	"github.com/sovereign-l1/l1/x/aetravm/compiler"
 )
 
 func newAVMFormatCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "fmt [paths...]",
-		Short: "Format AVM source into canonical source form",
+		Short: "Format Aetralis source into canonical source form",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			write, _ := cmd.Flags().GetBool("write")
@@ -70,7 +74,7 @@ func newAVMFormatCmd() *cobra.Command {
 func newAVMLintCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "lint [paths...]",
-		Short: "Compile AVM source and report static diagnostics",
+		Short: "Compile Aetralis source and report static diagnostics",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			res, err := compileAVMSources(args, avmCompileOptionsFromCmd(cmd))
@@ -95,7 +99,7 @@ func newAVMLintCmd() *cobra.Command {
 func newAVMDisasmCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "disasm [path]",
-		Short: "Disassemble an AVM module or source file",
+		Short: "Disassemble an Aetralis module or source file",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			module, summary, err := loadCompiledModule(args[0], avmCompileOptionsFromCmd(cmd))
@@ -116,7 +120,7 @@ func newAVMDisasmCmd() *cobra.Command {
 func newAVMGasCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "gas [paths...]",
-		Short: "Profile AVM gas usage from compiled module",
+		Short: "Profile Aetralis gas usage from compiled module",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			module, summary, err := loadCompiledModule(args[0], avmCompileOptionsFromCmd(cmd))
@@ -148,6 +152,11 @@ func newAVMInspectCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			rawDataHash := sha256.Sum256(res.StateInit.InitData)
+			rawDataChunks, err := renderAVMDataChunks(res.StateInit.InitData)
+			if err != nil {
+				return err
+			}
 			walletActions := make([]map[string]any, 0, len(res.Manifest.WalletActions))
 			for _, action := range res.Manifest.WalletActions {
 				walletActions = append(walletActions, map[string]any{
@@ -162,16 +171,24 @@ func newAVMInspectCmd() *cobra.Command {
 				})
 			}
 			return writeCommandJSON(cmd, map[string]any{
-				"contract":        res.Contract.Name,
-				"package":         res.Source.Package,
-				"module_hash":     fmt.Sprintf("%x", res.ModuleHash[:]),
-				"manifest_hash":   fmt.Sprintf("%x", res.ManifestHash[:]),
-				"state_init_hash": fmt.Sprintf("%x", res.StateInitHash[:]),
-				"storage_layout":  res.StorageLayout,
-				"selectors":       res.SelectorRegistry,
-				"wallet_actions":  walletActions,
-				"code_chunk_hash": fmt.Sprintf("%x", res.CodeChunkHash[:]),
-				"dependency_lock": res.DependencyLock,
+				"contract":          res.Contract.Name,
+				"package":           res.Source.Package,
+				"module_hash":       fmt.Sprintf("%x", res.ModuleHash[:]),
+				"manifest_hash":     fmt.Sprintf("%x", res.ManifestHash[:]),
+				"state_init_hash":   fmt.Sprintf("%x", res.StateInitHash[:]),
+				"storage_layout":    res.StorageLayout,
+				"selectors":         res.SelectorRegistry,
+				"wallet_actions":    walletActions,
+				"code_chunk_hash":   fmt.Sprintf("%x", res.CodeChunkHash[:]),
+				"bytecode_hex":      fmt.Sprintf("%x", res.ModuleBytes),
+				"bytecode_base64":   base64.StdEncoding.EncodeToString(res.ModuleBytes),
+				"bytecode_chunks":   chunk.RenderSource(res.CodeChunk),
+				"raw_data_hex":      fmt.Sprintf("%x", res.StateInit.InitData),
+				"raw_data_base64":   base64.StdEncoding.EncodeToString(res.StateInit.InitData),
+				"raw_data_hex_hash": fmt.Sprintf("%x", rawDataHash[:]),
+				"raw_data_chunks":   rawDataChunks,
+				"dependency_lock":   res.DependencyLock,
+				"warnings":          res.Diagnostics,
 			})
 		},
 	}
@@ -182,7 +199,7 @@ func newAVMInspectCmd() *cobra.Command {
 func newAVMTestCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "test [paths...]",
-		Short: "Compile AVM source and run deterministic runtime smoke checks",
+		Short: "Compile Aetralis source and run deterministic runtime smoke checks",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			res, err := compileAVMSources(args, avmCompileOptionsFromCmd(cmd))
@@ -191,14 +208,19 @@ func newAVMTestCmd() *cobra.Command {
 			}
 			outDir, _ := cmd.Flags().GetString("out")
 			if strings.TrimSpace(outDir) == "" {
-				outDir = ".avm-test"
+				outDir = ".atlx-test"
 			}
 			if err := writeAVMArtifacts(res, outDir); err != nil {
 				return err
 			}
+			artifactRoot, err := os.OpenRoot(outDir)
+			if err != nil {
+				return err
+			}
+			defer artifactRoot.Close()
 			report, runErr := runAVMTestSmoke(res)
 			report.ArtifactDir = outDir
-			if err := writeArtifactJSON(filepath.Join(outDir, "test-report.json"), report); err != nil {
+			if err := writeArtifactJSON(artifactRoot, "test-report.json", report); err != nil {
 				return err
 			}
 			if runErr != nil {
@@ -207,7 +229,7 @@ func newAVMTestCmd() *cobra.Command {
 			return writeCommandJSON(cmd, report)
 		},
 	}
-	cmd.Flags().String("out", ".avm-test", "output directory for test artifacts")
+	cmd.Flags().String("out", ".atlx-test", "output directory for test artifacts")
 	addAVMCompileFlags(cmd)
 	return cmd
 }
@@ -232,7 +254,7 @@ func newAVMSelectorsCmd() *cobra.Command {
 func newAVMLSPCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "lsp",
-		Short: "Run a minimal AVM language server over stdio",
+		Short: "Run a minimal Aetralis language server over stdio",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runAVMLanguageServer()
@@ -274,6 +296,9 @@ func compileAVMSources(paths []string, opts compiler.Options) (*compiler.Result,
 	if err != nil {
 		return nil, err
 	}
+	if opts.Resolver == nil && len(paths) > 0 {
+		opts.Resolver = compiler.NewFilesystemImportResolver(filepath.Dir(paths[0]))
+	}
 	c, err := compiler.New(opts)
 	if err != nil {
 		return nil, err
@@ -292,8 +317,21 @@ type avmTestExecution struct {
 	GasUsed       uint64 `json:"gas_used"`
 	ResultCode    uint32 `json:"result_code"`
 	StorageWrites uint32 `json:"storage_writes"`
-	ReturnValue   uint64 `json:"return_value"`
+	ReturnValue   avmTestRuntimeValue `json:"return_value"`
 	Outgoing      uint32 `json:"outgoing"`
+}
+
+type avmTestRuntimeValue struct {
+	Tag          string                `json:"tag"`
+	CanonicalHex string                `json:"canonical_hex"`
+	Bool         *bool                 `json:"bool,omitempty"`
+	Int64        *int64                `json:"int64,omitempty"`
+	Uint64       *uint64               `json:"uint64,omitempty"`
+	String       *string               `json:"string,omitempty"`
+	Address      *string               `json:"address,omitempty"`
+	HashHex      string                `json:"hash_hex,omitempty"`
+	BytesBase64  string                `json:"bytes_base64,omitempty"`
+	Tuple        []avmTestRuntimeValue `json:"tuple,omitempty"`
 }
 
 type avmTestReport struct {
@@ -363,12 +401,12 @@ func runAVMTestSmoke(res *compiler.Result) (avmTestReport, error) {
 			GasUsed:       exec.GasUsed,
 			ResultCode:    exec.ResultCode,
 			StorageWrites: exec.StorageWrites,
-			ReturnValue:   exec.ReturnValue,
+			ReturnValue:   summarizeAVMRuntimeValue(exec.ReturnValue),
 			Outgoing:      uint32(len(exec.Outgoing)),
 		})
 	}
 	if !report.Passed {
-		return report, fmt.Errorf("AVM runtime smoke failed")
+		return report, fmt.Errorf("Aetralis runtime smoke failed")
 	}
 	return report, nil
 }
@@ -397,6 +435,43 @@ func selectorForEntrypoint(entries []compiler.SelectorEntry, label string) (uint
 
 func dummyAVMAddress() sdk.AccAddress {
 	return sdk.AccAddress(bytes.Repeat([]byte{0x11}, 20))
+}
+
+func summarizeAVMRuntimeValue(value avm.RuntimeValue) avmTestRuntimeValue {
+	report := avmTestRuntimeValue{
+		Tag: value.Tag.String(),
+	}
+	if encoded, err := avm.CanonicalEncode(value); err == nil {
+		report.CanonicalHex = hex.EncodeToString(encoded)
+	}
+	if b, err := value.AsBool(); err == nil {
+		report.Bool = &b
+	}
+	if i, err := value.AsInt64(); err == nil {
+		report.Int64 = &i
+	}
+	if u, err := value.AsUint64(); err == nil {
+		report.Uint64 = &u
+	}
+	if s, err := value.AsString(); err == nil {
+		report.String = &s
+	}
+	if addr, err := value.AsAddress(); err == nil {
+		report.Address = &addr
+	}
+	if hash, err := value.AsHash(); err == nil {
+		report.HashHex = hex.EncodeToString(hash[:])
+	}
+	if raw, err := value.AsBytes(); err == nil && value.Tag == avm.TagBytes {
+		report.BytesBase64 = base64.StdEncoding.EncodeToString(raw)
+	}
+	if tuple, err := value.AsTuple(); err == nil {
+		report.Tuple = make([]avmTestRuntimeValue, 0, len(tuple))
+		for _, item := range tuple {
+			report.Tuple = append(report.Tuple, summarizeAVMRuntimeValue(item))
+		}
+	}
+	return report
 }
 
 func loadCompiledModule(path string, opts compiler.Options) (avm.Module, *compiler.Result, error) {
@@ -452,8 +527,9 @@ func collectAVMSources(path string, out *[]compiler.NamedSource) error {
 		return err
 	}
 	if !info.IsDir() {
-		if !strings.EqualFold(filepath.Ext(path), ".avm") {
-			return fmt.Errorf("source file must use .avm extension: %s", path)
+		ext := strings.ToLower(filepath.Ext(path))
+		if ext != ".atlx" && ext != ".avm" {
+			return fmt.Errorf("source file must use .atlx extension: %s", path)
 		}
 		raw, err := os.ReadFile(path)
 		if err != nil {
@@ -462,21 +538,29 @@ func collectAVMSources(path string, out *[]compiler.NamedSource) error {
 		*out = append(*out, compiler.NamedSource{Name: path, Data: raw})
 		return nil
 	}
-	return filepath.WalkDir(path, func(curr string, d fs.DirEntry, err error) error {
+	root, err := os.OpenRoot(path)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+
+	return fs.WalkDir(root.FS(), ".", func(curr string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.IsDir() {
 			return nil
 		}
-		if !strings.EqualFold(filepath.Ext(curr), ".avm") {
+		ext := strings.ToLower(filepath.Ext(curr))
+		if ext != ".atlx" && ext != ".avm" {
 			return nil
 		}
-		raw, err := os.ReadFile(curr)
+		raw, err := root.ReadFile(curr)
 		if err != nil {
 			return err
 		}
-		*out = append(*out, compiler.NamedSource{Name: curr, Data: raw})
+		name := filepath.Clean(filepath.Join(path, filepath.FromSlash(curr)))
+		*out = append(*out, compiler.NamedSource{Name: name, Data: raw})
 		return nil
 	})
 }

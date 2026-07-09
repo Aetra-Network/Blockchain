@@ -13,6 +13,11 @@ const (
 	MaxDataBits	= 2048
 	MaxRefs		= 8
 	HashSize	= 32
+	// MaxChunkTreeDepth caps the nesting depth of a serialized chunk tree on
+	// the decode path as defense-in-depth against maliciously deep inputs.
+	// The Build path already implies a ~255-level cap (level is uint8); 256 is
+	// a safe explicit bound.
+	MaxChunkTreeDepth = 256
 )
 
 // Structured ref indices
@@ -92,13 +97,145 @@ func (c *Chunk) HashLayer(i int) []byte {
 	return c.hashes[i][:]
 }
 
-// Serialize returns the canonical byte representation of the chunk.
+// Serialize returns the canonical byte representation of the chunk's own
+// header and data. Child references are written as hashes only (matching
+// the hashing scheme in encodeCanonical), so this form is not sufficient to
+// reconstruct a full tree — use SerializeTree/ParseChunkTree for that.
 func (c *Chunk) Serialize() ([]byte, error) {
 	var buf bytes.Buffer
 	if err := c.encodeCanonical(&buf, 0); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+// SerializeTree returns a self-contained byte representation of the chunk
+// and its entire ref subtree (recursively), sufficient for ParseChunkTree to
+// reconstruct an identical tree with the same Hash(). Unlike Serialize, this
+// embeds full child content instead of child hashes, so it round-trips
+// through storage without losing data.
+func (c *Chunk) SerializeTree() ([]byte, error) {
+	var buf bytes.Buffer
+	if err := c.encodeTree(&buf); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func (c *Chunk) encodeTree(w io.Writer) error {
+	if err := binary.Write(w, binary.BigEndian, uint8(c.typeTag)); err != nil {
+		return err
+	}
+	if err := binary.Write(w, binary.BigEndian, c.level); err != nil {
+		return err
+	}
+	if err := binary.Write(w, binary.BigEndian, c.bitCount); err != nil {
+		return err
+	}
+	byteLen := (int(c.bitCount) + 7) / 8
+	if byteLen > len(c.data) {
+		return fmt.Errorf("chunk data shorter than bit count")
+	}
+	if _, err := w.Write(c.data[:byteLen]); err != nil {
+		return err
+	}
+	if err := binary.Write(w, binary.BigEndian, c.refBitmap); err != nil {
+		return err
+	}
+	for i := 0; i < MaxRefs; i++ {
+		if (c.refBitmap & (1 << i)) == 0 {
+			continue
+		}
+		childBytes, err := c.refs[i].encodeTreeBytes()
+		if err != nil {
+			return err
+		}
+		if err := binary.Write(w, binary.BigEndian, uint32(len(childBytes))); err != nil {
+			return err
+		}
+		if _, err := w.Write(childBytes); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *Chunk) encodeTreeBytes() ([]byte, error) {
+	var buf bytes.Buffer
+	if err := c.encodeTree(&buf); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// ParseChunkTree reconstructs a chunk (and its full ref subtree) from bytes
+// produced by SerializeTree. Hashes are recomputed bottom-up via the normal
+// Builder path, so the result is indistinguishable from the original tree,
+// including Hash().
+func ParseChunkTree(data []byte) (*Chunk, int, error) {
+	return parseChunkTreeAt(data, 0)
+}
+
+// parseChunkTreeAt is the depth-tracking recursive implementation behind
+// ParseChunkTree. depth is the current nesting level; it is incremented for
+// each child so maliciously deep serialized trees are rejected with an error
+// rather than exhausting the stack.
+func parseChunkTreeAt(data []byte, depth int) (*Chunk, int, error) {
+	if depth > MaxChunkTreeDepth {
+		return nil, 0, fmt.Errorf("chunk tree: nesting depth exceeds limit %d", MaxChunkTreeDepth)
+	}
+	if len(data) < 1+1+2+1 {
+		return nil, 0, fmt.Errorf("chunk tree: truncated header")
+	}
+	offset := 0
+	typeTag := TypeTag(data[offset])
+	offset++
+	level := data[offset]
+	_ = level // recomputed by Build(); kept for forward-compat header shape
+	offset++
+	bitCount := binary.BigEndian.Uint16(data[offset:])
+	offset += 2
+	if bitCount > MaxDataBits {
+		return nil, 0, fmt.Errorf("chunk tree: bit count %d exceeds limit %d", bitCount, MaxDataBits)
+	}
+	byteLen := (int(bitCount) + 7) / 8
+	if len(data) < offset+byteLen+1 {
+		return nil, 0, fmt.Errorf("chunk tree: truncated data")
+	}
+	chunkData := append([]byte(nil), data[offset:offset+byteLen]...)
+	offset += byteLen
+	refBitmap := data[offset]
+	offset++
+
+	builder := NewBuilder().SetTypeTag(typeTag).SetData(chunkData, bitCount)
+	for i := 0; i < MaxRefs; i++ {
+		if (refBitmap & (1 << i)) == 0 {
+			continue
+		}
+		if len(data) < offset+4 {
+			return nil, 0, fmt.Errorf("chunk tree: truncated ref length")
+		}
+		childLen := int(binary.BigEndian.Uint32(data[offset:]))
+		offset += 4
+		if childLen < 0 || len(data) < offset+childLen {
+			return nil, 0, fmt.Errorf("chunk tree: truncated ref data")
+		}
+		child, consumed, err := parseChunkTreeAt(data[offset:offset+childLen], depth+1)
+		if err != nil {
+			return nil, 0, fmt.Errorf("chunk tree: ref %d: %w", i, err)
+		}
+		if consumed != childLen {
+			return nil, 0, fmt.Errorf("chunk tree: ref %d has trailing bytes", i)
+		}
+		offset += childLen
+		builder.SetRef(i, child)
+	}
+
+	built, err := builder.Build()
+	if err != nil {
+		return nil, 0, fmt.Errorf("chunk tree: rebuild: %w", err)
+	}
+	return built, offset, nil
 }
 
 // NewPrunedChunk creates a chunk that only contains its hashes and level,
@@ -238,6 +375,9 @@ func (c *Chunk) encodeCanonical(w io.Writer, layer int) error {
 	}
 
 	byteLen := (int(c.bitCount) + 7) / 8
+	if byteLen > len(c.data) {
+		return fmt.Errorf("chunk data shorter than bit count")
+	}
 	if _, err := w.Write(c.data[:byteLen]); err != nil {
 		return err
 	}

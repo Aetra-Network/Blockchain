@@ -9,14 +9,14 @@ import (
 )
 
 const (
-	goldenUserAddress	= "AEAAAQAAAAAAAAAAAAAAAHUedugZkZbUVJQcRdGzoyPxQzvW"
+	goldenUserAddress	= "AEJkAv_e2IQJ2T7CogF1HnboGZGW1FSUHEXRs6Mj8UM71g"
 	goldenRawAddress	= "4:000000000000000000000000751e76e8199196d454941c45d1b3a323f1433bd6"
 )
 
 func TestAccountStoreKeysAreDeterministicGoldenValues(t *testing.T) {
 	byUser, err := AccountByUserKey(goldenUserAddress)
 	require.NoError(t, err)
-	require.Equal(t, "account/by_user/AEAAAQAAAAAAAAAAAAAAAHUedugZkZbUVJQcRdGzoyPxQzvW", byUser)
+	require.Equal(t, "account/by_user/AEJkAv_e2IQJ2T7CogF1HnboGZGW1FSUHEXRs6Mj8UM71g", byUser)
 
 	byRaw, err := AccountByRawKey(goldenRawAddress)
 	require.NoError(t, err)
@@ -30,7 +30,7 @@ func TestAccountStoreKeysAreDeterministicGoldenValues(t *testing.T) {
 
 	storage, err := AccountStorageKey(goldenUserAddress)
 	require.NoError(t, err)
-	require.Equal(t, "account/storage/AEAAAQAAAAAAAAAAAAAAAHUedugZkZbUVJQcRdGzoyPxQzvW", storage)
+	require.Equal(t, "account/storage/AEJkAv_e2IQJ2T7CogF1HnboGZGW1FSUHEXRs6Mj8UM71g", storage)
 }
 
 func TestAccountStoreKeyDescriptorsDocumentRequiredPrefixes(t *testing.T) {

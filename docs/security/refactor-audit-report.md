@@ -41,7 +41,7 @@ Checked patterns:
 
 Changes made:
 
-- `Params.Validate` now checks fee-like integer params through an ordered slice
+- `Params.Validate` now checks fee-like integer params through an ordered list
   instead of ranging over a map.
 - `ValidateExportedState` now validates inbox/outbox maps by sorted owner keys
   instead of ranging over maps directly.
@@ -52,7 +52,7 @@ Remaining scanner hits are not consensus-critical in the reviewed context:
 - `ed25519.GenerateKey(rand.Reader)` in tests;
 - `time.Now` in tests and local service startup timing;
 - generated gRPC gateway goroutines in `*.pb.gw.go`;
-- fixed slice of memo index maps, with deterministic sorting inside each
+- fixed list of memo index maps, with deterministic sorting inside each
   bucket.
 
 ## Verification

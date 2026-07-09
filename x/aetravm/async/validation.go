@@ -7,6 +7,7 @@ import (
 	appparams "github.com/sovereign-l1/l1/app/params"
 
 	aetraaddress "github.com/sovereign-l1/l1/app/addressing"
+	contracttypes "github.com/sovereign-l1/l1/x/contracts/types"
 )
 
 func (c ContractAccount) Validate(params Params) error {
@@ -55,6 +56,11 @@ func (m MessageEnvelope) Validate(params Params) error {
 	}
 	if len(m.Body) > int(params.MaxBodySize) {
 		return fmt.Errorf("message body size must be <= %d", params.MaxBodySize)
+	}
+	if m.StateInit != nil {
+		if err := m.StateInit.Validate(contracttypes.DefaultParams()); err != nil {
+			return err
+		}
 	}
 	if m.DeliverAtBlock != 0 && m.DeadlineBlock != 0 && m.DeliverAtBlock > m.DeadlineBlock {
 		return errors.New("message deliver block must not exceed deadline block")

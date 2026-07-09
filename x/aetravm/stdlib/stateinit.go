@@ -12,9 +12,9 @@ import (
 )
 
 type StateInitBuilder struct {
-	si      avm.StateInit
-	root    *chunk.Chunk
-	err     error
+	si   avm.StateInit
+	root *chunk.Chunk
+	err  error
 }
 
 func NewStateInitBuilder() *StateInitBuilder {
@@ -87,7 +87,7 @@ func (b *StateInitBuilder) Dependency(hash [32]byte) *StateInitBuilder {
 	return b
 }
 
-func (b *StateInitBuilder) InitialStateRoot(root *Cell) *StateInitBuilder {
+func (b *StateInitBuilder) InitialStateRoot(root *Chunk) *StateInitBuilder {
 	if b.err != nil {
 		return b
 	}

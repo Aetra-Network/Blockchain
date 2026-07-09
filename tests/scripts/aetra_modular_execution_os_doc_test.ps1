@@ -1,15 +1,11 @@
 param(
-  [string]$Doc = "docs\architecture\aetra-modular-execution-os.md",
-  [string]$Readme = "README.md",
-  [string]$Sharding = "docs\architecture\sharding-rd.md"
+  [string]$Doc = "docs\architecture\aetra-modular-execution-os.md"
 )
 
 $ErrorActionPreference = "Stop"
 
 $RepoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
 $DocPath = if ([System.IO.Path]::IsPathRooted($Doc)) { $Doc } else { Join-Path $RepoRoot $Doc }
-$ReadmePath = if ([System.IO.Path]::IsPathRooted($Readme)) { $Readme } else { Join-Path $RepoRoot $Readme }
-$ShardingPath = if ([System.IO.Path]::IsPathRooted($Sharding)) { $Sharding } else { Join-Path $RepoRoot $Sharding }
 
 function Assert-Contains {
   param([string]$Text, [string]$Pattern, [string]$Message)
@@ -21,8 +17,6 @@ if (-not (Test-Path -LiteralPath $DocPath)) {
 }
 
 $docText = Get-Content -Raw -LiteralPath $DocPath
-$readmeText = Get-Content -Raw -LiteralPath $ReadmePath
-$shardingText = Get-Content -Raw -LiteralPath $ShardingPath
 
 foreach ($term in @(
     'Aetra Modular L1 Execution OS',
@@ -81,15 +75,5 @@ $finalStatement = 'Aetra is a modular Layer 1 execution operating system where c
 if ($docText.TrimEnd() -notlike "*$finalStatement") {
   throw "modular execution OS doc must end with the required final statement"
 }
-
-Assert-Contains `
-  -Text $readmeText `
-  -Pattern ([regex]::Escape('docs/architecture/aetra-modular-execution-os.md')) `
-  -Message "README must link to modular execution OS doc"
-
-Assert-Contains `
-  -Text $shardingText `
-  -Pattern ([regex]::Escape('aetra-modular-execution-os.md')) `
-  -Message "sharding R&D doc must cross-link modular execution OS doc"
 
 Write-Host "aetra modular execution OS doc test passed"

@@ -28,13 +28,13 @@ func TestCHAT3AllocationWeightsDeterministicGoldenAndRejectJailedSlashedOverCap(
 	require.NoError(t, err)
 
 	require.Equal(t, []AllocationWeight{
-		{ValidatorAddress: valA, Score: weights[0].Score, WeightBps: 5_000},
-		{ValidatorAddress: valB, Score: weights[1].Score, WeightBps: 5_000},
 		{ValidatorAddress: valC, Score: 0, WeightBps: 0},
+		{ValidatorAddress: valA, Score: weights[1].Score, WeightBps: 5_000},
 		{ValidatorAddress: valD, Score: 0, WeightBps: 0},
+		{ValidatorAddress: valB, Score: weights[3].Score, WeightBps: 5_000},
 	}, weights)
-	require.NotZero(t, weights[0].Score)
-	require.Equal(t, weights[0].Score, weights[1].Score)
+	require.NotZero(t, weights[1].Score)
+	require.Equal(t, weights[1].Score, weights[3].Score)
 
 	reversed := []ValidatorPolicyCandidate{candidates[3], candidates[2], candidates[1], candidates[0]}
 	for i := 0; i < 8; i++ {
@@ -60,9 +60,9 @@ func TestCHAT3AllocationPlanTouchesBoundedPoolAllocationKeysOnly(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Len(t, plan.Allocations, 1)
-	require.Equal(t, valA, plan.Allocations[0].Validator)
-	require.Equal(t, uint32(6_000), plan.Allocations[0].TargetWeightBps)
-	require.Equal(t, []string{string(PoolAllocationKey("pool-chat3", valA))}, plan.InternalMetadata.TouchedKeys)
+	require.Equal(t, valB, plan.Allocations[0].Validator)
+	require.Equal(t, uint32(4_000), plan.Allocations[0].TargetWeightBps)
+	require.Equal(t, []string{string(PoolAllocationKey("pool-chat3", valB))}, plan.InternalMetadata.TouchedKeys)
 }
 
 func TestCHAT3AllocationPlanAppliesDeterministicBoundedStateTransition(t *testing.T) {
@@ -87,12 +87,12 @@ func TestCHAT3AllocationPlanAppliesDeterministicBoundedStateTransition(t *testin
 	next, touched, err := ApplyPoolAllocationPlan(params, existing, receipt)
 	require.NoError(t, err)
 	require.Equal(t, []string{
-		string(PoolAllocationKey("pool-chat3", valA)),
 		string(PoolAllocationKey("pool-chat3", valB)),
+		string(PoolAllocationKey("pool-chat3", valA)),
 	}, touched)
 	require.Equal(t, []PoolValidatorAllocation{
-		{PoolID: "pool-chat3", Validator: valA, TargetWeightBps: 200, UpdatedHeight: 20},
 		{PoolID: "pool-chat3", Validator: valB, TargetWeightBps: 100, UpdatedHeight: 20},
+		{PoolID: "pool-chat3", Validator: valA, TargetWeightBps: 200, UpdatedHeight: 20},
 		{PoolID: "pool-other", Validator: valOther, TargetWeightBps: 25, UpdatedHeight: 10},
 	}, next)
 

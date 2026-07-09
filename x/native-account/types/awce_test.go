@@ -305,18 +305,27 @@ func TestRecoveryPolicyChangesStatusWithoutChangingIdentity(t *testing.T) {
 		AddressRaw:	addressing.SystemAddressAETMintRaw,
 		Status:		AccountStatusActive,
 		CreatedHeight:	100,
-		AuthPolicy: AuthPolicy{
-			Version:	1, Mode: AuthModeSingleKey,
-			Keys:	[]AuthKey{{ID: "key1", PublicKey: "pubkey1", Role: AuthKeyRolePrimary}},
-			RecoveryPolicy: RecoveryPolicy{
-				Keys:		[]string{"recovery_key_1", "recovery_key_2"},
-				Threshold:	2, TimelockEndHeight: 50,
-			},
+	}
+	guardian1 := newCoSigTestKey(t, "recovery-guardian-1", AuthKeyRoleGuardian, 0x71)
+	guardian2 := newCoSigTestKey(t, "recovery-guardian-2", AuthKeyRoleGuardian, 0x72)
+	account.AuthPolicy = AuthPolicy{
+		Version:	1, Mode: AuthModeSingleKey,
+		Keys:	[]AuthKey{{ID: "key1", PublicKey: "pubkey1", Role: AuthKeyRolePrimary}},
+		RecoveryPolicy: RecoveryPolicy{
+			Keys:		[]string{guardian1.pub, guardian2.pub},
+			Threshold:	2, TimelockEndHeight: 50,
 		},
 	}
+	// Recovery signers prove possession with co-signatures over the canonical
+	// recovery digest; a bare key string never authorizes recovery.
+	digest := ExternalMessageSigningBytes(account.AddressUser, account.Sequence, AuthOperationRecoverAccount, 0, nil)
+	coSig1 := guardian1.coSign(digest)
+	coSig1.KeyID = guardian1.pub
+	coSig2 := guardian2.coSign(digest)
+	coSig2.KeyID = guardian2.pub
 	msg := MsgRecoverAccount{
 		AccountUser:	account.AddressUser,
-		Signers:	[]string{"recovery_key_1", "recovery_key_2"},
+		CoSignatures:	[]AuthCoSignature{coSig1, coSig2},
 		CurrentHeight:	100,
 	}
 	if err := AuthorizeRecoveryPolicy(account, msg); err != nil {

@@ -2,6 +2,8 @@ param(
   [ValidateSet("Markdown", "Json")]
   [string]$OutputFormat = "Markdown",
   [switch]$RunLocalnetProfiles,
+  [switch]$RunFullGates,
+  [switch]$SkipLiveGates,
   [string]$Binary = "",
   [int]$TimeoutSeconds = 180,
   [switch]$AllowFailures
@@ -82,30 +84,116 @@ function Add-Check {
   }
 }
 
-$checks = [System.Collections.Generic.List[object]]::new()
-
-Add-Check $checks "avm_runtime_wired" "AVM contract runtime is wired as a native SDK module" {
-  Assert-Contains "app\modulewiring\modules.go" "contractsmodule\.NewAppModule\(deps\.ContractsKeeper\)" "contracts app module wiring"
-  Assert-Contains "app\keepers.go" "ContractsKeeper\s*=\s*persistentKeepers\.ContractsKeeper" "contracts keeper wiring"
-  Assert-Contains "app\wiring\storekeys\keys.go" "contractstypes\.StoreKey" "contracts store key"
-  Assert-FileExists "proto\l1\contracts\v1\tx.proto"
-  Assert-FileExists "proto\l1\contracts\v1\query.proto"
-  Assert-Contains "x\contracts\module.go" "RegisterServices" "contracts service registration"
-  Assert-Contains "x\contracts\types\service.go" "RegisterMsgServer" "contracts msg service descriptor"
-  Assert-Contains "x\contracts\types\service.go" "RegisterQueryServer" "contracts query service descriptor"
-  Assert-Contains "x\contracts\keeper\keeper.go" "func \(k \*Keeper\) StoreCode" "contracts StoreCode runtime"
-  Assert-Contains "x\contracts\keeper\keeper.go" "func \(k \*Keeper\) ExecuteContract" "contracts ExecuteContract runtime"
+# Invoke-LiveCommand runs a real external command and returns its captured
+# output. Unlike Assert-Contains (which only proves a string appears
+# somewhere in source/docs), this proves the command actually executed and
+# exited 0 right now, against the current tree.
+function Invoke-LiveCommand {
+  param(
+    [string]$FilePath,
+    [string[]]$Arguments,
+    [string]$FailureLabel
+  )
+  $previousErrorActionPreference = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    $output = & $FilePath @Arguments 2>&1
+    $exitCode = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+  }
+  $text = ($output | Out-String).Trim()
+  if ($exitCode -ne 0) {
+    $preview = $text
+    if ($preview.Length -gt 2000) { $preview = $preview.Substring($preview.Length - 2000) }
+    throw "$FailureLabel exited $exitCode`: $preview"
+  }
+  return $text
 }
 
-Add-Check $checks "native_account_wired" "native-account is a runtime SDK module, not only types/spec" {
-  Assert-Contains "app\modulewiring\modules.go" "nativeaccountmodule\.NewAppModule" "native-account app module wiring"
-  Assert-Contains "app\keepers.go" "NativeAccountKeeper\s*=\s*persistentKeepers\.NativeAccountKeeper" "native-account keeper wiring"
-  Assert-Contains "app\wiring\storekeys\keys.go" "nativeaccounttypes\.StoreKey" "native-account store key"
-  Assert-FileExists "x\native-account\module.go"
-  Assert-FileExists "x\native-account\keeper\msg_server.go"
-  Assert-FileExists "x\native-account\keeper\query_server.go"
+function Add-LiveCheck {
+  param(
+    [System.Collections.Generic.List[object]]$Checks,
+    [string]$Id,
+    [string]$Title,
+    [scriptblock]$Body
+  )
+  if ($SkipLiveGates) {
+    $Checks.Add([pscustomobject]@{
+        id       = $Id
+        title    = $Title
+        status   = "SKIPPED"
+        evidence = @("-SkipLiveGates was set; this gate was not executed")
+        error    = ""
+      }) | Out-Null
+    return
+  }
+  Add-Check $Checks $Id $Title $Body
+}
+
+$checks = [System.Collections.Generic.List[object]]::new()
+Push-Location $RepoRoot
+try {
+
+Add-LiveCheck $checks "live_build" "go build ./... succeeds against the current tree" {
+  Invoke-LiveCommand -FilePath "go" -Arguments @("build", "./...") -FailureLabel "go build ./..."
+  "go build ./... exited 0"
+}
+
+Add-LiveCheck $checks "live_vet" "go vet ./... reports no issues against the current tree" {
+  Invoke-LiveCommand -FilePath "go" -Arguments @("vet", "./...") -FailureLabel "go vet ./..."
+  "go vet ./... exited 0"
+}
+
+Add-LiveCheck $checks "live_module_wiring" "AVM contract runtime and native-account are wired as real SDK modules (executed, not grepped)" {
+  Invoke-LiveCommand -FilePath "go" -Arguments @("test", "./app", "-run", "TestLaunchModuleInventoryCoversWiredAetraModules", "-count=1", "-v") -FailureLabel "module wiring test"
+  Assert-FileExists "proto\l1\contracts\v1\tx.proto"
   Assert-FileExists "proto\l1\nativeaccount\v1\tx.proto"
-  Assert-FileExists "proto\l1\nativeaccount\v1\query.proto"
+  "TestLaunchModuleInventoryCoversWiredAetraModules passed against a live app.ModuleManager instance"
+}
+
+Add-LiveCheck $checks "live_invariants" "app-level invariants (rent runway, direct-delegation rejection, etc.) actually run and pass" {
+  Invoke-LiveCommand -FilePath "go" -Arguments @("test", "./app", "-run", "Invariant", "-count=1", "-v") -FailureLabel "invariant tests"
+  "go test ./app -run Invariant executed and passed"
+}
+
+Add-LiveCheck $checks "live_determinism_gate" "the AVM determinism gate and consensus-source scanner actually execute against current source" {
+  Invoke-LiveCommand -FilePath "go" -Arguments @("test", "./tests/avm_determinism_gate/...", "-count=1") -FailureLabel "determinism gate package"
+  Invoke-LiveCommand -FilePath "go" -Arguments @("test", "./app", "-run", "TestAVMRuntimeDeterminismGateRejectsNondeterminismAndKeepsStableRoots|TestConsensusCriticalSourceRejectsNondeterminismAndExternalNetworkCalls", "-count=1", "-v") -FailureLabel "determinism/consensus-audit tests"
+  "determinism gate + consensus-source scanner executed and passed"
+}
+
+Add-LiveCheck $checks "live_buf_lint" "buf lint actually runs clean against the current proto tree" {
+  $buf = & (Join-Path $RepoRoot "scripts\tooling\ensure-buf.ps1")
+  if ([string]::IsNullOrWhiteSpace($buf) -or -not (Test-Path -LiteralPath $buf)) {
+    throw "ensure-buf.ps1 did not return a usable buf path"
+  }
+  Invoke-LiveCommand -FilePath $buf -Arguments @("lint") -FailureLabel "buf lint"
+  "buf lint exited 0 (buf at $buf)"
+}
+
+if ($RunFullGates) {
+  $aetradBinary = if ([string]::IsNullOrWhiteSpace($Binary)) { Resolve-RepoPath "build\aetrad.exe" } else { Resolve-RepoPath $Binary }
+  Add-LiveCheck $checks "live_build_aetrad" "aetrad.exe builds and reports its version" {
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $aetradBinary) | Out-Null
+    Invoke-LiveCommand -FilePath "go" -Arguments @("build", "-o", $aetradBinary, "./cmd/l1d") -FailureLabel "build aetrad"
+    Invoke-LiveCommand -FilePath $aetradBinary -Arguments @("version", "--long", "--output", "json") -FailureLabel "aetrad version"
+    "aetrad built at $aetradBinary and reports version"
+  }
+
+  Add-LiveCheck $checks "live_export_import_roundtrip" "export/import roundtrip actually runs end to end" {
+    Invoke-LiveCommand -FilePath "powershell" -Arguments @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Resolve-RepoPath "tests\e2e\export_import_smoke.ps1"), "-Binary", $aetradBinary, "-TimeoutSeconds", "$TimeoutSeconds") -FailureLabel "export_import_smoke.ps1"
+    "export_import_smoke.ps1 executed and passed"
+  }
+
+  Add-LiveCheck $checks "live_avm_contract_smoke" "AVM contract deploy/execute smoke actually runs end to end" {
+    Invoke-LiveCommand -FilePath "powershell" -Arguments @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Resolve-RepoPath "tests\e2e\avm_contract_smoke.ps1"), "-Binary", $aetradBinary, "-TimeoutSeconds", "$TimeoutSeconds") -FailureLabel "avm_contract_smoke.ps1"
+    "avm_contract_smoke.ps1 executed and passed"
+  }
+} else {
+  Add-Check $checks "full_gates_not_run" "export/import and AVM contract smoke were not executed this run" {
+    "static wiring/doc checks only; pass -RunFullGates to actually build aetrad.exe and run export_import_smoke.ps1 / avm_contract_smoke.ps1"
+  }
 }
 
 Add-Check $checks "direct_delegation_disabled" "normal users cannot directly choose validators for staking" {
@@ -158,10 +246,24 @@ Add-Check $checks "export_import_roundtrip" "export/import roundtrip evidence ex
 }
 
 Add-Check $checks "buf_lint_gate" "buf lint is wired as a mandatory reproducible gate" {
-  Assert-Contains ".github\workflows\testnet-readiness.yml" "bufbuild/buf-setup-action@v1" "CI installs buf before linting"
+  Assert-Contains ".github\workflows\testnet-readiness.yml" ([regex]::Escape("scripts\tooling\ensure-buf.ps1")) "CI installs buf before linting"
+  Assert-Contains ".github\workflows\testnet-readiness.yml" "BUF_VERSION" "CI pins buf version"
   Assert-Contains ".github\workflows\testnet-readiness.yml" "buf lint" "CI runs buf lint"
-  Assert-Contains "docs\public-testnet-production-gates.md" "buf lint passes in CI" "production gate documents buf lint"
-  Assert-Contains "docs\public-testnet-preparation.md" "buf lint" "preparation docs mention buf lint"
+  Assert-Contains "docs\public-testnet-production-gates.md" "BUF_VERSION" "production gate documents pinned buf install"
+  Assert-Contains "docs\public-testnet-preparation.md" ([regex]::Escape("scripts\tooling\ensure-buf.ps1")) "preparation docs mention buf install helper"
+}
+
+Add-Check $checks "avm_contract_smoke" "AVM contract smoke is wired as a mandatory gated evidence path" {
+  Assert-FileExists "tests\e2e\avm_contract_smoke.ps1"
+  Assert-Contains ".github\workflows\testnet-readiness.yml" "avm-gates" "CI includes the AVM gate job"
+  Assert-Contains ".github\workflows\testnet-readiness.yml" "tests/e2e/avm_contract_smoke.ps1" "CI runs AVM contract smoke"
+  Assert-Contains "docs\public-testnet-e2e-smoke-commands.md" "avm_contract_smoke.ps1" "smoke command docs include AVM smoke"
+}
+
+Add-Check $checks "launch_evidence_bundle" "launch evidence bundle script is documented and available" {
+  Assert-FileExists "scripts\testnet\launch-evidence-bundle.ps1"
+  Assert-Contains "docs\public-testnet-preparation.md" "launch-evidence-bundle.ps1" "preparation docs mention bundle script"
+  Assert-Contains "docs\public-testnet-production-gates.md" "launch-evidence-bundle.ps1" "production gates doc mentions bundle script"
 }
 
 Add-Check $checks "formal_ci_readiness" "formal public testnet CI readiness workflow exists" {
@@ -180,12 +282,15 @@ Add-Check $checks "formal_ci_readiness" "formal public testnet CI readiness work
       "linter",
       "go vet ./...",
       "buf lint",
+      "scripts\tooling\ensure-buf.ps1",
       "release-artifact-build",
       "scripts/release/prototype-package.ps1",
       "version-command",
       "version --long --output json",
       "chain-id-validation",
-      "validator-docs"
+      "validator-docs",
+      "avm-gates",
+      "launch-evidence-bundle.ps1"
     )) {
     Assert-Contains ".github\workflows\testnet-readiness.yml" ([regex]::Escape($term)) "CI readiness term $term"
   }
@@ -201,9 +306,20 @@ Add-Check $checks "docs_match_behavior" "public docs match implemented behavior 
   Assert-Contains "architecture.md" "VM:\s+AVM first, AVM only at genesis" "AVM-only genesis architecture"
   Assert-NotContains "architecture.md" "CosmWasm first|EVM optional later" "stale CosmWasm/EVM-first language"
   Assert-Contains "docs\public-testnet-production-gates.md" "public-testnet-readiness-report\.ps1" "readiness report command"
+  Assert-Contains "docs\public-testnet-production-gates.md" "security-gates-triage\.md" "security triage ledger"
+  Assert-Contains "docs\security\security-gates-triage.md" "owner" "security triage owner field"
+  Assert-Contains "docs\security\security-gates-triage.md" "severity" "security triage severity field"
+  Assert-Contains "docs\security\security-gates-triage.md" "mitigation" "security triage mitigation field"
+  Assert-Contains "docs\security\security-gates-triage.md" "Milestone" "security triage milestone field"
   Assert-Contains "docs\public-testnet-preparation.md" "official liquid staking pool" "official pool docs"
   Assert-Contains "docs\public-testnet-preparation.md" "storage rent" "storage rent docs"
   Assert-Contains "docs\public-testnet-preparation.md" "direct delegation" "direct delegation docs"
+  Assert-Contains "docs\public-testnet-preparation.md" "state-sync-drill\.ps1" "state-sync drill docs"
+  Assert-Contains "docs\validator-onboarding.md" "validator-onboarding-drill\.ps1" "validator onboarding drill docs"
+  Assert-Contains "scripts\localnet\state-sync-drill.ps1" "trusted_rpcs" "state-sync drill evidence"
+  Assert-Contains "scripts\localnet\validator-onboarding-drill.ps1" "signing_info_count" "validator onboarding evidence"
+  Assert-Contains "docs\state-export-import.md" "rejected direct user delegation" "export/import staking behavior"
+  Assert-NotContains "docs\state-export-import.md" 'created `factory|pool `1` preserves|LP token' "stale tokenfactory/DEX export claims"
 }
 
 Add-Check $checks "localnet_profiles" "3/5/10 public-testnet localnet profiles are covered" {
@@ -255,6 +371,10 @@ Add-Check $checks "e2e_smoke_commands" "public testnet e2e smoke command list ex
     )) {
     Assert-Contains "docs\public-testnet-e2e-smoke-commands.md" ([regex]::Escape($term)) "e2e command $term"
   }
+}
+
+} finally {
+  Pop-Location
 }
 
 $failed = @($checks | Where-Object { $_.status -eq "FAIL" })

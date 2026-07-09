@@ -242,13 +242,16 @@ func (a Amendment) Validate(params Params) error {
 	if err := addressing.ValidateAuthorityAddress("constitution amendment proposer", a.Proposer); err != nil {
 		return err
 	}
-	for label, value := range map[string]string{
-		"constitution amendment approver":	a.Approver,
-		"constitution amendment executor":	a.Executor,
-		"constitution amendment canceller":	a.Canceller,
+	for _, entry := range []struct {
+		label string
+		value string
+	}{
+		{label: "constitution amendment approver", value: a.Approver},
+		{label: "constitution amendment executor", value: a.Executor},
+		{label: "constitution amendment canceller", value: a.Canceller},
 	} {
-		if strings.TrimSpace(value) != "" {
-			if err := addressing.ValidateAuthorityAddress(label, value); err != nil {
+		if strings.TrimSpace(entry.value) != "" {
+			if err := addressing.ValidateAuthorityAddress(entry.label, entry.value); err != nil {
 				return err
 			}
 		}

@@ -755,11 +755,15 @@ func slashAmount(stake uint64, fractionBps uint32) uint64 {
 	if fraction == 0 {
 		return 0
 	}
-	if stake > ^uint64(0)/fraction {
-		return stake
-	}
-	amount := stake * fraction / uint64(types.MaxBasisPoints)
-	if amount == 0 && stake > 0 && fractionBps > 0 {
+	// Overflow-safe stake*fractionBps/MaxBasisPoints. The previous guard returned
+	// the FULL stake (a 100% slash) whenever stake*fraction would overflow uint64
+	// — over-slashing a large validator to zero on a routine infraction. Split
+	// stake into whole and fractional parts of MaxBasisPoints so the product
+	// never overflows (fraction <= MaxBasisPoints, so the first term <= stake),
+	// mirroring x/validator-insurance. See SEC-MED: slashAmount overflow guard.
+	maxBps := uint64(types.MaxBasisPoints)
+	amount := stake/maxBps*fraction + stake%maxBps*fraction/maxBps
+	if amount == 0 && stake > 0 {
 		return 1
 	}
 	return amount

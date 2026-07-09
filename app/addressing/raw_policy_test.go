@@ -166,7 +166,7 @@ func TestLegacyPaddedRoundTripConsistency(t *testing.T) {
 	user, err := addressing.FormatUserFriendly(legacyBytes)
 	require.NoError(t, err)
 	require.True(t, strings.HasPrefix(user, "AE"))
-	require.Len(t, user, 48)
+	require.Len(t, user, addressing.UserFriendlyLength)
 
 	parsed2, err := addressing.Parse(user)
 	require.NoError(t, err)

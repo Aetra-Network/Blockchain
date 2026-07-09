@@ -1,0 +1,241 @@
+// DAO example for ATLX / AVM.
+//
+// Model:
+// - DaoCore holds the treasury and creates proposals.
+// - Each proposal lives in its own DaoProposal contract, so the core never
+//   stores a dictionary of proposals or votes.
+// - Proposal addresses are derived deterministically from:
+//   proposal code + init data { dao, id }.
+// - A passed proposal reports back to the core, which pays out the
+//   requested amount from the treasury balance.
+
+const ERR_NOT_OWNER = 1001
+const ERR_BAD_MSG = 0xFFFF
+const ERR_BAD_SENDER = 1004
+const ERR_BAD_AMOUNT = 1005
+const ERR_DAO_PAUSED = 1030
+
+// Outbound internal messages must fund the destination's gas/storage rent —
+// a freshly auto-deployed proposal contract created with amount: 0 would
+// have no balance and get frozen for unpaid storage rent immediately.
+const MSG_FORWARD_VALUE = aet("0.0001")
+
+@storage
+struct DaoCoreStorage {
+    owner: address
+    nextProposalId: uint64
+    proposalCode: Code
+    voteThreshold: uint64
+    paused: uint32
+}
+
+@storage
+struct DaoProposalStorage {
+    dao: address
+    id: uint64
+    author: address
+    beneficiary: address
+    amount: coins
+    description: string
+    votesFor: uint64
+    votesAgainst: uint64
+    threshold: uint64
+    open: uint32
+}
+
+@message(0x9101)
+struct CreateProposal {
+    beneficiary: address
+    amount: coins
+    description: string
+}
+
+@message(0x9102)
+struct ProposalSeed {
+    id: uint64
+    author: address
+    beneficiary: address
+    amount: coins
+    description: string
+    threshold: uint64
+}
+
+@message(0x9103)
+struct CastVote {
+    support: uint32
+}
+
+@message(0x9104)
+struct ProposalPassed {
+    id: uint64
+    beneficiary: address
+    amount: coins
+}
+
+@message(0x9105)
+struct DaoPayout {
+    id: uint64
+    amount: coins
+}
+
+@message(0x9106)
+struct SetPaused {
+    paused: uint32
+}
+
+type DaoInternalMsg = CreateProposal | ProposalPassed | SetPaused
+type ProposalInternalMsg = ProposalSeed | CastVote
+
+contract DaoCore {
+    author: "Aetralis example"
+    description: "DAO treasury with one proposal contract per proposal"
+    version: "0.01.0"
+
+    storage: DaoCoreStorage
+    incomingMessages: DaoInternalMsg
+
+    @store
+    func DaoCoreStorage.load() {
+        return DaoCoreStorage.fromChunk(contract.getData())
+    }
+
+    @store
+    func DaoCoreStorage.save(self) {
+        contract.setData(self.toChunk())
+    }
+
+    @pure
+    func proposalInitFor(dao: address, id: uint64) {
+        return DaoProposalStorage {
+            dao: dao,
+            id: id,
+            author: dao,
+            beneficiary: dao,
+            amount: 0,
+            description: "",
+            votesFor: 0,
+            votesAgainst: 0,
+            threshold: 0,
+            open: 0,
+        }
+    }
+
+    @pure
+    func proposalAddressFor(id: uint64): address {
+        const st = lazy DaoCoreStorage.load()
+        return counterfactualAddress({
+            code: st.proposalCode,
+            data: proposalInitFor(getAddress(), id),
+        })
+    }
+
+    @pure
+    func autoDeployProposalAddress(id: uint64): address {
+        const st = lazy DaoCoreStorage.load()
+        return autoDeployAddress({
+            code: st.proposalCode,
+            data: proposalInitFor(getAddress(), id),
+        })
+    }
+
+    @internal
+    func onInternalMessage(in: InMessage) {
+        const msg = lazy DaoInternalMsg.fromSegment(in.body)
+
+        match (msg) {
+            CreateProposal => {
+                var st = lazy DaoCoreStorage.load()
+                assert (st.paused == 0) throw ERR_DAO_PAUSED
+                assert (msg.amount > 0) throw ERR_BAD_AMOUNT
+
+                const id = st.nextProposalId
+                st.nextProposalId += 1
+
+                const proposal = autoDeployProposalAddress(id)
+                const seed = buildMessage({
+                    bounce: BounceMode.Only256BitsOfBody,
+                    amount: MSG_FORWARD_VALUE,
+                    receiver: proposal,
+                    body: ProposalSeed {
+                        id: id,
+                        author: in.senderAddress,
+                        beneficiary: msg.beneficiary,
+                        amount: msg.amount,
+                        description: msg.description,
+                        threshold: st.voteThreshold,
+                    }
+                })
+
+                seed.send(SEND_BOUNCE_ON_FAIL)
+                st.save()
+            }
+
+            ProposalPassed => {
+                var st = lazy DaoCoreStorage.load()
+                const expectedProposal = proposalAddressFor(msg.id)
+                assert (in.senderAddress == expectedProposal) throw ERR_BAD_SENDER
+
+                const payout = buildMessage({
+                    bounce: BounceMode.NoBounce,
+                    amount: msg.amount,
+                    receiver: msg.beneficiary,
+                    body: DaoPayout {
+                        id: msg.id,
+                        amount: msg.amount,
+                    }
+                })
+
+                payout.send(SEND_DEFAULT)
+            }
+
+            SetPaused => {
+                var st = lazy DaoCoreStorage.load()
+                assert (in.senderAddress == st.owner) throw ERR_NOT_OWNER
+
+                st.paused = msg.paused
+                st.save()
+            }
+
+            else => {
+                assert (in.body.isEmpty()) throw ERR_BAD_MSG
+            }
+        }
+    }
+
+    @bounced
+    func onBouncedMessage(in: InMessageBounced) {
+        in.bouncedBody.skipBouncedPrefix()
+
+        const bounced = lazy ProposalSeed.fromSegment(in.bouncedBody)
+
+        var st = lazy DaoCoreStorage.load()
+        if (st.nextProposalId == bounced.id + 1) {
+            // Seed bounced for the newest proposal: reclaim the id.
+            st.nextProposalId = bounced.id
+            st.save()
+        }
+    }
+
+    @get
+    func nextProposalId(): uint64 {
+        const st = lazy DaoCoreStorage.load()
+        return st.nextProposalId
+    }
+
+    @get
+    func proposalAddressOf(id: uint64): address {
+        return proposalAddressFor(id)
+    }
+
+    @get
+    func voteThreshold(): uint64 {
+        const st = lazy DaoCoreStorage.load()
+        return st.voteThreshold
+    }
+
+    @get
+    func isPaused(): uint32 {
+        const st = lazy DaoCoreStorage.load()
+        return st.paused
+    }
+}

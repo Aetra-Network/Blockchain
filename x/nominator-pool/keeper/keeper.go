@@ -464,7 +464,11 @@ func (k *Keeper) DepositToPool(msg types.MsgDepositToPool) (types.DelegatorShare
 	}
 	delegatorIdx, delegator, found := findDelegator(pool.DelegatorShares, msg.Delegator)
 	if found {
-		delegator.PendingRewards = types.AccruedReward(delegator, pool.RewardIndex)
+		accrued, err := types.AccruedReward(delegator, pool.RewardIndex)
+		if err != nil {
+			return types.DelegatorShare{}, err
+		}
+		delegator.PendingRewards = accrued
 		delegator.Shares += shareAmount
 		delegator.RewardIndexCheckpoint = pool.RewardIndex
 		delegator.SlashIndexCheckpoint = pool.SlashIndex
@@ -508,7 +512,11 @@ func (k *Keeper) DepositToOfficialLiquidStaking(msg types.MsgDepositToOfficialLi
 	}
 	delegatorIdx, delegator, found := findDelegator(pool.DelegatorShares, rawUserAddress)
 	if found {
-		delegator.PendingRewards = types.AccruedReward(delegator, pool.RewardIndex)
+		accrued, err := types.AccruedReward(delegator, pool.RewardIndex)
+		if err != nil {
+			return types.DelegatorShare{}, err
+		}
+		delegator.PendingRewards = accrued
 		delegator.Shares += shareAmount
 		delegator.RewardIndexCheckpoint = pool.RewardIndex
 		delegator.SlashIndexCheckpoint = pool.SlashIndex
@@ -838,8 +846,14 @@ func (k *Keeper) RequestPoolWithdrawal(msg types.MsgRequestPoolWithdrawal) (type
 	if msg.Shares > delegator.Shares || msg.Shares > pool.TotalShares {
 		return types.PendingWithdrawal{}, errors.New("nominator pool cannot withdraw more than total stake")
 	}
-	reward := types.AccruedReward(delegator, pool.RewardIndex)
-	amount := types.ShareValue(pool, msg.Shares)
+	reward, err := types.AccruedReward(delegator, pool.RewardIndex)
+	if err != nil {
+		return types.PendingWithdrawal{}, err
+	}
+	amount, err := types.ShareValue(pool, msg.Shares)
+	if err != nil {
+		return types.PendingWithdrawal{}, err
+	}
 	if amount == 0 || amount > pool.TotalBondedStake {
 		return types.PendingWithdrawal{}, errors.New("nominator pool withdrawal amount exceeds bonded stake")
 	}
@@ -1112,7 +1126,11 @@ func (k *Keeper) CancelPoolWithdrawal(msg types.MsgCancelPoolWithdrawal) (types.
 	}
 	delegatorIdx, delegator, found := findDelegator(pool.DelegatorShares, msg.Delegator)
 	if found {
-		delegator.PendingRewards = types.AccruedReward(delegator, pool.RewardIndex)
+		accrued, err := types.AccruedReward(delegator, pool.RewardIndex)
+		if err != nil {
+			return types.PendingWithdrawal{}, err
+		}
+		delegator.PendingRewards = accrued
 		delegator.Shares += shares
 		delegator.RewardIndexCheckpoint = pool.RewardIndex
 		pool.DelegatorShares[delegatorIdx] = delegator
@@ -1173,7 +1191,10 @@ func (k *Keeper) ClaimPoolRewards(msg types.MsgClaimPoolRewards) (uint64, error)
 	if !found {
 		return 0, errors.New("nominator pool delegator not found")
 	}
-	reward := types.AccruedReward(share, pool.RewardIndex)
+	reward, err := types.AccruedReward(share, pool.RewardIndex)
+	if err != nil {
+		return 0, err
+	}
 	share.PendingRewards = 0
 	share.RewardIndexCheckpoint = pool.RewardIndex
 	if err := share.Validate(); err != nil {
@@ -1405,8 +1426,15 @@ func (k *Keeper) ApplyPoolReward(poolID string, rewardAmount uint64) (types.Nomi
 	}
 	commission := rewardAmount * uint64(pool.PoolCommissionBps) / uint64(types.MaxBasisPoints)
 	netReward := rewardAmount - commission
-	pool.TotalBondedStake += netReward
-	pool.RewardIndex += types.RewardDelta(netReward, pool.TotalShares)
+	// Credit the reward only to the per-share RewardIndex, not to
+	// TotalBondedStake (the principal/exchange-rate pool). Crediting both
+	// double-counts every reward and makes the pool insolvent. See SEC-CRIT:
+	// pool reward double-credit.
+	delta, err := types.RewardDelta(netReward, pool.TotalShares)
+	if err != nil {
+		return types.NominatorPool{}, err
+	}
+	pool.RewardIndex += delta
 	return k.savePoolOnly(idx, pool)
 }
 
@@ -1422,7 +1450,11 @@ func (k *Keeper) ApplyPoolSlash(poolID string, slashAmount uint64) (types.Nomina
 		slashAmount = pool.TotalBondedStake
 	}
 	pool.TotalBondedStake -= slashAmount
-	pool.SlashIndex += types.RewardDelta(slashAmount, pool.TotalShares)
+	slashDelta, err := types.RewardDelta(slashAmount, pool.TotalShares)
+	if err != nil {
+		return types.NominatorPool{}, err
+	}
+	pool.SlashIndex += slashDelta
 	return k.savePoolOnly(idx, pool)
 }
 
@@ -1504,7 +1536,11 @@ func (k *Keeper) ApplyValidatorSlash(msg types.MsgApplyValidatorSlash) ([]types.
 				pool.TotalBondedStake = 0
 			}
 
-			pool.SlashIndex += types.RewardDelta(slashAmount, pool.TotalShares)
+			slashDelta, err := types.RewardDelta(slashAmount, pool.TotalShares)
+			if err != nil {
+				return nil, err
+			}
+			pool.SlashIndex += slashDelta
 
 			k.genesis.State.Pools[poolIdx] = pool
 
@@ -1603,7 +1639,11 @@ func (k *Keeper) PoolRewards(poolID string, delegator string) (uint64, bool) {
 	if !found {
 		return 0, false
 	}
-	return types.AccruedReward(share, pool.RewardIndex), true
+	reward, err := types.AccruedReward(share, pool.RewardIndex)
+	if err != nil {
+		return 0, false
+	}
+	return reward, true
 }
 
 func (k *Keeper) PoolShare(req types.QueryPoolShareRequest) (types.QueryPoolShareResponse, bool) {
@@ -1615,9 +1655,13 @@ func (k *Keeper) PoolShare(req types.QueryPoolShareRequest) (types.QueryPoolShar
 	if !found {
 		return types.QueryPoolShareResponse{}, false
 	}
+	reward, err := types.AccruedReward(share, pool.RewardIndex)
+	if err != nil {
+		return types.QueryPoolShareResponse{}, false
+	}
 	return types.QueryPoolShareResponse{
 		Share:          share,
-		PendingRewards: types.AccruedReward(share, pool.RewardIndex),
+		PendingRewards: reward,
 	}, true
 }
 

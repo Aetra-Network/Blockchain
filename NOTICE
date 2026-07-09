@@ -1,14 +1,20 @@
 Aetra Blockchain
 
-Copyright 2026 The Aetra Project
+Copyright (c) 2026 Aetra Network. All rights reserved.
 
 This distribution includes the Aetra logo at `assets/aetra.png`.
 
-Aetra and the Aetra logo are project identifiers used to indicate the official
-upstream project and its releases. The Apache License 2.0 grants copyright and
-patent permissions for the code, but it does not grant trademark rights.
+The Software is distributed under the Aetra Network Source-Available
+License, Version 1.0 (see LICENSE). You may download, use, and run the
+Software — including operating nodes and validators on Aetra networks —
+and build applications on top of the network. You may NOT sell the
+Software or derivative works, present them as your own product, or
+commercially exploit Aetra Network's designs, protocols, the Aetralis
+language, or the AVM as your own solution.
 
-Forks and derivative deployments may use the source code under the Apache
-License 2.0, but they must not present themselves as the official Aetra
-project, official Aetra releases, or otherwise imply endorsement by the Aetra
-Project unless explicitly authorized.
+Aetra and the Aetra logo are project identifiers used to indicate the
+official upstream project and its releases. The license does not grant
+trademark rights: forks and derivative deployments must not present
+themselves as the official Aetra Network, official Aetra releases, or
+otherwise imply endorsement by Aetra Network unless explicitly
+authorized. See docs/legal/trademark-policy.md.

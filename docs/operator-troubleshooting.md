@@ -83,7 +83,5 @@ Deep links:
 
 - [Operator Commands](operator-commands.md)
 - [Prototype Observability](observability.md)
-- [Mempool And CheckTx Negative Flow](mempool-checktx-negative-flow.md)
 - [Fees Ante Policy](fees-ante-policy.md)
-- [DEX E2E Flow](dex-e2e-flow.md)
 - [Local Funding](local-funding.md)

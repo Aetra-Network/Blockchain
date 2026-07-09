@@ -81,6 +81,30 @@ func TestPersistentRuntimeMutationSurvivesRestartAndImport(t *testing.T) {
 	require.Len(t, imported.ElectionCandidates(), 1)
 }
 
+// TestRestartedKeeperLoadsCommittedStateForBlock is the regression guard for
+// SEC-HIGH: election EndBlocker drives consensus off in-memory genesis that is
+// never restored on restart/state-sync. A fresh keeper (a restarted or
+// state-synced node, where InitChain is not re-run) starts with the empty
+// default in memory, and must hydrate the committed election state on the block
+// context before making consensus decisions.
+func TestRestartedKeeperLoadsCommittedStateForBlock(t *testing.T) {
+	ctx := context.Background()
+	service := kvtest.NewStoreService()
+
+	source := NewPersistentKeeper(service)
+	require.NoError(t, source.InitGenesisState(ctx, DefaultGenesis()))
+	applyCandidate(t, &source, 0x61, 100, 100, 2)
+	_, err := source.CommitElection(types.MsgCommitElection{Authority: prototype.DefaultAuthority, Height: 90})
+	require.NoError(t, err)
+
+	restarted := NewPersistentKeeper(service)
+	require.Empty(t, restarted.NextValidatorSet(), "fresh keeper starts at the empty default in memory")
+
+	require.NoError(t, restarted.loadForBlock(ctx))
+	require.Len(t, restarted.NextValidatorSet(), 1, "restarted node must load the committed election from the store")
+	require.Len(t, restarted.ElectionCandidates(), 1)
+}
+
 func TestCandidateWithdrawalBeforeDeadline(t *testing.T) {
 	k := NewKeeper()
 	app := applyCandidate(t, &k, 0x11, 100, 100, 2)

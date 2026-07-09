@@ -36,17 +36,12 @@ func TestExecutionOSSmokeCommandOutputsOperatorReport(t *testing.T) {
 			Band		string	`json:"band"`
 		}	`json:"load"`
 		Routing	struct {
-			ZoneID string `json:"zone_id"`
+			ZoneID		string	`json:"zone_id"`
+			ActiveShards	uint32	`json:"active_shards"`
 		}	`json:"routing"`
-		Sharding	struct {
-			ActiveShardCount uint32 `json:"active_shard_count"`
-		}	`json:"sharding"`
 		Mesh	struct {
 			ReceiptStatus string `json:"receipt_status"`
 		}	`json:"mesh"`
-		Identity	struct {
-			Domain string `json:"domain"`
-		}	`json:"identity"`
 		ProductionLive	bool	`json:"production_live"`
 	}
 	require.NoError(t, json.Unmarshal(out.Bytes(), &report), out.String())
@@ -54,9 +49,8 @@ func TestExecutionOSSmokeCommandOutputsOperatorReport(t *testing.T) {
 	require.Greater(t, report.Load.ScoreBps, uint32(0))
 	require.NotEmpty(t, report.Load.Band)
 	require.Equal(t, "FINANCIAL_ZONE", report.Routing.ZoneID)
-	require.GreaterOrEqual(t, report.Sharding.ActiveShardCount, uint32(2))
+	require.GreaterOrEqual(t, report.Routing.ActiveShards, uint32(2))
 	require.Equal(t, "SUCCESS", report.Mesh.ReceiptStatus)
-	require.Equal(t, "operator.aet", report.Identity.Domain)
 	require.False(t, report.ProductionLive)
 }
 

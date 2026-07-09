@@ -32,7 +32,7 @@ The public-testnet audit pack is [Security Audit Pack](security-audit-pack.md).
 ## App
 
 - InitGenesis and ExportGenesis validate module state, metadata, params, module accounts, and validator stake before state is trusted.
-- Upgrade handlers and future migrations follow [upgrade-migrations.md](../upgrade-migrations.md), including version-map sanity and export validation.
+- Upgrade handlers and future migrations include version-map sanity and export validation.
 - BeginBlocker, EndBlocker, ante decorators, vote extensions, and app wiring do not depend on wall time, randomness, map iteration order, floats, goroutines, select races, external APIs, pointer addresses, or platform-dependent serialization.
 - Panic is limited to impossible startup/wiring failures. Malformed tx, query, genesis input, and params input return errors.
 - Module accounts are registered with the minimum permissions required for tokenfactory, dex, fees, staking, bank, mint, and distribution interactions.
@@ -44,7 +44,6 @@ The public-testnet audit pack is [Security Audit Pack](security-audit-pack.md).
 - Mint, burn, and admin transfer require the current denom admin signer. `MsgUpdateParams` requires the configured authority.
 - Native `naet`, staking, fees, and DEX LP denoms cannot be spoofed or overwritten.
 - Bank keeper mint/burn/send errors propagate without local bookkeeping changes after failure.
-- Module account and bank movement inventory is maintained in [module-bank-movement-audit.md](module-bank-movement-audit.md).
 - Denom list/query endpoints are paginated or explicitly capped; not found and malformed requests return status errors.
 
 ## DEX

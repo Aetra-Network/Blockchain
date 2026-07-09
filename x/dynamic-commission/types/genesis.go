@@ -109,14 +109,17 @@ func (p Params) Validate() error {
 	if p.LowReputationThresholdBps > p.HighReputationThresholdBps || p.HighReputationThresholdBps > BasisPoints {
 		return fmt.Errorf("reputation thresholds must be ordered and <= %d bps", BasisPoints)
 	}
-	for name, value := range map[string]uint32{
-		"performance_bonus_bps":	p.PerformanceBonusBps,
-		"performance_penalty_bps":	p.PerformancePenaltyBps,
-		"reputation_bonus_bps":		p.ReputationBonusBps,
-		"reputation_penalty_bps":	p.ReputationPenaltyBps,
+	for _, entry := range []struct {
+		name  string
+		value uint32
+	}{
+		{name: "performance_bonus_bps", value: p.PerformanceBonusBps},
+		{name: "performance_penalty_bps", value: p.PerformancePenaltyBps},
+		{name: "reputation_bonus_bps", value: p.ReputationBonusBps},
+		{name: "reputation_penalty_bps", value: p.ReputationPenaltyBps},
 	} {
-		if value > BasisPoints {
-			return fmt.Errorf("%s must be <= %d", name, BasisPoints)
+		if entry.value > BasisPoints {
+			return fmt.Errorf("%s must be <= %d", entry.name, BasisPoints)
 		}
 	}
 	return nil

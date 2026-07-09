@@ -25,12 +25,31 @@ if ($TargetNodeIndex -lt 0 -or $TargetNodeIndex -ge $validatorCount) {
   throw "target node index $TargetNodeIndex out of range for $validatorCount validators"
 }
 
+function Get-RpcServerFromNodeHome {
+  param([string]$NodeHome)
+
+  $configToml = Join-Path $NodeHome "config\config.toml"
+  if (-not (Test-Path -LiteralPath $configToml)) {
+    throw "node config.toml not found: $configToml"
+  }
+  $config = Get-Content -Raw -LiteralPath $configToml
+  $match = [regex]::Match($config, '(?m)^laddr = "tcp://0\.0\.0\.0:(\d+)"')
+  if (-not $match.Success) {
+    throw "could not derive rpc laddr from $configToml"
+  }
+  return "tcp://127.0.0.1:$($match.Groups[1].Value)"
+}
+
 $rpcServers = @()
 for ($i = 0; $i -lt $validatorCount -and $rpcServers.Count -lt 2; $i++) {
   if ($i -eq $TargetNodeIndex) {
     continue
   }
-  $rpcServers += $manifest.nodes[$i].rpc_url
+  if ($manifest.PSObject.Properties["nodes"] -and $manifest.nodes -and $manifest.nodes[$i].rpc_url) {
+    $rpcServers += [string]$manifest.nodes[$i].rpc_url
+    continue
+  }
+  $rpcServers += Get-RpcServerFromNodeHome -NodeHome (Get-NodeHome -OutputDir $OutputDir -Index $i)
 }
 
 if ($TrustHeight -le 0 -or [string]::IsNullOrWhiteSpace($TrustHash)) {
@@ -64,6 +83,15 @@ if ($ResetData) {
     Remove-Item -LiteralPath $dataDir -Recurse -Force
     Write-Host "Removed target data directory $dataDir"
   }
+  New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
+  $privValidatorState = [ordered]@{
+    height    = "0"
+    round     = 0
+    step      = 0
+    signature = ""
+    signbytes = ""
+  }
+  $privValidatorState | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $dataDir "priv_validator_state.json")
 }
 
 $config = Get-Content -Raw -LiteralPath $configToml

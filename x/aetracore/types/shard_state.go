@@ -404,14 +404,17 @@ func (r ShardRoot) ValidateFormat() error {
 	if r.Height == 0 {
 		return errors.New("aetracore shard root height must be positive")
 	}
-	for field, value := range map[string]string{
-		"state":	r.StateRoot,
-		"inbox":	r.InboxRoot,
-		"outbox":	r.OutboxRoot,
-		"receipts":	r.ReceiptsRoot,
-		"metrics":	r.MetricsHash,
+	for _, entry := range []struct {
+		field string
+		value string
+	}{
+		{field: "state", value: r.StateRoot},
+		{field: "inbox", value: r.InboxRoot},
+		{field: "outbox", value: r.OutboxRoot},
+		{field: "receipts", value: r.ReceiptsRoot},
+		{field: "metrics", value: r.MetricsHash},
 	} {
-		if err := ValidateHash("aetracore shard "+field+" root", value); err != nil {
+		if err := ValidateHash("aetracore shard "+entry.field+" root", entry.value); err != nil {
 			return err
 		}
 	}

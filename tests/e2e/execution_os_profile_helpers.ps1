@@ -2,7 +2,7 @@ $ErrorActionPreference = "Stop"
 
 function Invoke-ExecutionOSProfileLocalnet {
   param(
-    [ValidateSet("base", "execution-os-sim", "zones-prototype", "mesh-prototype", "identity-prototype")]
+    [ValidateSet("base", "execution-os-sim", "zones-prototype", "mesh-prototype")]
     [string]$Profile,
     [string]$OutputDir = "",
     [string]$Binary = "",
@@ -136,7 +136,7 @@ function Invoke-ExecutionOSProfileLocalnet {
 function Invoke-ExecutionOSSmokeReport {
   param(
     [string]$Binary,
-    [ValidateSet("base", "execution-os-sim", "zones-prototype", "mesh-prototype", "identity-prototype")]
+    [ValidateSet("base", "execution-os-sim", "zones-prototype", "mesh-prototype")]
     [string]$Profile
   )
 

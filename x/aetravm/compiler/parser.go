@@ -2,14 +2,41 @@ package compiler
 
 import (
 	"fmt"
+	"math"
+	"sort"
 	"strconv"
 	"strings"
 )
 
+// maxParseDepth bounds recursive-descent nesting so pathological input such as
+// deeply nested "((((", "Chunk<Chunk<...>>", "!!!!", or nested blocks returns a
+// normal parse error instead of overflowing the goroutine stack (a fatal Go
+// error that recover() cannot catch).
+const maxParseDepth = 128
+
+// maxSourceBytes caps total input size up front to bound total work and token
+// count before any recursive descent begins.
+const maxSourceBytes = 1 << 20 // 1 MiB
+
 type parser struct {
-	lex *lexer
-	cur token
-	err error
+	lex   *lexer
+	cur   token
+	err   error
+	depth int
+}
+
+// enter increments recursion depth and fails if the configured limit is
+// exceeded. Every recursive production pairs it with a deferred leave().
+func (p *parser) enter() error {
+	p.depth++
+	if p.depth > maxParseDepth {
+		return fmt.Errorf("expression or type nesting too deep (max %d) at %s", maxParseDepth, p.cur.pos)
+	}
+	return nil
+}
+
+func (p *parser) leave() {
+	p.depth--
 }
 
 func ParseSource(src string) (*SourceFile, error) {
@@ -17,13 +44,29 @@ func ParseSource(src string) (*SourceFile, error) {
 }
 
 func ParseSourceNamed(fileName, src string) (*SourceFile, error) {
+	if len(src) > maxSourceBytes {
+		return nil, fmt.Errorf("source %q is %d bytes, exceeds limit %d", fileName, len(src), maxSourceBytes)
+	}
 	p := &parser{lex: newLexer(fileName, src)}
 	if err := p.read(); err != nil {
 		return nil, err
 	}
 	file := &SourceFile{}
 	for p.cur.kind != tokenEOF && p.err == nil {
+		annotations, err := p.parseAnnotationList()
+		if err != nil {
+			return nil, err
+		}
+		if len(annotations) > 0 && p.cur.text != "func" && p.cur.text != "struct" {
+			return nil, fmt.Errorf("annotations are only allowed before func or struct declarations at %s", p.cur.pos)
+		}
 		switch p.cur.text {
+		case "const":
+			cd, err := p.parseConstDecl()
+			if err != nil {
+				return nil, err
+			}
+			file.Consts = append(file.Consts, cd)
 		case "package":
 			if file.Package != "" {
 				return nil, fmt.Errorf("duplicate package declaration at %s", p.cur.pos)
@@ -40,7 +83,7 @@ func ParseSourceNamed(fileName, src string) (*SourceFile, error) {
 			}
 			file.Imports = append(file.Imports, imp)
 		case "struct":
-			st, err := p.parseStruct()
+			st, err := p.parseStruct(annotations)
 			if err != nil {
 				return nil, err
 			}
@@ -51,8 +94,14 @@ func ParseSourceNamed(fileName, src string) (*SourceFile, error) {
 				return nil, err
 			}
 			file.Enums = append(file.Enums, en)
-		case "fn":
-			fn, err := p.parseFunction()
+		case "type":
+			td, err := p.parseTypeDecl()
+			if err != nil {
+				return nil, err
+			}
+			file.Types = append(file.Types, td)
+		case "func":
+			fn, err := p.parseFunction(annotations)
 			if err != nil {
 				return nil, err
 			}
@@ -73,23 +122,173 @@ func ParseSourceNamed(fileName, src string) (*SourceFile, error) {
 	return file, nil
 }
 
-func (p *parser) parseFunction() (*FunctionDecl, error) {
+func (p *parser) parseFunction(annotations []Annotation) (*FunctionDecl, error) {
 	pos := p.cur.pos
-	if err := p.expectIdent("fn"); err != nil {
+	if err := p.expectIdent("func"); err != nil {
 		return nil, err
 	}
-	name, err := p.expectName()
+	nameParts, err := p.parsePath()
 	if err != nil {
 		return nil, err
 	}
+	name := joinPath(nameParts)
 	params, ret, body, err := p.parseFunctionTail()
 	if err != nil {
 		return nil, err
 	}
-	if ret == nil {
-		return nil, fmt.Errorf("function %q requires a return type at %s", name, pos)
+	if strings.Contains(name, ".") && len(params) > 0 && params[0].Name == "self" && params[0].Type.Name == "" {
+		params[0].Type = TypeRef{Name: strings.SplitN(name, ".", 2)[0]}
 	}
-	return &FunctionDecl{Name: name, Params: params, ReturnType: *ret, Body: body, Pos: pos}, nil
+	if err := validateAnnotationCompatibility(annotations, "func", pos); err != nil {
+		return nil, err
+	}
+	var rt TypeRef
+	if ret != nil {
+		rt = *ret
+	}
+	return &FunctionDecl{Annotations: canonicalAnnotations(annotations), Pure: functionIsPure(annotations), Name: name, Params: params, ReturnType: rt, Body: body, Pos: pos}, nil
+}
+
+func (p *parser) parseConstDecl() (*ConstDecl, error) {
+	pos := p.cur.pos
+	if err := p.expectIdent("const"); err != nil {
+		return nil, err
+	}
+	name, err := p.expectBindingName()
+	if err != nil {
+		return nil, err
+	}
+	if err := p.expect(tokenEqual); err != nil {
+		return nil, err
+	}
+	value, err := p.parseExpr()
+	if err != nil {
+		return nil, err
+	}
+	if p.cur.kind == tokenSemicolon {
+		if err := p.read(); err != nil {
+			return nil, err
+		}
+	}
+	return &ConstDecl{Name: name, Value: value, Pos: pos}, nil
+}
+
+func (p *parser) parseAnnotationList() ([]Annotation, error) {
+	var annotations []Annotation
+	for p.cur.kind == tokenAt {
+		pos := p.cur.pos
+		if err := p.read(); err != nil {
+			return nil, err
+		}
+		name, err := p.expectName()
+		if err != nil {
+			return nil, err
+		}
+		ann := Annotation{Name: "@" + name, Pos: pos}
+		if p.cur.kind == tokenLParen {
+			if err := p.read(); err != nil {
+				return nil, err
+			}
+			if p.cur.kind == tokenNumber {
+				opPos := p.cur.pos
+				value, err := p.expectNumberUint64()
+				if err != nil {
+					return nil, err
+				}
+				if value > math.MaxUint32 {
+					return nil, fmt.Errorf("annotation opcode %d exceeds uint32 range at %s", value, opPos)
+				}
+				v := uint32(value)
+				ann.Value = &v
+				if err := p.expect(tokenRParen); err != nil {
+					return nil, err
+				}
+			} else {
+				depth := 1
+				for depth > 0 {
+					if p.cur.kind == tokenEOF {
+						return nil, fmt.Errorf("unterminated annotation argument list at %s", pos)
+					}
+					if p.cur.kind == tokenLParen {
+						depth++
+					} else if p.cur.kind == tokenRParen {
+						depth--
+					}
+					if depth == 0 {
+						break
+					}
+					if err := p.read(); err != nil {
+						return nil, err
+					}
+				}
+				if err := p.expect(tokenRParen); err != nil {
+					return nil, err
+				}
+			}
+		}
+		switch ann.Name {
+		case "@internal", "@external", "@bounced", "@get", "@pure", "@impure", "@storage", "@message", "@store":
+		default:
+			return nil, fmt.Errorf("unknown annotation %q at %s", ann.Name, pos)
+		}
+		annotations = append(annotations, ann)
+	}
+	if len(annotations) > 1 {
+		return nil, fmt.Errorf("only one annotation is allowed per declaration at %s", annotations[1].Pos)
+	}
+	return annotations, nil
+}
+
+func canonicalAnnotations(annotations []Annotation) []Annotation {
+	if len(annotations) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(annotations))
+	out := make([]Annotation, 0, len(annotations))
+	for _, annotation := range annotations {
+		key := annotationKey(annotation)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, annotation)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return annotationRank(out[i]) < annotationRank(out[j])
+	})
+	return out
+}
+
+func annotationKey(annotation Annotation) string {
+	if annotation.Value == nil {
+		return annotation.Name
+	}
+	return fmt.Sprintf("%s:%d", annotation.Name, *annotation.Value)
+}
+
+func annotationRank(annotation Annotation) int {
+	switch annotation.Name {
+	case "@internal":
+		return 0
+	case "@external":
+		return 1
+	case "@bounced":
+		return 2
+	case "@get":
+		return 3
+	case "@pure":
+		return 4
+	case "@impure":
+		return 5
+	case "@storage":
+		return 6
+	case "@message":
+		return 7
+	case "@store":
+		return 8
+	default:
+		return 9
+	}
 }
 
 func (p *parser) parsePackageDecl() (string, error) {
@@ -170,7 +369,7 @@ func (p *parser) parseFunctionTail() ([]ParamDecl, *TypeRef, []Statement, error)
 		return nil, nil, nil, err
 	}
 	var ret *TypeRef
-	if p.cur.kind == tokenArrow {
+	if p.cur.kind == tokenArrow || p.cur.kind == tokenColon {
 		if err := p.read(); err != nil {
 			return nil, nil, nil, err
 		}
@@ -187,7 +386,7 @@ func (p *parser) parseFunctionTail() ([]ParamDecl, *TypeRef, []Statement, error)
 	return params, ret, body, nil
 }
 
-func (p *parser) parseStruct() (*StructDecl, error) {
+func (p *parser) parseStruct(annotations []Annotation) (*StructDecl, error) {
 	pos := p.cur.pos
 	if err := p.expectIdent("struct"); err != nil {
 		return nil, err
@@ -208,8 +407,17 @@ func (p *parser) parseStruct() (*StructDecl, error) {
 		if err != nil {
 			return nil, err
 		}
-		if err := p.expect(tokenColon); err != nil {
-			return nil, err
+		lazy := false
+		if p.cur.kind == tokenColon {
+			if err := p.read(); err != nil {
+				return nil, err
+			}
+		}
+		if p.cur.kind == tokenIdent && p.cur.text == "lazy" {
+			lazy = true
+			if err := p.read(); err != nil {
+				return nil, err
+			}
 		}
 		typ, err := p.parseTypeRef()
 		if err != nil {
@@ -226,7 +434,7 @@ func (p *parser) parseStruct() (*StructDecl, error) {
 			}
 			def = expr
 		}
-		fields = append(fields, FieldDecl{Name: fieldName, Type: typ, Default: def, Pos: p.cur.pos})
+		fields = append(fields, FieldDecl{Name: fieldName, Lazy: lazy, Type: typ, Default: def, Pos: p.cur.pos})
 		if p.cur.kind == tokenSemicolon {
 			if err := p.read(); err != nil {
 				return nil, err
@@ -236,7 +444,10 @@ func (p *parser) parseStruct() (*StructDecl, error) {
 	if err := p.expect(tokenRBrace); err != nil {
 		return nil, err
 	}
-	return &StructDecl{Name: name, Fields: fields, Pos: pos}, nil
+	if err := validateAnnotationCompatibility(annotations, "struct", pos); err != nil {
+		return nil, err
+	}
+	return &StructDecl{Annotations: canonicalAnnotations(annotations), Name: name, Fields: fields, Pos: pos}, nil
 }
 
 func (p *parser) parseEnum() (*EnumDecl, error) {
@@ -304,6 +515,41 @@ func (p *parser) parseEnum() (*EnumDecl, error) {
 	return &EnumDecl{Name: name, Variants: variants, Pos: pos}, nil
 }
 
+func (p *parser) parseTypeDecl() (*TypeDecl, error) {
+	pos := p.cur.pos
+	if err := p.expectIdent("type"); err != nil {
+		return nil, err
+	}
+	name, err := p.expectName()
+	if err != nil {
+		return nil, err
+	}
+	if err := p.expect(tokenEqual); err != nil {
+		return nil, err
+	}
+	first, err := p.parseTypeRef()
+	if err != nil {
+		return nil, err
+	}
+	members := []TypeRef{first}
+	for p.cur.kind == tokenPipe {
+		if err := p.read(); err != nil {
+			return nil, err
+		}
+		member, err := p.parseTypeRef()
+		if err != nil {
+			return nil, err
+		}
+		members = append(members, member)
+	}
+	if p.cur.kind == tokenSemicolon {
+		if err := p.read(); err != nil {
+			return nil, err
+		}
+	}
+	return &TypeDecl{Name: name, Members: members, Pos: pos}, nil
+}
+
 func (p *parser) parseContract() (*ContractDecl, error) {
 	pos := p.cur.pos
 	if err := p.expectIdent("contract"); err != nil {
@@ -321,16 +567,90 @@ func (p *parser) parseContract() (*ContractDecl, error) {
 		if p.cur.kind == tokenEOF {
 			return nil, fmt.Errorf("unterminated contract %q starting at %s", name, pos)
 		}
+		annotations, err := p.parseAnnotationList()
+		if err != nil {
+			return nil, err
+		}
+		if len(annotations) > 0 {
+			switch p.cur.text {
+			case "func":
+			default:
+				return nil, fmt.Errorf("annotations are only allowed before func declarations at %s", p.cur.pos)
+			}
+		}
 		switch p.cur.text {
 		case "storage":
 			if err := p.read(); err != nil {
 				return nil, err
+			}
+			if err := p.expect(tokenColon); err != nil {
+				return nil, fmt.Errorf("contract metadata key \"storage\" requires a colon (storage: TypeName) at %s", p.cur.pos)
 			}
 			stype, err := p.parseTypeRef()
 			if err != nil {
 				return nil, err
 			}
 			ct.StorageTypeName = stype.String()
+		case "author":
+			if err := p.read(); err != nil {
+				return nil, err
+			}
+			if err := p.expect(tokenColon); err != nil {
+				return nil, fmt.Errorf("contract metadata key \"author\" requires a colon (author: \"...\") at %s", p.cur.pos)
+			}
+			v, err := p.expectString()
+			if err != nil {
+				return nil, err
+			}
+			ct.Author = v
+		case "description":
+			if err := p.read(); err != nil {
+				return nil, err
+			}
+			if err := p.expect(tokenColon); err != nil {
+				return nil, fmt.Errorf("contract metadata key \"description\" requires a colon (description: \"...\") at %s", p.cur.pos)
+			}
+			v, err := p.expectString()
+			if err != nil {
+				return nil, err
+			}
+			ct.Description = v
+		case "version":
+			if err := p.read(); err != nil {
+				return nil, err
+			}
+			if err := p.expect(tokenColon); err != nil {
+				return nil, fmt.Errorf("contract metadata key \"version\" requires a colon (version: \"...\") at %s", p.cur.pos)
+			}
+			v, err := p.expectString()
+			if err != nil {
+				return nil, err
+			}
+			ct.Version = v
+		case "incomingMessages":
+			if err := p.read(); err != nil {
+				return nil, err
+			}
+			if err := p.expect(tokenColon); err != nil {
+				return nil, fmt.Errorf("contract metadata key \"incomingMessages\" requires a colon (incomingMessages: UnionType) at %s", p.cur.pos)
+			}
+			typ, err := p.parseTypeRef()
+			if err != nil {
+				return nil, err
+			}
+			ct.IncomingMessagesType = typ.String()
+		case "incomingExternal":
+			if err := p.read(); err != nil {
+				return nil, err
+			}
+			if err := p.expect(tokenColon); err != nil {
+				return nil, fmt.Errorf("contract metadata key \"incomingExternal\" requires a colon (incomingExternal: UnionType) at %s", p.cur.pos)
+			}
+			typ, err := p.parseTypeRef()
+			if err != nil {
+				return nil, err
+			}
+			ct.IncomingExternalType = typ.String()
 		case "namespace":
 			if err := p.read(); err != nil {
 				return nil, err
@@ -376,36 +696,22 @@ func (p *parser) parseContract() (*ContractDecl, error) {
 				return nil, err
 			}
 			ct.InitialBalance = v
+		case "func":
+			fn, err := p.parseFunction(annotations)
+			if err != nil {
+				return nil, err
+			}
+			ct.Functions = append(ct.Functions, fn)
 		case "message":
-			msg, err := p.parseMessage()
-			if err != nil {
-				return nil, err
-			}
-			ct.Messages = append(ct.Messages, msg)
+			return nil, fmt.Errorf("legacy declaration \"message\" is not part of ATLX at %s: declare a @message(opcode) struct and handle it in @internal func onInternalMessage / @external func onExternalMessage", p.cur.pos)
 		case "getter":
-			get, err := p.parseGetter()
-			if err != nil {
-				return nil, err
-			}
-			ct.Getters = append(ct.Getters, get)
+			return nil, fmt.Errorf("legacy declaration \"getter\" is not part of ATLX at %s: use @get func name(): T", p.cur.pos)
 		case "event":
-			event, err := p.parseEvent()
-			if err != nil {
-				return nil, err
-			}
-			ct.Events = append(ct.Events, event)
+			return nil, fmt.Errorf("legacy declaration \"event\" is not part of ATLX at %s", p.cur.pos)
 		case "wallet":
-			act, err := p.parseWalletAction()
-			if err != nil {
-				return nil, err
-			}
-			ct.WalletActions = append(ct.WalletActions, act)
-		case "deploy":
-			msg, err := p.parseDeployBlock()
-			if err != nil {
-				return nil, err
-			}
-			ct.Messages = append(ct.Messages, msg)
+			return nil, fmt.Errorf("legacy declaration \"wallet action\" is not part of ATLX at %s", p.cur.pos)
+		case "selector":
+			return nil, fmt.Errorf("\"selector\" is not part of ATLX at %s: message opcodes come from @message(opcode) struct annotations", p.cur.pos)
 		default:
 			return nil, fmt.Errorf("unexpected contract item %q at %s", p.cur.text, p.cur.pos)
 		}
@@ -413,191 +719,69 @@ func (p *parser) parseContract() (*ContractDecl, error) {
 	if err := p.expect(tokenRBrace); err != nil {
 		return nil, err
 	}
+	if ct.IncomingMessagesType == "" && ct.IncomingExternalType == "" {
+		return nil, fmt.Errorf("contract %q must declare incomingMessages, incomingExternal, or both at %s", name, pos)
+	}
 	return ct, nil
 }
 
-func (p *parser) parseMessage() (*MessageDecl, error) {
-	pos := p.cur.pos
-	if err := p.expectIdent("message"); err != nil {
-		return nil, err
+
+func validateAnnotationCompatibility(annotations []Annotation, target string, pos Position) error {
+	if len(annotations) == 0 {
+		return nil
 	}
-	kind := MessageKindExternal
-	if p.cur.kind == tokenIdent {
-		switch MessageKind(p.cur.text) {
-		case MessageKindExternal, MessageKindInternal, MessageKindBounced, MessageKindDeploy, MessageKindMigrate:
-			kind = MessageKind(p.cur.text)
-			if err := p.read(); err != nil {
-				return nil, err
+	hasStorage := false
+	hasMessage := false
+	hasPure := false
+	hasImpure := false
+	for _, annotation := range annotations {
+		switch target {
+		case "func":
+			switch annotation.Name {
+			case "@pure":
+				hasPure = true
+			case "@impure":
+				hasImpure = true
+			case "@get", "@external", "@internal", "@bounced", "@store":
+			default:
+				return fmt.Errorf("annotation %q is not valid on func at %s", annotation.Name, pos)
+			}
+		case "struct":
+			switch annotation.Name {
+			case "@storage":
+				if annotation.Value != nil {
+					return fmt.Errorf("annotation %q does not take an argument at %s", annotation.Name, pos)
+				}
+				hasStorage = true
+			case "@message":
+				if annotation.Value == nil {
+					return fmt.Errorf("annotation %q requires an opcode at %s", annotation.Name, pos)
+				}
+				hasMessage = true
+			default:
+				return fmt.Errorf("annotation %q is not valid on struct at %s", annotation.Name, pos)
 			}
 		}
 	}
-	name, err := p.expectName()
-	if err != nil {
-		return nil, err
+	if target == "struct" {
+		if hasStorage && hasMessage {
+			return fmt.Errorf("struct annotations @storage and @message cannot be combined at %s", pos)
+		}
 	}
-	params, ret, body, selector, err := p.parseCallableTail(true)
-	if err != nil {
-		return nil, err
+	if target == "func" && hasPure && hasImpure {
+		return fmt.Errorf("@pure and @impure cannot be combined at %s", pos)
 	}
-	return &MessageDecl{Name: name, Kind: kind, Params: params, ReturnType: ret, Body: body, ExplicitSel: selector, Pos: pos}, nil
+	return nil
 }
 
-func (p *parser) parseDeployBlock() (*MessageDecl, error) {
-	pos := p.cur.pos
-	if err := p.expectIdent("deploy"); err != nil {
-		return nil, err
-	}
-	body, err := p.parseBlock()
-	if err != nil {
-		return nil, err
-	}
-	return &MessageDecl{Name: "Deploy", Kind: MessageKindDeploy, Body: body, Pos: pos}, nil
-}
-
-func (p *parser) parseGetter() (*GetterDecl, error) {
-	pos := p.cur.pos
-	if err := p.expectIdent("getter"); err != nil {
-		return nil, err
-	}
-	name, err := p.expectName()
-	if err != nil {
-		return nil, err
-	}
-	params, ret, body, selector, err := p.parseCallableTail(false)
-	if err != nil {
-		return nil, err
-	}
-	if ret == nil {
-		return nil, fmt.Errorf("getter %q requires a return type at %s", name, pos)
-	}
-	return &GetterDecl{Name: name, Params: params, ReturnType: *ret, Body: body, ExplicitSel: selector, Pos: pos}, nil
-}
-
-func (p *parser) parseEvent() (*EventDecl, error) {
-	pos := p.cur.pos
-	if err := p.expectIdent("event"); err != nil {
-		return nil, err
-	}
-	name, err := p.expectName()
-	if err != nil {
-		return nil, err
-	}
-	fields, err := p.parseParamList()
-	if err != nil {
-		return nil, err
-	}
-	if p.cur.kind == tokenSemicolon {
-		if err := p.read(); err != nil {
-			return nil, err
+func functionIsPure(annotations []Annotation) bool {
+	for _, annotation := range annotations {
+		switch annotation.Name {
+		case "@impure", "@external", "@internal", "@bounced":
+			return false
 		}
 	}
-	return &EventDecl{Name: name, Fields: fields, Pos: pos}, nil
-}
-
-func (p *parser) parseWalletAction() (*WalletActionDecl, error) {
-	pos := p.cur.pos
-	if err := p.expectIdent("wallet"); err != nil {
-		return nil, err
-	}
-	if err := p.expectIdent("action"); err != nil {
-		return nil, err
-	}
-	name, err := p.expectName()
-	if err != nil {
-		return nil, err
-	}
-	if err := p.expect(tokenLBrace); err != nil {
-		return nil, err
-	}
-	act := &WalletActionDecl{Name: name, Pos: pos}
-	for p.cur.kind != tokenRBrace {
-		if p.cur.kind == tokenEOF {
-			return nil, fmt.Errorf("unterminated wallet action %q starting at %s", name, pos)
-		}
-		key, err := p.expectName()
-		if err != nil {
-			return nil, err
-		}
-		if err := p.expect(tokenEqual); err != nil {
-			return nil, err
-		}
-		switch key {
-		case "title":
-			act.Title, err = p.expectString()
-		case "risk":
-			act.Risk, err = p.expectString()
-		case "confirm_label":
-			act.ConfirmLabel, err = p.expectString()
-		case "warning_level":
-			act.WarningLevel, err = p.expectString()
-		case "expected_side_effects":
-			act.ExpectedSideEffects, err = p.expectStringList()
-		case "fund_access":
-			act.FundAccess, err = p.expectBool()
-		case "approval_semantics":
-			act.ApprovalSemantics, err = p.expectString()
-		default:
-			err = fmt.Errorf("unknown wallet action field %q at %s", key, p.cur.pos)
-		}
-		if err != nil {
-			return nil, err
-		}
-		if p.cur.kind == tokenSemicolon {
-			if err := p.read(); err != nil {
-				return nil, err
-			}
-		}
-	}
-	if err := p.expect(tokenRBrace); err != nil {
-		return nil, err
-	}
-	return act, nil
-}
-
-func (p *parser) parseCallableTail(requireReturn bool) ([]ParamDecl, *TypeRef, []Statement, *uint32, error) {
-	params, err := p.parseParamList()
-	if err != nil {
-		return nil, nil, nil, nil, err
-	}
-	var ret *TypeRef
-	if p.cur.kind == tokenArrow {
-		if err := p.read(); err != nil {
-			return nil, nil, nil, nil, err
-		}
-		typ, err := p.parseTypeRef()
-		if err != nil {
-			return nil, nil, nil, nil, err
-		}
-		ret = &typ
-	} else if requireReturn {
-		ret = nil
-	}
-	var selector *uint32
-	for p.cur.kind == tokenIdent {
-		switch p.cur.text {
-		case "selector":
-			if err := p.read(); err != nil {
-				return nil, nil, nil, nil, err
-			}
-			if err := p.expect(tokenEqual); err != nil {
-				return nil, nil, nil, nil, err
-			}
-			value, err := p.expectNumberUint64()
-			if err != nil {
-				return nil, nil, nil, nil, err
-			}
-			selector = new(uint32)
-			*selector = uint32(value)
-		default:
-			goto body
-		}
-	}
-body:
-	body, err := p.parseBlock()
-	if err != nil {
-		return nil, nil, nil, nil, err
-	}
-	return params, ret, body, selector, nil
+	return true
 }
 
 func (p *parser) parseParamList() ([]ParamDecl, error) {
@@ -607,18 +791,30 @@ func (p *parser) parseParamList() ([]ParamDecl, error) {
 	var params []ParamDecl
 	if p.cur.kind != tokenRParen {
 		for {
+			mutate := false
+			if p.cur.kind == tokenIdent && p.cur.text == "mutate" {
+				mutate = true
+				if err := p.read(); err != nil {
+					return nil, err
+				}
+			}
 			name, err := p.expectName()
 			if err != nil {
 				return nil, err
 			}
-			if err := p.expect(tokenColon); err != nil {
-				return nil, err
+			var typ TypeRef
+			if p.cur.kind == tokenColon {
+				if err := p.read(); err != nil {
+					return nil, err
+				}
+				typ, err = p.parseTypeRef()
+				if err != nil {
+					return nil, err
+				}
+			} else if name != "self" {
+				return nil, fmt.Errorf("expected type for parameter %q at %s", name, p.cur.pos)
 			}
-			typ, err := p.parseTypeRef()
-			if err != nil {
-				return nil, err
-			}
-			params = append(params, ParamDecl{Name: name, Type: typ, Pos: p.cur.pos})
+			params = append(params, ParamDecl{Name: name, Type: typ, Mutate: mutate, Pos: p.cur.pos})
 			if p.cur.kind != tokenComma {
 				break
 			}
@@ -634,6 +830,10 @@ func (p *parser) parseParamList() ([]ParamDecl, error) {
 }
 
 func (p *parser) parseBlock() ([]Statement, error) {
+	if err := p.enter(); err != nil {
+		return nil, err
+	}
+	defer p.leave()
 	if err := p.expect(tokenLBrace); err != nil {
 		return nil, err
 	}
@@ -660,13 +860,18 @@ func (p *parser) parseBlock() ([]Statement, error) {
 }
 
 func (p *parser) parseStatement() (Statement, error) {
+	if err := p.enter(); err != nil {
+		return Statement{}, err
+	}
+	defer p.leave()
 	pos := p.cur.pos
 	switch p.cur.text {
-	case "let":
+	case "const", "var":
+		mutable := p.cur.text == "var"
 		if err := p.read(); err != nil {
 			return Statement{}, err
 		}
-		name, err := p.expectName()
+		name, err := p.expectBindingName()
 		if err != nil {
 			return Statement{}, err
 		}
@@ -677,7 +882,51 @@ func (p *parser) parseStatement() (Statement, error) {
 		if err != nil {
 			return Statement{}, err
 		}
-		return Statement{Kind: StatementLet, Name: name, Value: expr, Pos: pos}, nil
+		return Statement{Kind: StatementBinding, Name: name, Value: expr, Mutable: mutable, Pos: pos}, nil
+	case "let", "val", "mut":
+		return Statement{}, fmt.Errorf("local bindings must use const or var at %s", p.cur.pos)
+	case "assert":
+		if err := p.read(); err != nil {
+			return Statement{}, err
+		}
+		if err := p.expect(tokenLParen); err != nil {
+			return Statement{}, err
+		}
+		cond, err := p.parseExpr()
+		if err != nil {
+			return Statement{}, err
+		}
+		if err := p.expect(tokenRParen); err != nil {
+			return Statement{}, err
+		}
+		if err := p.expectIdent("throw"); err != nil {
+			return Statement{}, err
+		}
+		code, err := p.parseExpr()
+		if err != nil {
+			return Statement{}, err
+		}
+		extra := map[string]Expr{"throw": code}
+		return Statement{Kind: StatementAssert, Value: cond, Extra: extra, Pos: pos}, nil
+	case "throw":
+		if err := p.read(); err != nil {
+			return Statement{}, err
+		}
+		code, err := p.parseExpr()
+		if err != nil {
+			return Statement{}, err
+		}
+		return Statement{Kind: StatementThrow, Value: code, Pos: pos}, nil
+	case "break":
+		if err := p.read(); err != nil {
+			return Statement{}, err
+		}
+		return Statement{Kind: StatementBreak, Pos: pos}, nil
+	case "continue":
+		if err := p.read(); err != nil {
+			return Statement{}, err
+		}
+		return Statement{Kind: StatementContinue, Pos: pos}, nil
 	case "set":
 		if err := p.read(); err != nil {
 			return Statement{}, err
@@ -760,6 +1009,24 @@ func (p *parser) parseStatement() (Statement, error) {
 		if err := p.read(); err != nil {
 			return Statement{}, err
 		}
+		if p.cur.kind == tokenDot {
+			if err := p.read(); err != nil {
+				return Statement{}, err
+			}
+			path, err := p.parsePath()
+			if err != nil {
+				return Statement{}, err
+			}
+			if err := p.expect(tokenEqual); err != nil {
+				return Statement{}, err
+			}
+			value, err := p.parseExpr()
+			if err != nil {
+				return Statement{}, err
+			}
+			path = append([]string{"state"}, path...)
+			return Statement{Kind: StatementSet, Path: path, Value: value, Pos: pos}, nil
+		}
 		value, err := p.parseExpr()
 		if err != nil {
 			return Statement{}, err
@@ -797,12 +1064,62 @@ func (p *parser) parseStatement() (Statement, error) {
 			if err := p.read(); err != nil {
 				return Statement{}, err
 			}
-			elseBody, err = p.parseBlock()
-			if err != nil {
-				return Statement{}, err
+			if p.cur.kind == tokenIdent && p.cur.text == "if" {
+				nested, err := p.parseStatement()
+				if err != nil {
+					return Statement{}, err
+				}
+				elseBody = []Statement{nested}
+			} else {
+				elseBody, err = p.parseBlock()
+				if err != nil {
+					return Statement{}, err
+				}
 			}
 		}
 		return Statement{Kind: StatementIf, Value: cond, Then: thenBody, Else: elseBody, Pos: pos}, nil
+	case "while":
+		if err := p.read(); err != nil {
+			return Statement{}, err
+		}
+		cond, err := p.parseExpr()
+		if err != nil {
+			return Statement{}, err
+		}
+		body, err := p.parseBlock()
+		if err != nil {
+			return Statement{}, err
+		}
+		return Statement{Kind: StatementWhile, Value: cond, Then: body, Pos: pos}, nil
+	case "do":
+		if err := p.read(); err != nil {
+			return Statement{}, err
+		}
+		body, err := p.parseBlock()
+		if err != nil {
+			return Statement{}, err
+		}
+		if err := p.expectIdent("while"); err != nil {
+			return Statement{}, err
+		}
+		cond, err := p.parseExpr()
+		if err != nil {
+			return Statement{}, err
+		}
+		return Statement{Kind: StatementDo, Value: cond, Then: body, Pos: pos}, nil
+	case "repeat":
+		if err := p.read(); err != nil {
+			return Statement{}, err
+		}
+		count, err := p.parseExpr()
+		if err != nil {
+			return Statement{}, err
+		}
+		body, err := p.parseBlock()
+		if err != nil {
+			return Statement{}, err
+		}
+		return Statement{Kind: StatementRepeat, Value: count, Then: body, Pos: pos}, nil
 	case "match":
 		if err := p.read(); err != nil {
 			return Statement{}, err
@@ -844,7 +1161,59 @@ func (p *parser) parseStatement() (Statement, error) {
 		}
 		return Statement{Kind: StatementFor, Index: index, Start: start, End: end, Then: body, Pos: pos}, nil
 	default:
-		return Statement{}, fmt.Errorf("unexpected statement %q at %s", p.cur.text, p.cur.pos)
+		expr, err := p.parseExpr()
+		if err != nil {
+			return Statement{}, err
+		}
+		switch p.cur.kind {
+		case tokenEqual, tokenPlusEqual, tokenMinusEqual:
+			op := p.cur.kind
+			if err := p.read(); err != nil {
+				return Statement{}, err
+			}
+			rhs, err := p.parseExpr()
+			if err != nil {
+				return Statement{}, err
+			}
+			path, ok := exprAsPath(expr)
+			if !ok {
+				return Statement{}, fmt.Errorf("assignment target must be a path at %s", expr.Pos)
+			}
+			value := rhs
+			switch op {
+			case tokenPlusEqual:
+				left := expr
+				value = Expr{Kind: ExprBinary, Op: "+", Left: &left, Right: &rhs, Pos: expr.Pos}
+			case tokenMinusEqual:
+				left := expr
+				value = Expr{Kind: ExprBinary, Op: "-", Left: &left, Right: &rhs, Pos: expr.Pos}
+			}
+			return Statement{Kind: StatementSet, Path: path, Value: value, Pos: pos}, nil
+		default:
+			if expr.Kind == ExprCall && len(expr.Path) >= 2 && strings.EqualFold(expr.Path[len(expr.Path)-1], "send") && len(expr.Args) == 1 {
+				receiverPath := expr.Path[:len(expr.Path)-1]
+				var value Expr
+				if len(receiverPath) == 1 {
+					value = Expr{Kind: ExprIdent, Text: receiverPath[0], Pos: expr.Pos}
+				} else {
+					value = Expr{Kind: ExprPath, Path: append([]string(nil), receiverPath...), Pos: expr.Pos}
+				}
+				extra := map[string]Expr{"mode": expr.Args[0]}
+				return Statement{Kind: StatementSend, Value: value, Extra: extra, Pos: pos}, nil
+			}
+			return Statement{Kind: StatementExpr, Value: expr, Pos: pos}, nil
+		}
+	}
+}
+
+func exprAsPath(expr Expr) ([]string, bool) {
+	switch expr.Kind {
+	case ExprIdent:
+		return []string{expr.Text}, true
+	case ExprPath:
+		return append([]string(nil), expr.Path...), true
+	default:
+		return nil, false
 	}
 }
 
@@ -866,6 +1235,11 @@ func (p *parser) parseMatchArms() ([]MatchArm, error) {
 		if err != nil {
 			return nil, err
 		}
+		if p.cur.kind == tokenFatArrow || p.cur.kind == tokenArrow {
+			if err := p.read(); err != nil {
+				return nil, err
+			}
+		}
 		body, err := p.parseBlock()
 		if err != nil {
 			return nil, err
@@ -884,6 +1258,12 @@ func (p *parser) parsePattern() (Pattern, error) {
 		return Pattern{}, fmt.Errorf("expected pattern at %s, got %q", p.cur.pos, p.cur.text)
 	}
 	if p.cur.text == "_" {
+		if err := p.read(); err != nil {
+			return Pattern{}, err
+		}
+		return Pattern{Kind: PatternWildcard, Pos: pos}, nil
+	}
+	if p.cur.text == "else" {
 		if err := p.read(); err != nil {
 			return Pattern{}, err
 		}
@@ -982,7 +1362,61 @@ func (p *parser) parsePath() ([]string, error) {
 }
 
 func (p *parser) parseExpr() (Expr, error) {
-	return p.parseLogicOr()
+	if err := p.enter(); err != nil {
+		return Expr{}, err
+	}
+	defer p.leave()
+	return p.parseTernary()
+}
+
+func (p *parser) parseTernary() (Expr, error) {
+	cond, err := p.parseCoalesce()
+	if err != nil {
+		return Expr{}, err
+	}
+	if p.cur.kind != tokenQuestion {
+		return cond, nil
+	}
+	pos := p.cur.pos
+	if err := p.read(); err != nil {
+		return Expr{}, err
+	}
+	thenExpr, err := p.parseExpr()
+	if err != nil {
+		return Expr{}, err
+	}
+	if err := p.expect(tokenColon); err != nil {
+		return Expr{}, err
+	}
+	elseExpr, err := p.parseExpr()
+	if err != nil {
+		return Expr{}, err
+	}
+	c := cond
+	t := thenExpr
+	e := elseExpr
+	return Expr{Kind: ExprTernary, Left: &c, Right: &t, Else: &e, Pos: pos}, nil
+}
+
+func (p *parser) parseCoalesce() (Expr, error) {
+	left, err := p.parseLogicOr()
+	if err != nil {
+		return Expr{}, err
+	}
+	for p.cur.kind == tokenQuestionQuestion {
+		op := p.cur.text
+		if err := p.read(); err != nil {
+			return Expr{}, err
+		}
+		right, err := p.parseLogicOr()
+		if err != nil {
+			return Expr{}, err
+		}
+		lhs := left
+		rhs := right
+		left = Expr{Kind: ExprBinary, Op: op, Left: &lhs, Right: &rhs, Pos: lhs.Pos}
+	}
+	return left, nil
 }
 
 func (p *parser) parseLogicOr() (Expr, error) {
@@ -1007,11 +1441,74 @@ func (p *parser) parseLogicOr() (Expr, error) {
 }
 
 func (p *parser) parseLogicAnd() (Expr, error) {
-	left, err := p.parseEquality()
+	left, err := p.parseBitwiseOr()
 	if err != nil {
 		return Expr{}, err
 	}
 	for p.cur.kind == tokenAndAnd {
+		op := p.cur.text
+		if err := p.read(); err != nil {
+			return Expr{}, err
+		}
+		right, err := p.parseBitwiseOr()
+		if err != nil {
+			return Expr{}, err
+		}
+		lhs := left
+		rhs := right
+		left = Expr{Kind: ExprLogic, Op: op, Left: &lhs, Right: &rhs, Pos: lhs.Pos}
+	}
+	return left, nil
+}
+
+func (p *parser) parseBitwiseOr() (Expr, error) {
+	left, err := p.parseBitwiseXor()
+	if err != nil {
+		return Expr{}, err
+	}
+	for p.cur.kind == tokenPipe {
+		op := p.cur.text
+		if err := p.read(); err != nil {
+			return Expr{}, err
+		}
+		right, err := p.parseBitwiseXor()
+		if err != nil {
+			return Expr{}, err
+		}
+		lhs := left
+		rhs := right
+		left = Expr{Kind: ExprBinary, Op: op, Left: &lhs, Right: &rhs, Pos: lhs.Pos}
+	}
+	return left, nil
+}
+
+func (p *parser) parseBitwiseXor() (Expr, error) {
+	left, err := p.parseBitwiseAnd()
+	if err != nil {
+		return Expr{}, err
+	}
+	for p.cur.kind == tokenCaret {
+		op := p.cur.text
+		if err := p.read(); err != nil {
+			return Expr{}, err
+		}
+		right, err := p.parseBitwiseAnd()
+		if err != nil {
+			return Expr{}, err
+		}
+		lhs := left
+		rhs := right
+		left = Expr{Kind: ExprBinary, Op: op, Left: &lhs, Right: &rhs, Pos: lhs.Pos}
+	}
+	return left, nil
+}
+
+func (p *parser) parseBitwiseAnd() (Expr, error) {
+	left, err := p.parseEquality()
+	if err != nil {
+		return Expr{}, err
+	}
+	for p.cur.kind == tokenAmpersand {
 		op := p.cur.text
 		if err := p.read(); err != nil {
 			return Expr{}, err
@@ -1022,7 +1519,7 @@ func (p *parser) parseLogicAnd() (Expr, error) {
 		}
 		lhs := left
 		rhs := right
-		left = Expr{Kind: ExprLogic, Op: op, Left: &lhs, Right: &rhs, Pos: lhs.Pos}
+		left = Expr{Kind: ExprBinary, Op: op, Left: &lhs, Right: &rhs, Pos: lhs.Pos}
 	}
 	return left, nil
 }
@@ -1049,16 +1546,16 @@ func (p *parser) parseEquality() (Expr, error) {
 }
 
 func (p *parser) parseComparison() (Expr, error) {
-	left, err := p.parseAdditive()
+	left, err := p.parseShift()
 	if err != nil {
 		return Expr{}, err
 	}
-	for p.cur.kind == tokenLess || p.cur.kind == tokenGreater || p.cur.kind == tokenLessEqual || p.cur.kind == tokenGreaterEqual {
+	for p.cur.kind == tokenLess || p.cur.kind == tokenGreater || p.cur.kind == tokenLessEqual || p.cur.kind == tokenGreaterEqual || p.cur.kind == tokenSpaceship {
 		op := p.cur.text
 		if err := p.read(); err != nil {
 			return Expr{}, err
 		}
-		right, err := p.parseAdditive()
+		right, err := p.parseShift()
 		if err != nil {
 			return Expr{}, err
 		}
@@ -1069,17 +1566,17 @@ func (p *parser) parseComparison() (Expr, error) {
 	return left, nil
 }
 
-func (p *parser) parseAdditive() (Expr, error) {
-	left, err := p.parsePrimary()
+func (p *parser) parseShift() (Expr, error) {
+	left, err := p.parseAdditive()
 	if err != nil {
 		return Expr{}, err
 	}
-	for p.cur.kind == tokenPlus || p.cur.kind == tokenMinus {
+	for p.cur.kind == tokenLessLess || p.cur.kind == tokenGreaterGreater {
 		op := p.cur.text
 		if err := p.read(); err != nil {
 			return Expr{}, err
 		}
-		right, err := p.parsePrimary()
+		right, err := p.parseAdditive()
 		if err != nil {
 			return Expr{}, err
 		}
@@ -1090,7 +1587,81 @@ func (p *parser) parseAdditive() (Expr, error) {
 	return left, nil
 }
 
+func (p *parser) parseAdditive() (Expr, error) {
+	left, err := p.parseMultiplicative()
+	if err != nil {
+		return Expr{}, err
+	}
+	for p.cur.kind == tokenPlus || p.cur.kind == tokenMinus {
+		op := p.cur.text
+		if err := p.read(); err != nil {
+			return Expr{}, err
+		}
+		right, err := p.parseMultiplicative()
+		if err != nil {
+			return Expr{}, err
+		}
+		lhs := left
+		rhs := right
+		left = Expr{Kind: ExprBinary, Op: op, Left: &lhs, Right: &rhs, Pos: lhs.Pos}
+	}
+	return left, nil
+}
+
+func (p *parser) parseMultiplicative() (Expr, error) {
+	left, err := p.parseUnary()
+	if err != nil {
+		return Expr{}, err
+	}
+	for p.cur.kind == tokenStar || p.cur.kind == tokenSlash || p.cur.kind == tokenPercent {
+		op := p.cur.text
+		if err := p.read(); err != nil {
+			return Expr{}, err
+		}
+		right, err := p.parseUnary()
+		if err != nil {
+			return Expr{}, err
+		}
+		lhs := left
+		rhs := right
+		left = Expr{Kind: ExprBinary, Op: op, Left: &lhs, Right: &rhs, Pos: lhs.Pos}
+	}
+	return left, nil
+}
+
+func (p *parser) parseUnary() (Expr, error) {
+	if err := p.enter(); err != nil {
+		return Expr{}, err
+	}
+	defer p.leave()
+	switch p.cur.kind {
+	case tokenBang, tokenMinus, tokenTilde:
+		op := p.cur.text
+		pos := p.cur.pos
+		if err := p.read(); err != nil {
+			return Expr{}, err
+		}
+		expr, err := p.parseUnary()
+		if err != nil {
+			return Expr{}, err
+		}
+		inner := expr
+		return Expr{Kind: ExprUnary, Op: op, Left: &inner, Pos: pos}, nil
+	default:
+		return p.parsePrimary()
+	}
+}
+
 func (p *parser) parsePrimary() (Expr, error) {
+	finish := func(expr Expr) (Expr, error) {
+		for p.cur.kind == tokenBang {
+			if err := p.read(); err != nil {
+				return Expr{}, err
+			}
+			expr.Unwrap = true
+		}
+		return expr, nil
+	}
 	switch p.cur.kind {
 	case tokenNumber:
 		text := p.cur.text
@@ -1098,16 +1669,26 @@ func (p *parser) parsePrimary() (Expr, error) {
 		if err := p.read(); err != nil {
 			return Expr{}, err
 		}
-		return Expr{Kind: ExprNumber, Text: text, Pos: pos}, nil
+		return finish(Expr{Kind: ExprNumber, Text: text, Pos: pos})
 	case tokenString:
 		text := p.cur.text
 		pos := p.cur.pos
 		if err := p.read(); err != nil {
 			return Expr{}, err
 		}
-		return Expr{Kind: ExprString, Text: text, Pos: pos}, nil
+		return finish(Expr{Kind: ExprString, Text: text, Pos: pos})
 	case tokenIdent:
 		pos := p.cur.pos
+		if p.cur.text == "lazy" {
+			if err := p.read(); err != nil {
+				return Expr{}, err
+			}
+			expr, err := p.parsePrimary()
+			if err != nil {
+				return Expr{}, err
+			}
+			return finish(expr)
+		}
 		if p.cur.text == "try" {
 			if err := p.read(); err != nil {
 				return Expr{}, err
@@ -1127,14 +1708,20 @@ func (p *parser) parsePrimary() (Expr, error) {
 				}
 				fallback = &next
 			}
-			return Expr{Kind: ExprTry, Left: &expr, Else: fallback, Pos: pos}, nil
+			return finish(Expr{Kind: ExprTry, Left: &expr, Else: fallback, Pos: pos})
 		}
-		if p.cur.text == "true" || p.cur.text == "false" {
-			val := p.cur.text == "true"
+		if p.cur.text == "null" {
 			if err := p.read(); err != nil {
 				return Expr{}, err
 			}
-			return Expr{Kind: ExprBool, Bool: val, Pos: pos}, nil
+			return finish(Expr{Kind: ExprNull, Pos: pos})
+		}
+		if p.cur.text == "true" || p.cur.text == "false" {
+			boolValue := p.cur.text == "true"
+			if err := p.read(); err != nil {
+				return Expr{}, err
+			}
+			return finish(Expr{Kind: ExprBool, Bool: boolValue, Pos: pos})
 		}
 		path, err := p.parsePath()
 		if err != nil {
@@ -1145,12 +1732,19 @@ func (p *parser) parsePrimary() (Expr, error) {
 			if err != nil {
 				return Expr{}, err
 			}
-			return Expr{Kind: ExprCall, Text: path[0], Path: path, Args: args, Pos: pos}, nil
+			return finish(Expr{Kind: ExprCall, Text: path[0], Path: path, Args: args, Pos: pos})
+		}
+		if p.cur.kind == tokenLBrace && p.looksLikeStructLiteral() {
+			fields, err := p.parseExprStructFields()
+			if err != nil {
+				return Expr{}, err
+			}
+			return finish(Expr{Kind: ExprStruct, Text: joinPath(path), Path: path, Fields: fields, Pos: pos})
 		}
 		if len(path) == 1 {
-			return Expr{Kind: ExprIdent, Text: path[0], Pos: pos}, nil
+			return finish(Expr{Kind: ExprIdent, Text: path[0], Pos: pos})
 		}
-		return Expr{Kind: ExprPath, Path: path, Pos: pos}, nil
+		return finish(Expr{Kind: ExprPath, Path: path, Pos: pos})
 	case tokenLParen:
 		if err := p.read(); err != nil {
 			return Expr{}, err
@@ -1162,13 +1756,85 @@ func (p *parser) parsePrimary() (Expr, error) {
 		if err := p.expect(tokenRParen); err != nil {
 			return Expr{}, err
 		}
-		return expr, nil
+		return finish(expr)
+	case tokenLBrace:
+		pos := p.cur.pos
+		fields, err := p.parseExprStructFields()
+		if err != nil {
+			return Expr{}, err
+		}
+		return finish(Expr{Kind: ExprStruct, Fields: fields, Pos: pos})
 	default:
 		return Expr{}, fmt.Errorf("unexpected expression token %q at %s", p.cur.text, p.cur.pos)
 	}
 }
 
+func (p *parser) parseExprStructFields() ([]ExprField, error) {
+	pos := p.cur.pos
+	if err := p.expect(tokenLBrace); err != nil {
+		return nil, err
+	}
+	var fields []ExprField
+	seen := map[string]struct{}{}
+	for p.cur.kind != tokenRBrace {
+		if p.cur.kind == tokenEOF {
+			return nil, fmt.Errorf("unterminated struct literal starting at %s", pos)
+		}
+		name, err := p.expectName()
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := seen[name]; ok {
+			return nil, fmt.Errorf("duplicate struct literal field %q at %s", name, p.cur.pos)
+		}
+		seen[name] = struct{}{}
+		if err := p.expect(tokenColon); err != nil {
+			return nil, err
+		}
+		value, err := p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+		fields = append(fields, ExprField{Name: name, Value: value, Pos: p.cur.pos})
+		if p.cur.kind == tokenComma || p.cur.kind == tokenSemicolon {
+			if err := p.read(); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if err := p.expect(tokenRBrace); err != nil {
+		return nil, err
+	}
+	return fields, nil
+}
+
+func (p *parser) looksLikeStructLiteral() bool {
+	if p.cur.kind != tokenLBrace {
+		return false
+	}
+	clone := *p
+	lexCopy := *p.lex
+	clone.lex = &lexCopy
+	if err := clone.read(); err != nil {
+		return false
+	}
+	if clone.cur.kind == tokenRBrace {
+		return true
+	}
+	if clone.cur.kind != tokenIdent {
+		return false
+	}
+	if err := clone.read(); err != nil {
+		return false
+	}
+	return clone.cur.kind == tokenColon
+}
+
 func (p *parser) parseTypeRef() (TypeRef, error) {
+	if err := p.enter(); err != nil {
+		return TypeRef{}, err
+	}
+	defer p.leave()
 	name, err := p.expectName()
 	if err != nil {
 		return TypeRef{}, err
@@ -1229,6 +1895,30 @@ func (p *parser) expectName() (string, error) {
 	return name, nil
 }
 
+// reservedBindingNames are language keywords that cannot be used as const/var
+// binding names. Parameter names such as `in` and `self` stay valid because
+// the canonical handler signatures require them.
+var reservedBindingNames = map[string]struct{}{
+	"import": {}, "contract": {}, "struct": {}, "enum": {}, "type": {},
+	"func": {}, "const": {}, "var": {}, "if": {}, "else": {}, "while": {},
+	"do": {}, "repeat": {}, "for": {}, "match": {}, "break": {},
+	"continue": {}, "return": {}, "assert": {}, "throw": {}, "lazy": {},
+	"mutate": {}, "set": {}, "emit": {}, "send": {}, "refund": {},
+	"true": {}, "false": {}, "null": {},
+}
+
+func (p *parser) expectBindingName() (string, error) {
+	pos := p.cur.pos
+	name, err := p.expectName()
+	if err != nil {
+		return "", err
+	}
+	if _, reserved := reservedBindingNames[name]; reserved {
+		return "", fmt.Errorf("cannot use keyword %q as a binding name at %s", name, pos)
+	}
+	return name, nil
+}
+
 func (p *parser) expectString() (string, error) {
 	if p.cur.kind != tokenString {
 		return "", fmt.Errorf("expected string at %s, got %q", p.cur.pos, p.cur.text)
@@ -1244,7 +1934,7 @@ func (p *parser) expectNumberUint64() (uint64, error) {
 	if p.cur.kind != tokenNumber {
 		return 0, fmt.Errorf("expected number at %s, got %q", p.cur.pos, p.cur.text)
 	}
-	value, err := strconv.ParseUint(p.cur.text, 10, 64)
+	value, err := parseUintLiteral(p.cur.text)
 	if err != nil {
 		return 0, fmt.Errorf("invalid number %q at %s: %w", p.cur.text, p.cur.pos, err)
 	}
@@ -1252,6 +1942,15 @@ func (p *parser) expectNumberUint64() (uint64, error) {
 		return 0, err
 	}
 	return value, nil
+}
+
+func parseUintLiteral(text string) (uint64, error) {
+	switch {
+	case strings.HasPrefix(text, "0x") || strings.HasPrefix(text, "0X"):
+		return strconv.ParseUint(text[2:], 16, 64)
+	default:
+		return strconv.ParseUint(text, 10, 64)
+	}
 }
 
 func (p *parser) expectBool() (bool, error) {

@@ -32,6 +32,9 @@ side effect in the compiler core. The canonical layout is:
 - `dependency-lock.json`
 - `test-report.json` for `avm test`
 
+Top-level JSON keys in every artifact are stable and sorted so artifact
+diffs stay deterministic across compiler runs.
+
 ## Traceability Matrix
 
 | Spec requirement | Implementation file | Test | Gate |
@@ -41,15 +44,17 @@ side effect in the compiler core. The canonical layout is:
 | Runtime entrypoint dispatch, bounce handling, and determinism | `x/aetravm/avm/avm.go`, `x/aetravm/avm/scenario.go` | `x/aetravm/avm/security_test.go`, `x/aetravm/avm/scenario_test.go` | `go test ./x/aetravm/avm ./x/aetravm/async` |
 | Forbidden host surface and reject-by-default policy | `x/aetravm/avm/host.go`, `x/aetravm/avm/security.go` | `x/aetravm/avm/security_test.go`, `x/aetravm/avm/proof_test.go` | `tests/avm_determinism_gate/gate_test.go` |
 | CLI tooling for compile, inspect, disasm, gas, selectors, and LSP | `cmd/l1d/cmd/avm_tools.go`, `cmd/l1d/cmd/avm_compile.go`, `cmd/l1d/cmd/avm_artifacts.go`, `cmd/l1d/cmd/avm_lsp.go` | `cmd/l1d/cmd/avm_test.go` | `go test ./cmd/l1d/cmd` |
-| Canonical reference examples | `examples/avm/counter.avm`, `examples/avm/treasury.avm` | `x/aetravm/compiler/compile_test.go` | `go test ./x/aetravm/compiler` |
+| Canonical reference examples | `examples/avm/counter_should_be.atlx`, `examples/avm/token/token_master.atlx` | `x/aetravm/compiler/compile_test.go` | `go test ./x/aetravm/compiler` |
 | Release gate must not overclaim AVM production readiness | `docs/public-testnet-production-gates.md`, `docs/security/prototype-audit-gate.md` | `docs/testnet_kernel_test.go` | `go test ./docs` |
 
 ## Reference Examples
 
-- `examples/avm/counter.avm` covers deploy, external, bounced, getter, event,
-  and wallet-action surfaces.
-- `examples/avm/treasury.avm` covers deploy, external, internal, bounced,
-  migrate, getter, event, and wallet-action surfaces.
+- `examples/avm/counter_should_be.atlx` covers deploy, external, internal,
+  bounced, and getter surfaces in the canonical Aetralis syntax.
+- The contract families under `examples/avm/` (`token/`, `nft/`, `dao/`,
+  `dns/`, `stake/`) cover the full lifecycle; `examples/avm/token/token_master.atlx`
+  exercises deploy, external, internal, bounced, and getter surfaces across a
+  master/wallet contract pair.
 
-Both examples are intentionally small and deterministic. They exist to keep the
+The examples are intentionally small and deterministic. They exist to keep the
 language surface and tooling surface anchored to real source files.

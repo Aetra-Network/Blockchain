@@ -277,7 +277,7 @@ func ResourceMultipliers(params ResourceMultiplierParams, signals CongestionSign
 	if err := signals.Validate(); err != nil {
 		return ResourceFeeMultipliers{}, err
 	}
-	spam := uint32(uint64(repeatedFailedTxs) * uint64(params.SpamSurchargeStepBps))
+	spam := saturatingUint32(uint64(repeatedFailedTxs) * uint64(params.SpamSurchargeStepBps))
 	if spam > params.MaxSpamSurchargeBps {
 		spam = params.MaxSpamSurchargeBps
 	}
@@ -313,7 +313,7 @@ func EstimateDynamicFee(input FeeEstimateInput) (FeeEstimate, error) {
 	if err != nil {
 		return FeeEstimate{}, err
 	}
-	totalMultiplier := uint32(uint64(resourceMultiplier) + uint64(multipliers.SpamSurchargeBps))
+	totalMultiplier := saturatingUint32(uint64(resourceMultiplier) + uint64(multipliers.SpamSurchargeBps))
 	if totalMultiplier < uint32(BasisPoints) {
 		totalMultiplier = uint32(BasisPoints)
 	}
@@ -439,7 +439,7 @@ func smoothedUtilizationBps(recent []uint32, current uint32, window uint32) uint
 	for _, value := range values {
 		sum += uint64(value)
 	}
-	return uint32(sum / uint64(len(values)))
+	return saturatingUint32(sum / uint64(len(values)))
 }
 
 func appendSmoothedWindow(recent []uint32, current uint32, window uint32) []uint32 {
@@ -470,13 +470,13 @@ func boundedBaseFeeAdjustmentBps(targetBps, utilizationBps, maxAdjustmentBps uin
 		if denom == 0 {
 			return int32(maxAdjustmentBps)
 		}
-		adjustment := uint32(uint64(utilizationBps-targetBps) * uint64(maxAdjustmentBps) / denom)
+		adjustment := saturatingUint32(uint64(utilizationBps-targetBps) * uint64(maxAdjustmentBps) / denom)
 		if adjustment > maxAdjustmentBps {
 			adjustment = maxAdjustmentBps
 		}
 		return int32(adjustment)
 	}
-	adjustment := uint32(uint64(targetBps-utilizationBps) * uint64(maxAdjustmentBps) / uint64(targetBps))
+	adjustment := saturatingUint32(uint64(targetBps-utilizationBps) * uint64(maxAdjustmentBps) / uint64(targetBps))
 	if adjustment > maxAdjustmentBps {
 		adjustment = maxAdjustmentBps
 	}

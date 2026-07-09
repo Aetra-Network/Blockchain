@@ -9,18 +9,31 @@ import (
 
 func DefaultParams() Params {
 	return Params{
-		MaxMessagesPerTx:		32,
-		MaxMessagesPerBlock:		128,
+		// A single transaction may carry up to 256 messages so a batch action
+		// (e.g. mint 255 NFTs behind one signature = 1 + 255) fits. Fan-out
+		// stays bounded at every layer regardless of this cap: each emit costs
+		// OpEmitInternal gas (100) plus ExecutionGasPerMessage (10_000) to
+		// process, the runtime gas ceiling (MaxRuntimeGasLimit) hard-limits
+		// total work, MaxMessagesPerBlock throttles the chain, and the queue is
+		// bounded by MaxInternalMessageQueueDepth / MaxQueuedMessagesPerContract.
+		MaxMessagesPerTx:		256,
+		MaxMessagesPerBlock:		4096,
 		MaxQueuedMessagesPerContract:	1024,
 		MaxProcessingAttempts:		4,
 		MaxRecursionDepth:		8,
 		MaxBodySize:			4096,
 		MaxStateSize:			64 * 1024,
-		MaxContractDeploysPerTx:	4,
-		MaxContractDeploysPerBlock:	16,
-		MaxEmittedMessagesPerExec:	16,
+		// A batch mint of one item-contract per NFT can deploy up to 256 in a
+		// single tx (1 signature + 255 items). Each deploy still costs
+		// ContractDeploymentCost plus ongoing storage rent, so state growth is
+		// economically bounded; the absolute ceiling caps misconfiguration.
+		MaxContractDeploysPerTx:	256,
+		MaxContractDeploysPerBlock:	4096,
+		// One execution may emit up to 256 messages so a batch handler can fan
+		// a single call out to the whole batch. Gas per emit keeps it bounded.
+		MaxEmittedMessagesPerExec:	256,
 		MaxStorageWritesPerExec:	64,
-		MaxActionsPerExecution:		256,
+		MaxActionsPerExecution:		512,
 		MaxRetriesPerMessage:		3,
 		DefaultRetryDelayBlocks:	1,
 		MaxRetryDelayBlocks:		64,
@@ -32,12 +45,29 @@ func DefaultParams() Params {
 	}
 }
 
+// AbsoluteMaxMessagesPerTx / PerBlock bound how high governance can raise the
+// message caps. They are defense-in-depth on top of gas metering: even though
+// every message already costs gas, a hard ceiling keeps a misconfiguration
+// from turning one transaction or block into an oversized fan-out.
+const (
+	AbsoluteMaxMessagesPerTx        = 1024
+	AbsoluteMaxMessagesPerBlock     = 65536
+	AbsoluteMaxEmittedPerExecution  = 1024
+	AbsoluteMaxContractDeploysPerTx = 1024
+)
+
 func (p Params) Validate() error {
 	if p.MaxMessagesPerTx == 0 {
 		return errors.New("max messages per tx must be positive")
 	}
+	if p.MaxMessagesPerTx > AbsoluteMaxMessagesPerTx {
+		return fmt.Errorf("max messages per tx %d exceeds absolute ceiling %d", p.MaxMessagesPerTx, AbsoluteMaxMessagesPerTx)
+	}
 	if p.MaxMessagesPerBlock == 0 {
 		return errors.New("max messages per block must be positive")
+	}
+	if p.MaxMessagesPerBlock > AbsoluteMaxMessagesPerBlock {
+		return fmt.Errorf("max messages per block %d exceeds absolute ceiling %d", p.MaxMessagesPerBlock, AbsoluteMaxMessagesPerBlock)
 	}
 	if p.MaxQueuedMessagesPerContract == 0 {
 		return errors.New("max queued messages per contract must be positive")
@@ -57,11 +87,17 @@ func (p Params) Validate() error {
 	if p.MaxContractDeploysPerTx == 0 {
 		return errors.New("max contract deploys per tx must be positive")
 	}
+	if p.MaxContractDeploysPerTx > AbsoluteMaxContractDeploysPerTx {
+		return fmt.Errorf("max contract deploys per tx %d exceeds absolute ceiling %d", p.MaxContractDeploysPerTx, AbsoluteMaxContractDeploysPerTx)
+	}
 	if p.MaxContractDeploysPerBlock == 0 {
 		return errors.New("max contract deploys per block must be positive")
 	}
 	if p.MaxEmittedMessagesPerExec == 0 {
 		return errors.New("max emitted messages per execution must be positive")
+	}
+	if p.MaxEmittedMessagesPerExec > AbsoluteMaxEmittedPerExecution {
+		return fmt.Errorf("max emitted messages per execution %d exceeds absolute ceiling %d", p.MaxEmittedMessagesPerExec, AbsoluteMaxEmittedPerExecution)
 	}
 	if p.MaxStorageWritesPerExec == 0 {
 		return errors.New("max storage writes per execution must be positive")

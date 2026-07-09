@@ -98,3 +98,9 @@ architecture.md
 SYSTEM_ENTETIES.md
 SERVICES.md
 TO_AUDIT_V2.md
+
+# Local agent/editor workspace (never for VCS)
+.claude/
+
+# Unrelated local machine maintenance scripts
+cleanup-edb.ps1

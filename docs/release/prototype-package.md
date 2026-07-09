@@ -17,7 +17,6 @@ Each package produced by `scripts\release\prototype-package.ps1` contains:
   - `README.md`
   - `docs/operator-commands.md`
   - `docs/operator-troubleshooting.md`
-  - `docs/prototype-acceptance-suite.md`
   - `docs/security/prototype-audit-gate.md`
   - `docs/query-surface.md`
   - `docs/observability.md`

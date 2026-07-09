@@ -3,35 +3,38 @@ package avm
 import (
 	"math/big"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestValueTagGoldenVectors(t *testing.T) {
 	golden := map[ValueTag]byte{
-		TagNull:		0,
-		TagBool:		1,
-		TagInt8:		2,
-		TagInt16:		3,
-		TagInt32:		4,
-		TagInt64:		5,
-		TagInt128:		6,
-		TagInt256:		7,
-		TagUint8:		8,
-		TagUint16:		9,
-		TagUint32:		10,
-		TagUint64:		11,
-		TagUint128:		12,
-		TagUint256:		13,
-		TagCoins:		14,
-		TagTimestamp:		15,
-		TagAddress:		16,
-		TagHash:		17,
-		TagBytes:		18,
-		TagString:		19,
-		TagTuple:		20,
-		TagChunkRef:		21,
-		TagReaderCursor:	22,
-		TagWriterHandle:	23,
-		TagExecFrameRef:	24,
+		TagNull:         0,
+		TagBool:         1,
+		TagInt8:         2,
+		TagInt16:        3,
+		TagInt32:        4,
+		TagInt64:        5,
+		TagInt128:       6,
+		TagInt256:       7,
+		TagUint8:        8,
+		TagUint16:       9,
+		TagUint32:       10,
+		TagUint64:       11,
+		TagUint128:      12,
+		TagUint256:      13,
+		TagCoins:        14,
+		TagTimestamp:    15,
+		TagAddress:      16,
+		TagHash:         17,
+		TagBytes:        18,
+		TagString:       19,
+		TagTuple:        20,
+		TagChunkRef:     21,
+		TagReaderCursor: 22,
+		TagWriterHandle: 23,
+		TagExecFrameRef: 24,
+		TagMap:          25,
 	}
 	for tag, expected := range golden {
 		if byte(tag) != expected {
@@ -42,19 +45,20 @@ func TestValueTagGoldenVectors(t *testing.T) {
 
 func TestValueTagString(t *testing.T) {
 	tests := map[ValueTag]string{
-		TagNull:		"null",
-		TagBool:		"bool",
-		TagInt64:		"int64",
-		TagUint256:		"uint256",
-		TagCoins:		"coins",
-		TagAddress:		"address",
-		TagHash:		"hash",
-		TagString:		"string",
-		TagTuple:		"tuple",
-		TagChunkRef:		"chunk_ref",
-		TagReaderCursor:	"reader_cursor",
-		TagWriterHandle:	"writer_handle",
-		TagExecFrameRef:	"exec_frame_ref",
+		TagNull:         "null",
+		TagBool:         "bool",
+		TagInt64:        "int64",
+		TagUint256:      "uint256",
+		TagCoins:        "coins",
+		TagAddress:      "address",
+		TagHash:         "hash",
+		TagString:       "string",
+		TagTuple:        "tuple",
+		TagChunkRef:     "chunk_ref",
+		TagReaderCursor: "reader_cursor",
+		TagWriterHandle: "writer_handle",
+		TagExecFrameRef: "exec_frame_ref",
+		TagMap:          "map",
 	}
 	for tag, expected := range tests {
 		if tag.String() != expected {
@@ -86,14 +90,16 @@ func TestCanonicalEncodeDecodeBool(t *testing.T) {
 
 func TestCanonicalEncodeDecodeIntegers(t *testing.T) {
 	tests := []struct {
-		name	string
-		value	RuntimeValue
-		tag	ValueTag
+		name  string
+		value RuntimeValue
+		tag   ValueTag
 	}{
 		{"int8_max", ValueInt8(127), TagInt8},
 		{"int8_min", ValueInt8(-128), TagInt8},
+		{"int16_neg", ValueInt16(-32768), TagInt16},
 		{"uint8_200", ValueUint8(200), TagUint8},
 		{"int64_big", ValueInt64(1 << 40), TagInt64},
+		{"int64_neg", ValueInt64(-1 << 40), TagInt64},
 		{"uint64_max", ValueUint64(18446744073709551615), TagUint64},
 		{"uint128_1", ValueBigUint128(big.NewInt(1)), TagUint128},
 		{"timestamp", ValueTimestamp(1700000000), TagTimestamp},
@@ -117,8 +123,42 @@ func TestCanonicalEncodeDecodeIntegers(t *testing.T) {
 			if decoded.Tag != tt.tag {
 				t.Errorf("tag mismatch: expected %v, got %v", tt.tag, decoded.Tag)
 			}
+			if tt.tag == TagInt8 || tt.tag == TagInt16 || tt.tag == TagInt64 {
+				got, err := decoded.AsInt64()
+				if err != nil {
+					t.Fatalf("AsInt64 %s: %v", tt.name, err)
+				}
+				want, err := tt.value.AsInt64()
+				if err != nil {
+					t.Fatalf("source AsInt64 %s: %v", tt.name, err)
+				}
+				if got != want {
+					t.Fatalf("signed round trip %s: expected %d, got %d", tt.name, want, got)
+				}
+			}
+			if tt.tag == TagUint8 || tt.tag == TagUint64 || tt.tag == TagUint128 || tt.tag == TagTimestamp {
+				got, err := decoded.AsUint64()
+				if err != nil {
+					t.Fatalf("AsUint64 %s: %v", tt.name, err)
+				}
+				want, err := tt.value.AsUint64()
+				if err != nil {
+					t.Fatalf("source AsUint64 %s: %v", tt.name, err)
+				}
+				if got != want {
+					t.Fatalf("unsigned round trip %s: expected %d, got %d", tt.name, want, got)
+				}
+			}
 		})
 	}
+}
+
+func TestCanonicalDecodeExactRejectsTrailingBytes(t *testing.T) {
+	encoded, err := CanonicalEncode(ValueUint64(42))
+	require.NoError(t, err)
+	_, err = CanonicalDecodeExact(append(encoded, 0xff))
+	require.Error(t, err)
+	require.ErrorContains(t, err, "trailing bytes")
 }
 
 func TestCanonicalEncodeDecodeString(t *testing.T) {
@@ -281,6 +321,64 @@ func TestCanonicalEmptyTuple(t *testing.T) {
 	}
 }
 
+func TestCanonicalEncodeDecodeMap(t *testing.T) {
+	entries := []runtimeMapEntry{
+		{Key: ValueString("b"), Value: ValueUint64(2)},
+		{Key: ValueString("a"), Value: ValueUint64(1)},
+		{Key: ValueString("c"), Value: ValueUint64(3)},
+	}
+	val := ValueMap(entries)
+
+	encoded, err := CanonicalEncode(val)
+	require.NoError(t, err)
+	require.Equal(t, byte(TagMap), encoded[0])
+
+	decoded, n, err := CanonicalDecode(encoded)
+	require.NoError(t, err)
+	require.Equal(t, len(encoded), n)
+	require.True(t, decoded.IsMap())
+
+	got, err := decoded.AsMap()
+	require.NoError(t, err)
+	require.Len(t, got, 3)
+
+	key0, _ := got[0].Key.AsString()
+	key1, _ := got[1].Key.AsString()
+	key2, _ := got[2].Key.AsString()
+	require.Equal(t, []string{"a", "b", "c"}, []string{key0, key1, key2})
+
+	v, found, err := runtimeMapLookup(got, ValueString("b"))
+	require.NoError(t, err)
+	require.True(t, found)
+	num, _ := v.AsUint64()
+	require.Equal(t, uint64(2), num)
+}
+
+func TestMapSetDeleteHasAndLen(t *testing.T) {
+	m := ValueMapEmpty()
+	entries, err := m.AsMap()
+	require.NoError(t, err)
+
+	entries, err = runtimeMapSet(entries, ValueString("owner"), ValueString("alice"))
+	require.NoError(t, err)
+	entries, err = runtimeMapSet(entries, ValueString("balance"), ValueUint64(42))
+	require.NoError(t, err)
+
+	require.Equal(t, 2, runtimeMapLen(entries))
+
+	_, found, err := runtimeMapLookup(entries, ValueString("owner"))
+	require.NoError(t, err)
+	require.True(t, found)
+
+	entries, err = runtimeMapDelete(entries, ValueString("owner"))
+	require.NoError(t, err)
+	require.Equal(t, 1, runtimeMapLen(entries))
+
+	_, found, err = runtimeMapLookup(entries, ValueString("owner"))
+	require.NoError(t, err)
+	require.False(t, found)
+}
+
 func TestOptionNoneIsTagNull(t *testing.T) {
 	none := OptionNone()
 	if !none.IsNull() {
@@ -360,19 +458,19 @@ func TestExplicitCastNullToValue(t *testing.T) {
 
 func TestValueBitWidth(t *testing.T) {
 	tests := map[ValueTag]int{
-		TagInt8:	8,
-		TagUint8:	8,
-		TagInt16:	16,
-		TagUint16:	16,
-		TagInt32:	32,
-		TagUint32:	32,
-		TagInt64:	64,
-		TagUint64:	64,
-		TagInt128:	128,
-		TagUint128:	128,
-		TagCoins:	128,
-		TagInt256:	256,
-		TagUint256:	256,
+		TagInt8:    8,
+		TagUint8:   8,
+		TagInt16:   16,
+		TagUint16:  16,
+		TagInt32:   32,
+		TagUint32:  32,
+		TagInt64:   64,
+		TagUint64:  64,
+		TagInt128:  128,
+		TagUint128: 128,
+		TagCoins:   128,
+		TagInt256:  256,
+		TagUint256: 256,
 	}
 	for tag, expected := range tests {
 		width, ok := ValueBitWidth(tag)

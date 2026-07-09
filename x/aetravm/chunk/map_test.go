@@ -277,6 +277,22 @@ func TestChunkMapIterate(t *testing.T) {
 	require.True(t, vals[h3], "v3 missing")
 }
 
+func TestChunkMapIterateLimit(t *testing.T) {
+	m := NewEmptyMap()
+	v, _ := NewBuilder().SetData([]byte{1}, 8).Build()
+	m, _ = m.Put([]byte("a"), v)
+	m, _ = m.Put([]byte("b"), v)
+	m, _ = m.Put([]byte("c"), v)
+
+	limited, err := m.IterateLimit(2)
+	require.ErrorContains(t, err, "iteration exceeds limit")
+	require.Nil(t, limited)
+
+	entries, err := m.IterateLimit(3)
+	require.NoError(t, err)
+	require.Len(t, entries, 3)
+}
+
 func TestChunkMapIterateEmpty(t *testing.T) {
 	m := NewEmptyMap()
 	entries := m.Iterate()

@@ -1,13 +1,27 @@
 # Aetra Virtual Machine
 
-AVM is the native Aetra Virtual Machine research track for asynchronous
-contracts. The current implementation is a pure Go executable specification in
-`x/aetravm/avm`; it is not wired into SDK keepers, module accounts, genesis,
-CLI, or ABCI hooks.
+AVM is the native Aetra Virtual Machine research track for deterministic smart
+contracts. The current implementation is split into two statuses:
 
-AVM cannot mutate production chain state until the base-chain safety gate,
-async queue semantics, security scans, determinism gate, and adversarial audit
-are green.
+- the language, compiler, executable spec, and developer tooling are
+  contract-developer ready;
+- the production runtime is enabled through the `x/contracts` keeper/module
+  path and must satisfy the same deterministic, bounded, and adversarial
+  constraints as the executable spec.
+
+AVM is not a general-purpose OS runtime. It supports only deterministic
+contract code and must not depend on filesystem access, network access,
+process spawning, wall-clock timing, or ambient host state.
+
+The canonical contract language for the AVM track is Aetralis v1, and the
+canonical source extension is `.atlx`.
+
+The executable spec lives in `x/aetravm/avm`; the production runtime wiring
+and export/import live in `x/contracts` and `app`. The developer CLI lives in
+`cmd/l1d/cmd`. No single surface alone is the whole runtime story.
+
+For contract authoring style and practical ATLX rules, see
+[`atlx-practical-guide.md`](atlx-practical-guide.md).
 
 ## Non-Negotiable Requirements
 
@@ -59,7 +73,9 @@ AVM entrypoints are explicit:
 
 Async messages use `receive internal` by default and `receive bounced` when the
 message envelope has `bounced = true`. Missing bounced handlers fail
-deterministically and must not create bounce/refund loops.
+deterministically and must not create bounce/refund loops. Internal dispatch
+is kind-first and then selector/opcode-decoded through the canonical ABI
+descriptor for the message body.
 
 ## Message ABI
 
@@ -82,17 +98,33 @@ AVM receives the Aetra async message envelope:
 AVM output messages are normal async `MessageEnvelope` values. They inherit
 deterministic queue semantics from `x/aetravm/async`.
 
+Canonical typed message bodies are bound through `@message(opcode) struct`
+schemas; raw parsing remains available for compatibility and debugging, but it
+is not the only supported path.
+
 ## Storage ABI
 
-AVM storage is a per-contract deterministic key/value namespace:
+AVM storage is a per-contract deterministic typed root:
 
-- keys are byte strings with bounded length;
-- values are byte strings;
+- each contract has exactly one canonical storage root type;
+- the root schema is derived from the declared `@storage struct` schema, not
+  from runtime lookup or anonymous fields;
+- persisted state is committed through canonical records, not ad hoc runtime
+  reflection;
+- keys used in the underlying storage layer are byte strings with bounded
+  length;
+- stored values and snapshot payloads are canonical bytes derived from the
+  storage schema;
 - integer helpers use big-endian encoding;
-- snapshots are sorted by key;
+- snapshots are sorted by key or canonical field order as appropriate;
 - iteration must be bounded and paginated;
 - exported snapshots must be deterministic;
-- state size and memory limits are enforced before committing state.
+- state size, nesting depth, chunk spillover, and memory limits are enforced
+  before committing state.
+- storage schemas use compiler-generated `toChunk` / `fromChunk` helpers to
+  keep round-trips typed and deterministic.
+- read-only chunk navigation uses `ChunkCursor`; it is not a storage
+  commitment and must not be treated as mutable state.
 
 ## Host Function Allowlist
 
@@ -158,13 +190,14 @@ disassembler, and gas profiler. The developer CLI exposes `avm compile`,
 `avm inspect`, `avm disasm`, `avm gas`, `avm test`, `avm selectors`, and
 `avm lsp` as non-production tooling.
 
-Developer tooling is not the same as production wiring: the runtime is still
-gated until keeper wiring, adversarial tests, export/import, and release gates
-are complete.
+Developer tooling is not the same as production wiring: the executable spec and
+tooling validate behavior, while `x/contracts` provides the production keeper
+and module path used by the app.
 
-## Keeper Gate
+## Runtime Path
 
-AVM keeper wiring is a separate production gate. It must provide:
+AVM production wiring is provided through the `x/contracts` keeper/module path.
+It must provide:
 
 - store code
 - instantiate contract
@@ -173,9 +206,22 @@ AVM keeper wiring is a separate production gate. It must provide:
 - execute getters
 - export/import state
 
-Keeper wiring must reuse the async queue export/import semantics and must not
+Runtime wiring must reuse the async queue export/import semantics and must not
 bypass address validation, zero-address rejection, `naet` fee policy, signer
 checks, malformed transaction handling, or genesis validation.
+
+Runtime evidence includes:
+
+- keeper/module wiring tests that cover store code, instantiate, execute,
+  query, migrate, and export/import round-trips through the real module path;
+- malicious contract tests that cover invalid bytecode, selector collisions,
+  getter-only write rejection, bounce handling, and rollback on failure;
+- gas model checks that prove gas is bounded and deterministic for the same
+  source tree and input;
+- state growth benchmarks that demonstrate bounded storage, queue, and receipt
+  growth under repeated contract activity;
+- adversarial tests that cover gas exhaustion, bounce storms, malformed
+  payloads, partial side effects, and state corruption attempts.
 
 ## Required Tests
 
@@ -217,8 +263,19 @@ before AVM can be enabled beyond the executable specification.
 
 ## Acceptance
 
-- AVM can execute a minimal contract deterministically.
+Developer/toolchain acceptance:
+
+- AVM can compile a minimal contract deterministically.
+- AVM inspect/disasm/gas/test/selectors/LSP outputs are stable for the same
+  source tree.
+- AVM artifacts are canonical and reproducible.
+
+Runtime acceptance is production-enabled through the keeper/module path:
+
 - AVM gas is deterministic and bounded.
 - AVM contracts can participate in the async message queue.
 - AVM cannot weaken base-chain signer, fee, denom, zero-address, transaction,
   or genesis validation.
+- AVM runtime stays production-enabled only while the keeper/module path,
+  malicious contract suite, gas model checks, state growth benchmarks, and
+  adversarial tests remain green on the real module surface.

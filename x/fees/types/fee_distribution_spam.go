@@ -286,7 +286,7 @@ func DefaultAntiSpamParams(params Params) AntiSpamParams {
 		minFee = sdkmath.NewInt(1)
 	}
 	return AntiSpamParams{
-		WindowTxSoftLimit:		uint32(params.MaxSenderTxsPerBlock),
+		WindowTxSoftLimit:		saturatingUint32(params.MaxSenderTxsPerBlock),
 		FailedTxSoftLimit:		3,
 		StateWriteSoftLimit:		10,
 		DeploymentSoftLimit:		2,
@@ -335,7 +335,7 @@ func ScoreAccountActivity(window AccountActivityWindow, params AntiSpamParams) (
 	deployments := excessScoreBps(window.DeploymentCount, params.DeploymentSoftLimit, params.AccountActivityScoreMaxBps)
 	total := uint64(excessScoreBps(window.TxCount, params.WindowTxSoftLimit, params.AccountActivityScoreMaxBps)) +
 		uint64(failed) + uint64(stateWrites) + uint64(deployments)
-	score := uint32(total)
+	score := saturatingUint32(total)
 	bounded := false
 	if score > params.AccountActivityScoreMaxBps {
 		score = params.AccountActivityScoreMaxBps
@@ -366,7 +366,7 @@ func AntiSpamSurchargeBps(window AccountActivityWindow, params AntiSpamParams) (
 	if surcharge > uint64(params.MaxTotalSurchargeBps) {
 		surcharge = uint64(params.MaxTotalSurchargeBps)
 	}
-	return uint32(surcharge), score, nil
+		return saturatingUint32(surcharge), score, nil
 }
 
 func ValidateAntiSpamFee(input AntiSpamFeeInput) (AntiSpamAdmissionDecision, error) {
@@ -427,7 +427,7 @@ func activityDependentBps(value, threshold, maxAdd uint32) uint32 {
 	if denom == 0 {
 		return maxAdd
 	}
-	add := uint32(uint64(value-threshold) * uint64(maxAdd) / denom)
+	add := saturatingUint32(uint64(value-threshold) * uint64(maxAdd) / denom)
 	if add > maxAdd {
 		return maxAdd
 	}
@@ -450,7 +450,7 @@ func excessScoreBps(value, softLimit, maxBps uint32) uint32 {
 	if score > uint64(maxBps) {
 		score = uint64(maxBps)
 	}
-	return uint32(score)
+	return saturatingUint32(score)
 }
 
 func excessCount(value, softLimit uint32) uint32 {

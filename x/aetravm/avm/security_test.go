@@ -448,11 +448,21 @@ func TestGasSafetyModelValidation(t *testing.T) {
 func TestGasSafetyNoPartialSideEffects(t *testing.T) {
 	model := DefaultGasSafetyModel()
 
-	err := model.ValidateNoPartialSideEffects(model.MaxGasTotal, model.MaxGasTotal, 300, 256, ExitGasExhausted)
-	if err != nil {
-		t.Logf("ValidateNoPartialSideEffects returned: %v (acceptable for matching gas limit)", err)
+	if err := model.ValidateNoPartialSideEffects(1, 10, 1, 10, ExitSuccess); err != nil {
+		t.Fatalf("expected in-bounds execution to pass, got %v", err)
 	}
-	_ = model
+	if err := model.ValidateNoPartialSideEffects(model.MaxGasTotal, model.MaxGasTotal, 300, 256, ExitGasExhausted); err != nil {
+		t.Fatalf("expected gas exhaustion to be accepted as non-success, got %v", err)
+	}
+	if err := model.ValidateNoPartialSideEffects(model.MaxGasTotal, model.MaxGasTotal, 300, 256, ExitSuccess); err == nil {
+		t.Fatal("expected success exit to be rejected when gas or action bounds are exceeded")
+	}
+	if err := model.ValidateGasExhaustion(model.MaxGasTotal, model.MaxGasTotal, ExitGasExhausted); err != nil {
+		t.Fatalf("expected gas exhaustion exit code to be accepted, got %v", err)
+	}
+	if err := model.ValidateGasExhaustion(model.MaxGasTotal, model.MaxGasTotal, ExitSuccess); err == nil {
+		t.Fatal("expected successful exit code to be rejected on gas exhaustion")
+	}
 }
 
 func TestStackDepthLimit(t *testing.T) {

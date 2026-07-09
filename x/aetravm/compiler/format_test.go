@@ -6,39 +6,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const formatRoundTripSource = `
-struct CounterState {
-  count: u64 = 0
-}
-
-contract Counter {
-  storage CounterState
-  namespace "counter"
-  chain "avm-local"
-  deploy {
-    set state.count = 0
-    return 0
-  }
-  message external Increment(amount: u64) selector = 11 {
-    set state.count = amount
-    return 0
-  }
-  message bounced Refund() selector = 12 {
-    return 0
-  }
-  getter GetCount() -> u64 selector = 13 {
-    return state.count
-  }
-}
-`
+// formatRoundTripSource reuses the canonical counter fixture: counterSource
+// deliberately sticks to the formatter-representable subset of the surface
+// (see compile_test.go) and exercises @internal/@external/@bounced handlers,
+// @message structs, a @get getter, and contract metadata.
+const formatRoundTripSource = counterSource
 
 func TestFormatSourceRoundTrip(t *testing.T) {
-	file, err := ParseSourceNamed("counter.avm", formatRoundTripSource)
+	file, err := ParseSourceNamed("counter.atlx", formatRoundTripSource)
 	require.NoError(t, err)
 	formatted := FormatSource(file)
 	require.NotEmpty(t, formatted)
 
-	again, err := FormatSourceNamed("counter.avm", formatted)
+	again, err := FormatSourceNamed("counter.atlx", formatted)
 	require.NoError(t, err)
 	require.Equal(t, formatted, again)
 
@@ -55,9 +35,9 @@ func TestFormatSourceRoundTrip(t *testing.T) {
 
 func FuzzFormatSourceRoundTrip(f *testing.F) {
 	f.Add(formatRoundTripSource)
-	f.Add("struct S { x: u64 = 0 }\ncontract C { storage S message bounced Refund() selector = 1 { return 0 } }\n")
+	f.Add("struct S {\n  x: u64 = 0\n}\n\ncontract C {\n  storage: S\n  incomingMessages: S\n\n  @bounced\n  func onBouncedMessage(in: InMessageBounced) {\n  }\n}\n")
 	f.Fuzz(func(t *testing.T, src string) {
-		file, err := ParseSourceNamed("fuzz.avm", src)
+		file, err := ParseSourceNamed("fuzz.atlx", src)
 		if err != nil {
 			return
 		}
@@ -65,9 +45,8 @@ func FuzzFormatSourceRoundTrip(f *testing.F) {
 		if formatted == "" {
 			return
 		}
-		again, err := ParseSourceNamed("fuzz.avm", formatted)
+		again, err := ParseSourceNamed("fuzz.atlx", formatted)
 		require.NoError(t, err)
 		_ = again
 	})
 }
-

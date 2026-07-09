@@ -5,17 +5,24 @@ launches.
 
 ## Hardware
 
-Public validators should start from a medium server profile and increase only
-after load testing proves the need.
+An Aetra validator runs on an average consumer PC. Decentralization and
+security are the priority; block time is deliberately relaxed (5-8s) so that
+ordinary hardware stays sufficient as the validator set grows.
 
-Baseline guidance:
+Baseline (final for public testnet):
 
 ```text
-CPU: 4-8 modern cores
-RAM: 16-32 GB
-Storage: NVMe SSD
+CPU: 4-8 modern cores (mid-range desktop CPU)
+RAM: 16 GB minimum (32 GB recommended for archive/heavy indexing)
+Storage: 500 GB - 1 TB NVMe SSD
 Network: stable 100 Mbps+ with low packet loss
 ```
+
+## Validator Set Size
+
+Phased growth, each ceiling raised by governance after load-testing the
+previous phase: genesis 100-128 (genesis `max_validators` = 128), growth
+150-200, mature 250-300. Sets of 500+ are not supported.
 
 ## OS
 

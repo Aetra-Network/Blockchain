@@ -2,6 +2,7 @@ package async
 
 import (
 	"bytes"
+	"encoding/hex"
 	"reflect"
 	"testing"
 
@@ -9,7 +10,9 @@ import (
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/stretchr/testify/require"
 
+	"github.com/sovereign-l1/l1/app/addressing"
 	appparams "github.com/sovereign-l1/l1/app/params"
+	contracttypes "github.com/sovereign-l1/l1/x/contracts/types"
 )
 
 func TestContractEmitsInternalMessageAndRecipientExecutesInOrder(t *testing.T) {
@@ -146,7 +149,11 @@ func TestExecutionEconomyFeedsProtocolLoop(t *testing.T) {
 
 	activity := executor.EconomicActivity()
 	require.Equal(t, params.ContractDeploymentCost, activity.AVMDeploymentCostNaet)
-	require.Equal(t, params.StorageFeePerByte.MulRaw(5), activity.AVMStorageFeeNaet)
+	// Rent is charged on the pre-execution state ("init:economy", 12 bytes)
+	// for the 1 block elapsed since deployment, not on the post-execution
+	// state size — storage rent accrues on what was occupied, not on what a
+	// message happens to leave behind.
+	require.Equal(t, params.StorageFeePerByte.MulRaw(12), activity.AVMStorageFeeNaet)
 	require.Equal(t, params.ForwardingFee, activity.AVMForwardingFeeNaet)
 
 	control, err := appparams.BalanceController(appparams.BalanceControllerInput{
@@ -220,6 +227,58 @@ func TestFailedSendProducesDeterministicBounceWithoutDestinationMutation(t *test
 	require.Equal(t, []byte("source:bounced"), contract.State)
 	_, exists := executor.Contract(missingDest)
 	require.False(t, exists)
+}
+
+func TestInvalidStateInitDeployBouncesAndPreservesReceiptOrder(t *testing.T) {
+	executor := newTestExecutor(t)
+	deployer := testAddr(1)
+	source := deployTestContract(t, executor, deployer, []byte("deploy-source"))
+
+	require.NoError(t, executor.RegisterHandler(source, func(contract ContractAccount, msg MessageEnvelope) ExecutionResult {
+		if msg.Bounced {
+			return ExecutionResult{
+				NewState:   []byte("source:bounced"),
+				ResultCode: ResultOK,
+			}
+		}
+		return ExecutionResult{
+			NewState:   []byte("source:original"),
+			ResultCode: ResultOK,
+		}
+	}))
+
+	codeHash := hex.EncodeToString(testCodeHash(13))
+	stateInit := contracttypes.NewStateInit(addressing.FormatAccAddress(source), codeHash, []byte("child-init"), "child-salt", 0)
+	expectedAddress, _, err := contracttypes.DeriveContractAddressFromStateInit(contracttypes.DefaultContractChainID, contracttypes.DefaultContractNamespace, addressing.FormatAccAddress(source), stateInit, contracttypes.DefaultParams())
+	require.NoError(t, err)
+
+	wrongDest := testAddr(2)
+	require.NotEqual(t, expectedAddress, addressing.FormatAccAddress(wrongDest))
+
+	msg := testMessage(source, wrongDest, 77)
+	msg.Value = naetCoin(0)
+	msg.Bounce = true
+	msg.StateInit = &stateInit
+	msg.Body = []byte("deploy-child")
+	require.NoError(t, executor.EnqueueTxMessages([]MessageEnvelope{msg}))
+
+	receipts, err := executor.ProcessBlock(1)
+	require.NoError(t, err)
+	require.Len(t, receipts, 2)
+	require.Equal(t, uint64(0), receipts[0].Sequence)
+	require.Equal(t, uint64(1), receipts[1].Sequence)
+	require.Equal(t, ResultNoDestination, receipts[0].ResultCode)
+	require.True(t, receipts[0].BounceCreated)
+	require.True(t, receipts[1].Bounced)
+	require.Equal(t, BounceOpcode, receipts[1].Opcode)
+	require.True(t, receipts[1].Source.Equals(wrongDest))
+	require.True(t, receipts[1].Destination.Equals(source))
+
+	contract, ok := executor.Contract(source)
+	require.True(t, ok)
+	require.Equal(t, []byte("source:bounced"), contract.State)
+	_, ok = executor.Contract(wrongDest)
+	require.False(t, ok)
 }
 
 func TestUnderfundedStorageRentFreezesAsyncContractAndPreservesState(t *testing.T) {
@@ -657,6 +716,10 @@ func TestMessageEnvelopeRequiresGasLimitAndNaetForwardFee(t *testing.T) {
 	require.ErrorContains(t, msg.Validate(params), "gas limit")
 
 	msg = testMessage(testAddr(1), testAddr(2), 1)
+	msg.Body = bytes.Repeat([]byte("x"), int(params.MaxBodySize)+1)
+	require.ErrorContains(t, msg.Validate(params), "message body size")
+
+	msg = testMessage(testAddr(1), testAddr(2), 1)
 	msg.ForwardFee = sdk.NewInt64Coin("uatom", 1)
 	require.ErrorContains(t, msg.Validate(params), "forward fee denom")
 
@@ -703,6 +766,95 @@ func TestBouncedMessageFailureDoesNotCreateBounceLoop(t *testing.T) {
 	require.Len(t, receipts, 1)
 	require.Equal(t, ResultBounceSuppressed, receipts[0].ResultCode)
 	require.False(t, receipts[0].Refunded)
+	require.Empty(t, executor.Queue())
+	require.Zero(t, executor.Metrics().BouncedMessages)
+	require.Zero(t, executor.Metrics().RefundMessages)
+}
+
+func TestBounceStormRemainsLinearAndReplaySafe(t *testing.T) {
+	executor := newTestExecutor(t)
+	deployer := testAddr(1)
+	source := deployTestContract(t, executor, deployer, []byte("bounce-storm"))
+	missingDest, err := DeriveContractAddress(deployer, testCodeHash(12), []byte("missing-bounce-storm"))
+	require.NoError(t, err)
+
+	require.NoError(t, executor.RegisterHandler(source, func(contract ContractAccount, msg MessageEnvelope) ExecutionResult {
+		if msg.Bounced {
+			return ExecutionResult{
+				NewState:   contract.State,
+				ResultCode: ResultExecutionFailed,
+				Error:      "replayed bounce must not escalate",
+			}
+		}
+		return ExecutionResult{
+			NewState:   []byte("source:storm"),
+			ResultCode: ResultOK,
+		}
+	}))
+
+	msgs := make([]MessageEnvelope, 0, 8)
+	for i := 0; i < 8; i++ {
+		msg := testMessage(source, missingDest, uint64(i+1))
+		msg.Body = []byte("storm")
+		msg.Value = naetCoin(1)
+		msg.Bounce = true
+		msgs = append(msgs, msg)
+	}
+	require.NoError(t, executor.EnqueueTxMessages(msgs))
+
+	receipts, err := executor.ProcessBlock(1)
+	require.NoError(t, err)
+	require.Len(t, receipts, 16)
+	require.Equal(t, uint64(16), executor.Metrics().ProcessedMessages)
+	require.Equal(t, uint64(8), executor.Metrics().BouncedMessages)
+	require.Empty(t, executor.Queue())
+
+	for i := 0; i < 8; i++ {
+		require.Equal(t, ResultNoDestination, receipts[i].ResultCode)
+		require.True(t, receipts[i].BounceCreated)
+	}
+	for i := 8; i < 16; i++ {
+		require.Equal(t, ResultBounceSuppressed, receipts[i].ResultCode)
+		require.False(t, receipts[i].BounceCreated)
+	}
+
+	contract, ok := executor.Contract(source)
+	require.True(t, ok)
+	require.Equal(t, []byte("init:bounce-storm"), contract.State)
+}
+
+func TestReplayProtectionSuppressesForgedBounceAndRefundMessages(t *testing.T) {
+	executor := newTestExecutor(t)
+	deployer := testAddr(1)
+	source := deployTestContract(t, executor, deployer, []byte("replay-protection"))
+
+	require.NoError(t, executor.RegisterHandler(source, func(contract ContractAccount, msg MessageEnvelope) ExecutionResult {
+		return ExecutionResult{
+			NewState:   append([]byte(nil), contract.State...),
+			ResultCode: ResultExecutionFailed,
+			Error:      "forged replay attempt",
+		}
+	}))
+
+	bounced := testMessage(testAddr(8), source, 101)
+	bounced.Opcode = BounceOpcode
+	bounced.Bounce = false
+	bounced.Bounced = true
+	bounced.Value = naetCoin(5)
+
+	refund := testMessage(testAddr(8), source, 102)
+	refund.Opcode = RefundOpcode
+	refund.Bounce = false
+	refund.RefundOfSequence = 44
+	refund.Value = naetCoin(5)
+
+	require.NoError(t, executor.EnqueueTxMessages([]MessageEnvelope{bounced, refund}))
+
+	receipts, err := executor.ProcessBlock(1)
+	require.NoError(t, err)
+	require.Len(t, receipts, 2)
+	require.Equal(t, ResultBounceSuppressed, receipts[0].ResultCode)
+	require.Equal(t, ResultRefundSuppressed, receipts[1].ResultCode)
 	require.Empty(t, executor.Queue())
 	require.Zero(t, executor.Metrics().BouncedMessages)
 	require.Zero(t, executor.Metrics().RefundMessages)
@@ -848,6 +1000,69 @@ func TestExecutionLimitsRejectGasEmittedMessagesAndStorageWrites(t *testing.T) {
 		require.Equal(t, ResultLimitExceeded, receipts[0].ResultCode)
 		require.Contains(t, receipts[0].Error, "storage write limit")
 	})
+}
+
+func TestFailedOutboundActionRollsBackStateAndDoesNotCommit(t *testing.T) {
+	params := DefaultParams()
+	params.MaxEmittedMessagesPerExec = 1
+	executor, err := NewExecutor(params)
+	require.NoError(t, err)
+
+	deployer := testAddr(1)
+	source := deployTestContract(t, executor, deployer, []byte("outbound-failure"))
+	destA := deployTestContract(t, executor, deployer, []byte("outbound-a"))
+	destB := deployTestContract(t, executor, deployer, []byte("outbound-b"))
+
+	initial, ok := executor.Contract(source)
+	require.True(t, ok)
+	initialState := append([]byte(nil), initial.State...)
+
+	require.NoError(t, executor.RegisterHandler(source, func(contract ContractAccount, msg MessageEnvelope) ExecutionResult {
+		return ExecutionResult{
+			NewState: []byte("mutated"),
+			Outgoing: []MessageEnvelope{
+				{
+					Destination: destA,
+					Value:       naetCoin(0),
+					Opcode:      10,
+					QueryID:     msg.QueryID,
+					Body:        []byte("first"),
+					Bounce:      true,
+					GasLimit:    100_000,
+					ForwardFee:  forwardFee(),
+				},
+				{
+					Destination: destB,
+					Value:       naetCoin(0),
+					Opcode:      11,
+					QueryID:     msg.QueryID + 1,
+					Body:        []byte("second"),
+					Bounce:      true,
+					GasLimit:    100_000,
+					ForwardFee:  forwardFee(),
+				},
+			},
+			ResultCode: ResultOK,
+		}
+	}))
+
+	msg := testMessage(testAddr(9), source, 1)
+	msg.Value = naetCoin(0)
+	msg.Bounce = false
+	require.NoError(t, executor.EnqueueTxMessages([]MessageEnvelope{msg}))
+
+	receipts, err := executor.ProcessBlock(1)
+	require.NoError(t, err)
+	require.Len(t, receipts, 1)
+	require.Equal(t, ResultLimitExceeded, receipts[0].ResultCode)
+	require.Equal(t, FailedPhaseQueue, receipts[0].FailedPhase)
+	require.Contains(t, receipts[0].Error, "emitted message limit")
+	require.Len(t, executor.Queue(), 0)
+
+	after, ok := executor.Contract(source)
+	require.True(t, ok)
+	require.Equal(t, initialState, after.State)
+	require.Len(t, executor.Queue(), 0)
 }
 
 func TestQueueOrderingUsesTxMessageLogicalDestinationAndSequence(t *testing.T) {

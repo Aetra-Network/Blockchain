@@ -1,12 +1,15 @@
 package avm
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"math/big"
+	"sort"
 	"unicode/utf8"
 
 	"github.com/sovereign-l1/l1/x/aetravm/chunk"
+	contracttypes "github.com/sovereign-l1/l1/x/contracts/types"
 	"lukechampine.com/blake3"
 )
 
@@ -16,7 +19,7 @@ import (
 type ValueTag uint8
 
 const (
-	TagNull	ValueTag	= iota
+	TagNull ValueTag = iota
 	TagBool
 	TagInt8
 	TagInt16
@@ -41,6 +44,7 @@ const (
 	TagReaderCursor
 	TagWriterHandle
 	TagExecFrameRef
+	TagMap
 )
 
 func (t ValueTag) String() string {
@@ -95,6 +99,8 @@ func (t ValueTag) String() string {
 		return "writer_handle"
 	case TagExecFrameRef:
 		return "exec_frame_ref"
+	case TagMap:
+		return "map"
 	default:
 		return fmt.Sprintf("unknown(%d)", t)
 	}
@@ -140,19 +146,207 @@ func IsInteger(tag ValueTag) bool {
 // All runtime values MUST be one of these.
 // No untyped values, no implicit casts, no runtime reflection.
 type RuntimeValue struct {
-	Tag		ValueTag
-	boolVal		bool
-	intVal		*big.Int
-	coinsVal	[16]byte
-	addrVal		string
-	hashVal		[32]byte
-	bytesVal	[]byte
-	strVal		string
-	tupleVal	[]RuntimeValue
-	chunkRef	*chunk.Chunk
-	readerOff	uint32
-	writerPtr	*ValueWriter
-	frameRef	*KernelExecutionFrame
+	Tag       ValueTag
+	boolVal   bool
+	intVal    *big.Int
+	coinsVal  [16]byte
+	addrVal   string
+	stateInit *contracttypes.StateInit
+	hashVal   [32]byte
+	bytesVal  []byte
+	strVal    string
+	tupleVal  []RuntimeValue
+	mapVal    []runtimeMapEntry
+	chunkRef  *chunk.Chunk
+	readerOff uint32
+	writerPtr *ValueWriter
+	frameRef  *KernelExecutionFrame
+}
+
+type runtimeMapEntry struct {
+	Key      RuntimeValue
+	Value    RuntimeValue
+	keyBytes []byte
+}
+
+func runtimeMapEntryFrom(key, value RuntimeValue) (runtimeMapEntry, error) {
+	keyBytes, err := CanonicalEncode(key)
+	if err != nil {
+		return runtimeMapEntry{}, err
+	}
+	return runtimeMapEntry{Key: key.clone(), Value: value.clone(), keyBytes: keyBytes}, nil
+}
+
+func runtimeMapClone(entries []runtimeMapEntry) []runtimeMapEntry {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]runtimeMapEntry, len(entries))
+	for i, entry := range entries {
+		out[i] = runtimeMapEntry{
+			Key:      entry.Key.clone(),
+			Value:    entry.Value.clone(),
+			keyBytes: append([]byte(nil), entry.keyBytes...),
+		}
+	}
+	return out
+}
+
+func runtimeMapNormalize(entries []runtimeMapEntry) ([]runtimeMapEntry, error) {
+	if len(entries) == 0 {
+		return nil, nil
+	}
+	type indexedEntry struct {
+		entry    runtimeMapEntry
+		keyBytes []byte
+	}
+	normalized := make([]indexedEntry, 0, len(entries))
+	for _, entry := range entries {
+		keyBytes := entry.keyBytes
+		if len(keyBytes) == 0 {
+			var err error
+			keyBytes, err = CanonicalEncode(entry.Key)
+			if err != nil {
+				return nil, err
+			}
+		}
+		normalized = append(normalized, indexedEntry{
+			entry: runtimeMapEntry{
+				Key:      entry.Key.clone(),
+				Value:    entry.Value.clone(),
+				keyBytes: append([]byte(nil), keyBytes...),
+			},
+			keyBytes: append([]byte(nil), keyBytes...),
+		})
+	}
+	sort.SliceStable(normalized, func(i, j int) bool {
+		return bytes.Compare(normalized[i].keyBytes, normalized[j].keyBytes) < 0
+	})
+	out := make([]runtimeMapEntry, 0, len(normalized))
+	for _, item := range normalized {
+		if len(out) > 0 && bytes.Equal(out[len(out)-1].keyBytes, item.keyBytes) {
+			out[len(out)-1] = item.entry
+			continue
+		}
+		out = append(out, item.entry)
+	}
+	return out, nil
+}
+
+func runtimeMapEmpty() []runtimeMapEntry {
+	return []runtimeMapEntry{}
+}
+
+func runtimeMapLen(entries []runtimeMapEntry) int {
+	return len(entries)
+}
+
+func runtimeMapLookup(entries []runtimeMapEntry, key RuntimeValue) (RuntimeValue, bool, error) {
+	keyBytes, err := CanonicalEncode(key)
+	if err != nil {
+		return RuntimeValue{}, false, err
+	}
+	if len(entries) == 0 {
+		return RuntimeValue{}, false, nil
+	}
+	lo, hi := 0, len(entries)
+	for lo < hi {
+		mid := lo + (hi-lo)/2
+		cmp := bytes.Compare(entries[mid].keyBytes, keyBytes)
+		switch {
+		case cmp < 0:
+			lo = mid + 1
+		case cmp > 0:
+			hi = mid
+		default:
+			return entries[mid].Value.clone(), true, nil
+		}
+	}
+	return RuntimeValue{}, false, nil
+}
+
+func runtimeMapSet(entries []runtimeMapEntry, key, value RuntimeValue) ([]runtimeMapEntry, error) {
+	keyBytes, err := CanonicalEncode(key)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]runtimeMapEntry, 0, len(entries)+1)
+	inserted := false
+	for _, entry := range entries {
+		cmp := bytes.Compare(entry.keyBytes, keyBytes)
+		if cmp == 0 {
+			if !inserted {
+				out = append(out, runtimeMapEntry{Key: key.clone(), Value: value.clone(), keyBytes: append([]byte(nil), keyBytes...)})
+				inserted = true
+			}
+			continue
+		}
+		if !inserted && cmp > 0 {
+			out = append(out, runtimeMapEntry{Key: key.clone(), Value: value.clone(), keyBytes: append([]byte(nil), keyBytes...)})
+			inserted = true
+		}
+		out = append(out, runtimeMapEntry{
+			Key:      entry.Key.clone(),
+			Value:    entry.Value.clone(),
+			keyBytes: append([]byte(nil), entry.keyBytes...),
+		})
+	}
+	if !inserted {
+		out = append(out, runtimeMapEntry{Key: key.clone(), Value: value.clone(), keyBytes: append([]byte(nil), keyBytes...)})
+	}
+	return out, nil
+}
+
+func runtimeMapDelete(entries []runtimeMapEntry, key RuntimeValue) ([]runtimeMapEntry, error) {
+	keyBytes, err := CanonicalEncode(key)
+	if err != nil {
+		return nil, err
+	}
+	if len(entries) == 0 {
+		return runtimeMapEmpty(), nil
+	}
+	out := make([]runtimeMapEntry, 0, len(entries))
+	removed := false
+	for _, entry := range entries {
+		if !removed && bytes.Equal(entry.keyBytes, keyBytes) {
+			removed = true
+			continue
+		}
+		out = append(out, runtimeMapEntry{
+			Key:      entry.Key.clone(),
+			Value:    entry.Value.clone(),
+			keyBytes: append([]byte(nil), entry.keyBytes...),
+		})
+	}
+	return out, nil
+}
+
+func runtimeMapKeys(entries []runtimeMapEntry, limit uint64) RuntimeValue {
+	if limit == 0 || len(entries) == 0 {
+		return ValueEmptyTuple()
+	}
+	if limit > uint64(len(entries)) {
+		limit = uint64(len(entries))
+	}
+	out := make([]RuntimeValue, 0, limit)
+	for i := uint64(0); i < limit; i++ {
+		out = append(out, entries[i].Key.clone())
+	}
+	return ValueTuple(out)
+}
+
+func runtimeMapEntriesValue(entries []runtimeMapEntry, limit uint64) RuntimeValue {
+	if limit == 0 || len(entries) == 0 {
+		return ValueEmptyTuple()
+	}
+	if limit > uint64(len(entries)) {
+		limit = uint64(len(entries))
+	}
+	out := make([]RuntimeValue, 0, limit)
+	for i := uint64(0); i < limit; i++ {
+		out = append(out, ValueTuple([]RuntimeValue{entries[i].Key.clone(), entries[i].Value.clone()}))
+	}
+	return ValueTuple(out)
 }
 
 func ValueNull() RuntimeValue {
@@ -223,6 +417,15 @@ func ValueAddress(addr string) RuntimeValue {
 	return RuntimeValue{Tag: TagAddress, addrVal: addr}
 }
 
+func ValueAddressWithStateInit(addr string, stateInit *contracttypes.StateInit) RuntimeValue {
+	out := ValueAddress(addr)
+	if stateInit != nil {
+		normalized := stateInit.Normalize()
+		out.stateInit = &normalized
+	}
+	return out
+}
+
 func ValueHash(h [32]byte) RuntimeValue {
 	return RuntimeValue{Tag: TagHash, hashVal: h}
 }
@@ -267,6 +470,18 @@ func ValueWriterHandle(w *ValueWriter) RuntimeValue {
 
 func ValueExecFrameRef(f *KernelExecutionFrame) RuntimeValue {
 	return RuntimeValue{Tag: TagExecFrameRef, frameRef: f}
+}
+
+func ValueMapEmpty() RuntimeValue {
+	return RuntimeValue{Tag: TagMap, mapVal: runtimeMapEmpty()}
+}
+
+func ValueMap(entries []runtimeMapEntry) RuntimeValue {
+	normalized, err := runtimeMapNormalize(entries)
+	if err != nil {
+		return RuntimeValue{Tag: TagMap}
+	}
+	return RuntimeValue{Tag: TagMap, mapVal: normalized}
 }
 
 func (v RuntimeValue) AsBool() (bool, error) {
@@ -352,6 +567,13 @@ func (v RuntimeValue) AsTuple() ([]RuntimeValue, error) {
 	return v.tupleVal, nil
 }
 
+func (v RuntimeValue) AsMap() ([]runtimeMapEntry, error) {
+	if v.Tag != TagMap {
+		return nil, typeError(TagMap, v.Tag)
+	}
+	return runtimeMapClone(v.mapVal), nil
+}
+
 func (v RuntimeValue) AsChunkRef() (*chunk.Chunk, error) {
 	if v.Tag != TagChunkRef {
 		return nil, typeError(TagChunkRef, v.Tag)
@@ -380,11 +602,12 @@ func (v RuntimeValue) AsExecFrameRef() (*KernelExecutionFrame, error) {
 	return v.frameRef, nil
 }
 
-func (v RuntimeValue) IsNull() bool	{ return v.Tag == TagNull }
-func (v RuntimeValue) IsBool() bool	{ return v.Tag == TagBool }
-func (v RuntimeValue) IsInt() bool	{ return IsSignedInteger(v.Tag) }
-func (v RuntimeValue) IsUint() bool	{ return IsUnsignedInteger(v.Tag) }
-func (v RuntimeValue) IsCoins() bool	{ return v.Tag == TagCoins }
+func (v RuntimeValue) IsNull() bool  { return v.Tag == TagNull }
+func (v RuntimeValue) IsBool() bool  { return v.Tag == TagBool }
+func (v RuntimeValue) IsInt() bool   { return IsSignedInteger(v.Tag) }
+func (v RuntimeValue) IsUint() bool  { return IsUnsignedInteger(v.Tag) }
+func (v RuntimeValue) IsCoins() bool { return v.Tag == TagCoins }
+func (v RuntimeValue) IsMap() bool    { return v.Tag == TagMap }
 
 func IsSignedInteger(tag ValueTag) bool {
 	return tag == TagInt8 || tag == TagInt16 || tag == TagInt32 || tag == TagInt64 || tag == TagInt128 || tag == TagInt256
@@ -408,19 +631,47 @@ func CanonicalEncode(v RuntimeValue) ([]byte, error) {
 			buf = append(buf, 0x00)
 		}
 	case TagInt8, TagUint8:
-		buf = append(buf, encodeIntBytes(v.intVal, 1)...)
+		encoded, err := encodeIntBytes(v.intVal, 1, IsSigned(v.Tag))
+		if err != nil {
+			return nil, err
+		}
+		buf = append(buf, encoded...)
 	case TagInt16, TagUint16:
-		buf = append(buf, encodeIntBytes(v.intVal, 2)...)
+		encoded, err := encodeIntBytes(v.intVal, 2, IsSigned(v.Tag))
+		if err != nil {
+			return nil, err
+		}
+		buf = append(buf, encoded...)
 	case TagInt32, TagUint32:
-		buf = append(buf, encodeIntBytes(v.intVal, 4)...)
+		encoded, err := encodeIntBytes(v.intVal, 4, IsSigned(v.Tag))
+		if err != nil {
+			return nil, err
+		}
+		buf = append(buf, encoded...)
 	case TagInt64, TagUint64:
-		buf = append(buf, encodeIntBytes(v.intVal, 8)...)
+		encoded, err := encodeIntBytes(v.intVal, 8, IsSigned(v.Tag))
+		if err != nil {
+			return nil, err
+		}
+		buf = append(buf, encoded...)
 	case TagInt128, TagUint128, TagCoins:
-		buf = append(buf, encodeIntBytes(v.intVal, 16)...)
+		encoded, err := encodeIntBytes(v.intVal, 16, IsSigned(v.Tag))
+		if err != nil {
+			return nil, err
+		}
+		buf = append(buf, encoded...)
 	case TagInt256, TagUint256:
-		buf = append(buf, encodeIntBytes(v.intVal, 32)...)
+		encoded, err := encodeIntBytes(v.intVal, 32, IsSigned(v.Tag))
+		if err != nil {
+			return nil, err
+		}
+		buf = append(buf, encoded...)
 	case TagTimestamp:
-		buf = append(buf, encodeIntBytes(v.intVal, 8)...)
+		encoded, err := encodeIntBytes(v.intVal, 8, false)
+		if err != nil {
+			return nil, err
+		}
+		buf = append(buf, encoded...)
 	case TagAddress:
 		addrBytes := []byte(v.addrVal)
 		buf = append(buf, encodeLengthPrefix(uint32(len(addrBytes)))...)
@@ -446,11 +697,48 @@ func CanonicalEncode(v RuntimeValue) ([]byte, error) {
 			}
 			buf = append(buf, encoded...)
 		}
+	case TagMap:
+		entries, err := runtimeMapNormalize(v.mapVal)
+		if err != nil {
+			return nil, fmt.Errorf("AVM: map: %w", err)
+		}
+		buf = append(buf, encodeLengthPrefix(uint32(len(entries)))...)
+		for i, entry := range entries {
+			keyBytes, err := CanonicalEncode(entry.Key)
+			if err != nil {
+				return nil, fmt.Errorf("AVM: map key %d: %w", i, err)
+			}
+			valueBytes, err := CanonicalEncode(entry.Value)
+			if err != nil {
+				return nil, fmt.Errorf("AVM: map value %d: %w", i, err)
+			}
+			buf = append(buf, encodeLengthPrefix(uint32(len(keyBytes)))...)
+			buf = append(buf, keyBytes...)
+			buf = append(buf, encodeLengthPrefix(uint32(len(valueBytes)))...)
+			buf = append(buf, valueBytes...)
+		}
 	case TagChunkRef:
+		// Chunk/Code values must survive a storage round trip so stored code
+		// can later be used to deploy child contracts (autoDeployAddress /
+		// counterfactualAddress read it back from state). A hash alone
+		// cannot be reconstructed, so the full tree is embedded here.
 		if v.chunkRef == nil {
-			buf = append(buf, make([]byte, 32)...)
+			buf = append(buf, 0x00)
 		} else {
-			buf = append(buf, v.chunkRef.Hash()...)
+			tree, err := v.chunkRef.SerializeTree()
+			if err != nil {
+				return nil, fmt.Errorf("AVM: chunk ref: %w", err)
+			}
+			if uint32(len(tree)) > MaxChunkTreeBytes {
+				return nil, fmt.Errorf("AVM: chunk ref tree is %d bytes, exceeds limit %d", len(tree), MaxChunkTreeBytes)
+			}
+			buf = append(buf, 0x01)
+			lenPrefix, err := encodeIntBytes(big.NewInt(int64(len(tree))), 4, false)
+			if err != nil {
+				return nil, err
+			}
+			buf = append(buf, lenPrefix...)
+			buf = append(buf, tree...)
 		}
 	case TagReaderCursor:
 		if v.chunkRef == nil {
@@ -458,7 +746,11 @@ func CanonicalEncode(v RuntimeValue) ([]byte, error) {
 		} else {
 			buf = append(buf, v.chunkRef.Hash()...)
 		}
-		buf = append(buf, encodeIntBytes(big.NewInt(int64(v.readerOff)), 4)...)
+		encoded, err := encodeIntBytes(big.NewInt(int64(v.readerOff)), 4, false)
+		if err != nil {
+			return nil, err
+		}
+		buf = append(buf, encoded...)
 	case TagWriterHandle:
 		if v.writerPtr == nil {
 			buf = append(buf, 0x00)
@@ -498,12 +790,7 @@ func CanonicalDecode(data []byte) (RuntimeValue, int, error) {
 		if len(data) < offset+width {
 			return RuntimeValue{}, 0, fmt.Errorf("AVM: truncated int8/uint8")
 		}
-		v := new(big.Int).SetBytes(data[offset : offset+width])
-		if IsSigned(tag) && data[offset]&0x80 != 0 {
-			v.SetInt64(-1)
-			v.Lsh(v, uint(width*8))
-			v.Or(v, new(big.Int).SetBytes(data[offset:offset+width]))
-		}
+		v := decodeIntBytes(data[offset:offset+width], IsSigned(tag))
 		offset += width
 		return RuntimeValue{Tag: tag, intVal: v}, offset, nil
 	case TagInt16, TagUint16:
@@ -511,7 +798,7 @@ func CanonicalDecode(data []byte) (RuntimeValue, int, error) {
 		if len(data) < offset+width {
 			return RuntimeValue{}, 0, fmt.Errorf("AVM: truncated int16/uint16")
 		}
-		v := new(big.Int).SetBytes(data[offset : offset+width])
+		v := decodeIntBytes(data[offset:offset+width], IsSigned(tag))
 		offset += width
 		return RuntimeValue{Tag: tag, intVal: v}, offset, nil
 	case TagInt32, TagUint32:
@@ -519,7 +806,7 @@ func CanonicalDecode(data []byte) (RuntimeValue, int, error) {
 		if len(data) < offset+width {
 			return RuntimeValue{}, 0, fmt.Errorf("AVM: truncated int32/uint32")
 		}
-		v := new(big.Int).SetBytes(data[offset : offset+width])
+		v := decodeIntBytes(data[offset:offset+width], IsSigned(tag))
 		offset += width
 		return RuntimeValue{Tag: tag, intVal: v}, offset, nil
 	case TagInt64, TagUint64, TagTimestamp:
@@ -527,7 +814,7 @@ func CanonicalDecode(data []byte) (RuntimeValue, int, error) {
 		if len(data) < offset+width {
 			return RuntimeValue{}, 0, fmt.Errorf("AVM: truncated int64/uint64/timestamp")
 		}
-		v := new(big.Int).SetBytes(data[offset : offset+width])
+		v := decodeIntBytes(data[offset:offset+width], IsSigned(tag))
 		offset += width
 		return RuntimeValue{Tag: tag, intVal: v}, offset, nil
 	case TagInt128, TagUint128, TagCoins:
@@ -535,7 +822,7 @@ func CanonicalDecode(data []byte) (RuntimeValue, int, error) {
 		if len(data) < offset+width {
 			return RuntimeValue{}, 0, fmt.Errorf("AVM: truncated int128/uint128/coins")
 		}
-		v := new(big.Int).SetBytes(data[offset : offset+width])
+		v := decodeIntBytes(data[offset:offset+width], IsSigned(tag))
 		offset += width
 		return RuntimeValue{Tag: tag, intVal: v}, offset, nil
 	case TagInt256, TagUint256:
@@ -543,7 +830,7 @@ func CanonicalDecode(data []byte) (RuntimeValue, int, error) {
 		if len(data) < offset+width {
 			return RuntimeValue{}, 0, fmt.Errorf("AVM: truncated int256/uint256")
 		}
-		v := new(big.Int).SetBytes(data[offset : offset+width])
+		v := decodeIntBytes(data[offset:offset+width], IsSigned(tag))
 		offset += width
 		return RuntimeValue{Tag: tag, intVal: v}, offset, nil
 	case TagAddress:
@@ -601,6 +888,16 @@ func CanonicalDecode(data []byte) (RuntimeValue, int, error) {
 			return RuntimeValue{}, 0, fmt.Errorf("AVM: tuple count: %w", err)
 		}
 		offset += n
+		// Bound the declared count before allocating: reject values that
+		// exceed the tuple cap or that cannot possibly fit in the remaining
+		// input (every element needs at least one tag byte). Without this a
+		// crafted 5-byte value could force a multi-terabyte make().
+		if count > MaxTupleElements {
+			return RuntimeValue{}, 0, fmt.Errorf("AVM: tuple element count %d exceeds limit %d", count, MaxTupleElements)
+		}
+		if uint64(count) > uint64(len(data)-offset) {
+			return RuntimeValue{}, 0, fmt.Errorf("AVM: tuple count %d exceeds remaining input", count)
+		}
 		elements := make([]RuntimeValue, count)
 		for i := uint32(0); i < count; i++ {
 			elem, consumed, err := CanonicalDecode(data[offset:])
@@ -611,13 +908,103 @@ func CanonicalDecode(data []byte) (RuntimeValue, int, error) {
 			offset += consumed
 		}
 		return ValueTuple(elements), offset, nil
+	case TagMap:
+		count, n, err := decodeLengthPrefix(data[offset:])
+		if err != nil {
+			return RuntimeValue{}, 0, fmt.Errorf("AVM: map count: %w", err)
+		}
+		offset += n
+		// Bound the declared entry count before pre-sizing the backing slice.
+		// Each entry needs at least a 4-byte key length + 4-byte value length,
+		// so count cannot exceed remaining/8; also cap at the tuple limit.
+		if count > MaxTupleElements {
+			return RuntimeValue{}, 0, fmt.Errorf("AVM: map entry count %d exceeds limit %d", count, MaxTupleElements)
+		}
+		if uint64(count) > uint64(len(data)-offset)/8 {
+			return RuntimeValue{}, 0, fmt.Errorf("AVM: map count %d exceeds remaining input", count)
+		}
+		entries := make([]runtimeMapEntry, 0, count)
+		var previous []byte
+		for i := uint32(0); i < count; i++ {
+			keyLen, n, err := decodeLengthPrefix(data[offset:])
+			if err != nil {
+				return RuntimeValue{}, 0, fmt.Errorf("AVM: map key length: %w", err)
+			}
+			offset += n
+			if uint32(len(data)-offset) < keyLen {
+				return RuntimeValue{}, 0, fmt.Errorf("AVM: truncated map key")
+			}
+			keyValue, keyConsumed, err := CanonicalDecode(data[offset : offset+int(keyLen)])
+			if err != nil {
+				return RuntimeValue{}, 0, fmt.Errorf("AVM: map key %d: %w", i, err)
+			}
+			if keyConsumed != int(keyLen) {
+				return RuntimeValue{}, 0, fmt.Errorf("AVM: map key %d has trailing bytes", i)
+			}
+			offset += int(keyLen)
+			valueLen, n, err := decodeLengthPrefix(data[offset:])
+			if err != nil {
+				return RuntimeValue{}, 0, fmt.Errorf("AVM: map value length: %w", err)
+			}
+			offset += n
+			if uint32(len(data)-offset) < valueLen {
+				return RuntimeValue{}, 0, fmt.Errorf("AVM: truncated map value")
+			}
+			valueValue, valueConsumed, err := CanonicalDecode(data[offset : offset+int(valueLen)])
+			if err != nil {
+				return RuntimeValue{}, 0, fmt.Errorf("AVM: map value %d: %w", i, err)
+			}
+			if valueConsumed != int(valueLen) {
+				return RuntimeValue{}, 0, fmt.Errorf("AVM: map value %d has trailing bytes", i)
+			}
+			offset += int(valueLen)
+			keyBytes, err := CanonicalEncode(keyValue)
+			if err != nil {
+				return RuntimeValue{}, 0, fmt.Errorf("AVM: map key %d canonicalization: %w", i, err)
+			}
+			if len(previous) > 0 && bytes.Compare(previous, keyBytes) >= 0 {
+				return RuntimeValue{}, 0, fmt.Errorf("AVM: map entries must be strictly sorted by canonical key")
+			}
+			previous = append(previous[:0], keyBytes...)
+			entries = append(entries, runtimeMapEntry{
+				Key:      keyValue,
+				Value:    valueValue,
+				keyBytes: keyBytes,
+			})
+		}
+		return RuntimeValue{Tag: TagMap, mapVal: entries}, offset, nil
 	case TagChunkRef:
-		width := 32
-		if len(data) < offset+width {
+		if len(data) < offset+1 {
 			return RuntimeValue{}, 0, fmt.Errorf("AVM: truncated chunk ref")
 		}
-
-		return RuntimeValue{Tag: TagChunkRef, chunkRef: nil}, offset + width, nil
+		present := data[offset]
+		offset++
+		if present == 0x00 {
+			return RuntimeValue{Tag: TagChunkRef, chunkRef: nil}, offset, nil
+		}
+		if present != 0x01 {
+			return RuntimeValue{}, 0, fmt.Errorf("AVM: invalid chunk ref presence marker 0x%02x", present)
+		}
+		if len(data) < offset+4 {
+			return RuntimeValue{}, 0, fmt.Errorf("AVM: truncated chunk ref length")
+		}
+		treeLen := binary.BigEndian.Uint32(data[offset:])
+		offset += 4
+		if treeLen > MaxChunkTreeBytes {
+			return RuntimeValue{}, 0, fmt.Errorf("AVM: chunk ref tree length %d exceeds limit %d", treeLen, MaxChunkTreeBytes)
+		}
+		if uint32(len(data)-offset) < treeLen {
+			return RuntimeValue{}, 0, fmt.Errorf("AVM: truncated chunk ref tree")
+		}
+		tree, consumed, err := chunk.ParseChunkTree(data[offset : offset+int(treeLen)])
+		if err != nil {
+			return RuntimeValue{}, 0, fmt.Errorf("AVM: chunk ref: %w", err)
+		}
+		if consumed != int(treeLen) {
+			return RuntimeValue{}, 0, fmt.Errorf("AVM: chunk ref tree has trailing bytes")
+		}
+		offset += int(treeLen)
+		return RuntimeValue{Tag: TagChunkRef, chunkRef: tree}, offset, nil
 	case TagReaderCursor:
 		width := 32 + 4
 		if len(data) < offset+width {
@@ -639,15 +1026,27 @@ func CanonicalDecode(data []byte) (RuntimeValue, int, error) {
 	}
 }
 
+// CanonicalDecodeExact decodes a RuntimeValue and rejects trailing bytes.
+func CanonicalDecodeExact(data []byte) (RuntimeValue, error) {
+	value, consumed, err := CanonicalDecode(data)
+	if err != nil {
+		return RuntimeValue{}, err
+	}
+	if consumed != len(data) {
+		return RuntimeValue{}, fmt.Errorf("AVM: trailing bytes after canonical decode")
+	}
+	return value, nil
+}
+
 type CastExitCode uint8
 
 const (
-	CastOK			CastExitCode	= 0
-	CastTypeMismatch	CastExitCode	= 1
-	CastOverflow		CastExitCode	= 2
-	CastTruncation		CastExitCode	= 3
-	CastInvalidUTF8		CastExitCode	= 4
-	CastNullToValue		CastExitCode	= 5
+	CastOK           CastExitCode = 0
+	CastTypeMismatch CastExitCode = 1
+	CastOverflow     CastExitCode = 2
+	CastTruncation   CastExitCode = 3
+	CastInvalidUTF8  CastExitCode = 4
+	CastNullToValue  CastExitCode = 5
 )
 
 // ExplicitCast performs a type cast between integer widths.
@@ -686,95 +1085,102 @@ func ExplicitCast(v RuntimeValue, targetTag ValueTag) (RuntimeValue, CastExitCod
 }
 
 var maxEncodedSize = map[ValueTag]uint32{
-	TagNull:		1,
-	TagBool:		2,
-	TagInt8:		2,
-	TagInt16:		3,
-	TagInt32:		5,
-	TagInt64:		9,
-	TagInt128:		17,
-	TagInt256:		33,
-	TagUint8:		2,
-	TagUint16:		3,
-	TagUint32:		5,
-	TagUint64:		9,
-	TagUint128:		17,
-	TagUint256:		33,
-	TagCoins:		17,
-	TagTimestamp:		9,
-	TagAddress:		4 + MaxAddressLength,
-	TagHash:		33,
-	TagBytes:		4 + MaxBytesLength,
-	TagString:		4 + MaxStringLength,
-	TagTuple:		5 + MaxTupleElements*33,
-	TagChunkRef:		33,
-	TagReaderCursor:	37,
-	TagWriterHandle:	34,
-	TagExecFrameRef:	2,
+	TagNull:         1,
+	TagBool:         2,
+	TagInt8:         2,
+	TagInt16:        3,
+	TagInt32:        5,
+	TagInt64:        9,
+	TagInt128:       17,
+	TagInt256:       33,
+	TagUint8:        2,
+	TagUint16:       3,
+	TagUint32:       5,
+	TagUint64:       9,
+	TagUint128:      17,
+	TagUint256:      33,
+	TagCoins:        17,
+	TagTimestamp:    9,
+	TagAddress:      4 + MaxAddressLength,
+	TagHash:         33,
+	TagBytes:        4 + MaxBytesLength,
+	TagString:       4 + MaxStringLength,
+	TagTuple:        5 + MaxTupleElements*33,
+	TagChunkRef:     1 + 4 + MaxChunkTreeBytes,
+	TagReaderCursor: 37,
+	TagWriterHandle: 34,
+	TagExecFrameRef: 2,
+	TagMap:          4 + MaxTupleElements*(4+MaxBytesLength+4+MaxBytesLength),
 }
 
 var gasCostEncode = map[ValueTag]uint64{
-	TagNull:		1,
-	TagBool:		1,
-	TagInt8:		2,
-	TagInt16:		2,
-	TagInt32:		3,
-	TagInt64:		3,
-	TagInt128:		5,
-	TagInt256:		8,
-	TagUint8:		2,
-	TagUint16:		2,
-	TagUint32:		3,
-	TagUint64:		3,
-	TagUint128:		5,
-	TagUint256:		8,
-	TagCoins:		5,
-	TagTimestamp:		3,
-	TagAddress:		10,
-	TagHash:		10,
-	TagBytes:		5 + 1,
-	TagString:		5 + 1,
-	TagTuple:		10,
-	TagChunkRef:		15,
-	TagReaderCursor:	20,
-	TagWriterHandle:	20,
-	TagExecFrameRef:	5,
+	TagNull:         1,
+	TagBool:         1,
+	TagInt8:         2,
+	TagInt16:        2,
+	TagInt32:        3,
+	TagInt64:        3,
+	TagInt128:       5,
+	TagInt256:       8,
+	TagUint8:        2,
+	TagUint16:       2,
+	TagUint32:       3,
+	TagUint64:       3,
+	TagUint128:      5,
+	TagUint256:      8,
+	TagCoins:        5,
+	TagTimestamp:    3,
+	TagAddress:      10,
+	TagHash:         10,
+	TagBytes:        5 + 1,
+	TagString:       5 + 1,
+	TagTuple:        10,
+	TagChunkRef:     15,
+	TagReaderCursor: 20,
+	TagWriterHandle: 20,
+	TagExecFrameRef: 5,
+	TagMap:          20,
 }
 
 var gasCostDecode = map[ValueTag]uint64{
-	TagNull:		1,
-	TagBool:		1,
-	TagInt8:		2,
-	TagInt16:		2,
-	TagInt32:		3,
-	TagInt64:		3,
-	TagInt128:		5,
-	TagInt256:		8,
-	TagUint8:		2,
-	TagUint16:		2,
-	TagUint32:		3,
-	TagUint64:		3,
-	TagUint128:		5,
-	TagUint256:		8,
-	TagCoins:		5,
-	TagTimestamp:		3,
-	TagAddress:		10,
-	TagHash:		10,
-	TagBytes:		5 + 1,
-	TagString:		5 + 1,
-	TagTuple:		10,
-	TagChunkRef:		15,
-	TagReaderCursor:	20,
-	TagWriterHandle:	20,
-	TagExecFrameRef:	5,
+	TagNull:         1,
+	TagBool:         1,
+	TagInt8:         2,
+	TagInt16:        2,
+	TagInt32:        3,
+	TagInt64:        3,
+	TagInt128:       5,
+	TagInt256:       8,
+	TagUint8:        2,
+	TagUint16:       2,
+	TagUint32:       3,
+	TagUint64:       3,
+	TagUint128:      5,
+	TagUint256:      8,
+	TagCoins:        5,
+	TagTimestamp:    3,
+	TagAddress:      10,
+	TagHash:         10,
+	TagBytes:        5 + 1,
+	TagString:       5 + 1,
+	TagTuple:        10,
+	TagChunkRef:     15,
+	TagReaderCursor: 20,
+	TagWriterHandle: 20,
+	TagExecFrameRef: 5,
+	TagMap:          20,
 }
 
 // Size bounds for variable-length types
 const (
-	MaxAddressLength	uint32	= 128
-	MaxBytesLength		uint32	= 65536
-	MaxStringLength		uint32	= 65536
-	MaxTupleElements	uint32	= 256
+	MaxAddressLength uint32 = 128
+	MaxBytesLength   uint32 = 65536
+	MaxStringLength  uint32 = 65536
+	MaxTupleElements uint32 = 256
+	// MaxChunkTreeBytes bounds the fully self-contained (hash-free) encoding
+	// of a Chunk/Code value, sized generously above the compiler's default
+	// 64 KiB code limit to cover recursive tree header overhead.
+	MaxChunkTreeBytes uint32 = 128 * 1024
 )
 
 // MaxEncodedSize returns the maximum encoded size for a value tag.
@@ -826,9 +1232,9 @@ func IsOptionNone(v RuntimeValue) bool {
 }
 
 type ValueWriter struct {
-	builder	*chunk.Builder
-	data	[]byte
-	refs	[]*chunk.Chunk
+	builder *chunk.Builder
+	data    []byte
+	refs    []*chunk.Chunk
 }
 
 func NewValueWriter() *ValueWriter {
@@ -851,6 +1257,17 @@ func (w *ValueWriter) WriteValue(v RuntimeValue) error {
 }
 
 func (w *ValueWriter) Build() (*chunk.Chunk, error) {
+	// Values whose serialized data exceeds one chunk (MaxDataBits) spill into a
+	// canonical 8-way chunk tree instead of failing, matching ToChunkPayload.
+	// A leaf value (<= MaxDataBits/8 bytes) still builds a single chunk with the
+	// exact same layout and hash as before, so this is additive: it only makes
+	// previously-unstorable large values representable.
+	if len(w.data) > chunk.MaxDataBits/8 {
+		if len(w.refs) > 0 {
+			return nil, fmt.Errorf("AVM value: %d bytes overflow a chunk and cannot be combined with %d explicit refs; nest the large field in its own Chunk<T>", len(w.data), len(w.refs))
+		}
+		return ToChunkPayload(w.data, chunk.TypeNormal)
+	}
 	w.builder.SetData(w.data, uint16(len(w.data)*8))
 	w.builder.SetTypeTag(chunk.TypeNormal)
 	for _, ref := range w.refs {
@@ -890,13 +1307,45 @@ func typeError(expected, got ValueTag) error {
 	return fmt.Errorf("AVM type error: expected %s, got %s → EXIT_TYPE_ERROR", expected, got)
 }
 
-func encodeIntBytes(v *big.Int, width int) []byte {
+func encodeIntBytes(v *big.Int, width int, signed bool) ([]byte, error) {
 	if v == nil {
-		return make([]byte, width)
+		return make([]byte, width), nil
+	}
+	if width <= 0 {
+		return nil, fmt.Errorf("AVM: invalid integer width %d", width)
+	}
+	bitWidth := uint(width * 8)
+	limit := new(big.Int).Lsh(big.NewInt(1), bitWidth)
+	if signed {
+		half := new(big.Int).Rsh(new(big.Int).Set(limit), 1)
+		min := new(big.Int).Neg(half)
+		max := new(big.Int).Sub(new(big.Int).Set(half), big.NewInt(1))
+		if v.Cmp(min) < 0 || v.Cmp(max) > 0 {
+			return nil, fmt.Errorf("AVM: signed integer %s out of range for %d-bit encoding", v.String(), bitWidth)
+		}
+		encoded := new(big.Int).Set(v)
+		if encoded.Sign() < 0 {
+			encoded.Add(encoded, limit)
+		}
+		b := make([]byte, width)
+		encoded.FillBytes(b)
+		return b, nil
+	}
+	if v.Sign() < 0 || v.BitLen() > int(bitWidth) {
+		return nil, fmt.Errorf("AVM: unsigned integer %s out of range for %d-bit encoding", v.String(), bitWidth)
 	}
 	b := make([]byte, width)
 	v.FillBytes(b)
-	return b
+	return b, nil
+}
+
+func decodeIntBytes(data []byte, signed bool) *big.Int {
+	v := new(big.Int).SetBytes(data)
+	if signed && len(data) > 0 && data[0]&0x80 != 0 {
+		limit := new(big.Int).Lsh(big.NewInt(1), uint(len(data)*8))
+		v.Sub(v, limit)
+	}
+	return v
 }
 
 func encodeLengthPrefix(length uint32) []byte {

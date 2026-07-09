@@ -1,0 +1,232 @@
+// Simple token staking example for ATLX / AVM.
+//
+// Model:
+// - StakePool accepts native value stakes and tracks the pool totals.
+// - Each staker's position lives in its own StakeAccount contract
+//   (same child-contract pattern as the token wallet family).
+// - This staking is application-level only: it never touches PoS,
+//   validators, or consensus — it is just a contract holding value.
+// - Account addresses are derived deterministically from:
+//   account code + init data { pool, owner }.
+
+const ERR_NOT_OWNER = 1001
+const ERR_BAD_MSG = 0xFFFF
+const ERR_BAD_AMOUNT = 1005
+const ERR_BAD_ACCOUNT = 1006
+const ERR_POOL_PAUSED = 1008
+
+// Every outbound internal message must carry enough value for the
+// destination to pay its own gas and storage rent — a message with
+// amount: 0 cannot fund a freshly auto-deployed child (it would be created
+// with zero balance and immediately frozen for unpaid storage rent). This
+// is deliberately expressed through aet(), not a bare integer literal.
+const MSG_FORWARD_VALUE = aet("0.0001")
+
+@storage
+struct StakePoolStorage {
+    owner: address
+    totalStaked: coins
+    stakerCount: uint64
+    accountCode: Code
+    paused: uint32
+}
+
+@storage
+struct StakeAccountStorage {
+    pool: address
+    owner: address
+    accountCode: Code
+    staked: coins
+    lastStakeAt: int64
+}
+
+@message(0x6101)
+struct Stake {
+    responseTo: address?
+}
+
+@message(0x6102)
+struct Unstake {
+    amount: coins
+}
+
+@message(0x6103)
+struct AccountCredit {
+    owner: address
+    amount: coins
+    isNew: uint32
+}
+
+@message(0x6104)
+struct AccountDebit {
+    owner: address
+    amount: coins
+}
+
+@message(0x6105)
+struct PoolPayout {
+    owner: address
+    amount: coins
+}
+
+@message(0x6106)
+struct SetPaused {
+    paused: uint32
+}
+
+type PoolInternalMsg = Stake | AccountDebit | SetPaused
+type AccountInternalMsg = AccountCredit | Unstake
+
+contract StakePool {
+    author: "Aetralis example"
+    description: "Application-level staking pool; independent from PoS"
+    version: "0.01.0"
+
+    storage: StakePoolStorage
+    incomingMessages: PoolInternalMsg
+
+    @store
+    func StakePoolStorage.load() {
+        return StakePoolStorage.fromChunk(contract.getData())
+    }
+
+    @store
+    func StakePoolStorage.save(self) {
+        contract.setData(self.toChunk())
+    }
+
+    @pure
+    func accountInitFor(pool: address, owner: address, accountCode: Code) {
+        return StakeAccountStorage {
+            pool: pool,
+            owner: owner,
+            accountCode: accountCode,
+            staked: 0,
+            lastStakeAt: 0,
+        }
+    }
+
+    @pure
+    func accountAddressFor(owner: address): address {
+        const st = lazy StakePoolStorage.load()
+        return counterfactualAddress({
+            code: st.accountCode,
+            data: accountInitFor(getAddress(), owner, st.accountCode),
+        })
+    }
+
+    @pure
+    func autoDeployAccountAddress(owner: address): address {
+        const st = lazy StakePoolStorage.load()
+        return autoDeployAddress({
+            code: st.accountCode,
+            data: accountInitFor(getAddress(), owner, st.accountCode),
+        })
+    }
+
+    @internal
+    func onInternalMessage(in: InMessage) {
+        const msg = lazy PoolInternalMsg.fromSegment(in.body)
+
+        match (msg) {
+            Stake => {
+                var st = lazy StakePoolStorage.load()
+                assert (st.paused == 0) throw ERR_POOL_PAUSED
+                assert (in.valueCoins > 0) throw ERR_BAD_AMOUNT
+
+                st.totalStaked += in.valueCoins
+                st.stakerCount += 1
+
+                const account = autoDeployAccountAddress(in.senderAddress)
+                const credit = buildMessage({
+                    bounce: BounceMode.Only256BitsOfBody,
+                    amount: MSG_FORWARD_VALUE,
+                    receiver: account,
+                    body: AccountCredit {
+                        owner: in.senderAddress,
+                        amount: in.valueCoins,
+                        isNew: 1,
+                    }
+                })
+
+                credit.send(SEND_BOUNCE_ON_FAIL)
+                st.save()
+            }
+
+            AccountDebit => {
+                var st = lazy StakePoolStorage.load()
+                const expectedAccount = accountAddressFor(msg.owner)
+                assert (in.senderAddress == expectedAccount) throw ERR_BAD_ACCOUNT
+                assert (msg.amount > 0) throw ERR_BAD_AMOUNT
+                assert (st.totalStaked >= msg.amount) throw ERR_BAD_AMOUNT
+
+                st.totalStaked -= msg.amount
+                st.save()
+
+                const payout = buildMessage({
+                    bounce: BounceMode.NoBounce,
+                    amount: msg.amount,
+                    receiver: msg.owner,
+                    body: PoolPayout {
+                        owner: msg.owner,
+                        amount: msg.amount,
+                    }
+                })
+
+                payout.send(SEND_DEFAULT)
+            }
+
+            SetPaused => {
+                var st = lazy StakePoolStorage.load()
+                assert (in.senderAddress == st.owner) throw ERR_NOT_OWNER
+
+                st.paused = msg.paused
+                st.save()
+            }
+
+            else => {
+                assert (in.body.isEmpty()) throw ERR_BAD_MSG
+            }
+        }
+    }
+
+    @bounced
+    func onBouncedMessage(in: InMessageBounced) {
+        in.bouncedBody.skipBouncedPrefix()
+
+        const bounced = lazy AccountCredit.fromSegment(in.bouncedBody)
+
+        var st = lazy StakePoolStorage.load()
+        if (st.totalStaked >= bounced.amount) {
+            // Credit bounced: revert the optimistic pool totals.
+            st.totalStaked -= bounced.amount
+            if (st.stakerCount > 0) {
+                st.stakerCount -= 1
+            }
+            st.save()
+        }
+    }
+
+    @get
+    func totalStaked(): coins {
+        const st = lazy StakePoolStorage.load()
+        return st.totalStaked
+    }
+
+    @get
+    func stakerCount(): uint64 {
+        const st = lazy StakePoolStorage.load()
+        return st.stakerCount
+    }
+
+    @get
+    func accountAddressOf(owner: address): address {
+        return accountAddressFor(owner)
+    }
+
+    @get
+    func isPaused(): uint32 {
+        const st = lazy StakePoolStorage.load()
+        return st.paused
+    }
+}

@@ -135,7 +135,7 @@ func TestTestnetInitRejectsMalformedChainIDBeforeGenesisWrite(t *testing.T) {
 		fmt.Sprintf("--%s=0%s", server.FlagMinGasPrices, appparams.BaseDenom),
 	})
 
-	require.ErrorContains(t, cmd.ExecuteContext(ctx), "chain-id must start with aetra-")
+	require.ErrorContains(t, cmd.ExecuteContext(ctx), "chain-id must be a small number (mainnet 1, testnet 2) or start with aetra-")
 	_, statErr := os.Stat(outputDir)
 	require.True(t, os.IsNotExist(statErr), "malformed chain-id must fail before writing localnet files")
 }
@@ -166,9 +166,11 @@ func assertPrototypeGenesisProfile(
 	}
 	requireNativeTokenMetadata(t, native)
 
+	// 1,000,000 consensus power = 1000 AET of naet per bootstrap account so it
+	// can afford transfers under the 0.5 AET average fee.
 	expectedAccountCoins := sdk.NewCoins(
 		sdk.NewCoin(bootstrapTestAssetDenom, sdk.TokensFromConsensusPower(1000, sdk.DefaultPowerReduction)),
-		sdk.NewCoin(appparams.BaseDenom, sdk.TokensFromConsensusPower(500, sdk.DefaultPowerReduction)),
+		sdk.NewCoin(appparams.BaseDenom, sdk.TokensFromConsensusPower(1_000_000, sdk.DefaultPowerReduction)),
 	).Sort()
 	for _, balance := range bankGenState.Balances {
 		_, err := sdk.AccAddressFromBech32(balance.Address)
@@ -183,10 +185,14 @@ func assertPrototypeGenesisProfile(
 	var mintGenState minttypes.GenesisState
 	cdc.MustUnmarshalJSON(appState[minttypes.ModuleName], &mintGenState)
 	require.Equal(t, appparams.BaseDenom, mintGenState.Params.MintDenom)
-	require.Equal(t, appparams.BpsToLegacyDec(appparams.DefaultTargetInflationBps), mintGenState.Minter.Inflation)
-	require.Equal(t, appparams.BpsToLegacyDec(appparams.MinInflationBps), mintGenState.Params.InflationMin)
-	require.Equal(t, appparams.BpsToLegacyDec(appparams.MaxInflationBps), mintGenState.Params.InflationMax)
-	require.Equal(t, appparams.BpsToLegacyDec(appparams.DefaultTargetStakeBps), mintGenState.Params.GoalBonded)
+	// The stock x/mint module is pinned to zero inflation; native emissions is
+	// the only protocol inflation source (SEC-CRIT: double inflation).
+	expectedMintGenesis := appparams.AetraMintGenesisState()
+	require.Equal(t, expectedMintGenesis.Minter.Inflation, mintGenState.Minter.Inflation)
+	require.True(t, mintGenState.Minter.Inflation.IsZero())
+	require.Equal(t, expectedMintGenesis.Params.InflationMin, mintGenState.Params.InflationMin)
+	require.Equal(t, expectedMintGenesis.Params.InflationMax, mintGenState.Params.InflationMax)
+	require.Equal(t, expectedMintGenesis.Params.GoalBonded, mintGenState.Params.GoalBonded)
 	require.True(t, mintGenState.Params.MaxSupply.IsZero())
 
 	var feesGenState feestypes.GenesisState
@@ -195,7 +201,7 @@ func assertPrototypeGenesisProfile(
 
 	genutilGenState := genutiltypes.GetGenesisStateFromAppState(cdc, appState)
 	require.Len(t, genutilGenState.GenTxs, validatorCount)
-	expectedSelfDelegation := sdk.NewCoin(appparams.BaseDenom, sdk.TokensFromConsensusPower(100, sdk.DefaultPowerReduction))
+	expectedSelfDelegation := sdk.NewCoin(appparams.BaseDenom, sdk.TokensFromConsensusPower(100_000, sdk.DefaultPowerReduction))
 	for _, genTx := range genutilGenState.GenTxs {
 		tx, err := genutiltypes.ValidateAndGetGenTx(genTx, txConfig.TxJSONDecoder(), genutiltypes.DefaultMessageValidator)
 		require.NoError(t, err)

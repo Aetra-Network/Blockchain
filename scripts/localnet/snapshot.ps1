@@ -33,6 +33,6 @@ $listOutput | ForEach-Object { Write-Host $_ }
 if (![string]::IsNullOrWhiteSpace($ArchivePath) -and $Height -gt 0) {
   $ArchivePath = ConvertTo-AbsolutePath -Path $ArchivePath
   New-Item -ItemType Directory -Force -Path (Split-Path -Parent $ArchivePath) | Out-Null
-  Invoke-ExternalChecked -FilePath $Binary -Arguments @("snapshots", "dump", "$Height", "1", "--home", $nodeHome, "--output", $ArchivePath) -FailureMessage "snapshot dump failed" | Out-Null
+  Invoke-ExternalChecked -FilePath $Binary -Arguments @("snapshots", "dump", "$Height", "3", "--home", $nodeHome, "--output", $ArchivePath) -FailureMessage "snapshot dump failed" | Out-Null
   Write-Host "Snapshot archive written to $ArchivePath"
 }

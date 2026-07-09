@@ -3,13 +3,16 @@ package compiler
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/sovereign-l1/l1/app/addressing"
 	"github.com/sovereign-l1/l1/x/aetravm/avm"
 	"github.com/sovereign-l1/l1/x/aetravm/chunk"
 	"github.com/sovereign-l1/l1/x/aetravm/standards"
@@ -30,56 +33,69 @@ const (
 )
 
 type Options struct {
-	ChainID           string
-	Namespace         string
-	DeployerAddress   string
-	Salt              string
-	InitialBalance    uint64
-	MaxCodeBytes      uint32
-	MaxPayloadBytes   uint32
-	MaxStorageBytes   uint32
-	MaxStateInitBytes uint32
-	Resolver          DependencyResolver
+	ChainID              string
+	Namespace            string
+	DeployerAddress      string
+	Salt                 string
+	InitialBalance       uint64
+	MaxCodeBytes         uint32
+	MaxPayloadBytes      uint32
+	MaxStorageBytes      uint32
+	MaxStateInitBytes    uint32
+	Resolver             DependencyResolver
+	SurfaceCompatibility SurfaceCompatibilityMode
 }
 
 func DefaultOptions() Options {
 	return Options{
-		ChainID:           DefaultChainID,
-		Namespace:         DefaultNamespace,
-		DeployerAddress:   DefaultDeployerAddress,
-		Salt:              DefaultSalt,
-		MaxCodeBytes:      DefaultMaxCodeBytes,
-		MaxPayloadBytes:   DefaultMaxPayloadBytes,
-		MaxStorageBytes:   DefaultMaxStorageBytes,
-		MaxStateInitBytes: DefaultMaxStateInitBytes,
+		ChainID:              DefaultChainID,
+		Namespace:            DefaultNamespace,
+		DeployerAddress:      DefaultDeployerAddress,
+		Salt:                 DefaultSalt,
+		MaxCodeBytes:         DefaultMaxCodeBytes,
+		MaxPayloadBytes:      DefaultMaxPayloadBytes,
+		MaxStorageBytes:      DefaultMaxStorageBytes,
+		MaxStateInitBytes:    DefaultMaxStateInitBytes,
+		SurfaceCompatibility: SurfaceCompatibilityWarnings,
 	}
 }
 
+func (c *Compiler) nextLabel(prefix string) string {
+	c.labelSeq++
+	return fmt.Sprintf("%s_%d", prefix, c.labelSeq)
+}
+
 type Compiler struct {
-	opts Options
+	opts         Options
+	diags        []Diagnostic
+	labelSeq     uint64
+	globalConsts map[string]constValue
 }
 
 type Result struct {
-	Source           *SourceFile
-	Contract         *ContractDecl
-	Module           avm.Module
-	ModuleBytes      []byte
-	ModuleHash       [32]byte
-	Manifest         avm.InterfaceManifest
-	ManifestHash     [32]byte
-	StateInit        *avm.StateInit
-	StateInitHash    [32]byte
-	CodeChunk        *chunk.Chunk
-	CodeChunkHash    [32]byte
-	StorageLayout    StorageLayout
-	StorageCodec     Codec
-	MessageCodecs    map[string]Codec
-	GetterCodecs     map[string]Codec
-	EventCodecs      map[string]Codec
-	SelectorRegistry SelectorRegistry
-	Diagnostics      []Diagnostic
-	IR               *IRProgram
-	DependencyLock   DependencyLock
+	Source             *SourceFile
+	Contract           *ContractDecl
+	Module             avm.Module
+	ModuleBytes        []byte
+	ModuleHash         [32]byte
+	Manifest           avm.InterfaceManifest
+	ManifestHash       [32]byte
+	StateInit          *avm.StateInit
+	StateInitHash      [32]byte
+	CodeChunk          *chunk.Chunk
+	CodeChunkHash      [32]byte
+	StorageLayout      StorageLayout
+	StorageCodec       Codec
+	MessageCodecs      map[string]Codec
+	MessageBodies      map[string]Codec
+	MessageBodyOpcodes map[string]uint32
+	MessageUnions      map[string]MessageUnion
+	GetterCodecs       map[string]Codec
+	EventCodecs        map[string]Codec
+	SelectorRegistry   SelectorRegistry
+	Diagnostics        []Diagnostic
+	IR                 *IRProgram
+	DependencyLock     DependencyLock
 }
 
 type StorageLayout struct {
@@ -90,6 +106,7 @@ type StorageLayout struct {
 
 type CodecField struct {
 	Name    string
+	Lazy    bool
 	Type    TypeRef
 	Default Expr
 	Pos     Position
@@ -101,6 +118,20 @@ type Codec struct {
 	Fields     []CodecField
 	ReturnType *TypeRef
 	Hash       [32]byte
+	// MaxBytes bounds the encoded payload size; zero means unlimited.
+	MaxBytes int
+}
+
+type MessageUnion struct {
+	Name     string
+	Variants []MessageUnionVariant
+	Hash     [32]byte
+}
+
+type MessageUnionVariant struct {
+	Name   string
+	Type   string
+	Opcode uint32
 }
 
 type SelectorEntry struct {
@@ -150,38 +181,70 @@ func New(opts Options) (*Compiler, error) {
 	if opts.Resolver != nil {
 		merged.Resolver = opts.Resolver
 	}
+	if opts.SurfaceCompatibility != "" {
+		merged.SurfaceCompatibility = opts.SurfaceCompatibility
+	}
 	return &Compiler{opts: merged}, nil
 }
 
 func (c *Compiler) Compile(src []byte) (*Result, error) {
-	return c.CompileFiles([]NamedSource{{Name: "main.avm", Data: src}})
+	return c.CompileFiles([]NamedSource{{Name: "main.atlx", Data: src}})
 }
 
 func (c *Compiler) CompileFiles(sources []NamedSource) (*Result, error) {
+	c.diags = nil
 	file, err := parsePackageSources(sources, c.opts.Resolver)
 	if err != nil {
 		return nil, err
+	}
+	if diags, err := c.collectCompatibilityDiagnostics(sources, file); err != nil {
+		return nil, err
+	} else {
+		c.diags = append(c.diags, diags...)
+	}
+	if diags, err := normalizeSourceFile(file, c.opts.SurfaceCompatibility); err != nil {
+		return nil, err
+	} else {
+		c.diags = append(c.diags, diags...)
 	}
 	if len(file.Contracts) != 1 {
 		return nil, fail("E_CONTRACT_COUNT", Position{}, "package must declare exactly one contract")
 	}
 	contract := file.Contracts[0]
-	functions, err := buildFunctionMap(file.Functions)
+	allFunctions := append([]*FunctionDecl(nil), file.Functions...)
+	allFunctions = append(allFunctions, contract.Functions...)
+	functions, err := buildFunctionMap(allFunctions)
 	if err != nil {
 		return nil, err
 	}
-	result := &Result{Source: file, Contract: contract, MessageCodecs: map[string]Codec{}, GetterCodecs: map[string]Codec{}, EventCodecs: map[string]Codec{}}
+	if err := inferFunctionPurity(allFunctions, functions); err != nil {
+		return nil, err
+	}
+	result := &Result{
+		Source:             file,
+		Contract:           contract,
+		MessageCodecs:      map[string]Codec{},
+		MessageBodies:      map[string]Codec{},
+		MessageBodyOpcodes: map[string]uint32{},
+		MessageUnions:      map[string]MessageUnion{},
+		GetterCodecs:       map[string]Codec{},
+		EventCodecs:        map[string]Codec{},
+	}
 	lock, err := c.buildDependencyLock(file)
 	if err != nil {
 		return nil, err
 	}
 	result.DependencyLock = lock
 
-	if err := c.typecheck(file, contract, functions); err != nil {
+	consts, err := c.buildConstEnv(file, functions)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.typecheck(file, contract, functions, consts); err != nil {
 		return nil, err
 	}
 
-	manifest, registry, layout, storageCodec, msgCodecs, getterCodecs, eventCodecs, err := c.buildArtifacts(file, contract)
+	manifest, registry, layout, storageCodec, msgCodecs, bodyCodecs, bodyOpcodes, unions, getterCodecs, eventCodecs, err := c.buildArtifacts(file, contract)
 	if err != nil {
 		return nil, err
 	}
@@ -194,10 +257,13 @@ func (c *Compiler) CompileFiles(sources []NamedSource) (*Result, error) {
 	result.StorageLayout = layout
 	result.StorageCodec = storageCodec
 	result.MessageCodecs = msgCodecs
+	result.MessageBodies = bodyCodecs
+	result.MessageBodyOpcodes = bodyOpcodes
+	result.MessageUnions = unions
 	result.GetterCodecs = getterCodecs
 	result.EventCodecs = eventCodecs
 
-	module, moduleBytes, ir, err := c.buildModule(file, contract, manifest, result.SelectorRegistry, msgCodecs, getterCodecs, eventCodecs, lock, functions)
+	module, moduleBytes, ir, err := c.buildModule(file, contract, manifest, result.SelectorRegistry, msgCodecs, getterCodecs, eventCodecs, bodyOpcodes, lock, functions)
 	if err != nil {
 		return nil, err
 	}
@@ -223,6 +289,7 @@ func (c *Compiler) CompileFiles(sources []NamedSource) (*Result, error) {
 	}
 	result.StateInit = stateInit
 	result.StateInitHash = stateInitHash
+	result.Diagnostics = append([]Diagnostic(nil), c.diags...)
 
 	if len(result.ModuleBytes) > int(c.opts.MaxCodeBytes) {
 		return nil, fail("E_CODE_SIZE", Position{}, fmt.Sprintf("generated module exceeds code size limit %d", c.opts.MaxCodeBytes))
@@ -267,7 +334,9 @@ func parsePackageSources(sources []NamedSource, resolver DependencyResolver) (*S
 			merged.Imports = append(merged.Imports, imp)
 		}
 		merged.Structs = append(merged.Structs, file.Structs...)
+		merged.Consts = append(merged.Consts, file.Consts...)
 		merged.Enums = append(merged.Enums, file.Enums...)
+		merged.Types = append(merged.Types, file.Types...)
 		merged.Functions = append(merged.Functions, file.Functions...)
 		merged.Contracts = append(merged.Contracts, file.Contracts...)
 	}
@@ -320,7 +389,9 @@ func mergeImportedSource(merged *SourceFile, resolver DependencyResolver, seen m
 	}
 	merged.Imports = append(merged.Imports, src.Imports...)
 	merged.Structs = append(merged.Structs, src.Structs...)
+	merged.Consts = append(merged.Consts, src.Consts...)
 	merged.Enums = append(merged.Enums, src.Enums...)
+	merged.Types = append(merged.Types, src.Types...)
 	merged.Functions = append(merged.Functions, src.Functions...)
 	merged.Contracts = append(merged.Contracts, src.Contracts...)
 	return mergeResolvedImports(merged, resolver, seen)
@@ -338,6 +409,96 @@ func buildFunctionMap(funcs []*FunctionDecl) (map[string]*FunctionDecl, error) {
 		out[fn.Name] = fn
 	}
 	return out, nil
+}
+
+func inferFunctionPurity(funcs []*FunctionDecl, functions map[string]*FunctionDecl) error {
+	if len(funcs) == 0 {
+		return nil
+	}
+	funcNames := make(map[string]bool, len(functions))
+	for name := range functions {
+		funcNames[name] = true
+	}
+	pure := make(map[string]bool, len(funcs))
+	calls := make(map[string][]string, len(funcs))
+	for _, fn := range funcs {
+		if fn == nil {
+			continue
+		}
+		hasHandler := false
+		if ann, ok := functionHandlerAnnotation(fn.Annotations); ok && ann != "" {
+			hasHandler = true
+		}
+		pure[fn.Name] = !hasHandler && !isStoreStatefulFunction(fn) && !functionHasDirectEffects(fn.Body) && !hasImpureAnnotation(fn.Annotations)
+		calls[fn.Name] = collectFunctionCallsFromStatements(fn.Body, funcNames)
+	}
+	changed := true
+	for changed {
+		changed = false
+		for _, fn := range funcs {
+			if fn == nil || !pure[fn.Name] {
+				continue
+			}
+			for _, call := range calls[fn.Name] {
+				if callee, ok := functions[call]; ok && callee != nil && !pure[callee.Name] {
+					pure[fn.Name] = false
+					changed = true
+					break
+				}
+			}
+		}
+	}
+	for _, fn := range funcs {
+		if fn == nil {
+			continue
+		}
+		fn.Pure = pure[fn.Name]
+	}
+	return nil
+}
+
+func functionHasDirectEffects(stmts []Statement) bool {
+	_, ok := functionDirectEffectMessage(stmts)
+	return ok
+}
+
+func functionDirectEffectMessage(stmts []Statement) (string, bool) {
+	for _, stmt := range stmts {
+		switch stmt.Kind {
+		case StatementExpr:
+			if stmt.Value.Kind == ExprCall && len(stmt.Value.Path) >= 2 {
+				method := strings.ToLower(stmt.Value.Path[len(stmt.Value.Path)-1])
+				switch method {
+				case "setdata", "save", "touch", "deletedata":
+					return "pure functions cannot write state or perform chain-visible side effects", true
+				}
+			}
+		case StatementSet:
+			return "pure functions cannot write state or perform chain-visible side effects", true
+		case StatementEmit:
+			return "pure functions cannot emit events or perform chain-visible side effects", true
+		case StatementRefund, StatementSend, StatementSelf:
+			return "pure functions cannot send/refund/schedule self or perform chain-visible side effects", true
+		case StatementIf:
+			if msg, ok := functionDirectEffectMessage(stmt.Then); ok {
+				return msg, true
+			}
+			if msg, ok := functionDirectEffectMessage(stmt.Else); ok {
+				return msg, true
+			}
+		case StatementWhile, StatementDo, StatementRepeat, StatementFor:
+			if msg, ok := functionDirectEffectMessage(stmt.Then); ok {
+				return msg, true
+			}
+		case StatementMatch:
+			for _, arm := range stmt.Arms {
+				if msg, ok := functionDirectEffectMessage(arm.Body); ok {
+					return msg, true
+				}
+			}
+		}
+	}
+	return "", false
 }
 
 func (c *Compiler) buildDependencyLock(file *SourceFile) (DependencyLock, error) {
@@ -414,9 +575,12 @@ func dependencyFromParts(path, version, alias string, abiHash, sourceHash [32]by
 	return dep
 }
 
-func (c *Compiler) typecheck(file *SourceFile, contract *ContractDecl, functions map[string]*FunctionDecl) error {
+func (c *Compiler) typecheck(file *SourceFile, contract *ContractDecl, functions map[string]*FunctionDecl, consts map[string]constValue) error {
+	allFunctions := append([]*FunctionDecl(nil), file.Functions...)
+	allFunctions = append(allFunctions, contract.Functions...)
 	structs := map[string]*StructDecl{}
 	enums := map[string]*EnumDecl{}
+	types := map[string]*TypeDecl{}
 	for _, st := range file.Structs {
 		if _, ok := structs[st.Name]; ok {
 			return fail("E_DUP_STRUCT", st.Pos, fmt.Sprintf("duplicate struct %q", st.Name))
@@ -429,39 +593,63 @@ func (c *Compiler) typecheck(file *SourceFile, contract *ContractDecl, functions
 		}
 		enums[en.Name] = en
 	}
-	storage, ok := structs[contract.StorageTypeName]
-	if !ok {
-		return fail("E_STORAGE_TYPE", contract.Pos, fmt.Sprintf("storage type %q not found", contract.StorageTypeName))
+	for _, td := range file.Types {
+		if _, ok := types[td.Name]; ok {
+			return fail("E_DUP_TYPE", td.Pos, fmt.Sprintf("duplicate type %q", td.Name))
+		}
+		types[td.Name] = td
+	}
+	var storage *StructDecl
+	if contract.StorageTypeName != "" {
+		var ok bool
+		storage, ok = structs[contract.StorageTypeName]
+		if !ok {
+			return fail("E_STORAGE_TYPE", contract.Pos, fmt.Sprintf("storage type %q not found", contract.StorageTypeName))
+		}
 	}
 	seenCallables := map[string]struct{}{}
-	if err := c.validateStruct(storage, structs, enums); err != nil {
+	if storage != nil {
+		if err := c.validateStruct(storage, structs, enums, types, consts, true); err != nil {
+			return err
+		}
+	}
+	if err := inferMissingReturnTypes(allFunctions, storage, structs, enums, types, functions, consts); err != nil {
 		return err
 	}
 	for _, st := range file.Structs {
-		if err := c.validateStruct(st, structs, enums); err != nil {
+		if err := c.validateStruct(st, structs, enums, types, consts, st == storage); err != nil {
 			return err
 		}
 	}
 	for _, en := range file.Enums {
-		if err := c.validateEnum(en, structs, enums); err != nil {
+		if err := c.validateEnum(en, structs, enums, types); err != nil {
+			return err
+		}
+	}
+	for _, td := range file.Types {
+		if err := c.validateTypeDecl(td, structs, enums, types); err != nil {
 			return err
 		}
 	}
 	for _, fn := range file.Functions {
-		if err := c.validateFunction(fn, structs, enums, functions); err != nil {
+		if err := c.validateFunction(fn, false, structs, enums, types, functions, consts); err != nil {
 			return err
 		}
-		if _, ok := seenCallables[fn.Name]; ok {
-			return fail("E_DUP_CALLABLE", fn.Pos, fmt.Sprintf("duplicate callable name %q", fn.Name))
+	}
+	for _, fn := range contract.Functions {
+		if err := c.validateFunction(fn, true, structs, enums, types, functions, consts); err != nil {
+			return err
 		}
-		seenCallables[fn.Name] = struct{}{}
+	}
+	if err := validateCanonicalHandlerUniqueness(contract.Functions); err != nil {
+		return err
 	}
 	for _, msg := range contract.Messages {
 		if _, ok := seenCallables[msg.Name]; ok {
 			return fail("E_DUP_CALLABLE", msg.Pos, fmt.Sprintf("duplicate callable name %q", msg.Name))
 		}
 		seenCallables[msg.Name] = struct{}{}
-		if err := c.validateMessage(msg, contract, storage, structs, enums, functions); err != nil {
+		if err := c.validateMessage(msg, contract, storage, structs, enums, types, functions, consts); err != nil {
 			return err
 		}
 	}
@@ -470,7 +658,7 @@ func (c *Compiler) typecheck(file *SourceFile, contract *ContractDecl, functions
 			return fail("E_DUP_CALLABLE", get.Pos, fmt.Sprintf("duplicate callable name %q", get.Name))
 		}
 		seenCallables[get.Name] = struct{}{}
-		if err := c.validateGetter(get, contract, storage, structs, enums, functions); err != nil {
+		if err := c.validateGetter(get, contract, storage, structs, enums, types, functions, consts); err != nil {
 			return err
 		}
 	}
@@ -482,7 +670,7 @@ func (c *Compiler) typecheck(file *SourceFile, contract *ContractDecl, functions
 			return fail("E_DUP_EVENT", event.Pos, fmt.Sprintf("duplicate event name %q", event.Name))
 		}
 		seenCallables[event.Name] = struct{}{}
-		if err := c.validateEvent(event, structs, enums); err != nil {
+		if err := c.validateEvent(event, structs, enums, types); err != nil {
 			return err
 		}
 	}
@@ -508,15 +696,40 @@ func (c *Compiler) typecheck(file *SourceFile, contract *ContractDecl, functions
 	if needsBounce && !hasBounce {
 		return fail("E_BOUNCE_HANDLER", contract.Pos, "contract has bounceable entrypoints but no bounced handler")
 	}
-	if err := validateFunctionRecursion(file.Functions); err != nil {
+	if err := validateFunctionRecursion(allFunctions); err != nil {
 		return err
 	}
 	return nil
 }
 
-func (c *Compiler) validateFunction(fn *FunctionDecl, structs map[string]*StructDecl, enums map[string]*EnumDecl, functions map[string]*FunctionDecl) error {
+func (c *Compiler) validateFunction(fn *FunctionDecl, inContract bool, structs map[string]*StructDecl, enums map[string]*EnumDecl, types map[string]*TypeDecl, functions map[string]*FunctionDecl, consts map[string]constValue) error {
 	if fn == nil {
 		return fail("E_FUNCTION", Position{}, "nil function")
+	}
+	if handlerAnn, ok := functionHandlerAnnotation(fn.Annotations); ok {
+		if !inContract {
+			return fail("E_HANDLER_SCOPE", fn.Pos, fmt.Sprintf("%s handlers are only allowed inside contract blocks", handlerAnn))
+		}
+		expectedName := handlerExpectedName(handlerAnn)
+		if fn.Name != expectedName {
+			if reservedAnn, reserved := reservedHandlerAnnotation(fn.Name); reserved {
+				return fail("E_HANDLER_NAME", fn.Pos, fmt.Sprintf("Function name `%s` is reserved for `%s` handlers. Expected `%s` for `%s`.", fn.Name, reservedAnn, expectedName, handlerAnn))
+			}
+			return fail("E_HANDLER_NAME", fn.Pos, fmt.Sprintf("Expected function name `%s` for handler annotated with `%s`.", expectedName, handlerAnn))
+		}
+		if err := validateCanonicalHandlerSignature(handlerAnn, fn); err != nil {
+			return err
+		}
+	} else if reservedAnn, ok := reservedHandlerAnnotation(fn.Name); ok {
+		return fail("E_HANDLER_NAME", fn.Pos, fmt.Sprintf("`%s` is a reserved message handler name and can only be used with `%s`.", fn.Name, reservedAnn))
+	}
+	if hasPureAnnotation(fn.Annotations) && !fn.Pure {
+		return fail("E_PURE_DECL", fn.Pos, fmt.Sprintf("function %q is annotated @pure but has side effects", fn.Name))
+	}
+	if _, ok := functionHandlerAnnotation(fn.Annotations); !ok {
+		if msg, ok := functionDirectEffectMessage(fn.Body); ok && !hasImpureAnnotation(fn.Annotations) && !hasStoreAnnotation(fn.Annotations) {
+			return fail("E_PURE_DECL", fn.Pos, msg)
+		}
 	}
 	if err := c.validateCallableName(fn.Name, fn.Pos); err != nil {
 		return err
@@ -524,19 +737,120 @@ func (c *Compiler) validateFunction(fn *FunctionDecl, structs map[string]*Struct
 	if err := validateParamNames(fn.Params, "function "+fn.Name, fn.Pos); err != nil {
 		return err
 	}
-	if err := c.validateType(fn.ReturnType, structs, enums); err != nil {
-		return err
+	if fn.ReturnType.Name != "" {
+		if err := c.validateType(fn.ReturnType, structs, enums, types); err != nil {
+			return err
+		}
 	}
 	env := c.buildEnv(fn.Params, nil, structs, enums)
+	mutables := c.buildMutableEnv(fn.Params, false)
+	scope := c.initialScope(fn.Params, false)
 	for _, stmt := range fn.Body {
-		if err := c.validateStatement(stmt, env, map[string]constValue{}, nil, structs, enums, &fn.ReturnType, functions, true); err != nil {
+		if err := c.validateStatement(stmt, env, mutables, scope, cloneConstEnv(consts), nil, structs, enums, types, &fn.ReturnType, functions, fn.Pure, 0); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (c *Compiler) validateStruct(st *StructDecl, structs map[string]*StructDecl, enums map[string]*EnumDecl) error {
+func validateCanonicalHandlerSignature(annotation string, fn *FunctionDecl) error {
+	if fn == nil {
+		return fail("E_FUNCTION", Position{}, "nil function")
+	}
+	if len(fn.Params) != 1 {
+		return fail("E_HANDLER_SIGNATURE", fn.Pos, fmt.Sprintf("handler %q must take exactly one parameter", fn.Name))
+	}
+	if fn.ReturnType.Name != "" {
+		return fail("E_HANDLER_SIGNATURE", fn.Pos, fmt.Sprintf("handler %q must not declare a return type", fn.Name))
+	}
+	switch annotation {
+	case "@internal":
+		if fn.Params[0].Name != "in" || fn.Params[0].Type.Name != "InMessage" {
+			return fail("E_HANDLER_SIGNATURE", fn.Pos, "internal handler must be `func onInternalMessage(in: InMessage)`")
+		}
+	case "@external":
+		if fn.Params[0].Name != "inMsg" || fn.Params[0].Type.Name != "Segment" {
+			return fail("E_HANDLER_SIGNATURE", fn.Pos, "external handler must be `func onExternalMessage(inMsg: Segment)`")
+		}
+	case "@bounced":
+		if fn.Params[0].Name != "in" || fn.Params[0].Type.Name != "InMessageBounced" {
+			return fail("E_HANDLER_SIGNATURE", fn.Pos, "bounced handler must be `func onBouncedMessage(in: InMessageBounced)`")
+		}
+	default:
+		return fail("E_HANDLER_SIGNATURE", fn.Pos, fmt.Sprintf("unsupported handler annotation %q", annotation))
+	}
+	return nil
+}
+
+func validateCanonicalHandlerUniqueness(funcs []*FunctionDecl) error {
+	counts := map[string]int{}
+	positions := map[string]Position{}
+	for _, fn := range funcs {
+		if fn == nil {
+			continue
+		}
+		kind, ok := functionHandlerAnnotation(fn.Annotations)
+		if !ok {
+			continue
+		}
+		counts[kind]++
+		if _, exists := positions[kind]; !exists {
+			positions[kind] = fn.Pos
+		}
+	}
+	for _, kind := range []string{"@internal", "@external", "@bounced"} {
+		if counts[kind] > 1 {
+			return fail("E_HANDLER_DUP", positions[kind], fmt.Sprintf("only one %s handler is allowed per contract", kind))
+		}
+	}
+	return nil
+}
+
+func hasPureAnnotation(annotations []Annotation) bool {
+	for _, annotation := range annotations {
+		if annotation.Name == "@pure" {
+			return true
+		}
+	}
+	return false
+}
+
+func hasImpureAnnotation(annotations []Annotation) bool {
+	for _, annotation := range annotations {
+		if annotation.Name == "@impure" {
+			return true
+		}
+	}
+	return false
+}
+
+func hasStoreAnnotation(annotations []Annotation) bool {
+	for _, annotation := range annotations {
+		if annotation.Name == "@store" {
+			return true
+		}
+	}
+	return false
+}
+
+func isStoreStatefulFunction(fn *FunctionDecl) bool {
+	if fn == nil || !hasStoreAnnotation(fn.Annotations) {
+		return false
+	}
+	name := strings.ToLower(fn.Name)
+	return strings.HasSuffix(name, ".save") || strings.HasSuffix(name, ".touch") || strings.HasSuffix(name, ".delete")
+}
+
+func hasAnnotation(annotations []Annotation, name string) bool {
+	for _, annotation := range annotations {
+		if annotation.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Compiler) validateStruct(st *StructDecl, structs map[string]*StructDecl, enums map[string]*EnumDecl, types map[string]*TypeDecl, consts map[string]constValue, allowLazy bool) error {
 	if st == nil {
 		return fail("E_STRUCT", Position{}, "nil struct")
 	}
@@ -549,15 +863,18 @@ func (c *Compiler) validateStruct(st *StructDecl, structs map[string]*StructDecl
 			return fail("E_DUP_FIELD", field.Pos, fmt.Sprintf("struct %q has duplicate field %q", st.Name, field.Name))
 		}
 		seen[field.Name] = struct{}{}
-		if err := c.validateType(field.Type, structs, enums); err != nil {
+		if field.Lazy && !allowLazy {
+			return fail("E_LAZY_FIELD", field.Pos, fmt.Sprintf("lazy field %q is only allowed in storage structs", field.Name))
+		}
+		if err := c.validateType(field.Type, structs, enums, types); err != nil {
 			return err
 		}
 		if field.Default.Kind != "" {
-			typ, err := c.inferExprType(field.Default, nil, st, structs, enums, nil, false)
+			typ, err := c.inferExprType(field.Default, nil, st, structs, enums, types, nil, consts, false)
 			if err != nil {
 				return err
 			}
-			if !compatibleTypes(typ, field.Type) {
+			if !compatibleTypesResolved(typ, field.Type, types) {
 				return fail("E_DEFAULT_TYPE", field.Pos, fmt.Sprintf("default for %s.%s has incompatible type %s", st.Name, field.Name, typ.String()))
 			}
 		}
@@ -565,7 +882,7 @@ func (c *Compiler) validateStruct(st *StructDecl, structs map[string]*StructDecl
 	return nil
 }
 
-func (c *Compiler) validateEnum(en *EnumDecl, structs map[string]*StructDecl, enums map[string]*EnumDecl) error {
+func (c *Compiler) validateEnum(en *EnumDecl, structs map[string]*StructDecl, enums map[string]*EnumDecl, types map[string]*TypeDecl) error {
 	if en == nil {
 		return fail("E_ENUM", Position{}, "nil enum")
 	}
@@ -576,7 +893,7 @@ func (c *Compiler) validateEnum(en *EnumDecl, structs map[string]*StructDecl, en
 		}
 		seen[variant.Name] = struct{}{}
 		for _, field := range variant.Fields {
-			if err := c.validateType(field.Type, structs, enums); err != nil {
+			if err := c.validateType(field.Type, structs, enums, types); err != nil {
 				return err
 			}
 		}
@@ -584,7 +901,33 @@ func (c *Compiler) validateEnum(en *EnumDecl, structs map[string]*StructDecl, en
 	return nil
 }
 
-func (c *Compiler) validateMessage(msg *MessageDecl, contract *ContractDecl, storage *StructDecl, structs map[string]*StructDecl, enums map[string]*EnumDecl, functions map[string]*FunctionDecl) error {
+func (c *Compiler) validateTypeDecl(td *TypeDecl, structs map[string]*StructDecl, enums map[string]*EnumDecl, types map[string]*TypeDecl) error {
+	if td == nil {
+		return fail("E_TYPE_DECL", Position{}, "nil type")
+	}
+	if !isValidName(td.Name) {
+		return fail("E_NAME", td.Pos, fmt.Sprintf("invalid type name %q", td.Name))
+	}
+	if len(td.Members) == 0 {
+		return fail("E_TYPE_EMPTY", td.Pos, fmt.Sprintf("type %q must declare at least one member", td.Name))
+	}
+	seen := map[string]struct{}{}
+	for _, member := range td.Members {
+		if err := c.validateType(member, structs, enums, types); err != nil {
+			return err
+		}
+		if _, ok := seen[member.String()]; ok {
+			return fail("E_DUP_TYPE_VARIANT", member.Pos, fmt.Sprintf("type %q has duplicate member %q", td.Name, member.String()))
+		}
+		seen[member.String()] = struct{}{}
+	}
+	if _, err := c.expandTypeDeclMembers(td.Name, types, map[string]bool{}); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *Compiler) validateMessage(msg *MessageDecl, contract *ContractDecl, storage *StructDecl, structs map[string]*StructDecl, enums map[string]*EnumDecl, types map[string]*TypeDecl, functions map[string]*FunctionDecl, consts map[string]constValue) error {
 	if msg == nil {
 		return fail("E_MESSAGE", Position{}, "nil message")
 	}
@@ -595,25 +938,27 @@ func (c *Compiler) validateMessage(msg *MessageDecl, contract *ContractDecl, sto
 		return err
 	}
 	for _, param := range msg.Params {
-		if err := c.validateType(param.Type, structs, enums); err != nil {
+		if err := c.validateType(param.Type, structs, enums, types); err != nil {
 			return err
 		}
 	}
 	if msg.ReturnType != nil {
-		if err := c.validateType(*msg.ReturnType, structs, enums); err != nil {
+		if err := c.validateType(*msg.ReturnType, structs, enums, types); err != nil {
 			return err
 		}
 	}
 	env := c.buildEnv(msg.Params, storage, structs, enums)
+	mutables := c.buildMutableEnv(msg.Params, storage != nil)
+	scope := c.initialScope(msg.Params, storage != nil)
 	for _, stmt := range msg.Body {
-		if err := c.validateStatement(stmt, env, map[string]constValue{}, storage, structs, enums, msg.ReturnType, functions, false); err != nil {
+		if err := c.validateStatement(stmt, env, mutables, scope, cloneConstEnv(consts), storage, structs, enums, types, msg.ReturnType, functions, false, 0); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (c *Compiler) validateGetter(get *GetterDecl, contract *ContractDecl, storage *StructDecl, structs map[string]*StructDecl, enums map[string]*EnumDecl, functions map[string]*FunctionDecl) error {
+func (c *Compiler) validateGetter(get *GetterDecl, contract *ContractDecl, storage *StructDecl, structs map[string]*StructDecl, enums map[string]*EnumDecl, types map[string]*TypeDecl, functions map[string]*FunctionDecl, consts map[string]constValue) error {
 	if get == nil {
 		return fail("E_GETTER", Position{}, "nil getter")
 	}
@@ -623,19 +968,92 @@ func (c *Compiler) validateGetter(get *GetterDecl, contract *ContractDecl, stora
 	if err := validateParamNames(get.Params, "getter "+get.Name, get.Pos); err != nil {
 		return err
 	}
-	if err := c.validateType(get.ReturnType, structs, enums); err != nil {
-		return err
+	if get.ReturnType.Name != "" {
+		if err := c.validateType(get.ReturnType, structs, enums, types); err != nil {
+			return err
+		}
 	}
 	env := c.buildEnv(get.Params, storage, structs, enums)
+	mutables := c.buildMutableEnv(get.Params, storage != nil)
+	scope := c.initialScope(get.Params, storage != nil)
 	for _, stmt := range get.Body {
-		if err := c.validateStatement(stmt, env, map[string]constValue{}, storage, structs, enums, &get.ReturnType, functions, true); err != nil {
+		if err := c.validateStatement(stmt, env, mutables, scope, cloneConstEnv(consts), storage, structs, enums, types, &get.ReturnType, functions, true, 0); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (c *Compiler) validateEvent(event *EventDecl, structs map[string]*StructDecl, enums map[string]*EnumDecl) error {
+func (c *Compiler) inferFunctionReturnType(fn *FunctionDecl, storage *StructDecl, structs map[string]*StructDecl, enums map[string]*EnumDecl, types map[string]*TypeDecl, functions map[string]*FunctionDecl, consts map[string]constValue) (TypeRef, bool, error) {
+	env := c.buildEnv(fn.Params, storage, structs, enums)
+	var inferred TypeRef
+	var hasInferred bool
+	var walk func([]Statement) error
+	walk = func(stmts []Statement) error {
+		for _, stmt := range stmts {
+			switch stmt.Kind {
+			case StatementReturn:
+				typ, err := c.inferExprType(stmt.Value, env, storage, structs, enums, types, functions, consts, fn.Pure)
+				if err != nil {
+					return err
+				}
+				if !hasInferred {
+					inferred = typ
+					hasInferred = true
+					continue
+				}
+				if !compatibleTypesResolved(typ, inferred, types) {
+					return fail("E_RETURN_TYPE", stmt.Pos, fmt.Sprintf("return type %s does not match %s", typ.String(), inferred.String()))
+				}
+			case StatementIf:
+				if err := walk(stmt.Then); err != nil {
+					return err
+				}
+				if err := walk(stmt.Else); err != nil {
+					return err
+				}
+			case StatementMatch:
+				for _, arm := range stmt.Arms {
+					if err := walk(arm.Body); err != nil {
+						return err
+					}
+				}
+			case StatementWhile, StatementDo, StatementRepeat, StatementFor:
+				if err := walk(stmt.Then); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	if err := walk(fn.Body); err != nil {
+		return TypeRef{}, false, err
+	}
+	return inferred, hasInferred, nil
+}
+
+func inferMissingReturnTypes(funcs []*FunctionDecl, storage *StructDecl, structs map[string]*StructDecl, enums map[string]*EnumDecl, types map[string]*TypeDecl, functions map[string]*FunctionDecl, consts map[string]constValue) error {
+	changed := true
+	for changed {
+		changed = false
+		for _, fn := range funcs {
+			if fn == nil || fn.ReturnType.Name != "" {
+				continue
+			}
+			inferred, ok, err := (&Compiler{}).inferFunctionReturnType(fn, storage, structs, enums, types, functions, consts)
+			if err != nil {
+				return err
+			}
+			if ok {
+				fn.ReturnType = inferred
+				changed = true
+			}
+		}
+	}
+	return nil
+}
+
+func (c *Compiler) validateEvent(event *EventDecl, structs map[string]*StructDecl, enums map[string]*EnumDecl, types map[string]*TypeDecl) error {
 	if event == nil {
 		return fail("E_EVENT", Position{}, "nil event")
 	}
@@ -646,7 +1064,7 @@ func (c *Compiler) validateEvent(event *EventDecl, structs map[string]*StructDec
 		return err
 	}
 	for _, field := range event.Fields {
-		if err := c.validateType(field.Type, structs, enums); err != nil {
+		if err := c.validateType(field.Type, structs, enums, types); err != nil {
 			return err
 		}
 	}
@@ -669,26 +1087,119 @@ func (c *Compiler) validateWallet(wallet *WalletActionDecl, contract *ContractDe
 	if strings.TrimSpace(wallet.Title) == "" {
 		return fail("E_WALLET_TITLE", wallet.Pos, fmt.Sprintf("wallet action %q requires title", wallet.Name))
 	}
+	if !wallet.HasTitle {
+		return fail("E_WALLET_TITLE", wallet.Pos, fmt.Sprintf("wallet action %q requires explicit title", wallet.Name))
+	}
 	if strings.TrimSpace(wallet.Risk) == "" {
 		return fail("E_WALLET_RISK", wallet.Pos, fmt.Sprintf("wallet action %q requires risk", wallet.Name))
+	}
+	if !wallet.HasRisk {
+		return fail("E_WALLET_RISK", wallet.Pos, fmt.Sprintf("wallet action %q requires explicit risk", wallet.Name))
 	}
 	if strings.TrimSpace(wallet.ConfirmLabel) == "" {
 		return fail("E_WALLET_CONFIRM", wallet.Pos, fmt.Sprintf("wallet action %q requires confirm label", wallet.Name))
 	}
+	if !wallet.HasConfirmLabel {
+		return fail("E_WALLET_CONFIRM", wallet.Pos, fmt.Sprintf("wallet action %q requires explicit confirm label", wallet.Name))
+	}
 	if strings.TrimSpace(wallet.WarningLevel) == "" {
 		return fail("E_WALLET_WARNING", wallet.Pos, fmt.Sprintf("wallet action %q requires warning level", wallet.Name))
+	}
+	if !wallet.HasWarningLevel {
+		return fail("E_WALLET_WARNING", wallet.Pos, fmt.Sprintf("wallet action %q requires explicit warning level", wallet.Name))
+	}
+	if !wallet.HasExpectedSideEffects {
+		return fail("E_WALLET_EFFECTS", wallet.Pos, fmt.Sprintf("wallet action %q requires expected_side_effects", wallet.Name))
+	}
+	if !wallet.HasFundAccess {
+		return fail("E_WALLET_FUND_ACCESS", wallet.Pos, fmt.Sprintf("wallet action %q requires fund_access", wallet.Name))
 	}
 	if strings.TrimSpace(wallet.ApprovalSemantics) == "" {
 		return fail("E_WALLET_APPROVAL", wallet.Pos, fmt.Sprintf("wallet action %q requires approval semantics", wallet.Name))
 	}
+	if !wallet.HasApprovalSemantics {
+		return fail("E_WALLET_APPROVAL", wallet.Pos, fmt.Sprintf("wallet action %q requires explicit approval semantics", wallet.Name))
+	}
 	return nil
 }
 
+func (c *Compiler) buildConstEnv(file *SourceFile, functions map[string]*FunctionDecl) (map[string]constValue, error) {
+	consts := map[string]constValue{}
+	env := loweringEnv{params: map[string]int{}, consts: consts}
+	for _, decl := range file.Consts {
+		value, ok := evalConstValue(decl.Value, env, functions, map[string]bool{})
+		if !ok {
+			return nil, fail("E_CONST", decl.Pos, fmt.Sprintf("const %s must be compile-time constant", decl.Name))
+		}
+		consts[decl.Name] = value
+		env.consts[decl.Name] = value
+	}
+	return consts, nil
+}
+
 func (c *Compiler) validateCallableName(name string, pos Position) error {
-	if !isValidName(name) {
+	parts := strings.Split(name, ".")
+	if len(parts) == 0 {
+		return fail("E_NAME", pos, fmt.Sprintf("invalid callable name %q", name))
+	}
+	for _, part := range parts {
+		if !isValidName(part) {
+			return fail("E_NAME", pos, fmt.Sprintf("invalid callable name %q", name))
+		}
+	}
+	if strings.Contains(name, "..") || strings.HasPrefix(name, ".") || strings.HasSuffix(name, ".") {
 		return fail("E_NAME", pos, fmt.Sprintf("invalid callable name %q", name))
 	}
 	return nil
+}
+
+func functionHandlerAnnotation(annotations []Annotation) (string, bool) {
+	for _, annotation := range annotations {
+		switch annotation.Name {
+		case "@external", "@internal", "@bounced":
+			return annotation.Name, true
+		}
+	}
+	return "", false
+}
+
+func handlerAnnotationEntrypoint(annotation string) (avm.Entrypoint, bool) {
+	switch annotation {
+	case "@external":
+		return avm.EntryReceiveExternal, true
+	case "@internal":
+		return avm.EntryReceiveInternal, true
+	case "@bounced":
+		return avm.EntryReceiveBounced, true
+	default:
+		return 0, false
+	}
+}
+
+func handlerExpectedName(annotation string) string {
+	switch annotation {
+	case "@external":
+		return "onExternalMessage"
+	case "@internal":
+		return "onInternalMessage"
+	case "@bounced":
+		return "onBouncedMessage"
+	default:
+		return ""
+	}
+}
+
+func reservedHandlerAnnotation(name string) (string, bool) {
+	switch name {
+	case "onExternalMessage":
+		return "@external", true
+	case "onInternalMessage":
+		return "@internal", true
+	case "onBouncedMessage":
+		return "@bounced", true
+	default:
+		return "", false
+	}
 }
 
 func validateParamNames(params []ParamDecl, label string, pos Position) error {
@@ -705,83 +1216,441 @@ func validateParamNames(params []ParamDecl, label string, pos Position) error {
 	return nil
 }
 
-func (c *Compiler) validateType(typ TypeRef, structs map[string]*StructDecl, enums map[string]*EnumDecl) error {
+func (c *Compiler) validateType(typ TypeRef, structs map[string]*StructDecl, enums map[string]*EnumDecl, types map[string]*TypeDecl) error {
 	if typ.Name == "" {
 		return fail("E_TYPE", typ.Pos, "empty type")
 	}
 	switch strings.ToLower(typ.Name) {
-	case "bool", "u8", "u16", "u32", "u64", "i64", "bytes", "string", "hash32":
+	case "bool", "u2", "u4", "u8", "u16", "u32", "u64", "u128", "u256", "i2", "i4", "i8", "i16", "i32", "i64", "i128", "i256", "uint2", "uint4", "uint8", "uint16", "uint32", "uint64", "uint128", "uint256", "int2", "int4", "int8", "int16", "int32", "int64", "int128", "int256", "bytes", "string", "hash32", "address", "coins", "timestamp", "messageenvelope", "inmessage", "inmessagebounced", "contractcontext":
 	default:
 		if desc, ok := standards.DefaultRegistry().Find(typ.Name); ok {
+			if strings.EqualFold(desc.Name, "Chunk") && len(typ.Args) == 1 {
+				break
+			}
 			if desc.Arity != len(typ.Args) {
 				return fail("E_TYPE_ARITY", typ.Pos, fmt.Sprintf("type %q requires %d type arguments", typ.Name, desc.Arity))
 			}
 		} else if _, ok := structs[typ.Name]; !ok {
 			if _, ok := enums[typ.Name]; !ok {
-				return fail("E_UNKNOWN_TYPE", typ.Pos, fmt.Sprintf("unknown type %q", typ.Name))
+				if _, ok := types[typ.Name]; !ok {
+					return fail("E_UNKNOWN_TYPE", typ.Pos, fmt.Sprintf("unknown type %q", typ.Name))
+				}
 			}
 		}
 	}
 	for _, arg := range typ.Args {
-		if err := c.validateType(arg, structs, enums); err != nil {
+		if err := c.validateType(arg, structs, enums, types); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (c *Compiler) validateStatement(stmt Statement, env map[string]TypeRef, consts map[string]constValue, storage *StructDecl, structs map[string]*StructDecl, enums map[string]*EnumDecl, ret *TypeRef, functions map[string]*FunctionDecl, inPure bool) error {
-	switch stmt.Kind {
-	case StatementLet:
-		typ, err := c.inferExprType(stmt.Value, env, storage, structs, enums, functions, inPure)
+func (c *Compiler) validateCallArgs(expr Expr, fn *FunctionDecl, env map[string]TypeRef, storage *StructDecl, structs map[string]*StructDecl, enums map[string]*EnumDecl, types map[string]*TypeDecl, functions map[string]*FunctionDecl, consts map[string]constValue, inPure bool) error {
+	if fn == nil {
+		return fail("E_CALL", expr.Pos, "nil function")
+	}
+	if len(expr.Args) != len(fn.Params) {
+		return fail("E_CALL_ARITY", expr.Pos, fmt.Sprintf("function %q expects %d args", fn.Name, len(fn.Params)))
+	}
+	for i, arg := range expr.Args {
+		argType, err := c.inferExprType(arg, env, storage, structs, enums, types, functions, consts, inPure)
 		if err != nil {
 			return err
 		}
+		if !compatibleTypes(argType, fn.Params[i].Type) {
+			return fail("E_CALL_TYPE", arg.Pos, fmt.Sprintf("argument %q has type %s, want %s", fn.Params[i].Name, argType.String(), fn.Params[i].Type.String()))
+		}
+	}
+	return nil
+}
+
+func (c *Compiler) inferBuiltinMethodCallType(expr Expr, env map[string]TypeRef, storage *StructDecl, structs map[string]*StructDecl, enums map[string]*EnumDecl, types map[string]*TypeDecl, functions map[string]*FunctionDecl, consts map[string]constValue, inPure bool) (TypeRef, bool, error) {
+	if len(expr.Path) < 2 {
+		return TypeRef{}, false, nil
+	}
+	method := strings.ToLower(expr.Path[len(expr.Path)-1])
+	receiverPath := append([]string(nil), expr.Path[:len(expr.Path)-1]...)
+	var receiverType TypeRef
+	var receiverKnown bool
+	if len(receiverPath) == 1 {
+		switch receiverPath[0] {
+		case "contract":
+			receiverType = TypeRef{Name: "ContractContext"}
+			receiverKnown = true
+		default:
+			if st, ok := structs[receiverPath[0]]; ok {
+				receiverType = TypeRef{Name: st.Name}
+				receiverKnown = true
+			} else if _, ok := types[receiverPath[0]]; ok {
+				receiverType = TypeRef{Name: receiverPath[0]}
+				receiverKnown = true
+			} else if _, ok := enums[receiverPath[0]]; ok {
+				receiverType = TypeRef{Name: receiverPath[0]}
+				receiverKnown = true
+			} else if typ, ok := env[receiverPath[0]]; ok {
+				receiverType = typ
+				receiverKnown = true
+			} else if desc, ok := standards.DefaultRegistry().Find(receiverPath[0]); ok {
+				receiverType = TypeRef{Name: desc.Name}
+				receiverKnown = true
+			}
+		}
+	}
+	if !receiverKnown {
+		if typ, err := c.resolvePathType(receiverPath, env, storage, structs, enums, types, expr.Pos); err == nil {
+			receiverType = typ
+			receiverKnown = true
+		}
+	}
+	receiverType = resolveSingleMemberTypeRef(receiverType, types)
+
+	mapMethodType := func() (TypeRef, TypeRef, bool) {
+		if !receiverKnown || !isMapFamilyType(receiverType.Name) {
+			return TypeRef{}, TypeRef{}, false
+		}
+		keyType := TypeRef{Name: "bytes"}
+		valueType := TypeRef{Name: "bytes"}
+		if len(receiverType.Args) > 0 {
+			keyType = receiverType.Args[0]
+		}
+		if len(receiverType.Args) > 1 {
+			valueType = receiverType.Args[1]
+		}
+		return keyType, valueType, true
+	}
+
+	validateArity := func(expected int) (TypeRef, bool) {
+		if len(expr.Args) != expected {
+			return TypeRef{}, false
+		}
+		return receiverType, true
+	}
+
+	// pureMutation reports a purity-bypass error for a mutating builtin
+	// (setData/deleteData/save/touch and map set/delete) invoked from a @pure
+	// function or a @get getter/getter-block. This single guard covers every
+	// mutating builtin for both function and block forms.
+	pureMutation := func(op string) error {
+		return fail("E_PURE_MUTATION", expr.Pos, fmt.Sprintf("pure functions and getters cannot call %s, which mutates state", op))
+	}
+	switch method {
+	case "empty":
+		if len(expr.Args) != 0 {
+			return TypeRef{}, false, nil
+		}
+		if receiverKnown && isMapFamilyType(receiverType.Name) {
+			return receiverType, true, nil
+		}
+	case "fromsegment", "fromchunk", "fromstate", "fromhex", "frombase64":
+		if len(expr.Args) != 1 {
+			return TypeRef{}, false, nil
+		}
+		if receiverKnown {
+			return receiverType, true, nil
+		}
+		if len(receiverPath) == 1 {
+			return TypeRef{Name: receiverPath[0]}, true, nil
+		}
+	case "tochunk":
+		if len(expr.Args) != 0 {
+			return TypeRef{}, false, nil
+		}
+		if receiverKnown {
+			return TypeRef{Name: "Chunk"}, true, nil
+		}
+	case "hash":
+		if len(expr.Args) != 0 {
+			return TypeRef{}, false, nil
+		}
+		if receiverKnown {
+			return TypeRef{Name: "hash32"}, true, nil
+		}
+	case "bitshash":
+		if len(expr.Args) != 0 {
+			return TypeRef{}, false, nil
+		}
+		if receiverKnown {
+			return TypeRef{Name: "hash32"}, true, nil
+		}
+	case "len":
+		if len(expr.Args) != 0 {
+			return TypeRef{}, false, nil
+		}
+		if receiverKnown {
+			return TypeRef{Name: "u64"}, true, nil
+		}
+	case "get":
+		if len(expr.Args) != 1 {
+			return TypeRef{}, false, nil
+		}
+		keyType, valueType, ok := mapMethodType()
+		if !ok {
+			return TypeRef{}, false, nil
+		}
+		argType, err := c.inferExprType(expr.Args[0], env, storage, structs, enums, types, functions, consts, inPure)
+		if err != nil {
+			return TypeRef{}, false, nil
+		}
+		if !compatibleTypesResolved(argType, keyType, types) {
+			return TypeRef{}, false, nil
+		}
+		return TypeRef{Name: valueType.Name, Args: append([]TypeRef(nil), valueType.Args...), Optional: true}, true, nil
+	case "set":
+		if len(expr.Args) != 2 {
+			return TypeRef{}, false, nil
+		}
+		keyType, valueType, ok := mapMethodType()
+		if !ok {
+			return TypeRef{}, false, nil
+		}
+		if inPure {
+			return TypeRef{}, true, pureMutation("map set()")
+		}
+		keyArg, err := c.inferExprType(expr.Args[0], env, storage, structs, enums, types, functions, consts, inPure)
+		if err != nil {
+			return TypeRef{}, false, nil
+		}
+		if !compatibleTypesResolved(keyArg, keyType, types) {
+			return TypeRef{}, false, nil
+		}
+		valArg, err := c.inferExprType(expr.Args[1], env, storage, structs, enums, types, functions, consts, inPure)
+		if err != nil {
+			return TypeRef{}, false, nil
+		}
+		if !compatibleTypesResolved(valArg, valueType, types) {
+			return TypeRef{}, false, nil
+		}
+		return receiverType, true, nil
+	case "has":
+		if len(expr.Args) != 1 {
+			return TypeRef{}, false, nil
+		}
+		keyType, _, ok := mapMethodType()
+		if !ok {
+			return TypeRef{}, false, nil
+		}
+		argType, err := c.inferExprType(expr.Args[0], env, storage, structs, enums, types, functions, consts, inPure)
+		if err != nil {
+			return TypeRef{}, false, nil
+		}
+		if !compatibleTypesResolved(argType, keyType, types) {
+			return TypeRef{}, false, nil
+		}
+		return TypeRef{Name: "bool"}, true, nil
+	case "delete":
+		if len(expr.Args) != 1 {
+			return TypeRef{}, false, nil
+		}
+		keyType, _, ok := mapMethodType()
+		if !ok {
+			return TypeRef{}, false, nil
+		}
+		if inPure {
+			return TypeRef{}, true, pureMutation("map delete()")
+		}
+		argType, err := c.inferExprType(expr.Args[0], env, storage, structs, enums, types, functions, consts, inPure)
+		if err != nil {
+			return TypeRef{}, false, nil
+		}
+		if !compatibleTypesResolved(argType, keyType, types) {
+			return TypeRef{}, false, nil
+		}
+		return receiverType, true, nil
+	case "keys":
+		if len(expr.Args) != 1 {
+			return TypeRef{}, false, nil
+		}
+		keyType, _, ok := mapMethodType()
+		if !ok {
+			return TypeRef{}, false, nil
+		}
+		argType, err := c.inferExprType(expr.Args[0], env, storage, structs, enums, types, functions, consts, inPure)
+		if err != nil {
+			return TypeRef{}, false, nil
+		}
+		if !isNumericLikeType(argType, types) {
+			return TypeRef{}, false, nil
+		}
+		return TypeRef{Name: "List", Args: []TypeRef{keyType}}, true, nil
+	case "entries":
+		if len(expr.Args) != 1 {
+			return TypeRef{}, false, nil
+		}
+		keyType, valueType, ok := mapMethodType()
+		if !ok {
+			return TypeRef{}, false, nil
+		}
+		argType, err := c.inferExprType(expr.Args[0], env, storage, structs, enums, types, functions, consts, inPure)
+		if err != nil {
+			return TypeRef{}, false, nil
+		}
+		if !isNumericLikeType(argType, types) {
+			return TypeRef{}, false, nil
+		}
+		return TypeRef{Name: "List", Args: []TypeRef{{Name: "MapEntry", Args: []TypeRef{keyType, valueType}}}}, true, nil
+	case "getdata":
+		if _, ok := validateArity(0); ok {
+			return TypeRef{Name: "Chunk"}, true, nil
+		}
+	case "deletedata":
+		if _, ok := validateArity(0); ok {
+			if inPure {
+				return TypeRef{}, true, pureMutation("deleteData()")
+			}
+			return TypeRef{Name: "Chunk"}, true, nil
+		}
+	case "setdata":
+		if _, ok := validateArity(1); ok {
+			if inPure {
+				return TypeRef{}, true, pureMutation("setData()")
+			}
+			return TypeRef{Name: "Chunk"}, true, nil
+		}
+	case "touch", "save":
+		if _, ok := validateArity(0); ok {
+			if inPure {
+				return TypeRef{}, true, pureMutation(method + "()")
+			}
+			if receiverKnown {
+				return receiverType, true, nil
+			}
+			return TypeRef{Name: "u64"}, true, nil
+		}
+	case "isempty":
+		if _, ok := validateArity(0); ok {
+			return TypeRef{Name: "bool"}, true, nil
+		}
+	case "skipbouncedprefix":
+		if _, ok := validateArity(0); ok {
+			if receiverKnown {
+				return receiverType, true, nil
+			}
+			return TypeRef{Name: "Segment"}, true, nil
+		}
+	}
+	return TypeRef{}, false, nil
+}
+
+func (c *Compiler) validateStatement(stmt Statement, env map[string]TypeRef, mutables map[string]bool, scope map[string]struct{}, consts map[string]constValue, storage *StructDecl, structs map[string]*StructDecl, enums map[string]*EnumDecl, types map[string]*TypeDecl, ret *TypeRef, functions map[string]*FunctionDecl, inPure bool, loopDepth int) error {
+	switch stmt.Kind {
+	case StatementBinding:
+		if _, exists := scope[stmt.Name]; exists {
+			return fail("E_DUP_BINDING", stmt.Pos, fmt.Sprintf("duplicate binding %q in the same scope", stmt.Name))
+		}
+		typ, err := c.inferExprType(stmt.Value, env, storage, structs, enums, types, functions, consts, inPure)
+		if err != nil {
+			return err
+		}
+		scope[stmt.Name] = struct{}{}
 		env[stmt.Name] = typ
-		if value, ok := evalConstValue(stmt.Value, loweringEnv{params: map[string]int{}, consts: consts}, functions, map[string]bool{}); ok {
-			consts[stmt.Name] = value
+		if mutables == nil {
+			mutables = map[string]bool{}
+		}
+		mutables[stmt.Name] = stmt.Mutable
+		if !stmt.Mutable {
+			if value, ok := evalConstValue(stmt.Value, loweringEnv{params: map[string]int{}, consts: consts}, functions, map[string]bool{}); ok {
+				consts[stmt.Name] = value
+			}
 		}
 		return nil
 	case StatementSet:
 		if inPure {
-			return fail("E_PURE_MUTATION", stmt.Pos, "pure functions cannot write state")
+			return fail("E_PURE_MUTATION", stmt.Pos, "pure functions cannot write state or perform chain-visible side effects")
 		}
-		if len(stmt.Path) < 2 || stmt.Path[0] != "state" {
-			return fail("E_SET_PATH", stmt.Pos, "set statements must target state.<field>")
+		if len(stmt.Path) == 1 {
+			root := stmt.Path[0]
+			if isMutable, ok := mutables[root]; ok {
+				if !isMutable {
+					return fail("E_SET_IMMUTABLE", stmt.Pos, fmt.Sprintf("cannot assign to immutable binding %q", root))
+				}
+				typ, err := c.inferExprType(stmt.Value, env, storage, structs, enums, types, functions, consts, inPure)
+				if err != nil {
+					return err
+				}
+				if !compatibleTypesResolved(typ, env[root], types) {
+					return fail("E_SET_TYPE", stmt.Pos, fmt.Sprintf("cannot assign %s to %s", typ.String(), env[root].String()))
+				}
+				return nil
+			}
 		}
-		fieldType, ok := lookupStructField(storage, stmt.Path[1])
+		if len(stmt.Path) < 2 {
+			return fail("E_SET_PATH", stmt.Pos, "set statements must target state.<field> or a mutable local binding")
+		}
+		var targetStruct *StructDecl
+		if stmt.Path[0] == "state" {
+			targetStruct = storage
+		} else if rootType, ok := env[stmt.Path[0]]; ok {
+			targetStruct = structs[rootType.Name]
+		}
+		if targetStruct == nil {
+			// Resolve the write target through the binding environment: a
+			// self/receiver binding in a storage-type method, or a mutable
+			// local struct. NOTE: a bare `state.<field>` write in a genuinely
+			// storage-less contract is not hard-errored here because
+			// storage-type methods (`func Storage.method(self)`) desugar `self`
+			// to `state` while their storage struct is threaded separately, so
+			// the two cases are indistinguishable at this point; the lenient
+			// fall-through preserves valid storage methods.
+			if rootType, ok := env[stmt.Path[0]]; ok {
+				resolved := resolveSingleMemberTypeRef(rootType, types)
+				if st, isStruct := structs[resolved.Name]; isStruct {
+					targetStruct = st
+				} else {
+					return fail("E_SET_TARGET", stmt.Pos, fmt.Sprintf("cannot assign to %q: %s is not an indexable struct", joinPath(stmt.Path), rootType.String()))
+				}
+			} else {
+				_, err := c.inferExprType(stmt.Value, env, storage, structs, enums, types, functions, consts, inPure)
+				return err
+			}
+		}
+		fieldType, ok := lookupStructField(targetStruct, stmt.Path[1])
 		if !ok {
-			return fail("E_SET_FIELD", stmt.Pos, fmt.Sprintf("storage field %q not found", stmt.Path[1]))
+			return fail("E_SET_FIELD", stmt.Pos, fmt.Sprintf("field %q not found on %s", stmt.Path[1], targetStruct.Name))
 		}
-		typ, err := c.inferExprType(stmt.Value, env, storage, structs, enums, functions, inPure)
+		typ, err := c.inferExprType(stmt.Value, env, storage, structs, enums, types, functions, consts, inPure)
 		if err != nil {
 			return err
 		}
-		if !compatibleTypes(typ, fieldType) {
+		if !compatibleTypesResolved(typ, fieldType, types) {
 			return fail("E_SET_TYPE", stmt.Pos, fmt.Sprintf("cannot assign %s to %s", typ.String(), fieldType.String()))
 		}
 		return nil
 	case StatementEmit:
 		if inPure {
-			return fail("E_PURE_EFFECT", stmt.Pos, "pure functions cannot emit events")
+			return fail("E_PURE_EFFECT", stmt.Pos, "pure functions cannot emit events or perform chain-visible side effects")
 		}
 		return nil
+	case StatementAssert:
+		_, err := c.inferExprType(stmt.Value, env, storage, structs, enums, types, functions, consts, inPure)
+		return err
+	case StatementThrow:
+		_, err := c.inferExprType(stmt.Value, env, storage, structs, enums, types, functions, consts, inPure)
+		return err
+	case StatementBreak, StatementContinue:
+		if loopDepth == 0 {
+			return fail("E_LOOP_CTRL", stmt.Pos, fmt.Sprintf("%s is only allowed inside a loop", stmt.Kind))
+		}
+		return nil
+	case StatementExpr:
+		_, err := c.inferExprType(stmt.Value, env, storage, structs, enums, types, functions, consts, inPure)
+		return err
 	case StatementReturn:
-		typ, err := c.inferExprType(stmt.Value, env, storage, structs, enums, functions, inPure)
+		typ, err := c.inferExprType(stmt.Value, env, storage, structs, enums, types, functions, consts, inPure)
 		if err != nil {
 			return err
 		}
-		if ret != nil && !compatibleTypes(typ, *ret) {
+		if ret != nil && !compatibleTypesResolved(typ, *ret, types) {
 			return fail("E_RETURN_TYPE", stmt.Pos, fmt.Sprintf("return type %s does not match %s", typ.String(), ret.String()))
 		}
 		return nil
 	case StatementRefund, StatementSend, StatementSelf:
 		if inPure {
-			return fail("E_PURE_EFFECT", stmt.Pos, "pure functions cannot send/refund/schedule self")
+			return fail("E_PURE_EFFECT", stmt.Pos, "pure functions cannot send/refund/schedule self or perform chain-visible side effects")
 		}
 		return nil
 	case StatementIf:
-		typ, err := c.inferExprType(stmt.Value, env, storage, structs, enums, functions, inPure)
+		typ, err := c.inferExprType(stmt.Value, env, storage, structs, enums, types, functions, consts, inPure)
 		if err != nil {
 			return err
 		}
@@ -789,46 +1658,110 @@ func (c *Compiler) validateStatement(stmt Statement, env map[string]TypeRef, con
 			return fail("E_IF_COND", stmt.Pos, "if condition must be bool")
 		}
 		thenEnv := cloneTypeEnv(env)
+		thenMutables := cloneBoolEnv(mutables)
 		thenConsts := cloneConstEnv(consts)
+		thenScope := map[string]struct{}{}
 		for _, inner := range stmt.Then {
-			if err := c.validateStatement(inner, thenEnv, thenConsts, storage, structs, enums, ret, functions, inPure); err != nil {
+			if err := c.validateStatement(inner, thenEnv, thenMutables, thenScope, thenConsts, storage, structs, enums, types, ret, functions, inPure, loopDepth); err != nil {
 				return err
 			}
 		}
 		elseEnv := cloneTypeEnv(env)
+		elseMutables := cloneBoolEnv(mutables)
 		elseConsts := cloneConstEnv(consts)
+		elseScope := map[string]struct{}{}
 		for _, inner := range stmt.Else {
-			if err := c.validateStatement(inner, elseEnv, elseConsts, storage, structs, enums, ret, functions, inPure); err != nil {
+			if err := c.validateStatement(inner, elseEnv, elseMutables, elseScope, elseConsts, storage, structs, enums, types, ret, functions, inPure, loopDepth); err != nil {
+				return err
+			}
+		}
+		return nil
+	case StatementWhile:
+		typ, err := c.inferExprType(stmt.Value, env, storage, structs, enums, types, functions, consts, inPure)
+		if err != nil {
+			return err
+		}
+		if !strings.EqualFold(typ.Name, "bool") {
+			return fail("E_WHILE_COND", stmt.Pos, "while condition must be bool")
+		}
+		bodyEnv := cloneTypeEnv(env)
+		bodyMutables := cloneBoolEnv(mutables)
+		bodyConsts := cloneConstEnv(consts)
+		bodyScope := map[string]struct{}{}
+		for _, inner := range stmt.Then {
+			if err := c.validateStatement(inner, bodyEnv, bodyMutables, bodyScope, bodyConsts, storage, structs, enums, types, ret, functions, inPure, loopDepth+1); err != nil {
+				return err
+			}
+		}
+		return nil
+	case StatementDo:
+		bodyEnv := cloneTypeEnv(env)
+		bodyMutables := cloneBoolEnv(mutables)
+		bodyConsts := cloneConstEnv(consts)
+		bodyScope := map[string]struct{}{}
+		for _, inner := range stmt.Then {
+			if err := c.validateStatement(inner, bodyEnv, bodyMutables, bodyScope, bodyConsts, storage, structs, enums, types, ret, functions, inPure, loopDepth+1); err != nil {
+				return err
+			}
+		}
+		typ, err := c.inferExprType(stmt.Value, env, storage, structs, enums, types, functions, consts, inPure)
+		if err != nil {
+			return err
+		}
+		if !strings.EqualFold(typ.Name, "bool") {
+			return fail("E_DO_WHILE_COND", stmt.Pos, "do while condition must be bool")
+		}
+		return nil
+	case StatementRepeat:
+		countTyp, err := c.inferExprType(stmt.Value, env, storage, structs, enums, types, functions, consts, inPure)
+		if err != nil {
+			return err
+		}
+		if !isNumericLikeType(countTyp, types) {
+			return fail("E_REPEAT_COUNT", stmt.Pos, "repeat count must be numeric")
+		}
+		bodyEnv := cloneTypeEnv(env)
+		bodyMutables := cloneBoolEnv(mutables)
+		bodyConsts := cloneConstEnv(consts)
+		bodyScope := map[string]struct{}{}
+		for _, inner := range stmt.Then {
+			if err := c.validateStatement(inner, bodyEnv, bodyMutables, bodyScope, bodyConsts, storage, structs, enums, types, ret, functions, inPure, loopDepth+1); err != nil {
 				return err
 			}
 		}
 		return nil
 	case StatementMatch:
-		scrutineeType, err := c.inferExprType(stmt.Value, env, storage, structs, enums, functions, inPure)
+		scrutineeType, err := c.inferExprType(stmt.Value, env, storage, structs, enums, types, functions, consts, inPure)
 		if err != nil {
 			return err
 		}
-		if err := c.validateMatchStatement(stmt, scrutineeType, env, consts, storage, structs, enums, ret, functions, inPure); err != nil {
+		if err := c.validateMatchStatement(stmt, scrutineeType, env, mutables, scope, consts, storage, structs, enums, types, ret, functions, inPure, loopDepth); err != nil {
 			return err
 		}
 		return nil
 	case StatementFor:
-		startTyp, err := c.inferExprType(stmt.Start, env, storage, structs, enums, functions, inPure)
+		startTyp, err := c.inferExprType(stmt.Start, env, storage, structs, enums, types, functions, consts, inPure)
 		if err != nil {
 			return err
 		}
-		endTyp, err := c.inferExprType(stmt.End, env, storage, structs, enums, functions, inPure)
+		endTyp, err := c.inferExprType(stmt.End, env, storage, structs, enums, types, functions, consts, inPure)
 		if err != nil {
 			return err
 		}
 		if !isNumericType(startTyp) || !isNumericType(endTyp) {
 			return fail("E_FOR_BOUNDS", stmt.Pos, "for bounds must be numeric")
 		}
+		if _, exists := scope[stmt.Index]; exists {
+			return fail("E_DUP_BINDING", stmt.Pos, fmt.Sprintf("duplicate binding %q in the same scope", stmt.Index))
+		}
 		bodyEnv := cloneTypeEnv(env)
+		bodyMutables := cloneBoolEnv(mutables)
 		bodyConsts := cloneConstEnv(consts)
+		bodyScope := map[string]struct{}{stmt.Index: struct{}{}}
 		bodyEnv[stmt.Index] = TypeRef{Name: "u64"}
+		bodyMutables[stmt.Index] = false
 		for _, inner := range stmt.Then {
-			if err := c.validateStatement(inner, bodyEnv, bodyConsts, storage, structs, enums, ret, functions, inPure); err != nil {
+			if err := c.validateStatement(inner, bodyEnv, bodyMutables, bodyScope, bodyConsts, storage, structs, enums, types, ret, functions, inPure, loopDepth+1); err != nil {
 				return err
 			}
 		}
@@ -838,10 +1771,79 @@ func (c *Compiler) validateStatement(stmt Statement, env map[string]TypeRef, con
 	}
 }
 
-func (c *Compiler) validateMatchStatement(stmt Statement, scrutineeType TypeRef, env map[string]TypeRef, consts map[string]constValue, storage *StructDecl, structs map[string]*StructDecl, enums map[string]*EnumDecl, ret *TypeRef, functions map[string]*FunctionDecl, inPure bool) error {
-	exhaustive := false
-	covered := map[string]struct{}{}
+func (c *Compiler) validateMatchStatement(stmt Statement, scrutineeType TypeRef, env map[string]TypeRef, mutables map[string]bool, scope map[string]struct{}, consts map[string]constValue, storage *StructDecl, structs map[string]*StructDecl, enums map[string]*EnumDecl, types map[string]*TypeDecl, ret *TypeRef, functions map[string]*FunctionDecl, inPure bool, loopDepth int) error {
+	if td, ok := types[scrutineeType.Name]; ok {
+		members, err := c.expandTypeDeclMembers(td.Name, types, map[string]bool{})
+		if err != nil {
+			return err
+		}
+		if len(members) == 0 {
+			return fail("E_MATCH_TYPE", stmt.Pos, fmt.Sprintf("type %s has no matchable members", td.Name))
+		}
+		covered := map[string]struct{}{}
+		exhaustive := false
+		for _, arm := range stmt.Arms {
+			switch arm.Pattern.Kind {
+			case PatternWildcard:
+				exhaustive = true
+			case PatternName:
+				patternName := patternTail(arm.Pattern.Name)
+				found := false
+				var matched TypeRef
+				for _, candidate := range members {
+					if candidate.Name == patternName {
+						matched = candidate
+						found = true
+						break
+					}
+				}
+				if !found {
+					return fail("E_MATCH_VARIANT", arm.Pos, fmt.Sprintf("type %s has no member %q", td.Name, arm.Pattern.Name))
+				}
+				if _, ok := covered[patternName]; ok {
+					return fail("E_MATCH_DUP", arm.Pos, fmt.Sprintf("duplicate match arm for %s.%s", td.Name, patternName))
+				}
+				covered[patternName] = struct{}{}
+				armEnv := cloneTypeEnv(env)
+				armMutables := cloneBoolEnv(mutables)
+				armConsts := cloneConstEnv(consts)
+				armScope := map[string]struct{}{}
+				if st, ok := structs[matched.Name]; ok {
+					if len(arm.Pattern.Bindings) > 0 && len(arm.Pattern.Bindings) != len(st.Fields) {
+						return fail("E_MATCH_BINDINGS", arm.Pos, fmt.Sprintf("match arm %s expects %d bindings, got %d", arm.Pattern.Name, len(st.Fields), len(arm.Pattern.Bindings)))
+					}
+					for i, bind := range arm.Pattern.Bindings {
+						if _, exists := armScope[bind]; exists {
+							return fail("E_MATCH_BINDINGS", arm.Pos, fmt.Sprintf("duplicate match binding %q", bind))
+						}
+						armEnv[bind] = st.Fields[i].Type
+						armMutables[bind] = false
+						armScope[bind] = struct{}{}
+					}
+				} else if len(arm.Pattern.Bindings) > 0 {
+					return fail("E_MATCH_BINDINGS", arm.Pos, fmt.Sprintf("match arm %s cannot destructure non-struct member %s", arm.Pattern.Name, matched.String()))
+				}
+				for _, inner := range arm.Body {
+					if err := c.validateStatement(inner, armEnv, armMutables, armScope, armConsts, storage, structs, enums, types, ret, functions, inPure, loopDepth); err != nil {
+						return err
+					}
+				}
+			default:
+				return fail("E_MATCH_PATTERN", arm.Pos, "unsupported pattern kind")
+			}
+		}
+		if !exhaustive {
+			for _, member := range members {
+				if _, ok := covered[member.Name]; !ok {
+					return fail("E_MATCH_EXHAUSTIVE", stmt.Pos, fmt.Sprintf("match on %s is missing variant %s", td.Name, member.Name))
+				}
+			}
+		}
+		return nil
+	}
 	if en, ok := enums[scrutineeType.Name]; ok {
+		exhaustive := false
+		covered := map[string]struct{}{}
 		for _, arm := range stmt.Arms {
 			switch arm.Pattern.Kind {
 			case PatternWildcard:
@@ -852,8 +1854,8 @@ func (c *Compiler) validateMatchStatement(stmt Statement, scrutineeType TypeRef,
 				var variant *VariantDecl
 				for i := range en.Variants {
 					if en.Variants[i].Name == patternName {
-						found = true
 						variant = &en.Variants[i]
+						found = true
 						break
 					}
 				}
@@ -864,16 +1866,27 @@ func (c *Compiler) validateMatchStatement(stmt Statement, scrutineeType TypeRef,
 					return fail("E_MATCH_DUP", arm.Pos, fmt.Sprintf("duplicate match arm for %s.%s", en.Name, patternName))
 				}
 				covered[patternName] = struct{}{}
-				if len(arm.Pattern.Bindings) != len(variant.Fields) {
-					return fail("E_MATCH_BINDINGS", arm.Pos, fmt.Sprintf("variant %s.%s expects %d bindings", en.Name, patternName, len(variant.Fields)))
-				}
 				armEnv := cloneTypeEnv(env)
+				armMutables := cloneBoolEnv(mutables)
 				armConsts := cloneConstEnv(consts)
-				for i, bind := range arm.Pattern.Bindings {
-					armEnv[bind] = variant.Fields[i].Type
+				armScope := map[string]struct{}{}
+				if variant != nil {
+					if len(arm.Pattern.Bindings) > 0 && len(arm.Pattern.Bindings) != len(variant.Fields) {
+						return fail("E_MATCH_BINDINGS", arm.Pos, fmt.Sprintf("match arm %s expects %d bindings, got %d", arm.Pattern.Name, len(variant.Fields), len(arm.Pattern.Bindings)))
+					}
+					for i, bind := range arm.Pattern.Bindings {
+						if _, exists := armScope[bind]; exists {
+							return fail("E_MATCH_BINDINGS", arm.Pos, fmt.Sprintf("duplicate match binding %q", bind))
+						}
+						armEnv[bind] = variant.Fields[i].Type
+						armMutables[bind] = false
+						armScope[bind] = struct{}{}
+					}
+				} else if len(arm.Pattern.Bindings) > 0 {
+					return fail("E_MATCH_BINDINGS", arm.Pos, fmt.Sprintf("match arm %s cannot destructure variant without fields", arm.Pattern.Name))
 				}
 				for _, inner := range arm.Body {
-					if err := c.validateStatement(inner, armEnv, armConsts, storage, structs, enums, ret, functions, inPure); err != nil {
+					if err := c.validateStatement(inner, armEnv, armMutables, armScope, armConsts, storage, structs, enums, types, ret, functions, inPure, loopDepth); err != nil {
 						return err
 					}
 				}
@@ -891,6 +1904,7 @@ func (c *Compiler) validateMatchStatement(stmt Statement, scrutineeType TypeRef,
 		return nil
 	}
 	if st, ok := structs[scrutineeType.Name]; ok {
+		exhaustive := false
 		for _, arm := range stmt.Arms {
 			switch arm.Pattern.Kind {
 			case PatternWildcard:
@@ -899,16 +1913,23 @@ func (c *Compiler) validateMatchStatement(stmt Statement, scrutineeType TypeRef,
 				if patternTail(arm.Pattern.Name) != st.Name {
 					return fail("E_MATCH_STRUCT", arm.Pos, fmt.Sprintf("struct match must use %s pattern or _", st.Name))
 				}
-				if len(arm.Pattern.Bindings) != len(st.Fields) {
-					return fail("E_MATCH_BINDINGS", arm.Pos, fmt.Sprintf("struct %s expects %d bindings", st.Name, len(st.Fields)))
-				}
 				armEnv := cloneTypeEnv(env)
+				armMutables := cloneBoolEnv(mutables)
 				armConsts := cloneConstEnv(consts)
+				armScope := map[string]struct{}{}
+				if len(arm.Pattern.Bindings) > 0 && len(arm.Pattern.Bindings) != len(st.Fields) {
+					return fail("E_MATCH_BINDINGS", arm.Pos, fmt.Sprintf("struct %s expects %d bindings, got %d", st.Name, len(st.Fields), len(arm.Pattern.Bindings)))
+				}
 				for i, bind := range arm.Pattern.Bindings {
+					if _, exists := armScope[bind]; exists {
+						return fail("E_MATCH_BINDINGS", arm.Pos, fmt.Sprintf("duplicate match binding %q", bind))
+					}
 					armEnv[bind] = st.Fields[i].Type
+					armMutables[bind] = false
+					armScope[bind] = struct{}{}
 				}
 				for _, inner := range arm.Body {
-					if err := c.validateStatement(inner, armEnv, armConsts, storage, structs, enums, ret, functions, inPure); err != nil {
+					if err := c.validateStatement(inner, armEnv, armMutables, armScope, armConsts, storage, structs, enums, types, ret, functions, inPure, loopDepth); err != nil {
 						return err
 					}
 				}
@@ -921,7 +1942,45 @@ func (c *Compiler) validateMatchStatement(stmt Statement, scrutineeType TypeRef,
 		}
 		return nil
 	}
-	return fail("E_MATCH_TYPE", stmt.Pos, fmt.Sprintf("match scrutinee %s is not an enum or struct", scrutineeType.String()))
+	return fail("E_MATCH_TYPE", stmt.Pos, fmt.Sprintf("match scrutinee %s is not an enum, union, or struct", scrutineeType.String()))
+}
+
+func (c *Compiler) expandTypeDeclMembers(name string, types map[string]*TypeDecl, stack map[string]bool) ([]TypeRef, error) {
+	td, ok := types[name]
+	if !ok {
+		return nil, nil
+	}
+	if stack[name] {
+		return nil, fail("E_TYPE_CYCLE", td.Pos, fmt.Sprintf("type %q forms a cycle", name))
+	}
+	stack[name] = true
+	defer delete(stack, name)
+	var out []TypeRef
+	seen := map[string]struct{}{}
+	for _, member := range td.Members {
+		if nested, ok := types[member.Name]; ok && !member.Optional && len(member.Args) == 0 {
+			nestedMembers, err := c.expandTypeDeclMembers(nested.Name, types, stack)
+			if err != nil {
+				return nil, err
+			}
+			for _, nestedMember := range nestedMembers {
+				key := nestedMember.String()
+				if _, exists := seen[key]; exists {
+					return nil, fail("E_DUP_TYPE_VARIANT", nestedMember.Pos, fmt.Sprintf("type %q has duplicate member %q", name, key))
+				}
+				seen[key] = struct{}{}
+				out = append(out, nestedMember)
+			}
+			continue
+		}
+		key := member.String()
+		if _, exists := seen[key]; exists {
+			return nil, fail("E_DUP_TYPE_VARIANT", member.Pos, fmt.Sprintf("type %q has duplicate member %q", name, key))
+		}
+		seen[key] = struct{}{}
+		out = append(out, member)
+	}
+	return out, nil
 }
 
 func cloneTypeEnv(env map[string]TypeRef) map[string]TypeRef {
@@ -932,6 +1991,46 @@ func cloneTypeEnv(env map[string]TypeRef) map[string]TypeRef {
 	return out
 }
 
+func cloneBoolEnv(env map[string]bool) map[string]bool {
+	out := make(map[string]bool, len(env))
+	for k, v := range env {
+		out[k] = v
+	}
+	return out
+}
+
+func statementContainsLoopControl(stmts []Statement) bool {
+	for _, stmt := range stmts {
+		if statementContainsLoopControlStmt(stmt) {
+			return true
+		}
+	}
+	return false
+}
+
+func statementContainsLoopControlStmt(stmt Statement) bool {
+	switch stmt.Kind {
+	case StatementBreak, StatementContinue:
+		return true
+	case StatementIf:
+		if statementContainsLoopControl(stmt.Then) {
+			return true
+		}
+		return statementContainsLoopControl(stmt.Else)
+	case StatementWhile, StatementDo, StatementRepeat, StatementFor:
+		if statementContainsLoopControl(stmt.Then) {
+			return true
+		}
+	case StatementMatch:
+		for _, arm := range stmt.Arms {
+			if statementContainsLoopControl(arm.Body) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func patternTail(name string) string {
 	if i := strings.LastIndex(name, "."); i >= 0 && i+1 < len(name) {
 		return name[i+1:]
@@ -940,9 +2039,15 @@ func patternTail(name string) string {
 }
 
 func validateFunctionRecursion(funcs []*FunctionDecl) error {
+	funcNames := make(map[string]bool, len(funcs))
+	for _, fn := range funcs {
+		if fn != nil {
+			funcNames[fn.Name] = true
+		}
+	}
 	callGraph := map[string][]string{}
 	for _, fn := range funcs {
-		callGraph[fn.Name] = append(callGraph[fn.Name], collectFunctionCallsFromStatements(fn.Body)...)
+		callGraph[fn.Name] = append(callGraph[fn.Name], collectFunctionCallsFromStatements(fn.Body, funcNames)...)
 	}
 	seen := map[string]bool{}
 	stack := map[string]bool{}
@@ -972,62 +2077,99 @@ func validateFunctionRecursion(funcs []*FunctionDecl) error {
 	return nil
 }
 
-func collectFunctionCallsFromStatements(stmts []Statement) []string {
+func collectFunctionCallsFromStatements(stmts []Statement, funcNames map[string]bool) []string {
 	var out []string
 	for _, stmt := range stmts {
-		out = append(out, collectFunctionCallsFromStatement(stmt)...)
+		out = append(out, collectFunctionCallsFromStatement(stmt, funcNames)...)
 	}
 	return out
 }
 
-func collectFunctionCallsFromStatement(stmt Statement) []string {
+func collectFunctionCallsFromStatement(stmt Statement, funcNames map[string]bool) []string {
 	var out []string
-	out = append(out, collectFunctionCallsFromExpr(stmt.Value)...)
-	out = append(out, collectFunctionCallsFromExpr(stmt.Start)...)
-	out = append(out, collectFunctionCallsFromExpr(stmt.End)...)
+	out = append(out, collectFunctionCallsFromExpr(stmt.Value, funcNames)...)
+	out = append(out, collectFunctionCallsFromExpr(stmt.Start, funcNames)...)
+	out = append(out, collectFunctionCallsFromExpr(stmt.End, funcNames)...)
 	for _, arg := range stmt.Args {
-		out = append(out, collectFunctionCallsFromExpr(arg)...)
+		out = append(out, collectFunctionCallsFromExpr(arg, funcNames)...)
 	}
 	for _, ex := range stmt.Extra {
-		out = append(out, collectFunctionCallsFromExpr(ex)...)
+		out = append(out, collectFunctionCallsFromExpr(ex, funcNames)...)
 	}
-	for _, inner := range stmt.Then {
-		out = append(out, collectFunctionCallsFromStatement(inner)...)
+	switch stmt.Kind {
+	case StatementIf, StatementWhile, StatementDo, StatementRepeat, StatementFor:
+		for _, inner := range stmt.Then {
+			out = append(out, collectFunctionCallsFromStatement(inner, funcNames)...)
+		}
 	}
-	for _, inner := range stmt.Else {
-		out = append(out, collectFunctionCallsFromStatement(inner)...)
+	if stmt.Kind == StatementIf {
+		for _, inner := range stmt.Else {
+			out = append(out, collectFunctionCallsFromStatement(inner, funcNames)...)
+		}
 	}
-	for _, arm := range stmt.Arms {
-		for _, inner := range arm.Body {
-			out = append(out, collectFunctionCallsFromStatement(inner)...)
+	if stmt.Kind == StatementMatch {
+		for _, arm := range stmt.Arms {
+			for _, inner := range arm.Body {
+				out = append(out, collectFunctionCallsFromStatement(inner, funcNames)...)
+			}
 		}
 	}
 	return out
 }
 
-func collectFunctionCallsFromExpr(expr Expr) []string {
+// builtinCallNames are call targets handled as intrinsics rather than user
+// functions. They are excluded from the recursion/purity call graph ONLY when
+// no user function shadows the name; otherwise a self-recursive user function
+// named e.g. `hash` would escape recursion detection.
+var builtinCallNames = map[string]struct{}{
+	"hash": {}, "len": {}, "ok": {}, "err": {},
+}
+
+func collectFunctionCallsFromExpr(expr Expr, funcNames map[string]bool) []string {
 	var out []string
 	switch expr.Kind {
 	case ExprCall:
-		if expr.Text != "hash" && expr.Text != "len" && expr.Text != "ok" && expr.Text != "err" {
-			out = append(out, expr.Text)
+		if len(expr.Path) == 1 {
+			name := expr.Text
+			_, isBuiltin := builtinCallNames[name]
+			if funcNames[name] || !isBuiltin {
+				out = append(out, name)
+			}
 		}
 		for _, arg := range expr.Args {
-			out = append(out, collectFunctionCallsFromExpr(arg)...)
+			out = append(out, collectFunctionCallsFromExpr(arg, funcNames)...)
 		}
 	case ExprBinary, ExprCompare, ExprLogic:
 		if expr.Left != nil {
-			out = append(out, collectFunctionCallsFromExpr(*expr.Left)...)
+			out = append(out, collectFunctionCallsFromExpr(*expr.Left, funcNames)...)
 		}
 		if expr.Right != nil {
-			out = append(out, collectFunctionCallsFromExpr(*expr.Right)...)
+			out = append(out, collectFunctionCallsFromExpr(*expr.Right, funcNames)...)
+		}
+	case ExprUnary:
+		if expr.Left != nil {
+			out = append(out, collectFunctionCallsFromExpr(*expr.Left, funcNames)...)
+		}
+	case ExprTernary:
+		if expr.Left != nil {
+			out = append(out, collectFunctionCallsFromExpr(*expr.Left, funcNames)...)
+		}
+		if expr.Right != nil {
+			out = append(out, collectFunctionCallsFromExpr(*expr.Right, funcNames)...)
+		}
+		if expr.Else != nil {
+			out = append(out, collectFunctionCallsFromExpr(*expr.Else, funcNames)...)
 		}
 	case ExprTry:
 		if expr.Left != nil {
-			out = append(out, collectFunctionCallsFromExpr(*expr.Left)...)
+			out = append(out, collectFunctionCallsFromExpr(*expr.Left, funcNames)...)
 		}
 		if expr.Else != nil {
-			out = append(out, collectFunctionCallsFromExpr(*expr.Else)...)
+			out = append(out, collectFunctionCallsFromExpr(*expr.Else, funcNames)...)
+		}
+	case ExprStruct:
+		for _, field := range expr.Fields {
+			out = append(out, collectFunctionCallsFromExpr(field.Value, funcNames)...)
 		}
 	}
 	return out
@@ -1041,22 +2183,62 @@ func (c *Compiler) buildEnv(params []ParamDecl, storage *StructDecl, structs map
 	if storage != nil {
 		env["state"] = TypeRef{Name: storage.Name}
 	}
+	env["contract"] = TypeRef{Name: "ContractContext"}
 	return env
 }
 
-func (c *Compiler) inferExprType(expr Expr, env map[string]TypeRef, storage *StructDecl, structs map[string]*StructDecl, enums map[string]*EnumDecl, functions map[string]*FunctionDecl, inPure bool) (TypeRef, error) {
+func (c *Compiler) buildMutableEnv(params []ParamDecl, hasStorage bool) map[string]bool {
+	mutables := map[string]bool{}
+	for _, param := range params {
+		mutables[param.Name] = false
+	}
+	if hasStorage {
+		mutables["state"] = false
+	}
+	mutables["contract"] = false
+	return mutables
+}
+
+func (c *Compiler) initialScope(params []ParamDecl, hasStorage bool) map[string]struct{} {
+	scope := map[string]struct{}{}
+	for _, param := range params {
+		scope[param.Name] = struct{}{}
+	}
+	if hasStorage {
+		scope["state"] = struct{}{}
+	}
+	scope["contract"] = struct{}{}
+	return scope
+}
+
+func (c *Compiler) inferExprType(expr Expr, env map[string]TypeRef, storage *StructDecl, structs map[string]*StructDecl, enums map[string]*EnumDecl, types map[string]*TypeDecl, functions map[string]*FunctionDecl, consts map[string]constValue, inPure bool) (TypeRef, error) {
 	switch expr.Kind {
 	case ExprNumber:
 		return TypeRef{Name: "u64"}, nil
 	case ExprString:
 		return TypeRef{Name: "string"}, nil
+	case ExprBytes:
+		return TypeRef{Name: "bytes"}, nil
 	case ExprBool:
 		return TypeRef{Name: "bool"}, nil
+	case ExprNull:
+		return TypeRef{Name: "null"}, nil
 	case ExprIdent:
 		if env != nil {
 			if typ, ok := env[expr.Text]; ok {
 				return typ, nil
 			}
+		}
+		if consts != nil {
+			if value, ok := consts[expr.Text]; ok {
+				return constValueType(value), nil
+			}
+		}
+		if _, ok := builtinSendModeValue(expr.Text); ok {
+			return TypeRef{Name: "u32"}, nil
+		}
+		if strings.HasPrefix(strings.ToUpper(expr.Text), "ERR_") {
+			return TypeRef{Name: "u64"}, nil
 		}
 		if fn, ok := functions[expr.Text]; ok && fn != nil {
 			return fn.ReturnType, nil
@@ -1072,18 +2254,138 @@ func (c *Compiler) inferExprType(expr Expr, env map[string]TypeRef, storage *Str
 				}
 			}
 		}
-		return c.resolvePathType(expr.Path, env, storage, structs, enums, expr.Pos)
+		return c.resolvePathType(expr.Path, env, storage, structs, enums, types, expr.Pos)
+	case ExprStruct:
+		if expr.Text != "" {
+			if isMapFamilyType(expr.Text) && len(expr.Fields) > 0 {
+				return TypeRef{}, fail("E_STRUCT", expr.Pos, "map literals do not support inline fields; use set() to populate a map")
+			}
+			return TypeRef{Name: expr.Text}, nil
+		}
+		if len(expr.Path) > 0 {
+			return TypeRef{Name: joinPath(expr.Path)}, nil
+		}
+		return TypeRef{Name: "struct"}, nil
+	case ExprUnary:
+		if expr.Left == nil {
+			return TypeRef{}, fail("E_UNARY", expr.Pos, "unary expression is missing operand")
+		}
+		operand, err := c.inferExprType(*expr.Left, env, storage, structs, enums, types, functions, consts, inPure)
+		if err != nil {
+			return TypeRef{}, err
+		}
+		switch expr.Op {
+		case "!":
+			if !strings.EqualFold(operand.Name, "bool") {
+				return TypeRef{}, fail("E_UNARY_TYPE", expr.Pos, "logical not requires bool operand")
+			}
+			return TypeRef{Name: "bool"}, nil
+		case "-", "~":
+			if !isNumericLikeType(operand, types) {
+				return TypeRef{}, fail("E_UNARY_TYPE", expr.Pos, fmt.Sprintf("unary %q requires numeric operand, got %s", expr.Op, operand.String()))
+			}
+			return operand, nil
+		default:
+			return TypeRef{}, fail("E_UNARY_OP", expr.Pos, fmt.Sprintf("unary %q is not supported", expr.Op))
+		}
 	case ExprCall:
+		if fn, ok := functions[joinPath(expr.Path)]; ok {
+			if inPure && !fn.Pure {
+				return TypeRef{}, fail("E_PURE_CALL", expr.Pos, fmt.Sprintf("pure functions cannot call impure function %q", fn.Name))
+			}
+			if err := c.validateCallArgs(expr, fn, env, storage, structs, enums, types, functions, consts, inPure); err != nil {
+				return TypeRef{}, err
+			}
+			return fn.ReturnType, nil
+		}
+		if ret, ok, err := c.inferBuiltinMethodCallType(expr, env, storage, structs, enums, types, functions, consts, inPure); err != nil {
+			return TypeRef{}, err
+		} else if ok {
+			return ret, nil
+		}
+		if st, ok := structs[expr.Text]; ok && len(expr.Args) >= 0 {
+			return TypeRef{Name: st.Name}, nil
+		}
+		if _, ok := types[expr.Text]; ok && len(expr.Args) >= 0 {
+			return TypeRef{Name: expr.Text}, nil
+		}
 		switch strings.ToLower(expr.Text) {
+		case "buildmessage":
+			if len(expr.Args) != 1 {
+				return TypeRef{}, fail("E_CALL_ARITY", expr.Pos, "buildMessage() requires one struct argument")
+			}
+			if expr.Args[0].Kind != ExprStruct {
+				return TypeRef{}, fail("E_CALL_TYPE", expr.Args[0].Pos, "buildMessage() requires a struct literal argument")
+			}
+			if err := validateBuildMessageFields(expr.Args[0]); err != nil {
+				return TypeRef{}, err
+			}
+			return TypeRef{Name: "MessageEnvelope"}, nil
+		case "wrapmessage":
+			if len(expr.Args) != 1 {
+				return TypeRef{}, fail("E_CALL_ARITY", expr.Pos, "wrapMessage() requires one struct literal argument")
+			}
+			if expr.Args[0].Kind != ExprStruct || expr.Args[0].Text == "" {
+				return TypeRef{}, fail("E_CALL_TYPE", expr.Args[0].Pos, "wrapMessage() requires a struct literal argument")
+			}
+			st, ok := structs[expr.Args[0].Text]
+			if !ok || !structHasAnnotation(st, "@message") {
+				return TypeRef{}, fail("E_WRAP_MESSAGE", expr.Pos, fmt.Sprintf("wrapMessage() requires a @message-annotated struct literal, got %q", expr.Args[0].Text))
+			}
+			return TypeRef{Name: st.Name}, nil
+		case "getaddress":
+			if len(expr.Args) != 0 {
+				return TypeRef{}, fail("E_CALL_ARITY", expr.Pos, "getAddress() requires no arguments")
+			}
+			return TypeRef{Name: "address"}, nil
+		case "address":
+			if len(expr.Args) != 1 {
+				return TypeRef{}, fail("E_CALL_ARITY", expr.Pos, "address() requires one argument")
+			}
+			if expr.Args[0].Kind != ExprString {
+				return TypeRef{}, fail("E_CALL_TYPE", expr.Args[0].Pos, "address() requires a string literal argument")
+			}
+			return TypeRef{Name: "address"}, nil
+		case "getoriginalbalance", "getbalance":
+			return TypeRef{Name: "coins"}, nil
+		case "getattachedvalue":
+			return TypeRef{Name: "coins"}, nil
+		case "counterfactualaddress", "autodeployaddress":
+			if len(expr.Args) != 1 {
+				return TypeRef{}, fail("E_CALL_ARITY", expr.Pos, expr.Text+"() requires one struct argument")
+			}
+			if expr.Args[0].Kind != ExprStruct {
+				return TypeRef{}, fail("E_CALL_TYPE", expr.Args[0].Pos, expr.Text+"() requires a struct literal argument")
+			}
+			if err := validateAddressBuilderFields(expr.Args[0], expr.Text); err != nil {
+				return TypeRef{}, err
+			}
+			return TypeRef{Name: "address"}, nil
 		case "hash":
+			if len(expr.Args) != 1 {
+				return TypeRef{}, fail("E_CALL_ARITY", expr.Pos, "hash() requires one argument")
+			}
 			return TypeRef{Name: "hash32"}, nil
+		case "issignaturevalid", "verifysignature":
+			if len(expr.Args) != 3 {
+				return TypeRef{}, fail("E_CALL_ARITY", expr.Pos, expr.Text+"() requires three arguments")
+			}
+			return TypeRef{Name: "bool"}, nil
 		case "len":
 			return TypeRef{Name: "u64"}, nil
+		case "aet":
+			return TypeRef{Name: "Coins"}, nil
+		case "now":
+			return TypeRef{Name: "i64"}, nil
+		case "logicaltime", "currentblocklogicaltime":
+			return TypeRef{Name: "u64"}, nil
+		case "random":
+			return TypeRef{Name: "u256"}, nil
 		case "ok":
 			if len(expr.Args) != 1 {
 				return TypeRef{}, fail("E_CALL_ARITY", expr.Pos, "ok() requires one argument")
 			}
-			argType, err := c.inferExprType(expr.Args[0], env, storage, structs, enums, functions, inPure)
+			argType, err := c.inferExprType(expr.Args[0], env, storage, structs, enums, types, functions, consts, inPure)
 			if err != nil {
 				return TypeRef{}, err
 			}
@@ -1092,22 +2394,25 @@ func (c *Compiler) inferExprType(expr Expr, env map[string]TypeRef, storage *Str
 			if len(expr.Args) != 1 {
 				return TypeRef{}, fail("E_CALL_ARITY", expr.Pos, "err() requires one argument")
 			}
-			argType, err := c.inferExprType(expr.Args[0], env, storage, structs, enums, functions, inPure)
+			argType, err := c.inferExprType(expr.Args[0], env, storage, structs, enums, types, functions, consts, inPure)
 			if err != nil {
 				return TypeRef{}, err
 			}
 			return TypeRef{Name: "Result", Args: []TypeRef{{Name: "u64"}, argType}}, nil
 		default:
 			if fn, ok := functions[expr.Text]; ok {
+				if inPure && !fn.Pure {
+					return TypeRef{}, fail("E_PURE_CALL", expr.Pos, fmt.Sprintf("pure functions cannot call impure function %q", fn.Name))
+				}
 				if len(expr.Args) != len(fn.Params) {
 					return TypeRef{}, fail("E_CALL_ARITY", expr.Pos, fmt.Sprintf("function %q expects %d args", fn.Name, len(fn.Params)))
 				}
 				for i, arg := range expr.Args {
-					argType, err := c.inferExprType(arg, env, storage, structs, enums, functions, inPure)
+					argType, err := c.inferExprType(arg, env, storage, structs, enums, types, functions, consts, inPure)
 					if err != nil {
 						return TypeRef{}, err
 					}
-					if !compatibleTypes(argType, fn.Params[i].Type) {
+					if !compatibleTypesResolved(argType, fn.Params[i].Type, types) {
 						return TypeRef{}, fail("E_CALL_TYPE", arg.Pos, fmt.Sprintf("argument %q has type %s, want %s", fn.Params[i].Name, argType.String(), fn.Params[i].Type.String()))
 					}
 				}
@@ -1116,34 +2421,95 @@ func (c *Compiler) inferExprType(expr Expr, env map[string]TypeRef, storage *Str
 			return TypeRef{}, fail("E_CALL", expr.Pos, fmt.Sprintf("unknown function %q", expr.Text))
 		}
 	case ExprBinary:
-		left, err := c.inferExprType(*expr.Left, env, storage, structs, enums, functions, inPure)
+		left, err := c.inferExprType(*expr.Left, env, storage, structs, enums, types, functions, consts, inPure)
 		if err != nil {
 			return TypeRef{}, err
 		}
-		right, err := c.inferExprType(*expr.Right, env, storage, structs, enums, functions, inPure)
+		right, err := c.inferExprType(*expr.Right, env, storage, structs, enums, types, functions, consts, inPure)
 		if err != nil {
 			return TypeRef{}, err
 		}
-		if !compatibleTypes(left, right) {
-			return TypeRef{}, fail("E_BINARY_TYPE", expr.Pos, fmt.Sprintf("binary %q requires matching types, got %s and %s", expr.Op, left.String(), right.String()))
+		switch expr.Op {
+		case "+":
+			if !isNumericLikeType(left, types) || !isNumericLikeType(right, types) {
+				return TypeRef{}, fail("E_BINARY_TYPE", expr.Pos, fmt.Sprintf("binary %q requires numeric operands", expr.Op))
+			}
+			return left, nil
+		case "-":
+			if !isNumericLikeType(left, types) || !isNumericLikeType(right, types) {
+				return TypeRef{}, fail("E_BINARY_TYPE", expr.Pos, fmt.Sprintf("binary %q requires numeric operands", expr.Op))
+			}
+			return left, nil
+		case "*", "/", "%", "<<", ">>", "&", "|", "^":
+			if !isNumericLikeType(left, types) || !isNumericLikeType(right, types) {
+				return TypeRef{}, fail("E_BINARY_TYPE", expr.Pos, fmt.Sprintf("binary %q requires numeric operands", expr.Op))
+			}
+			return left, nil
+		case "??":
+			if compatibleTypesResolved(left, right, types) {
+				return left, nil
+			}
+			return right, nil
+		case "==", "!=", "<", "<=", ">", ">=", "and", "or":
+			return TypeRef{Name: "bool"}, nil
+		default:
+			return TypeRef{}, fail("E_BINARY_OP", expr.Pos, fmt.Sprintf("binary %q is not supported", expr.Op))
 		}
-		if !isNumericType(left) && !strings.EqualFold(left.Name, "string") && !strings.EqualFold(left.Name, "bytes") {
-			return TypeRef{}, fail("E_BINARY_TYPE", expr.Pos, fmt.Sprintf("binary %q not supported on %s", expr.Op, left.String()))
+	case ExprCompare:
+		if expr.Op == "<=>" {
+			return TypeRef{Name: "i64"}, nil
 		}
-		return left, nil
-	case ExprCompare, ExprLogic:
 		return TypeRef{Name: "bool"}, nil
+	case ExprLogic:
+		left, err := c.inferExprType(*expr.Left, env, storage, structs, enums, types, functions, consts, inPure)
+		if err != nil {
+			return TypeRef{}, err
+		}
+		right, err := c.inferExprType(*expr.Right, env, storage, structs, enums, types, functions, consts, inPure)
+		if err != nil {
+			return TypeRef{}, err
+		}
+		if !strings.EqualFold(left.Name, "bool") || !strings.EqualFold(right.Name, "bool") {
+			return TypeRef{}, fail("E_LOGIC_TYPE", expr.Pos, "logical operators require bool operands")
+		}
+		return TypeRef{Name: "bool"}, nil
+	case ExprTernary:
+		if expr.Left == nil || expr.Right == nil || expr.Else == nil {
+			return TypeRef{}, fail("E_TERNARY", expr.Pos, "ternary expression is incomplete")
+		}
+		condType, err := c.inferExprType(*expr.Left, env, storage, structs, enums, types, functions, consts, inPure)
+		if err != nil {
+			return TypeRef{}, err
+		}
+		if !strings.EqualFold(condType.Name, "bool") {
+			return TypeRef{}, fail("E_TERNARY_COND", expr.Pos, "ternary condition must be bool")
+		}
+		thenType, err := c.inferExprType(*expr.Right, env, storage, structs, enums, types, functions, consts, inPure)
+		if err != nil {
+			return TypeRef{}, err
+		}
+		elseType, err := c.inferExprType(*expr.Else, env, storage, structs, enums, types, functions, consts, inPure)
+		if err != nil {
+			return TypeRef{}, err
+		}
+		if compatibleTypesResolved(thenType, elseType, types) {
+			return thenType, nil
+		}
+		if compatibleTypesResolved(elseType, thenType, types) {
+			return elseType, nil
+		}
+		return TypeRef{}, fail("E_TERNARY_TYPE", expr.Pos, fmt.Sprintf("ternary branches must have matching types, got %s and %s", thenType.String(), elseType.String()))
 	case ExprTry:
-		t, err := c.inferExprType(*expr.Left, env, storage, structs, enums, functions, inPure)
+		t, err := c.inferExprType(*expr.Left, env, storage, structs, enums, types, functions, consts, inPure)
 		if err != nil {
 			return TypeRef{}, err
 		}
 		if expr.Else != nil {
-			t2, err := c.inferExprType(*expr.Else, env, storage, structs, enums, functions, inPure)
+			t2, err := c.inferExprType(*expr.Else, env, storage, structs, enums, types, functions, consts, inPure)
 			if err != nil {
 				return TypeRef{}, err
 			}
-			if !compatibleTypes(t, t2) {
+			if !compatibleTypesResolved(t, t2, types) {
 				return TypeRef{}, fail("E_TRY_TYPE", expr.Pos, "try branches must have matching types")
 			}
 			return t, nil
@@ -1154,7 +2520,65 @@ func (c *Compiler) inferExprType(expr Expr, env map[string]TypeRef, storage *Str
 	}
 }
 
-func (c *Compiler) resolvePathType(path []string, env map[string]TypeRef, storage *StructDecl, structs map[string]*StructDecl, enums map[string]*EnumDecl, pos Position) (TypeRef, error) {
+func validateBuildMessageFields(expr Expr) error {
+	allowed := map[string]struct{}{
+		"bounce":    {},
+		"amount":    {},
+		"receiver":  {},
+		"body":      {},
+		"opcode":    {},
+		"queryId":   {},
+		"stateInit": {},
+	}
+	seen := map[string]struct{}{}
+	for _, field := range expr.Fields {
+		if _, ok := allowed[field.Name]; !ok {
+			return fail("E_BUILD_MESSAGE_FIELD", field.Pos, fmt.Sprintf("unknown buildMessage field %q", field.Name))
+		}
+		if _, ok := seen[field.Name]; ok {
+			return fail("E_BUILD_MESSAGE_FIELD", field.Pos, fmt.Sprintf("duplicate buildMessage field %q", field.Name))
+		}
+		seen[field.Name] = struct{}{}
+	}
+	if _, ok := seen["receiver"]; !ok {
+		return fail("E_BUILD_MESSAGE_FIELD", expr.Pos, "buildMessage requires receiver")
+	}
+	if _, ok := seen["body"]; !ok {
+		return fail("E_BUILD_MESSAGE_FIELD", expr.Pos, "buildMessage requires body")
+	}
+	return nil
+}
+
+func validateAddressBuilderFields(expr Expr, name string) error {
+	allowed := map[string]struct{}{
+		"code":      {},
+		"data":      {},
+		"salt":      {},
+		"deployer":  {},
+		"chainId":   {},
+		"namespace": {},
+		"balance":   {},
+	}
+	seen := map[string]struct{}{}
+	for _, field := range expr.Fields {
+		if _, ok := allowed[field.Name]; !ok {
+			return fail("E_ADDRESS_BUILDER_FIELD", field.Pos, fmt.Sprintf("unknown %s field %q", name, field.Name))
+		}
+		if _, ok := seen[field.Name]; ok {
+			return fail("E_ADDRESS_BUILDER_FIELD", field.Pos, fmt.Sprintf("duplicate %s field %q", name, field.Name))
+		}
+		seen[field.Name] = struct{}{}
+	}
+	if _, ok := seen["code"]; !ok {
+		return fail("E_ADDRESS_BUILDER_FIELD", expr.Pos, fmt.Sprintf("%s requires code", name))
+	}
+	if _, ok := seen["data"]; !ok {
+		return fail("E_ADDRESS_BUILDER_FIELD", expr.Pos, fmt.Sprintf("%s requires data", name))
+	}
+	return nil
+}
+
+func (c *Compiler) resolvePathType(path []string, env map[string]TypeRef, storage *StructDecl, structs map[string]*StructDecl, enums map[string]*EnumDecl, types map[string]*TypeDecl, pos Position) (TypeRef, error) {
 	if len(path) == 0 {
 		return TypeRef{}, fail("E_PATH", pos, "empty path")
 	}
@@ -1167,13 +2591,49 @@ func (c *Compiler) resolvePathType(path []string, env map[string]TypeRef, storag
 	}
 	current := typ
 	for i := 1; i < len(path); i++ {
-		if current.Name == storage.Name {
+		if storage != nil && current.Name == storage.Name {
 			fieldType, ok := lookupStructField(storage, path[i])
 			if !ok {
 				return TypeRef{}, fail("E_PATH_FIELD", pos, fmt.Sprintf("storage field %q not found", path[i]))
 			}
 			current = fieldType
 			continue
+		}
+		if fieldType, ok := builtinContextFieldType(current, path[i]); ok {
+			current = fieldType
+			continue
+		}
+		if td, ok := types[current.Name]; ok {
+			members, err := c.expandTypeDeclMembers(td.Name, types, map[string]bool{})
+			if err != nil {
+				return TypeRef{}, err
+			}
+			var matched TypeRef
+			found := false
+			compatible := true
+			for _, member := range members {
+				st, ok := structs[member.Name]
+				if !ok {
+					continue
+				}
+				fieldType, ok := lookupStructField(st, path[i])
+				if !ok {
+					continue
+				}
+				if !found {
+					matched = fieldType
+					found = true
+					continue
+				}
+				if !compatibleTypesResolved(fieldType, matched, types) {
+					compatible = false
+					break
+				}
+			}
+			if found && compatible {
+				current = matched
+				continue
+			}
 		}
 		if st, ok := structs[current.Name]; ok {
 			fieldType, ok := lookupStructField(st, path[i])
@@ -1188,6 +2648,62 @@ func (c *Compiler) resolvePathType(path []string, env map[string]TypeRef, storag
 	return current, nil
 }
 
+func builtinContextFieldType(typ TypeRef, field string) (TypeRef, bool) {
+	switch strings.ToLower(typ.Name) {
+	case "inmessage":
+		switch field {
+		case "body":
+			return TypeRef{Name: "Segment"}, true
+		case "sender":
+			return TypeRef{Name: "address"}, true
+		case "senderAddress":
+			return TypeRef{Name: "address"}, true
+		case "value":
+			return TypeRef{Name: "coins"}, true
+		case "valueCoins":
+			return TypeRef{Name: "coins"}, true
+		case "opcode":
+			return TypeRef{Name: "u32"}, true
+		case "queryId":
+			return TypeRef{Name: "u64"}, true
+		case "logicalTime":
+			return TypeRef{Name: "u64"}, true
+		case "attachedValue":
+			return TypeRef{Name: "coins"}, true
+		case "originalForwardFee":
+			return TypeRef{Name: "coins"}, true
+		}
+	case "inmessagebounced":
+		switch field {
+		case "bouncedBody":
+			return TypeRef{Name: "Segment"}, true
+		case "body":
+			return TypeRef{Name: "Segment"}, true
+		}
+	case "contractcontext":
+		switch field {
+		case "address":
+			return TypeRef{Name: "address"}, true
+		case "balance":
+			return TypeRef{Name: "coins"}, true
+		case "data":
+			return TypeRef{Name: "Chunk"}, true
+		}
+	case "mapentry":
+		switch field {
+		case "key":
+			if len(typ.Args) > 0 {
+				return typ.Args[0], true
+			}
+		case "value":
+			if len(typ.Args) > 1 {
+				return typ.Args[1], true
+			}
+		}
+	}
+	return TypeRef{}, false
+}
+
 func lookupStructField(st *StructDecl, name string) (TypeRef, bool) {
 	for _, field := range st.Fields {
 		if field.Name == name {
@@ -1198,9 +2714,29 @@ func lookupStructField(st *StructDecl, name string) (TypeRef, bool) {
 }
 
 func compatibleTypes(a, b TypeRef) bool {
-	if strings.EqualFold(a.Name, b.Name) {
-		if a.Optional != b.Optional {
+	if strings.EqualFold(a.Name, "null") && b.Optional {
+		return true
+	}
+	if strings.EqualFold(b.Name, "null") && a.Optional {
+		return true
+	}
+	if isMapFamilyType(a.Name) && isMapFamilyType(b.Name) {
+		if len(a.Args) == 0 || len(b.Args) == 0 {
+			return true
+		}
+		if len(a.Args) != len(b.Args) {
 			return false
+		}
+		for i := range a.Args {
+			if !compatibleTypes(a.Args[i], b.Args[i]) {
+				return false
+			}
+		}
+		return true
+	}
+	if strings.EqualFold(a.Name, b.Name) {
+		if isMapFamilyType(a.Name) && (len(a.Args) == 0 || len(b.Args) == 0) {
+			return true
 		}
 		if len(a.Args) != len(b.Args) {
 			return false
@@ -1218,6 +2754,9 @@ func compatibleTypes(a, b TypeRef) bool {
 	if isStringLikeType(a) && isStringLikeType(b) {
 		return true
 	}
+	if isChunkLikeType(a) && isChunkLikeType(b) {
+		return true
+	}
 	if strings.EqualFold(a.Name, "string") && isStringLikeType(b) {
 		return true
 	}
@@ -1227,34 +2766,122 @@ func compatibleTypes(a, b TypeRef) bool {
 	return false
 }
 
-func isNumericType(t TypeRef) bool {
-	switch strings.ToLower(t.Name) {
-	case "u8", "u16", "u32", "u64", "i64", "coins":
+func isMapFamilyType(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "map", "dict":
 		return true
 	default:
 		return false
 	}
+}
+
+func resolveSingleMemberTypeRef(t TypeRef, types map[string]*TypeDecl) TypeRef {
+	seen := map[string]bool{}
+	for {
+		if td, ok := types[t.Name]; ok && len(td.Members) == 1 {
+			if seen[t.Name] {
+				return t
+			}
+			seen[t.Name] = true
+			t = td.Members[0]
+			continue
+		}
+		return t
+	}
+}
+
+func compatibleTypesResolved(a, b TypeRef, types map[string]*TypeDecl) bool {
+	if compatibleTypes(a, b) {
+		return true
+	}
+	if td, ok := types[a.Name]; ok && len(td.Members) == 1 {
+		return compatibleTypesResolved(td.Members[0], b, types)
+	}
+	if td, ok := types[b.Name]; ok && len(td.Members) == 1 {
+		return compatibleTypesResolved(a, td.Members[0], types)
+	}
+	return false
+}
+
+func isNumericType(t TypeRef) bool {
+	switch strings.ToLower(t.Name) {
+	case "u2", "u4", "u8", "u16", "u32", "u64", "uint2", "uint4", "uint8", "uint16", "uint32", "uint64", "uint128", "uint256", "i2", "i4", "i8", "i16", "i32", "i64", "int2", "int4", "int8", "int16", "int32", "int64", "int128", "int256", "coins":
+		return true
+	default:
+		return false
+	}
+}
+
+func isNumericLikeType(t TypeRef, types map[string]*TypeDecl) bool {
+	if isNumericType(t) {
+		return true
+	}
+	seen := map[string]bool{}
+	var walk func(TypeRef) bool
+	walk = func(cur TypeRef) bool {
+		name := strings.TrimSpace(cur.Name)
+		if name == "" || seen[name] {
+			return false
+		}
+		seen[name] = true
+		td, ok := types[name]
+		if !ok || len(td.Members) != 1 {
+			return false
+		}
+		if isNumericType(td.Members[0]) {
+			return true
+		}
+		return walk(td.Members[0])
+	}
+	return walk(t)
 }
 
 func isStringLikeType(t TypeRef) bool {
 	switch strings.ToLower(t.Name) {
-	case "bytes", "hash32", "address":
+	case "bytes", "hash", "hash32", "address":
 		return true
 	default:
 		return false
 	}
 }
 
-func (c *Compiler) buildArtifacts(file *SourceFile, contract *ContractDecl) (avm.InterfaceManifest, SelectorRegistry, StorageLayout, Codec, map[string]Codec, map[string]Codec, map[string]Codec, error) {
+func isChunkLikeType(t TypeRef) bool {
+	switch strings.ToLower(t.Name) {
+	case "chunk", "code", "stateinit":
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *Compiler) buildArtifacts(file *SourceFile, contract *ContractDecl) (avm.InterfaceManifest, SelectorRegistry, StorageLayout, Codec, map[string]Codec, map[string]Codec, map[string]uint32, map[string]MessageUnion, map[string]Codec, map[string]Codec, error) {
+	allFunctions := append([]*FunctionDecl(nil), file.Functions...)
+	allFunctions = append(allFunctions, contract.Functions...)
 	storage, _ := findStruct(file.Structs, contract.StorageTypeName)
 	layout, storageCodec := buildStorageLayout(storage)
 	msgCodecs := map[string]Codec{}
+	bodyCodecs := map[string]Codec{}
+	bodyOpcodes := map[string]uint32{}
+	unions := map[string]MessageUnion{}
 	getterCodecs := map[string]Codec{}
 	eventCodecs := map[string]Codec{}
 	registry := SelectorRegistry{Contract: contract.Name}
-	manifest := avm.InterfaceManifest{Name: contract.Name, Version: DefaultABIVersion}
+	manifest := avm.InterfaceManifest{Name: contract.Name, Version: DefaultABIVersion, UnknownMessagePolicy: "reject"}
+	structs := map[string]*StructDecl{}
+	for _, st := range file.Structs {
+		if st != nil {
+			structs[st.Name] = st
+		}
+	}
+	types := map[string]*TypeDecl{}
+	for _, td := range file.Types {
+		if td != nil {
+			types[td.Name] = td
+		}
+	}
 
 	seenSelectors := map[uint32]string{}
+	seenBodyOpcodes := map[uint32]string{}
 	appendSelector := func(kind, name, signature string, selector uint32, topic string, entrypoint string) error {
 		if prev, ok := seenSelectors[selector]; ok && prev != signature {
 			return fail("E_SELECTOR_COLLISION", Position{}, fmt.Sprintf("selector collision for 0x%08x between %q and %q", selector, prev, signature))
@@ -1264,6 +2891,74 @@ func (c *Compiler) buildArtifacts(file *SourceFile, contract *ContractDecl) (avm
 		return nil
 	}
 
+	for _, st := range file.Structs {
+		if st == nil {
+			continue
+		}
+		if !structHasAnnotation(st, "@message") {
+			continue
+		}
+		opcode, ok := structAnnotationValue(st, "@message")
+		if !ok {
+			return avm.InterfaceManifest{}, SelectorRegistry{}, StorageLayout{}, Codec{}, nil, nil, nil, nil, nil, nil, fail("E_MESSAGE_OPCODE", st.Pos, fmt.Sprintf("message schema %q requires an opcode", st.Name))
+		}
+		if prev, exists := bodyOpcodes[st.Name]; exists && prev != opcode {
+			return avm.InterfaceManifest{}, SelectorRegistry{}, StorageLayout{}, Codec{}, nil, nil, nil, nil, nil, nil, fail("E_MESSAGE_OPCODE", st.Pos, fmt.Sprintf("message schema %q has conflicting opcodes", st.Name))
+		}
+		if prev, exists := seenBodyOpcodes[opcode]; exists && prev != st.Name {
+			return avm.InterfaceManifest{}, SelectorRegistry{}, StorageLayout{}, Codec{}, nil, nil, nil, nil, nil, nil, fail("E_MESSAGE_OPCODE", st.Pos, fmt.Sprintf("opcode 0x%08x is already bound to message schema %q", opcode, prev))
+		}
+		codec := Codec{Name: st.Name, Kind: "message_body", Fields: codecFieldsFromStructFields(st.Fields), MaxBytes: int(c.opts.MaxPayloadBytes)}
+		buf := make([]byte, 4)
+		binary.BigEndian.PutUint32(buf, opcode)
+		codec.Hash = sha256.Sum256(append(codecHashBytes(codec), buf...))
+		bodyOpcodes[st.Name] = opcode
+		seenBodyOpcodes[opcode] = st.Name
+		bodyCodecs[st.Name] = codec
+	}
+	for _, td := range file.Types {
+		if td == nil {
+			continue
+		}
+		members, err := c.expandTypeDeclMembers(td.Name, types, map[string]bool{})
+		if err != nil {
+			return avm.InterfaceManifest{}, SelectorRegistry{}, StorageLayout{}, Codec{}, nil, nil, nil, nil, nil, nil, err
+		}
+		var variants []MessageUnionVariant
+		allMessages := len(members) > 0
+		for _, member := range members {
+			if member.Optional || len(member.Args) > 0 {
+				allMessages = false
+				break
+			}
+			st, ok := structs[member.Name]
+			if !ok || !structHasAnnotation(st, "@message") {
+				allMessages = false
+				break
+			}
+			opcode, ok := bodyOpcodes[member.Name]
+			if !ok {
+				allMessages = false
+				break
+			}
+			variants = append(variants, MessageUnionVariant{Name: member.Name, Type: member.String(), Opcode: opcode})
+		}
+		if !allMessages {
+			continue
+		}
+		sort.SliceStable(variants, func(i, j int) bool {
+			if variants[i].Opcode != variants[j].Opcode {
+				return variants[i].Opcode < variants[j].Opcode
+			}
+			if variants[i].Name != variants[j].Name {
+				return variants[i].Name < variants[j].Name
+			}
+			return variants[i].Type < variants[j].Type
+		})
+		unionHash := sha256.Sum256(messageUnionHashBytes(td.Name, variants))
+		unions[td.Name] = MessageUnion{Name: td.Name, Variants: variants, Hash: unionHash}
+	}
+
 	sort.SliceStable(contract.Messages, func(i, j int) bool {
 		if contract.Messages[i].Kind != contract.Messages[j].Kind {
 			return messageKindOrder(contract.Messages[i].Kind) < messageKindOrder(contract.Messages[j].Kind)
@@ -1271,10 +2966,10 @@ func (c *Compiler) buildArtifacts(file *SourceFile, contract *ContractDecl) (avm
 		if contract.Messages[i].Name != contract.Messages[j].Name {
 			return contract.Messages[i].Name < contract.Messages[j].Name
 		}
-		return signatureForMessage(contract.Messages[i]) < signatureForMessage(contract.Messages[j])
+		return signatureForMessage(contract.Name, contract.Messages[i]) < signatureForMessage(contract.Name, contract.Messages[j])
 	})
 	for _, msg := range contract.Messages {
-		sig := signatureForMessage(msg)
+		sig := signatureForMessage(contract.Name, msg)
 		sel := selectorFromSignature(sig)
 		if msg.ExplicitSel != nil {
 			sel = *msg.ExplicitSel
@@ -1301,19 +2996,45 @@ func (c *Compiler) buildArtifacts(file *SourceFile, contract *ContractDecl) (avm
 			entry.Entrypoint = entrypointName(kindToEntrypoint(msg.Kind))
 		}
 		if err := appendSelector("message", msg.Name, sig, sel, "", entry.Entrypoint); err != nil {
-			return avm.InterfaceManifest{}, SelectorRegistry{}, StorageLayout{}, Codec{}, nil, nil, nil, err
+			return avm.InterfaceManifest{}, SelectorRegistry{}, StorageLayout{}, Codec{}, nil, nil, nil, nil, nil, nil, err
 		}
-		msgCodecs[msg.Name] = Codec{Name: msg.Name, Kind: "message", Fields: paramsToCodecFields(msg.Params), ReturnType: msg.ReturnType, Hash: sha256.Sum256([]byte(sig))}
+		msgCodecs[msg.Name] = Codec{Name: msg.Name, Kind: "message", Fields: paramsToCodecFields(msg.Params), ReturnType: msg.ReturnType, Hash: sha256.Sum256([]byte(sig)), MaxBytes: int(c.opts.MaxPayloadBytes)}
+	}
+	for _, fn := range contract.Functions {
+		kind, ok := functionHandlerAnnotation(fn.Annotations)
+		if !ok {
+			continue
+		}
+		entrypoint, ok := handlerAnnotationEntrypoint(kind)
+		if !ok {
+			return avm.InterfaceManifest{}, SelectorRegistry{}, StorageLayout{}, Codec{}, nil, nil, nil, nil, nil, nil, fail("E_IR", fn.Pos, fmt.Sprintf("unsupported handler annotation %q", kind))
+		}
+		sig := signatureForFunction(fn)
+		sel := selectorFromSignature(sig)
+		manifest.AsyncHandlers = append(manifest.AsyncHandlers, avm.InterfaceAsyncHandler{
+			Name:        fn.Name,
+			Entrypoint:  entrypoint,
+			Opcode:      sel,
+			MessageType: kind + ":" + fn.Name,
+			Bounced:     kind == "@bounced",
+			Idempotent:  false,
+			Params:      paramsToInterface(fn.Params),
+			Results:     resultsToInterface(&fn.ReturnType),
+			Description: "",
+		})
+		if err := appendSelector("message", fn.Name, sig, sel, "", entrypointName(entrypoint)); err != nil {
+			return avm.InterfaceManifest{}, SelectorRegistry{}, StorageLayout{}, Codec{}, nil, nil, nil, nil, nil, nil, err
+		}
 	}
 
 	sort.SliceStable(contract.Getters, func(i, j int) bool {
 		if contract.Getters[i].Name != contract.Getters[j].Name {
 			return contract.Getters[i].Name < contract.Getters[j].Name
 		}
-		return signatureForGetter(contract.Getters[i]) < signatureForGetter(contract.Getters[j])
+		return signatureForGetter(contract.Name, contract.Getters[i]) < signatureForGetter(contract.Name, contract.Getters[j])
 	})
 	for _, get := range contract.Getters {
-		sig := signatureForGetter(get)
+		sig := signatureForGetter(contract.Name, get)
 		sel := selectorFromSignature(sig)
 		if get.ExplicitSel != nil {
 			sel = *get.ExplicitSel
@@ -1322,26 +3043,44 @@ func (c *Compiler) buildArtifacts(file *SourceFile, contract *ContractDecl) (avm
 			Name: get.Name, Entrypoint: avm.EntryQuery, Selector: sel, Params: paramsToInterface(get.Params), Results: []avm.InterfaceResultDescriptor{{Name: "result", Kind: interfaceKindForType(get.ReturnType), Required: true}}, Cacheable: true, MaxResponseBytes: c.opts.MaxPayloadBytes, Description: "",
 		})
 		if err := appendSelector("getter", get.Name, sig, sel, "", entrypointName(avm.EntryQuery)); err != nil {
-			return avm.InterfaceManifest{}, SelectorRegistry{}, StorageLayout{}, Codec{}, nil, nil, nil, err
+			return avm.InterfaceManifest{}, SelectorRegistry{}, StorageLayout{}, Codec{}, nil, nil, nil, nil, nil, nil, err
 		}
 		ret := get.ReturnType
 		getterCodecs[get.Name] = Codec{Name: get.Name, Kind: "getter", Fields: paramsToCodecFields(get.Params), ReturnType: &ret, Hash: sha256.Sum256([]byte(sig))}
 	}
+	for _, fn := range contract.Functions {
+		if !hasAnnotation(fn.Annotations, "@get") {
+			continue
+		}
+		sig := signatureForGetterFunction(contract.Name, fn)
+		sel := selectorFromSignature(sig)
+		manifest.GetMethods = append(manifest.GetMethods, avm.InterfaceGetMethod{
+			Name: fn.Name, Entrypoint: avm.EntryQuery, Selector: sel, Params: paramsToInterface(fn.Params), Results: []avm.InterfaceResultDescriptor{{Name: "result", Kind: interfaceKindForType(fn.ReturnType), Required: true}}, Cacheable: true, MaxResponseBytes: c.opts.MaxPayloadBytes, Description: "",
+		})
+		if err := appendSelector("getter", fn.Name, sig, sel, "", entrypointName(avm.EntryQuery)); err != nil {
+			return avm.InterfaceManifest{}, SelectorRegistry{}, StorageLayout{}, Codec{}, nil, nil, nil, nil, nil, nil, err
+		}
+		ret := fn.ReturnType
+		getterCodecs[fn.Name] = Codec{Name: fn.Name, Kind: "getter", Fields: paramsToCodecFields(fn.Params), ReturnType: &ret, Hash: sha256.Sum256([]byte(sig))}
+	}
 
 	sort.SliceStable(contract.Events, func(i, j int) bool { return contract.Events[i].Name < contract.Events[j].Name })
 	for _, event := range contract.Events {
-		sig := signatureForEvent(event)
+		sig := signatureForEvent(contract.Name, event)
 		hash := sha256.Sum256([]byte(sig))
 		sel := binary.BigEndian.Uint32(hash[:4])
 		manifest.Events = append(manifest.Events, avm.InterfaceEvent{Name: event.Name, Opcode: sel, Fields: paramsToInterface(event.Fields)})
 		if err := appendSelector("event", event.Name, sig, sel, fmt.Sprintf("%x", hash[:]), "event"); err != nil {
-			return avm.InterfaceManifest{}, SelectorRegistry{}, StorageLayout{}, Codec{}, nil, nil, nil, err
+			return avm.InterfaceManifest{}, SelectorRegistry{}, StorageLayout{}, Codec{}, nil, nil, nil, nil, nil, nil, err
 		}
 		eventCodecs[event.Name] = Codec{Name: event.Name, Kind: "event", Fields: paramsToCodecFields(event.Fields), Hash: hash}
 	}
 
 	sort.SliceStable(contract.WalletActions, func(i, j int) bool { return contract.WalletActions[i].Name < contract.WalletActions[j].Name })
 	for _, wallet := range contract.WalletActions {
+		sig := signatureForWalletAction(contract.Name, wallet)
+		sel := selectorFromSignature(sig)
+		hash := sha256.Sum256([]byte(sig))
 		manifest.WalletActions = append(manifest.WalletActions, avm.InterfaceWalletAction{
 			Method:              wallet.Name,
 			Title:               wallet.Title,
@@ -1357,6 +3096,9 @@ func (c *Compiler) buildArtifacts(file *SourceFile, contract *ContractDecl) (avm
 			Inputs:              paramsToInterface(wallet.Inputs),
 			Outputs:             paramsToInterface(wallet.Outputs),
 		})
+		if err := appendSelector("wallet_action", wallet.Name, sig, sel, fmt.Sprintf("%x", hash[:]), "wallet_action"); err != nil {
+			return avm.InterfaceManifest{}, SelectorRegistry{}, StorageLayout{}, Codec{}, nil, nil, nil, nil, nil, nil, err
+		}
 	}
 
 	manifest.CLIBindings = buildCLIBindings(contract)
@@ -1366,26 +3108,62 @@ func (c *Compiler) buildArtifacts(file *SourceFile, contract *ContractDecl) (avm
 	}
 
 	if _, err := avm.InterfaceHash(manifest); err != nil {
-		return avm.InterfaceManifest{}, SelectorRegistry{}, StorageLayout{}, Codec{}, nil, nil, nil, err
+		return avm.InterfaceManifest{}, SelectorRegistry{}, StorageLayout{}, Codec{}, nil, nil, nil, nil, nil, nil, err
 	}
 	registry.RegistryHash = sha256.Sum256(registryHashBytes(registry))
 	layout.LayoutHash = sha256.Sum256(layoutHashBytes(layout))
 	storageCodec.Hash = sha256.Sum256(codecHashBytes(storageCodec))
-	return manifest, registry, layout, storageCodec, msgCodecs, getterCodecs, eventCodecs, nil
+	return manifest, registry, layout, storageCodec, msgCodecs, bodyCodecs, bodyOpcodes, unions, getterCodecs, eventCodecs, nil
 }
 
 func buildStorageLayout(storage *StructDecl) (StorageLayout, Codec) {
+	if storage == nil {
+		return StorageLayout{}, Codec{Kind: "storage"}
+	}
 	layout := StorageLayout{Name: storage.Name}
 	codec := Codec{Name: storage.Name, Kind: "storage"}
 	for _, field := range storage.Fields {
-		layout.Fields = append(layout.Fields, CodecField{Name: field.Name, Type: field.Type, Default: field.Default, Pos: field.Pos})
-		codec.Fields = append(codec.Fields, CodecField{Name: field.Name, Type: field.Type, Default: field.Default, Pos: field.Pos})
+		item := CodecField{Name: field.Name, Lazy: field.Lazy, Type: field.Type, Default: field.Default, Pos: field.Pos}
+		layout.Fields = append(layout.Fields, item)
+		codec.Fields = append(codec.Fields, item)
 	}
 	return layout, codec
 }
 
-func (c *Compiler) buildModule(file *SourceFile, contract *ContractDecl, manifest avm.InterfaceManifest, registry SelectorRegistry, msgCodecs map[string]Codec, getterCodecs map[string]Codec, eventCodecs map[string]Codec, lock DependencyLock, functions map[string]*FunctionDecl) (avm.Module, []byte, *IRProgram, error) {
-	ir, err := c.buildIR(file, contract, registry, lock, functions)
+func codecFieldsFromStructFields(fields []FieldDecl) []CodecField {
+	out := make([]CodecField, 0, len(fields))
+	for _, field := range fields {
+		out = append(out, CodecField{Name: field.Name, Lazy: field.Lazy, Type: field.Type, Default: field.Default, Pos: field.Pos})
+	}
+	return out
+}
+
+func structHasAnnotation(st *StructDecl, name string) bool {
+	if st == nil {
+		return false
+	}
+	for _, ann := range st.Annotations {
+		if ann.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func structAnnotationValue(st *StructDecl, name string) (uint32, bool) {
+	if st == nil {
+		return 0, false
+	}
+	for _, ann := range st.Annotations {
+		if ann.Name == name && ann.Value != nil {
+			return *ann.Value, true
+		}
+	}
+	return 0, false
+}
+
+func (c *Compiler) buildModule(file *SourceFile, contract *ContractDecl, manifest avm.InterfaceManifest, registry SelectorRegistry, msgCodecs map[string]Codec, getterCodecs map[string]Codec, eventCodecs map[string]Codec, msgOpcodes map[string]uint32, lock DependencyLock, functions map[string]*FunctionDecl) (avm.Module, []byte, *IRProgram, error) {
+	ir, err := c.buildIR(file, contract, registry, msgOpcodes, lock, functions)
 	if err != nil {
 		return avm.Module{}, nil, nil, err
 	}
@@ -1396,15 +3174,51 @@ func (c *Compiler) buildModule(file *SourceFile, contract *ContractDecl, manifes
 	}
 	copy(module.MetadataHash[:], h[:])
 	var code []avm.Instruction
+	grouped := map[avm.Entrypoint][]IREntry{}
+	var entryOrder []avm.Entrypoint
 	for _, entry := range ir.Entries {
-		if _, exists := module.Exports[entry.Entrypoint]; exists {
-			return avm.Module{}, nil, nil, fail("E_ENTRY_DISPATCH", entry.Pos, fmt.Sprintf("multiple handlers lower to AVM entrypoint %s; selector dispatch opcode is not available in AVM v1", entrypointName(entry.Entrypoint)))
+		if _, ok := grouped[entry.Entrypoint]; !ok {
+			entryOrder = append(entryOrder, entry.Entrypoint)
 		}
-		module.Exports[entry.Entrypoint] = uint32(len(code))
-		lowered, err := c.lowerIREntry(entry)
+		grouped[entry.Entrypoint] = append(grouped[entry.Entrypoint], entry)
+	}
+	for _, entrypoint := range entryOrder {
+		entries := grouped[entrypoint]
+		entryBase := uint32(len(code))
+		module.Exports[entrypoint] = entryBase
+		combined := entries[0]
+		if len(entries) > 1 {
+			// Several entries share one entrypoint (e.g. multiple getters on
+			// EntryQuery). Dispatch by selector and fail closed on unknown
+			// selectors instead of silently dropping entries.
+			combined = IREntry{
+				Name:       entries[0].Name,
+				Kind:       entries[0].Kind,
+				Entrypoint: entrypoint,
+				Selector:   entries[0].Selector,
+				Pos:        entries[0].Pos,
+			}
+			var stmts []IRStmt
+			for i, e := range entries {
+				skip := fmt.Sprintf("__dispatch_%d_%d", entrypoint, i)
+				cond := &IRExpr{
+					Kind:  IRExprEq,
+					Left:  &IRExpr{Kind: IRExprMsgOpcode, Pos: e.Pos},
+					Right: &IRExpr{Kind: IRExprConstU64, Value: uint64(e.Selector), Pos: e.Pos},
+					Pos:   e.Pos,
+				}
+				stmts = append(stmts, IRStmt{Kind: IRStmtJumpIfZero, Target: skip, Expr: cond, Position: e.Pos})
+				stmts = append(stmts, e.Statements...)
+				stmts = append(stmts, IRStmt{Kind: IRStmtLabel, Name: skip, Position: e.Pos})
+			}
+			stmts = append(stmts, IRStmt{Kind: IRStmtAbort, Arg: 0xffff, Position: entries[0].Pos})
+			combined.Statements = stmts
+		}
+		lowered, err := c.lowerIREntry(combined)
 		if err != nil {
 			return avm.Module{}, nil, nil, err
 		}
+		relocateJumpTargets(lowered, entryBase)
 		code = append(code, lowered...)
 	}
 	module.Code = code
@@ -1416,13 +3230,54 @@ func (c *Compiler) buildModule(file *SourceFile, contract *ContractDecl, manifes
 	return module, encoded, ir, nil
 }
 
-func (c *Compiler) buildIR(file *SourceFile, contract *ContractDecl, registry SelectorRegistry, lock DependencyLock, functions map[string]*FunctionDecl) (*IRProgram, error) {
+func relocateJumpTargets(code []avm.Instruction, base uint32) {
+	if base == 0 {
+		return
+	}
+	for i := range code {
+		switch code[i].Op {
+		case avm.OpJump, avm.OpJumpIfZero:
+			code[i].Arg += uint64(base)
+		}
+	}
+}
+
+func (c *Compiler) buildIR(file *SourceFile, contract *ContractDecl, registry SelectorRegistry, msgOpcodes map[string]uint32, lock DependencyLock, functions map[string]*FunctionDecl) (*IRProgram, error) {
+	allFunctions := append([]*FunctionDecl(nil), file.Functions...)
+	allFunctions = append(allFunctions, contract.Functions...)
+	structs := map[string]*StructDecl{}
+	for _, st := range file.Structs {
+		if st != nil {
+			structs[st.Name] = st
+		}
+	}
+	consts, err := c.buildConstEnv(file, functions)
+	if err != nil {
+		return nil, err
+	}
+	oldConsts := c.globalConsts
+	c.globalConsts = consts
+	defer func() {
+		c.globalConsts = oldConsts
+	}()
 	program := &IRProgram{
 		Contract:         contract.Name,
 		Package:          file.Package,
 		TraceCommitments: map[string]string{},
 		Dependencies:     append([]ResolvedDependency(nil), lock.Entries...),
 		LoweringRules:    StatementLoweringRules(),
+	}
+	externalPrelude := func(params []ParamDecl) []IRStmt {
+		if len(params) != 1 {
+			return nil
+		}
+		if !strings.EqualFold(params[0].Type.Name, "Segment") {
+			return nil
+		}
+		return []IRStmt{
+			{Kind: IRStmtPushU64, Expr: &IRExpr{Kind: IRExprMsgBody, Pos: params[0].Pos}, Position: params[0].Pos},
+			{Kind: IRStmtStoreLocal, Slot: 0, Position: params[0].Pos},
+		}
 	}
 	blockOrder := []struct {
 		kind       MessageKind
@@ -1449,18 +3304,93 @@ func (c *Compiler) buildIR(file *SourceFile, contract *ContractDecl, registry Se
 				Name:       msg.Name,
 				Kind:       block.kind.String(),
 				Entrypoint: block.entrypoint,
-				Selector:   selectorForMessage(msg),
+				Selector:   selectorForMessage(contract.Name, msg),
 				Statements: []IRStmt{{Kind: IRStmtTrace, Data: commit[:], Position: msg.Pos}},
 				Pos:        msg.Pos,
 			}
-			body, err := c.lowerStatementsToIR(msg.Body, msg.Params, msg.ReturnType, false, true, functions, loweringEnv{})
+			body, err := c.lowerStatementsToIR(msg.Body, msg.Params, msg.ReturnType, false, true, functions, structs, msgOpcodes, loweringEnv{types: map[string]TypeRef{}, consts: consts, msgOpcodes: msgOpcodes}, c.initialScope(msg.Params, true), nil)
 			if err != nil {
 				return nil, err
 			}
 			entry.Statements = append(entry.Statements, body...)
+			if block.entrypoint == avm.EntryReceiveExternal {
+				entry.Statements = append(externalPrelude(msg.Params), entry.Statements...)
+			}
 			program.TraceCommitments[entrypointName(entry.Entrypoint)+":"+entry.Name] = fmt.Sprintf("%x", commit[:])
 			program.Entries = append(program.Entries, entry)
 		}
+	}
+	for _, fn := range contract.Functions {
+		kind, ok := functionHandlerAnnotation(fn.Annotations)
+		if !ok {
+			continue
+		}
+		entrypoint, ok := handlerAnnotationEntrypoint(kind)
+		if !ok {
+			return nil, fail("E_IR", fn.Pos, fmt.Sprintf("unsupported handler annotation %q", kind))
+		}
+		handle := canonicalHandle{
+			Name:       fn.Name,
+			Signature:  signatureForFunction(fn),
+			Selector:   selectorFromSignature(signatureForFunction(fn)),
+			Entrypoint: entrypointName(entrypoint),
+			Params:     typeNamesFromParams(fn.Params),
+			Results:    typeNamesFromResults(&fn.ReturnType),
+			Body:       canonicalStatements(fn.Body),
+		}
+		commit, err := traceCommitment(contract.Name, kind[1:], []canonicalHandle{handle})
+		if err != nil {
+			return nil, err
+		}
+		body, err := c.lowerStatementsToIR(fn.Body, fn.Params, &fn.ReturnType, false, true, functions, structs, msgOpcodes, loweringEnv{types: map[string]TypeRef{}, consts: consts, msgOpcodes: msgOpcodes}, c.initialScope(fn.Params, true), nil)
+		if err != nil {
+			return nil, err
+		}
+		program.TraceCommitments[entrypointName(entrypoint)+":"+fn.Name] = fmt.Sprintf("%x", commit[:])
+		statements := append([]IRStmt{{Kind: IRStmtTrace, Data: commit[:], Position: fn.Pos}}, body...)
+		if entrypoint == avm.EntryReceiveExternal {
+			statements = append(externalPrelude(fn.Params), statements...)
+		}
+		program.Entries = append(program.Entries, IREntry{
+			Name:       fn.Name,
+			Kind:       kind[1:],
+			Entrypoint: entrypoint,
+			Selector:   selectorFromSignature(signatureForFunction(fn)),
+			Statements: statements,
+			Pos:        fn.Pos,
+		})
+	}
+	for _, fn := range contract.Functions {
+		if !hasAnnotation(fn.Annotations, "@get") {
+			continue
+		}
+		sig := signatureForGetterFunction(contract.Name, fn)
+		handle := canonicalHandle{
+			Name:       fn.Name,
+			Signature:  sig,
+			Selector:   selectorFromSignature(sig),
+			Entrypoint: entrypointName(avm.EntryQuery),
+			Params:     typeNamesFromParams(fn.Params),
+			Results:    typeNamesFromResults(&fn.ReturnType),
+			Body:       canonicalStatements(fn.Body),
+		}
+		commit, err := traceCommitment(contract.Name, "query", []canonicalHandle{handle})
+		if err != nil {
+			return nil, err
+		}
+		body, err := c.lowerStatementsToIR(fn.Body, fn.Params, &fn.ReturnType, true, true, functions, structs, msgOpcodes, loweringEnv{types: map[string]TypeRef{}, consts: consts, msgOpcodes: msgOpcodes}, c.initialScope(fn.Params, true), nil)
+		if err != nil {
+			return nil, err
+		}
+		program.TraceCommitments[entrypointName(avm.EntryQuery)+":"+fn.Name] = fmt.Sprintf("%x", commit[:])
+		program.Entries = append(program.Entries, IREntry{
+			Name:       fn.Name,
+			Kind:       "query",
+			Entrypoint: avm.EntryQuery,
+			Selector:   selectorFromSignature(sig),
+			Statements: append([]IRStmt{{Kind: IRStmtTrace, Data: commit[:], Position: fn.Pos}}, body...),
+			Pos:        fn.Pos,
+		})
 	}
 	for _, handle := range c.collectGetters(contract) {
 		commit, err := traceCommitment(contract.Name, "query", []canonicalHandle{handle})
@@ -1476,11 +3406,11 @@ func (c *Compiler) buildIR(file *SourceFile, contract *ContractDecl, registry Se
 			Name:       get.Name,
 			Kind:       "query",
 			Entrypoint: avm.EntryQuery,
-			Selector:   selectorForGetter(get),
+			Selector:   selectorForGetter(contract.Name, get),
 			Statements: []IRStmt{{Kind: IRStmtTrace, Data: commit[:], Position: get.Pos}},
 			Pos:        get.Pos,
 		}
-		body, err := c.lowerStatementsToIR(get.Body, get.Params, &ret, true, true, functions, loweringEnv{})
+		body, err := c.lowerStatementsToIR(get.Body, get.Params, &ret, true, true, functions, structs, msgOpcodes, loweringEnv{types: map[string]TypeRef{}, consts: consts, msgOpcodes: msgOpcodes}, c.initialScope(get.Params, true), nil)
 		if err != nil {
 			return nil, err
 		}
@@ -1494,37 +3424,162 @@ func (c *Compiler) buildIR(file *SourceFile, contract *ContractDecl, registry Se
 		}
 		return program.Entries[i].Entrypoint < program.Entries[j].Entrypoint
 	})
+	for i := range program.Entries {
+		for j := range program.Entries[i].Statements {
+			coerceStructLiteralFieldTypes(program.Entries[i].Statements[j].Expr, structs)
+		}
+	}
 	return program, nil
 }
 
-func (c *Compiler) lowerStatementsToIR(stmts []Statement, params []ParamDecl, ret *TypeRef, readOnly bool, ensureReturn bool, functions map[string]*FunctionDecl, envInit loweringEnv) ([]IRStmt, error) {
-	env := loweringEnv{params: map[string]int{}, consts: map[string]constValue{}}
+// coerceStructLiteralFieldTypes walks a lowered expression tree looking for
+// IRExprStruct nodes and retags bare-literal field values to match their
+// declared struct field type where the default lowering (IRExprConstU64,
+// always TagUint64) would otherwise diverge from the canonical tag a
+// non-literal source (message field, storage read) carries for the same
+// field. Without this, e.g. `SomeStorage { balance: 0 }` for a `coins`-typed
+// field encodes as TagUint64 while every other source of that field encodes
+// TagCoins, breaking anything that hashes the struct — such as an address
+// derived via counterfactualAddress/autoDeployAddress from that literal.
+func coerceStructLiteralFieldTypes(expr *IRExpr, structs map[string]*StructDecl) {
+	if expr == nil {
+		return
+	}
+	if expr.Kind == IRExprStruct {
+		if st, ok := structs[expr.Text]; ok {
+			for i := range expr.Fields {
+				field := &expr.Fields[i]
+				fieldType, ok := lookupStructField(st, field.Name)
+				if !ok || field.Expr == nil {
+					continue
+				}
+				if strings.EqualFold(fieldType.Name, "coins") && field.Expr.Kind == IRExprConstU64 {
+					field.Expr = &IRExpr{Kind: IRExprCoinsCast, Left: field.Expr, Pos: field.Expr.Pos}
+				}
+			}
+		}
+	}
+	coerceStructLiteralFieldTypes(expr.Left, structs)
+	coerceStructLiteralFieldTypes(expr.Right, structs)
+	coerceStructLiteralFieldTypes(expr.Else, structs)
+	for _, arg := range expr.Args {
+		coerceStructLiteralFieldTypes(arg, structs)
+	}
+	for i := range expr.Fields {
+		coerceStructLiteralFieldTypes(expr.Fields[i].Expr, structs)
+	}
+}
+
+func (c *Compiler) lowerStatementsToIR(stmts []Statement, params []ParamDecl, ret *TypeRef, readOnly bool, ensureReturn bool, functions map[string]*FunctionDecl, structs map[string]*StructDecl, msgOpcodes map[string]uint32, envInit loweringEnv, scopeInit map[string]struct{}, loops []loopContext) ([]IRStmt, error) {
+	env := cloneLoweringEnv(envInit)
 	for i, param := range params {
 		env.params[param.Name] = i
+		env.types[param.Name] = param.Type
 	}
-	for name, value := range envInit.consts {
-		env.consts[name] = value
+	if len(env.consts) == 0 && len(c.globalConsts) > 0 {
+		for name, value := range c.globalConsts {
+			env.consts[name] = value
+		}
+	}
+	scope := map[string]struct{}{}
+	for name := range scopeInit {
+		scope[name] = struct{}{}
 	}
 	var out []IRStmt
 	for _, stmt := range stmts {
 		switch stmt.Kind {
-		case StatementLet:
+		case StatementBinding:
+			if _, exists := scope[stmt.Name]; exists {
+				return nil, fail("E_LOWER_BINDING", stmt.Pos, fmt.Sprintf("duplicate binding %q in the same scope", stmt.Name))
+			}
+			if stmt.Value.Kind == ExprCall && len(stmt.Value.Path) >= 2 {
+				env.types[stmt.Name] = TypeRef{Name: stmt.Value.Path[0], Pos: stmt.Value.Pos}
+			} else if stmt.Value.Kind == ExprPath && len(stmt.Value.Path) >= 1 {
+				env.types[stmt.Name] = TypeRef{Name: stmt.Value.Path[0], Pos: stmt.Value.Pos}
+			}
 			v, ok := evalConstValue(stmt.Value, env, functions, map[string]bool{})
-			if !ok {
-				return nil, fail("E_LOWER_LOCAL", stmt.Pos, "AVM v1 lowering only supports compile-time constant let bindings")
+			if !stmt.Mutable && ok {
+				scope[stmt.Name] = struct{}{}
+				env.consts[stmt.Name] = v
+				var arg uint64
+				if v.Kind == constKindU64 {
+					arg = v.U64
+				}
+				out = append(out, IRStmt{Kind: IRStmtLetConst, Name: stmt.Name, Arg: arg, Position: stmt.Pos})
+				continue
 			}
-			env.consts[stmt.Name] = v
-			var arg uint64
-			if v.Kind == constKindU64 {
-				arg = v.U64
+			if isStorageLoadBinding(stmt.Value) {
+				scope[stmt.Name] = struct{}{}
+				env.storageAliases[stmt.Name] = struct{}{}
+				continue
 			}
-			out = append(out, IRStmt{Kind: IRStmtLetConst, Name: stmt.Name, Arg: arg, Position: stmt.Pos})
+			binding := localBinding{Slot: env.nextLocalSlot, Type: env.types[stmt.Name], Mutable: stmt.Mutable, FromHandlerMessage: exprIsHandlerMessage(stmt.Value, env)}
+			env.nextLocalSlot++
+			env.locals[stmt.Name] = binding
+			scope[stmt.Name] = struct{}{}
+			expr, err := lowerExprToIR(stmt.Value, env, functions, map[string]bool{})
+			if err == nil && stmt.Value.Kind == ExprCall && strings.EqualFold(stmt.Value.Text, "buildMessage") {
+				expr, err = lowerBuildMessageExpr(stmt.Value, env, functions, msgOpcodes)
+			}
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, IRStmt{Kind: IRStmtPushU64, Expr: expr, Position: stmt.Pos})
+			out = append(out, IRStmt{Kind: IRStmtStoreLocal, Slot: binding.Slot, Position: stmt.Pos})
 		case StatementSet:
 			if readOnly {
 				return nil, fail("E_GETTER_MUTATION", stmt.Pos, "getter cannot write storage")
 			}
-			if len(stmt.Path) != 2 || stmt.Path[0] != "state" {
+			if len(stmt.Path) == 1 {
+				root := stmt.Path[0]
+				if binding, ok := env.locals[root]; ok {
+					if !binding.Mutable {
+						return nil, fail("E_LOWER_SET", stmt.Pos, fmt.Sprintf("binding %q is immutable", root))
+					}
+					expr, err := lowerExprToIR(stmt.Value, env, functions, map[string]bool{})
+					if err != nil {
+						return nil, err
+					}
+					out = append(out, IRStmt{Kind: IRStmtPushU64, Expr: expr, Position: stmt.Pos})
+					out = append(out, IRStmt{Kind: IRStmtStoreLocal, Slot: binding.Slot, Position: stmt.Pos})
+					continue
+				}
+			}
+			if len(stmt.Path) < 2 {
 				return nil, fail("E_LOWER_SET", stmt.Pos, "AVM v1 lowering supports only direct state.<field> writes")
+			}
+			if binding, ok := env.locals[stmt.Path[0]]; ok {
+				if !binding.Mutable {
+					return nil, fail("E_LOWER_SET", stmt.Pos, fmt.Sprintf("binding %q is immutable", stmt.Path[0]))
+				}
+				if !isFieldLikeType(binding.Type.Name) {
+					return nil, fail("E_LOWER_SET", stmt.Pos, "local field assignment requires a struct-like binding")
+				}
+				targetStruct := structs[binding.Type.Name]
+				if targetStruct == nil {
+					return nil, fail("E_LOWER_SET", stmt.Pos, fmt.Sprintf("local binding %q has unknown struct type %s", stmt.Path[0], binding.Type.Name))
+				}
+				if _, ok := lookupStructField(targetStruct, stmt.Path[1]); !ok {
+					return nil, fail("E_LOWER_SET", stmt.Pos, fmt.Sprintf("field %q not found on %s", stmt.Path[1], targetStruct.Name))
+				}
+				expr, err := lowerExprToIR(stmt.Value, env, functions, map[string]bool{})
+				if err != nil {
+					return nil, err
+				}
+				updated := &IRExpr{
+					Kind: IRExprMapSet,
+					Left: &IRExpr{Kind: IRExprLocalLoad, Slot: binding.Slot, Pos: stmt.Pos},
+					Args: []*IRExpr{{Kind: IRExprConstString, Text: stmt.Path[1], Pos: stmt.Pos}, expr},
+					Pos:  stmt.Pos,
+				}
+				out = append(out, IRStmt{Kind: IRStmtPushU64, Expr: updated, Position: stmt.Pos})
+				out = append(out, IRStmt{Kind: IRStmtStoreLocal, Slot: binding.Slot, Position: stmt.Pos})
+				continue
+			}
+			if stmt.Path[0] != "state" {
+				if _, ok := env.storageAliases[stmt.Path[0]]; !ok {
+					return nil, fail("E_LOWER_SET", stmt.Pos, "AVM v1 lowering supports only state aliases bound from <StorageType>.load()")
+				}
 			}
 			expr, err := lowerExprToIR(stmt.Value, env, functions, map[string]bool{})
 			if err != nil {
@@ -1533,6 +3588,64 @@ func (c *Compiler) lowerStatementsToIR(stmts []Statement, params []ParamDecl, re
 			out = append(out, IRStmt{Kind: IRStmtStoreState, Key: stmt.Path[1], Expr: expr, Position: stmt.Pos})
 		case StatementEmit:
 			out = append(out, IRStmt{Kind: IRStmtTrace, Name: stmt.Name, Data: eventTraceData(stmt), Position: stmt.Pos})
+		case StatementAssert:
+			cond, err := lowerExprToIR(stmt.Value, env, functions, map[string]bool{})
+			if err != nil {
+				return nil, err
+			}
+			throwExpr := stmt.Extra["throw"]
+			code := uint64(0)
+			if throwExpr.Kind != "" {
+				if v, ok := evalConstU64(throwExpr, env, functions, map[string]bool{}); ok {
+					code = v
+				}
+			}
+			failLabel := c.nextLabel("assert_fail")
+			endLabel := c.nextLabel("assert_end")
+			out = append(out, IRStmt{Kind: IRStmtJumpIfZero, Target: failLabel, Expr: cond, Position: stmt.Pos})
+			out = append(out, IRStmt{Kind: IRStmtJump, Target: endLabel, Position: stmt.Pos})
+			out = append(out, IRStmt{Kind: IRStmtLabel, Name: failLabel, Position: stmt.Pos})
+			out = append(out, IRStmt{Kind: IRStmtAbort, Arg: code, Position: stmt.Pos})
+			out = append(out, IRStmt{Kind: IRStmtLabel, Name: endLabel, Position: stmt.Pos})
+		case StatementThrow:
+			code, ok := evalConstU64(stmt.Value, env, functions, map[string]bool{})
+			if !ok {
+				return nil, fail("E_LOWER_THROW", stmt.Pos, "throw exit code must be compile-time constant")
+			}
+			out = append(out, IRStmt{Kind: IRStmtAbort, Arg: code, Position: stmt.Pos})
+		case StatementBreak:
+			if len(loops) == 0 {
+				return nil, fail("E_LOWER_LOOP", stmt.Pos, "break is only allowed inside a loop")
+			}
+			out = append(out, IRStmt{Kind: IRStmtJump, Target: loops[len(loops)-1].breakTarget, Position: stmt.Pos})
+		case StatementContinue:
+			if len(loops) == 0 {
+				return nil, fail("E_LOWER_LOOP", stmt.Pos, "continue is only allowed inside a loop")
+			}
+			out = append(out, IRStmt{Kind: IRStmtJump, Target: loops[len(loops)-1].continueTarget, Position: stmt.Pos})
+		case StatementExpr:
+			if stmt.Value.Kind == ExprCall && len(stmt.Value.Path) >= 2 {
+				method := strings.ToLower(stmt.Value.Path[len(stmt.Value.Path)-1])
+				switch method {
+				case "save":
+					out = append(out, IRStmt{Kind: IRStmtStoreState, Key: "", Expr: &IRExpr{Kind: IRExprStateRead, Key: "", Pos: stmt.Pos}, Position: stmt.Pos})
+					continue
+				case "deletedata":
+					out = append(out, IRStmt{Kind: IRStmtDeleteState, Key: "", Position: stmt.Pos})
+					continue
+				case "setdata":
+					if len(stmt.Value.Args) != 1 {
+						return nil, fail("E_LOWER_CALL", stmt.Pos, "setData() requires one argument")
+					}
+					expr, err := lowerExprToIR(stmt.Value.Args[0], env, functions, map[string]bool{})
+					if err != nil {
+						return nil, err
+					}
+					out = append(out, IRStmt{Kind: IRStmtStoreState, Key: "", Expr: expr, Position: stmt.Pos})
+					continue
+				}
+			}
+			continue
 		case StatementSend:
 			if readOnly {
 				return nil, fail("E_GETTER_SEND", stmt.Pos, "getter cannot send internal messages")
@@ -1541,7 +3654,11 @@ func (c *Compiler) lowerStatementsToIR(stmts []Statement, params []ParamDecl, re
 			if err != nil {
 				return nil, err
 			}
-			out = append(out, IRStmt{Kind: IRStmtEmitInternal, Opcode: opcode, Data: statementTraceData(stmt), Position: stmt.Pos})
+			expr, err := lowerExprToIR(stmt.Value, env, functions, map[string]bool{})
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, IRStmt{Kind: IRStmtEmitInternal, Opcode: opcode, Expr: expr, Data: statementTraceData(stmt), Position: stmt.Pos})
 		case StatementRefund:
 			if readOnly {
 				return nil, fail("E_GETTER_REFUND", stmt.Pos, "getter cannot refund")
@@ -1570,47 +3687,244 @@ func (c *Compiler) lowerStatementsToIR(stmts []Statement, params []ParamDecl, re
 			}
 			out = append(out, IRStmt{Kind: IRStmtReturn, Arg: resultCode, Expr: expr, Position: stmt.Pos})
 		case StatementIf:
-			cond, ok := evalConstBool(stmt.Value, env, functions, map[string]bool{})
-			if !ok {
-				return nil, fail("E_LOWER_IF", stmt.Pos, "if condition must be compile-time constant on AVM v1")
-			}
-			var branch []Statement
-			if cond {
-				branch = stmt.Then
-			} else {
-				branch = stmt.Else
-			}
-			branchIR, err := c.lowerStatementsToIR(branch, params, ret, readOnly, false, functions, env)
+			cond, err := lowerExprToIR(stmt.Value, env, functions, map[string]bool{})
 			if err != nil {
 				return nil, err
 			}
-			out = append(out, branchIR...)
-		case StatementMatch:
-			tag, ok := evalConstEnum(stmt.Value, env, functions, map[string]bool{})
-			if !ok {
-				return nil, fail("E_LOWER_MATCH", stmt.Pos, "match scrutinee must be compile-time constant on AVM v1")
+			elseLabel := c.nextLabel("if_else")
+			endLabel := c.nextLabel("if_end")
+			out = append(out, IRStmt{Kind: IRStmtJumpIfZero, Target: elseLabel, Expr: cond, Position: stmt.Pos})
+			thenIR, err := c.lowerStatementsToIR(stmt.Then, params, ret, readOnly, false, functions, structs, msgOpcodes, cloneLoweringEnv(env), map[string]struct{}{}, loops)
+			if err != nil {
+				return nil, err
 			}
-			var matched []Statement
+			out = append(out, thenIR...)
+			out = append(out, IRStmt{Kind: IRStmtJump, Target: endLabel, Position: stmt.Pos})
+			out = append(out, IRStmt{Kind: IRStmtLabel, Name: elseLabel, Position: stmt.Pos})
+			elseIR, err := c.lowerStatementsToIR(stmt.Else, params, ret, readOnly, false, functions, structs, msgOpcodes, cloneLoweringEnv(env), map[string]struct{}{}, loops)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, elseIR...)
+			out = append(out, IRStmt{Kind: IRStmtLabel, Name: endLabel, Position: stmt.Pos})
+		case StatementWhile:
+			startLabel := c.nextLabel("while_start")
+			endLabel := c.nextLabel("while_end")
+			out = append(out, IRStmt{Kind: IRStmtLabel, Name: startLabel, Position: stmt.Pos})
+			cond, err := lowerExprToIR(stmt.Value, env, functions, map[string]bool{})
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, IRStmt{Kind: IRStmtJumpIfZero, Target: endLabel, Expr: cond, Position: stmt.Pos})
+			bodyIR, err := c.lowerStatementsToIR(stmt.Then, params, ret, readOnly, false, functions, structs, msgOpcodes, cloneLoweringEnv(env), map[string]struct{}{}, append(loops, loopContext{breakTarget: endLabel, continueTarget: startLabel}))
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, bodyIR...)
+			out = append(out, IRStmt{Kind: IRStmtJump, Target: startLabel, Position: stmt.Pos})
+			out = append(out, IRStmt{Kind: IRStmtLabel, Name: endLabel, Position: stmt.Pos})
+		case StatementDo:
+			startLabel := c.nextLabel("do_start")
+			continueLabel := c.nextLabel("do_continue")
+			endLabel := c.nextLabel("do_end")
+			out = append(out, IRStmt{Kind: IRStmtLabel, Name: startLabel, Position: stmt.Pos})
+			bodyIR, err := c.lowerStatementsToIR(stmt.Then, params, ret, readOnly, false, functions, structs, msgOpcodes, cloneLoweringEnv(env), map[string]struct{}{}, append(loops, loopContext{breakTarget: endLabel, continueTarget: continueLabel}))
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, bodyIR...)
+			out = append(out, IRStmt{Kind: IRStmtLabel, Name: continueLabel, Position: stmt.Pos})
+			cond, err := lowerExprToIR(stmt.Value, env, functions, map[string]bool{})
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, IRStmt{Kind: IRStmtJumpIfZero, Target: endLabel, Expr: cond, Position: stmt.Pos})
+			out = append(out, IRStmt{Kind: IRStmtJump, Target: startLabel, Position: stmt.Pos})
+			out = append(out, IRStmt{Kind: IRStmtLabel, Name: endLabel, Position: stmt.Pos})
+		case StatementRepeat:
+			count, ok := evalConstU64(stmt.Value, env, functions, map[string]bool{})
+			if ok && !statementContainsLoopControl(stmt.Then) {
+				for i := uint64(0); i < count; i++ {
+					bodyIR, err := c.lowerStatementsToIR(stmt.Then, params, ret, readOnly, false, functions, structs, msgOpcodes, cloneLoweringEnv(env), map[string]struct{}{}, loops)
+					if err != nil {
+						return nil, err
+					}
+					out = append(out, bodyIR...)
+				}
+				break
+			}
+			startLabel := c.nextLabel("repeat_start")
+			continueLabel := c.nextLabel("repeat_continue")
+			endLabel := c.nextLabel("repeat_end")
+			countIR, err := lowerExprToIR(stmt.Value, env, functions, map[string]bool{})
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, IRStmt{Kind: IRStmtPushU64, Arg: 0, Expr: countIR, Position: stmt.Pos})
+			out = append(out, IRStmt{Kind: IRStmtLabel, Name: startLabel, Position: stmt.Pos})
+			out = append(out, IRStmt{Kind: IRStmtDup, Position: stmt.Pos})
+			out = append(out, IRStmt{Kind: IRStmtJumpIfZero, Target: endLabel, Position: stmt.Pos})
+			bodyIR, err := c.lowerStatementsToIR(stmt.Then, params, ret, readOnly, false, functions, structs, msgOpcodes, cloneLoweringEnv(env), map[string]struct{}{}, append(loops, loopContext{breakTarget: endLabel, continueTarget: continueLabel}))
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, bodyIR...)
+			out = append(out, IRStmt{Kind: IRStmtLabel, Name: continueLabel, Position: stmt.Pos})
+			out = append(out, IRStmt{Kind: IRStmtPushU64, Arg: 1, Position: stmt.Pos})
+			out = append(out, IRStmt{Kind: IRStmtSub, Position: stmt.Pos})
+			out = append(out, IRStmt{Kind: IRStmtJump, Target: startLabel, Position: stmt.Pos})
+			out = append(out, IRStmt{Kind: IRStmtLabel, Name: endLabel, Position: stmt.Pos})
+			out = append(out, IRStmt{Kind: IRStmtDrop, Position: stmt.Pos})
+		case StatementMatch:
+			endLabel := c.nextLabel("match_end")
+			useMessageMatch := false
 			for _, arm := range stmt.Arms {
-				switch arm.Pattern.Kind {
-				case PatternWildcard:
-					matched = arm.Body
-					goto matchedBranch
-				case PatternName:
-					if arm.Pattern.Name == tag {
-						if len(arm.Pattern.Bindings) > 0 {
-							return nil, fail("E_LOWER_MATCH", arm.Pos, "pattern bindings require runtime destructuring, which AVM v1 does not provide")
+				if arm.Pattern.Kind == PatternName {
+					if _, ok := msgOpcodes[patternTail(arm.Pattern.Name)]; ok {
+						useMessageMatch = true
+						break
+					}
+				}
+			}
+			if useMessageMatch {
+				// A message-union match is either over the handler's own
+				// top-level incoming message (ctx.Message.Opcode is the
+				// authoritative, host-verified discriminant there — every
+				// existing handler matches this way) or over some other
+				// derived value, e.g. a nested payload pulled out of a field
+				// and decoded separately (wrapMessage()/fromChunk()). Those
+				// two cases need different discriminant/field-read sources;
+				// exprIsHandlerMessage tells them apart. Preserving the
+				// ctx.Message.Opcode path exactly for the top-level case is
+				// what keeps every existing `match (msg)` handler unchanged.
+				topLevelScrutinee := exprIsHandlerMessage(stmt.Value, env)
+				var scrutineeIR *IRExpr
+				if !topLevelScrutinee {
+					var err error
+					scrutineeIR, err = lowerExprToIR(stmt.Value, env, functions, map[string]bool{})
+					if err != nil {
+						return nil, err
+					}
+				}
+				opcodeSource := func(pos Position) *IRExpr {
+					if topLevelScrutinee {
+						return &IRExpr{Kind: IRExprMsgOpcode, Pos: pos}
+					}
+					// Reads the wrapMessage()-injected synthetic field off
+					// the scrutinee value itself; a scrutinee that was never
+					// wrapMessage()-tagged has no such field and this fails
+					// at runtime with a clear "field not found"-shaped error
+					// rather than silently mismatching.
+					return &IRExpr{Kind: IRExprField, Left: scrutineeIR, Text: nestedMessageOpcodeField, Pos: pos}
+				}
+				fieldSource := func(name string, pos Position) *IRExpr {
+					if topLevelScrutinee {
+						return &IRExpr{Kind: IRExprMsgField, Text: name, Pos: pos}
+					}
+					return &IRExpr{Kind: IRExprField, Left: scrutineeIR, Text: name, Pos: pos}
+				}
+				hasWildcard := false
+				for i, arm := range stmt.Arms {
+					switch arm.Pattern.Kind {
+					case PatternWildcard:
+						hasWildcard = true
+						armLabel := c.nextLabel("match_wild")
+						out = append(out, IRStmt{Kind: IRStmtLabel, Name: armLabel, Position: arm.Pos})
+						armIR, err := c.lowerStatementsToIR(arm.Body, params, ret, readOnly, false, functions, structs, msgOpcodes, cloneLoweringEnv(env), map[string]struct{}{}, loops)
+						if err != nil {
+							return nil, err
 						}
+						out = append(out, armIR...)
+						out = append(out, IRStmt{Kind: IRStmtJump, Target: endLabel, Position: arm.Pos})
+					case PatternName:
+						opcode, ok := msgOpcodes[patternTail(arm.Pattern.Name)]
+						if !ok {
+							return nil, fail("E_LOWER_MATCH", arm.Pos, fmt.Sprintf("unknown message variant %q", arm.Pattern.Name))
+						}
+						armEnv := cloneLoweringEnv(env)
+						armScope := map[string]struct{}{}
+						armPrelude := make([]IRStmt, 0, len(arm.Pattern.Bindings)*2)
+						if st, ok := structs[patternTail(arm.Pattern.Name)]; ok {
+							if len(arm.Pattern.Bindings) > 0 && len(arm.Pattern.Bindings) != len(st.Fields) {
+								return nil, fail("E_LOWER_MATCH", arm.Pos, fmt.Sprintf("match arm %s expects %d bindings, got %d", arm.Pattern.Name, len(st.Fields), len(arm.Pattern.Bindings)))
+							}
+							for i, bind := range arm.Pattern.Bindings {
+								if _, exists := armScope[bind]; exists {
+									return nil, fail("E_LOWER_MATCH", arm.Pos, fmt.Sprintf("duplicate match binding %q", bind))
+								}
+								binding := localBinding{Slot: armEnv.nextLocalSlot, Type: st.Fields[i].Type, Mutable: false}
+								armEnv.nextLocalSlot++
+								armEnv.locals[bind] = binding
+								armEnv.types[bind] = st.Fields[i].Type
+								armScope[bind] = struct{}{}
+								armPrelude = append(armPrelude,
+									IRStmt{Kind: IRStmtPushU64, Expr: fieldSource(st.Fields[i].Name, arm.Pos), Position: arm.Pos},
+									IRStmt{Kind: IRStmtStoreLocal, Slot: binding.Slot, Position: arm.Pos},
+								)
+							}
+						} else if len(arm.Pattern.Bindings) > 0 {
+							return nil, fail("E_LOWER_MATCH", arm.Pos, fmt.Sprintf("match arm %s cannot destructure variant without struct fields", arm.Pattern.Name))
+						}
+						armLabel := c.nextLabel(fmt.Sprintf("match_arm_%d", i))
+						cond := &IRExpr{
+							Kind:  IRExprEq,
+							Left:  opcodeSource(stmt.Pos),
+							Right: &IRExpr{Kind: IRExprConstU64, Value: uint64(opcode), Pos: stmt.Pos},
+							Pos:   stmt.Pos,
+						}
+						out = append(out, IRStmt{Kind: IRStmtJumpIfZero, Target: armLabel, Expr: cond, Position: arm.Pos})
+						armIR, err := c.lowerStatementsToIR(arm.Body, params, ret, readOnly, false, functions, structs, msgOpcodes, armEnv, armScope, loops)
+						if err != nil {
+							return nil, err
+						}
+						out = append(out, armPrelude...)
+						out = append(out, armIR...)
+						out = append(out, IRStmt{Kind: IRStmtJump, Target: endLabel, Position: arm.Pos})
+						out = append(out, IRStmt{Kind: IRStmtLabel, Name: armLabel, Position: arm.Pos})
+					default:
+						return nil, fail("E_LOWER_MATCH", arm.Pos, "unsupported match pattern")
+					}
+				}
+				if !hasWildcard {
+					out = append(out, IRStmt{Kind: IRStmtAbort, Arg: 0xffff, Position: stmt.Pos})
+				}
+				out = append(out, IRStmt{Kind: IRStmtLabel, Name: endLabel, Position: stmt.Pos})
+				break
+			}
+			tag, ok := evalConstEnum(stmt.Value, env, functions, map[string]bool{})
+			var matched []Statement
+			if ok {
+				for _, arm := range stmt.Arms {
+					switch arm.Pattern.Kind {
+					case PatternWildcard:
+						matched = arm.Body
+						goto matchedBranch
+					case PatternName:
+						if arm.Pattern.Name == tag {
+							if len(arm.Pattern.Bindings) > 0 {
+								return nil, fail("E_LOWER_MATCH", arm.Pos, "pattern bindings require runtime destructuring, which AVM v1 does not provide")
+							}
+							matched = arm.Body
+							goto matchedBranch
+						}
+					}
+				}
+			} else {
+				for _, arm := range stmt.Arms {
+					if arm.Pattern.Kind == PatternWildcard {
 						matched = arm.Body
 						goto matchedBranch
 					}
+				}
+				if len(stmt.Arms) > 0 {
+					matched = stmt.Arms[0].Body
 				}
 			}
 			if matched == nil {
 				return nil, fail("E_LOWER_MATCH", stmt.Pos, fmt.Sprintf("no match arm for enum variant %s", tag))
 			}
 		matchedBranch:
-			branchIR, err := c.lowerStatementsToIR(matched, params, ret, readOnly, false, functions, env)
+			branchIR, err := c.lowerStatementsToIR(matched, params, ret, readOnly, false, functions, structs, msgOpcodes, cloneLoweringEnv(env), map[string]struct{}{}, loops)
 			if err != nil {
 				return nil, err
 			}
@@ -1624,15 +3938,44 @@ func (c *Compiler) lowerStatementsToIR(stmts []Statement, params []ParamDecl, re
 			if end < start {
 				return nil, fail("E_LOWER_FOR", stmt.Pos, "loop end must be >= start")
 			}
-			for i := start; i < end; i++ {
-				iterEnv := loweringEnv{params: env.params, consts: cloneConstEnv(env.consts)}
-				iterEnv.consts[stmt.Index] = constValue{Kind: constKindU64, U64: i}
-				bodyIR, err := c.lowerStatementsToIR(stmt.Then, params, ret, readOnly, false, functions, iterEnv)
-				if err != nil {
-					return nil, err
-				}
-				out = append(out, bodyIR...)
+			if _, exists := scope[stmt.Index]; exists {
+				return nil, fail("E_LOWER_FOR", stmt.Pos, fmt.Sprintf("duplicate binding %q in the same scope", stmt.Index))
 			}
+			bodyEnv := cloneLoweringEnv(env)
+			bodyBinding := localBinding{Slot: bodyEnv.nextLocalSlot, Type: TypeRef{Name: "u64"}, Mutable: false}
+			bodyEnv.nextLocalSlot++
+			bodyEnv.locals[stmt.Index] = bodyBinding
+			bodyEnv.types[stmt.Index] = TypeRef{Name: "u64"}
+			bodyScope := map[string]struct{}{stmt.Index: struct{}{}}
+			checkLabel := c.nextLabel("for_check")
+			continueLabel := c.nextLabel("for_continue")
+			endLabel := c.nextLabel("for_end")
+			out = append(out, IRStmt{Kind: IRStmtPushU64, Arg: start, Position: stmt.Pos})
+			out = append(out, IRStmt{Kind: IRStmtStoreLocal, Slot: bodyBinding.Slot, Position: stmt.Pos})
+			out = append(out, IRStmt{Kind: IRStmtLabel, Name: checkLabel, Position: stmt.Pos})
+			cond := &IRExpr{
+				Kind:  IRExprLt,
+				Left:  &IRExpr{Kind: IRExprLocalLoad, Slot: bodyBinding.Slot, Pos: stmt.Pos},
+				Right: &IRExpr{Kind: IRExprConstU64, Value: end, Pos: stmt.Pos},
+				Pos:   stmt.Pos,
+			}
+			out = append(out, IRStmt{Kind: IRStmtJumpIfZero, Target: endLabel, Expr: cond, Position: stmt.Pos})
+			bodyIR, err := c.lowerStatementsToIR(stmt.Then, params, ret, readOnly, false, functions, structs, msgOpcodes, bodyEnv, bodyScope, append(loops, loopContext{breakTarget: endLabel, continueTarget: continueLabel}))
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, bodyIR...)
+			out = append(out, IRStmt{Kind: IRStmtLabel, Name: continueLabel, Position: stmt.Pos})
+			increment := &IRExpr{
+				Kind:  IRExprAdd,
+				Left:  &IRExpr{Kind: IRExprLocalLoad, Slot: bodyBinding.Slot, Pos: stmt.Pos},
+				Right: &IRExpr{Kind: IRExprConstU64, Value: 1, Pos: stmt.Pos},
+				Pos:   stmt.Pos,
+			}
+			out = append(out, IRStmt{Kind: IRStmtPushU64, Expr: increment, Position: stmt.Pos})
+			out = append(out, IRStmt{Kind: IRStmtStoreLocal, Slot: bodyBinding.Slot, Position: stmt.Pos})
+			out = append(out, IRStmt{Kind: IRStmtJump, Target: checkLabel, Position: stmt.Pos})
+			out = append(out, IRStmt{Kind: IRStmtLabel, Name: endLabel, Position: stmt.Pos})
 		default:
 			return nil, fail("E_LOWER_STMT", stmt.Pos, fmt.Sprintf("unsupported statement %q", stmt.Kind))
 		}
@@ -1645,17 +3988,66 @@ func (c *Compiler) lowerStatementsToIR(stmts []Statement, params []ParamDecl, re
 
 func (c *Compiler) lowerIREntry(entry IREntry) ([]avm.Instruction, error) {
 	var code []avm.Instruction
+	type jumpPatch struct {
+		index  int
+		target string
+		pos    Position
+	}
+	var patches []jumpPatch
+	labels := map[string]int{}
 	for _, stmt := range entry.Statements {
 		switch stmt.Kind {
 		case IRStmtTrace:
 			code = append(code, avm.Instruction{Op: avm.OpNop, Data: append([]byte(nil), stmt.Data...)})
 		case IRStmtLetConst:
+		case IRStmtLabel:
+			if stmt.Name == "" {
+				return nil, fail("E_LOWER_IR", stmt.Position, "label requires a name")
+			}
+			if _, exists := labels[stmt.Name]; exists {
+				return nil, fail("E_LOWER_IR", stmt.Position, fmt.Sprintf("duplicate label %q", stmt.Name))
+			}
+			labels[stmt.Name] = len(code)
+		case IRStmtJump:
+			patches = append(patches, jumpPatch{index: len(code), target: stmt.Target, pos: stmt.Position})
+			code = append(code, avm.Instruction{Op: avm.OpJump})
+		case IRStmtJumpIfZero:
+			if stmt.Expr != nil {
+				if err := emitIRExpr(stmt.Expr, &code); err != nil {
+					return nil, err
+				}
+			}
+			patches = append(patches, jumpPatch{index: len(code), target: stmt.Target, pos: stmt.Position})
+			code = append(code, avm.Instruction{Op: avm.OpJumpIfZero})
+		case IRStmtPushU64:
+			if stmt.Expr != nil {
+				if err := emitIRExpr(stmt.Expr, &code); err != nil {
+					return nil, err
+				}
+				break
+			}
+			code = append(code, avm.Instruction{Op: avm.OpPushU64, Arg: stmt.Arg})
+		case IRStmtDup:
+			code = append(code, avm.Instruction{Op: avm.OpDup})
+		case IRStmtDrop:
+			code = append(code, avm.Instruction{Op: avm.OpDrop})
+		case IRStmtStoreLocal:
+			code = append(code, avm.Instruction{Op: avm.OpStoreLocal, Arg: uint64(stmt.Slot)})
+		case IRStmtSub:
+			code = append(code, avm.Instruction{Op: avm.OpSub})
+		case IRStmtAbort:
+			code = append(code, avm.Instruction{Op: avm.OpAbort, Arg: stmt.Arg})
 		case IRStmtStoreState:
 			if err := emitIRExpr(stmt.Expr, &code); err != nil {
 				return nil, err
 			}
 			code = append(code, avm.Instruction{Op: avm.OpWriteStorage, Data: []byte(stmt.Key)})
+		case IRStmtDeleteState:
+			code = append(code, avm.Instruction{Op: avm.OpDeleteStorage, Data: []byte(stmt.Key)})
 		case IRStmtEmitInternal:
+			if err := emitIRExpr(stmt.Expr, &code); err != nil {
+				return nil, err
+			}
 			code = append(code, avm.Instruction{Op: avm.OpEmitInternal, Arg: uint64(stmt.Opcode), Data: append([]byte(nil), stmt.Data...)})
 		case IRStmtScheduleSelf:
 			code = append(code, avm.Instruction{Op: avm.OpScheduleSelf, Arg: stmt.Arg, Data: append([]byte(nil), stmt.Data...)})
@@ -1670,31 +4062,217 @@ func (c *Compiler) lowerIREntry(entry IREntry) ([]avm.Instruction, error) {
 			return nil, fail("E_LOWER_IR", stmt.Position, fmt.Sprintf("unsupported IR statement %q", stmt.Kind))
 		}
 	}
+	for _, patch := range patches {
+		target, ok := labels[patch.target]
+		if !ok {
+			return nil, fail("E_LOWER_IR", patch.pos, fmt.Sprintf("unknown label %q", patch.target))
+		}
+		code[patch.index].Arg = uint64(target)
+	}
 	return code, nil
 }
 
 const refundOpcode uint32 = 0xfffffff0
 
 type loweringEnv struct {
-	params map[string]int
-	consts map[string]constValue
+	params         map[string]int
+	consts         map[string]constValue
+	types          map[string]TypeRef
+	locals         map[string]localBinding
+	storageAliases map[string]struct{}
+	unknowns       map[string]struct{}
+	nextLocalSlot  uint32
+	// msgOpcodes is the file-wide map of @message(N) struct name -> opcode,
+	// threaded through here (rather than as its own lowerExprToIR parameter)
+	// so wrapMessage() can resolve an opcode from any expression position,
+	// not just the handful of statement-level call sites that already had
+	// msgOpcodes in scope. Read-only: never mutated after construction, so
+	// sharing the same map across cloned envs is safe.
+	msgOpcodes map[string]uint32
+}
+
+type localBinding struct {
+	Slot    uint32
+	Type    TypeRef
+	Mutable bool
+	// FromHandlerMessage marks a binding whose value chain traces, through
+	// zero or more no-op fromSegment/fromChunk/fromState re-tags, back to the
+	// current handler's own incoming message (the in/inMsg parameter or its
+	// .body/.bouncedBody field). StatementMatch uses this to decide whether a
+	// message-union match should keep comparing the host-verified
+	// ctx.Message.Opcode (top-level, e.g. `match (msg)` where msg came from
+	// in.body) or must instead read the discriminant field off the scrutinee
+	// value itself (nested, e.g. a payload extracted from another message's
+	// field and decoded separately). See exprIsHandlerMessage.
+	FromHandlerMessage bool
+}
+
+type loopContext struct {
+	breakTarget    string
+	continueTarget string
+}
+
+func cloneLoweringEnv(in loweringEnv) loweringEnv {
+	out := loweringEnv{
+		params:         map[string]int{},
+		consts:         map[string]constValue{},
+		types:          map[string]TypeRef{},
+		locals:         map[string]localBinding{},
+		storageAliases: map[string]struct{}{},
+		unknowns:       map[string]struct{}{},
+		nextLocalSlot:  in.nextLocalSlot,
+		msgOpcodes:     in.msgOpcodes,
+	}
+	for k, v := range in.params {
+		out.params[k] = v
+	}
+	for k, v := range in.consts {
+		out.consts[k] = v
+	}
+	for k, v := range in.types {
+		out.types[k] = v
+	}
+	for k, v := range in.locals {
+		out.locals[k] = v
+	}
+	for k := range in.storageAliases {
+		out.storageAliases[k] = struct{}{}
+	}
+	for k := range in.unknowns {
+		out.unknowns[k] = struct{}{}
+	}
+	return out
+}
+
+// nestedMessageOpcodeField is the synthetic field wrapMessage() injects into
+// a message struct literal so a *nested* match (see exprIsHandlerMessage) can
+// recover the variant's opcode via the same generic OpReadField mechanism
+// normal field access already uses. It contains "$", which the lexer never
+// accepts in an identifier (isIdentStart/isIdentPart, lexer.go), so no
+// user-declared ATLX field can ever collide with it — no reservation check
+// is needed on struct field declarations.
+const nestedMessageOpcodeField = "$opcode"
+
+// exprIsHandlerMessage reports whether expr's value, after unwrapping any
+// chain of no-op fromSegment/fromChunk/fromState re-tags, traces back to the
+// current function's own handler-message parameter (in/inMsg, or its
+// .body/.bouncedBody field) rather than to some other derived value such as
+// a nested payload extracted from a field and decoded separately with
+// wrapMessage()/fromChunk(). StatementMatch relies on this to keep using the
+// authoritative ctx.Message.Opcode for every existing top-level
+// `match (msg)` handler unchanged, while switching nested matches to a
+// value-based field read instead.
+func exprIsHandlerMessage(expr Expr, env loweringEnv) bool {
+	for expr.Kind == ExprCall && len(expr.Path) >= 2 && len(expr.Args) == 1 {
+		switch strings.ToLower(expr.Path[len(expr.Path)-1]) {
+		case "fromsegment", "fromchunk", "fromstate":
+			expr = expr.Args[0]
+			continue
+		}
+		break
+	}
+	switch expr.Kind {
+	case ExprIdent:
+		return identIsHandlerMessage(expr.Text, env)
+	case ExprPath:
+		if len(expr.Path) == 1 {
+			return identIsHandlerMessage(expr.Path[0], env)
+		}
+		if len(expr.Path) == 2 {
+			if _, ok := env.locals[expr.Path[0]]; ok {
+				// Field access on a local (e.g. msg.forwardPayload) yields a
+				// different, nested value — not a re-reference to the
+				// handler's own message.
+				return false
+			}
+			if typ, ok := env.types[expr.Path[0]]; ok {
+				switch strings.ToLower(typ.Name) {
+				case "inmessage":
+					return expr.Path[1] == "body"
+				case "inmessagebounced":
+					return expr.Path[1] == "bouncedBody" || expr.Path[1] == "body"
+				}
+			}
+		}
+	}
+	return false
+}
+
+func identIsHandlerMessage(name string, env loweringEnv) bool {
+	if binding, ok := env.locals[name]; ok {
+		return binding.FromHandlerMessage
+	}
+	if _, ok := env.params[name]; ok {
+		if typ, ok := env.types[name]; ok {
+			switch strings.ToLower(typ.Name) {
+			case "segment", "chunk", "inmessage", "inmessagebounced":
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isStorageLoadBinding(expr Expr) bool {
+	if expr.Kind != ExprCall || len(expr.Path) != 2 {
+		return false
+	}
+	return strings.EqualFold(expr.Path[1], "load")
+}
+
+func isFieldLikeType(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "", "bool", "u2", "u4", "u8", "u16", "u32", "u64", "u128", "u256", "uint2", "uint4", "uint8", "uint16", "uint32", "uint64", "uint128", "uint256", "i2", "i4", "i8", "i16", "i32", "i64", "i128", "i256", "int2", "int4", "int8", "int16", "int32", "int64", "int128", "int256", "bytes", "string", "hash32", "address", "coins", "timestamp", "chunk", "code", "null", "map", "dict", "list", "option", "result":
+		return false
+	default:
+		return true
+	}
 }
 
 type constValueKind string
 
 const (
-	constKindU64  constValueKind = "u64"
-	constKindBool constValueKind = "bool"
-	constKindEnum constValueKind = "enum"
-	constKindText constValueKind = "text"
+	constKindU64   constValueKind = "u64"
+	constKindBool  constValueKind = "bool"
+	constKindNull  constValueKind = "null"
+	constKindEnum  constValueKind = "enum"
+	constKindText  constValueKind = "text"
+	constKindAddr  constValueKind = "addr"
+	constKindBytes constValueKind = "bytes"
 )
 
 type constValue struct {
-	Kind constValueKind
-	U64  uint64
-	Bool bool
-	Text string
-	Type string
+	Kind  constValueKind
+	U64   uint64
+	Bool  bool
+	Text  string
+	Bytes []byte
+	Type  string
+}
+
+func constValueType(v constValue) TypeRef {
+	switch v.Kind {
+	case constKindBool:
+		return TypeRef{Name: "bool"}
+	case constKindNull:
+		return TypeRef{Name: "null"}
+	case constKindText:
+		return TypeRef{Name: "string"}
+	case constKindAddr:
+		return TypeRef{Name: "address"}
+	case constKindBytes:
+		if strings.TrimSpace(v.Type) != "" {
+			return TypeRef{Name: v.Type}
+		}
+		return TypeRef{Name: "bytes"}
+	case constKindEnum:
+		if strings.TrimSpace(v.Type) != "" {
+			return TypeRef{Name: v.Type}
+		}
+		return TypeRef{Name: "enum"}
+	default:
+		return TypeRef{Name: "u64"}
+	}
 }
 
 func lowerExprToIR(expr Expr, env loweringEnv, functions map[string]*FunctionDecl, seen map[string]bool) (*IRExpr, error) {
@@ -1705,12 +4283,19 @@ func lowerExprToIR(expr Expr, env loweringEnv, functions map[string]*FunctionDec
 			return nil, fail("E_LOWER_EXPR", expr.Pos, "invalid u64 literal")
 		}
 		return &IRExpr{Kind: IRExprConstU64, Value: v, Pos: expr.Pos}, nil
+	case ExprString:
+		return &IRExpr{Kind: IRExprConstString, Text: expr.Text, Pos: expr.Pos}, nil
+	case ExprBytes:
+		return &IRExpr{Kind: IRExprConstBytes, Data: append([]byte(nil), expr.Bytes...), Pos: expr.Pos}, nil
 	case ExprBool:
 		if expr.Bool {
 			return &IRExpr{Kind: IRExprConstU64, Value: 1, Pos: expr.Pos}, nil
 		}
 		return &IRExpr{Kind: IRExprConstU64, Pos: expr.Pos}, nil
 	case ExprIdent:
+		if binding, ok := env.locals[expr.Text]; ok {
+			return &IRExpr{Kind: IRExprLocalLoad, Slot: binding.Slot, Pos: expr.Pos}, nil
+		}
 		if v, ok := env.consts[expr.Text]; ok {
 			if v.Kind == constKindU64 {
 				return &IRExpr{Kind: IRExprConstU64, Value: v.U64, Pos: expr.Pos}, nil
@@ -1721,6 +4306,15 @@ func lowerExprToIR(expr Expr, env loweringEnv, functions map[string]*FunctionDec
 				}
 				return &IRExpr{Kind: IRExprConstU64, Pos: expr.Pos}, nil
 			}
+			if v.Kind == constKindAddr {
+				return &IRExpr{Kind: IRExprConstAddress, Text: v.Text, Pos: expr.Pos}, nil
+			}
+		}
+		if mode, ok := builtinSendModeValue(expr.Text); ok {
+			return &IRExpr{Kind: IRExprConstU64, Value: uint64(mode), Pos: expr.Pos}, nil
+		}
+		if _, ok := env.unknowns[expr.Text]; ok {
+			return &IRExpr{Kind: IRExprConstU64, Pos: expr.Pos}, nil
 		}
 		switch strings.ToLower(expr.Text) {
 		case "opcode":
@@ -1729,8 +4323,26 @@ func lowerExprToIR(expr Expr, env loweringEnv, functions map[string]*FunctionDec
 			return &IRExpr{Kind: IRExprMsgQueryID, Pos: expr.Pos}, nil
 		case "block_height":
 			return &IRExpr{Kind: IRExprBlockHeight, Pos: expr.Pos}, nil
+		case "getaddress":
+			return &IRExpr{Kind: IRExprContractAddress, Pos: expr.Pos}, nil
+		case "getoriginalbalance":
+			return &IRExpr{Kind: IRExprOriginalBalance, Pos: expr.Pos}, nil
+		case "getattachedvalue":
+			return &IRExpr{Kind: IRExprAttachedValue, Pos: expr.Pos}, nil
+		case "now":
+			return &IRExpr{Kind: IRExprBlockTimestamp, Pos: expr.Pos}, nil
+		case "logicaltime":
+			return &IRExpr{Kind: IRExprLogicalTime, Pos: expr.Pos}, nil
+		case "currentblocklogicaltime":
+			return &IRExpr{Kind: IRExprCurrentBlockLogicalTime, Pos: expr.Pos}, nil
 		}
 		if idx, ok := env.params[expr.Text]; ok {
+			if typ, ok := env.types[expr.Text]; ok {
+				switch strings.ToLower(typ.Name) {
+				case "segment", "chunk":
+					return &IRExpr{Kind: IRExprMsgBody, Pos: expr.Pos}, nil
+				}
+			}
 			if idx == 0 {
 				return &IRExpr{Kind: IRExprMsgQueryID, Pos: expr.Pos}, nil
 			}
@@ -1738,14 +4350,434 @@ func lowerExprToIR(expr Expr, env loweringEnv, functions map[string]*FunctionDec
 		}
 		return nil, fail("E_LOWER_IDENT", expr.Pos, fmt.Sprintf("identifier %q is not lowerable", expr.Text))
 	case ExprPath:
-		if len(expr.Path) == 2 && expr.Path[0] == "state" {
-			return &IRExpr{Kind: IRExprStateRead, Key: expr.Path[1], Pos: expr.Pos}, nil
+		if v, ok := builtinBounceModeValuePath(expr.Path); ok {
+			return &IRExpr{Kind: IRExprConstU64, Value: v, Pos: expr.Pos}, nil
+		}
+		if len(expr.Path) == 1 {
+			if binding, ok := env.locals[expr.Path[0]]; ok {
+				return &IRExpr{Kind: IRExprLocalLoad, Slot: binding.Slot, Pos: expr.Pos}, nil
+			}
+			if typ, ok := env.types[expr.Path[0]]; ok {
+				switch strings.ToLower(typ.Name) {
+				case "segment", "chunk":
+					return &IRExpr{Kind: IRExprMsgBody, Pos: expr.Pos}, nil
+				}
+			}
+			if _, ok := env.unknowns[expr.Path[0]]; ok {
+				return &IRExpr{Kind: IRExprConstU64, Pos: expr.Pos}, nil
+			}
+		}
+		if len(expr.Path) == 2 {
+			if expr.Path[0] == "state" {
+				return &IRExpr{Kind: IRExprStateRead, Key: expr.Path[1], Pos: expr.Pos}, nil
+			}
+			if _, ok := env.storageAliases[expr.Path[0]]; ok {
+				return &IRExpr{Kind: IRExprStateRead, Key: expr.Path[1], Pos: expr.Pos}, nil
+			}
+			if binding, ok := env.locals[expr.Path[0]]; ok {
+				if isFieldLikeType(binding.Type.Name) {
+					return &IRExpr{Kind: IRExprField, Left: &IRExpr{Kind: IRExprLocalLoad, Slot: binding.Slot, Pos: expr.Pos}, Text: expr.Path[1], Pos: expr.Pos}, nil
+				}
+				return nil, fail("E_LOWER_PATH", expr.Pos, "local field access is not supported in AVM v1")
+			}
+			if typ, ok := env.types[expr.Path[0]]; ok {
+				switch strings.ToLower(typ.Name) {
+				case "inmessage":
+					switch expr.Path[1] {
+					case "sender":
+						return &IRExpr{Kind: IRExprMsgSender, Pos: expr.Pos}, nil
+					case "senderAddress":
+						return &IRExpr{Kind: IRExprMsgSender, Pos: expr.Pos}, nil
+					case "value":
+						return &IRExpr{Kind: IRExprMsgValue, Pos: expr.Pos}, nil
+					case "valueCoins":
+						return &IRExpr{Kind: IRExprMsgValue, Pos: expr.Pos}, nil
+					case "body":
+						return &IRExpr{Kind: IRExprMsgBody, Pos: expr.Pos}, nil
+					case "opcode":
+						return &IRExpr{Kind: IRExprMsgOpcode, Pos: expr.Pos}, nil
+					case "queryId":
+						return &IRExpr{Kind: IRExprMsgQueryID, Pos: expr.Pos}, nil
+					case "logicalTime":
+						return &IRExpr{Kind: IRExprLogicalTime, Pos: expr.Pos}, nil
+					case "attachedValue":
+						return &IRExpr{Kind: IRExprAttachedValue, Pos: expr.Pos}, nil
+					}
+				case "inmessagebounced":
+					switch expr.Path[1] {
+					case "bouncedBody", "body":
+						return &IRExpr{Kind: IRExprMsgBody, Pos: expr.Pos}, nil
+					}
+				case "contractcontext":
+					switch expr.Path[1] {
+					case "address":
+						return &IRExpr{Kind: IRExprMsgSender, Pos: expr.Pos}, nil
+					case "balance":
+						return &IRExpr{Kind: IRExprMsgValue, Pos: expr.Pos}, nil
+					case "data":
+						return &IRExpr{Kind: IRExprMsgBody, Pos: expr.Pos}, nil
+					}
+				}
+				return &IRExpr{Kind: IRExprMsgField, Text: expr.Path[1], Pos: expr.Pos}, nil
+			}
+			if _, ok := env.unknowns[expr.Path[0]]; ok {
+				return &IRExpr{Kind: IRExprConstU64, Pos: expr.Pos}, nil
+			}
 		}
 		return nil, fail("E_LOWER_PATH", expr.Pos, "AVM v1 lowering supports only state.<field> reads")
+	case ExprNull:
+		return &IRExpr{Kind: IRExprNull, Pos: expr.Pos}, nil
+	case ExprUnary:
+		if expr.Left == nil {
+			return nil, fail("E_LOWER_EXPR", expr.Pos, "unary expression is missing operand")
+		}
+		left, err := lowerExprToIR(*expr.Left, env, functions, seen)
+		if err != nil {
+			return nil, err
+		}
+		switch expr.Op {
+		case "!":
+			return &IRExpr{Kind: IRExprNot, Left: left, Pos: expr.Pos}, nil
+		case "-":
+			return &IRExpr{Kind: IRExprNeg, Left: left, Pos: expr.Pos}, nil
+		case "~":
+			return &IRExpr{Kind: IRExprBitNot, Left: left, Pos: expr.Pos}, nil
+		default:
+			return nil, fail("E_LOWER_UNARY", expr.Pos, fmt.Sprintf("unary %q has no AVM v1 opcode", expr.Op))
+		}
 	case ExprCall:
+		if callNameIs(expr, "address") {
+			if len(expr.Args) != 1 || expr.Args[0].Kind != ExprString {
+				return nil, fail("E_LOWER_CALL", expr.Pos, "address() requires one string argument")
+			}
+			addr, err := parseAddressLiteral(expr.Args[0].Text)
+			if err != nil {
+				return nil, err
+			}
+			return &IRExpr{Kind: IRExprConstAddress, Text: addr, Pos: expr.Pos}, nil
+		}
+		if len(expr.Path) >= 2 {
+			method := strings.ToLower(expr.Path[len(expr.Path)-1])
+			receiver := Expr{Kind: ExprPath, Path: append([]string(nil), expr.Path[:len(expr.Path)-1]...), Pos: expr.Pos}
+			switch method {
+			case "hash":
+				if len(expr.Args) != 0 {
+					return nil, fail("E_LOWER_CALL", expr.Pos, "hash() takes no arguments")
+				}
+				left, err := lowerExprToIR(receiver, env, functions, seen)
+				if err != nil {
+					return nil, err
+				}
+				return &IRExpr{Kind: IRExprHash, Left: left, Pos: expr.Pos}, nil
+			case "bitshash":
+				if len(expr.Args) != 0 {
+					return nil, fail("E_LOWER_CALL", expr.Pos, "bitsHash() takes no arguments")
+				}
+				left, err := lowerExprToIR(receiver, env, functions, seen)
+				if err != nil {
+					return nil, err
+				}
+				return &IRExpr{Kind: IRExprBitsHash, Left: left, Pos: expr.Pos}, nil
+			case "empty":
+				if len(expr.Args) != 0 {
+					return nil, fail("E_LOWER_CALL", expr.Pos, "empty() takes no arguments")
+				}
+				return &IRExpr{Kind: IRExprMapEmpty, Pos: expr.Pos}, nil
+			case "isempty":
+				if len(expr.Args) != 0 {
+					return nil, fail("E_LOWER_CALL", expr.Pos, "isEmpty() takes no arguments")
+				}
+				left, err := lowerExprToIR(receiver, env, functions, seen)
+				if err != nil {
+					return nil, err
+				}
+				return &IRExpr{Kind: IRExprIsEmpty, Left: left, Pos: expr.Pos}, nil
+			case "skipbouncedprefix":
+				if len(expr.Args) != 0 {
+					return nil, fail("E_LOWER_CALL", expr.Pos, "skipBouncedPrefix() takes no arguments")
+				}
+				return lowerExprToIR(receiver, env, functions, seen)
+			case "fromsegment", "fromchunk", "fromstate":
+				if len(expr.Args) != 1 {
+					return nil, fail("E_LOWER_CALL", expr.Pos, fmt.Sprintf("%s() requires one argument", expr.Text))
+				}
+				return lowerExprToIR(expr.Args[0], env, functions, seen)
+			case "fromhex":
+				if len(expr.Args) != 1 || expr.Args[0].Kind != ExprString {
+					return nil, fail("E_LOWER_CALL", expr.Pos, "fromHex() requires one string literal argument")
+				}
+				decoded, err := hex.DecodeString(strings.TrimSpace(expr.Args[0].Text))
+				if err != nil {
+					return nil, fail("E_LOWER_CALL", expr.Pos, "fromHex() argument is not valid hex")
+				}
+				return &IRExpr{Kind: IRExprConstBytes, Data: decoded, Pos: expr.Pos}, nil
+			case "frombase64":
+				if len(expr.Args) != 1 || expr.Args[0].Kind != ExprString {
+					return nil, fail("E_LOWER_CALL", expr.Pos, "fromBase64() requires one string literal argument")
+				}
+				decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(expr.Args[0].Text))
+				if err != nil {
+					return nil, fail("E_LOWER_CALL", expr.Pos, "fromBase64() argument is not valid base64")
+				}
+				return &IRExpr{Kind: IRExprConstBytes, Data: decoded, Pos: expr.Pos}, nil
+			case "len":
+				if len(expr.Args) != 0 {
+					return nil, fail("E_LOWER_CALL", expr.Pos, "len() takes no arguments")
+				}
+				left, err := lowerExprToIR(receiver, env, functions, seen)
+				if err != nil {
+					return nil, err
+				}
+				return &IRExpr{Kind: IRExprLen, Left: left, Pos: expr.Pos}, nil
+			case "get":
+				if len(expr.Args) != 1 {
+					return nil, fail("E_LOWER_CALL", expr.Pos, "get() requires one argument")
+				}
+				left, err := lowerExprToIR(receiver, env, functions, seen)
+				if err != nil {
+					return nil, err
+				}
+				arg, err := lowerExprToIR(expr.Args[0], env, functions, seen)
+				if err != nil {
+					return nil, err
+				}
+				return &IRExpr{Kind: IRExprMapGet, Left: left, Args: []*IRExpr{arg}, Pos: expr.Pos}, nil
+			case "set":
+				if len(expr.Args) != 2 {
+					return nil, fail("E_LOWER_CALL", expr.Pos, "set() requires two arguments")
+				}
+				left, err := lowerExprToIR(receiver, env, functions, seen)
+				if err != nil {
+					return nil, err
+				}
+				key, err := lowerExprToIR(expr.Args[0], env, functions, seen)
+				if err != nil {
+					return nil, err
+				}
+				value, err := lowerExprToIR(expr.Args[1], env, functions, seen)
+				if err != nil {
+					return nil, err
+				}
+				return &IRExpr{Kind: IRExprMapSet, Left: left, Args: []*IRExpr{key, value}, Pos: expr.Pos}, nil
+			case "has":
+				if len(expr.Args) != 1 {
+					return nil, fail("E_LOWER_CALL", expr.Pos, "has() requires one argument")
+				}
+				left, err := lowerExprToIR(receiver, env, functions, seen)
+				if err != nil {
+					return nil, err
+				}
+				arg, err := lowerExprToIR(expr.Args[0], env, functions, seen)
+				if err != nil {
+					return nil, err
+				}
+				return &IRExpr{Kind: IRExprMapHas, Left: left, Args: []*IRExpr{arg}, Pos: expr.Pos}, nil
+			case "delete":
+				if len(expr.Args) != 1 {
+					return nil, fail("E_LOWER_CALL", expr.Pos, "delete() requires one argument")
+				}
+				left, err := lowerExprToIR(receiver, env, functions, seen)
+				if err != nil {
+					return nil, err
+				}
+				arg, err := lowerExprToIR(expr.Args[0], env, functions, seen)
+				if err != nil {
+					return nil, err
+				}
+				return &IRExpr{Kind: IRExprMapDelete, Left: left, Args: []*IRExpr{arg}, Pos: expr.Pos}, nil
+			case "keys":
+				if len(expr.Args) != 1 {
+					return nil, fail("E_LOWER_CALL", expr.Pos, "keys() requires one argument")
+				}
+				left, err := lowerExprToIR(receiver, env, functions, seen)
+				if err != nil {
+					return nil, err
+				}
+				arg, err := lowerExprToIR(expr.Args[0], env, functions, seen)
+				if err != nil {
+					return nil, err
+				}
+				return &IRExpr{Kind: IRExprMapKeys, Left: left, Args: []*IRExpr{arg}, Pos: expr.Pos}, nil
+			case "entries":
+				if len(expr.Args) != 1 {
+					return nil, fail("E_LOWER_CALL", expr.Pos, "entries() requires one argument")
+				}
+				left, err := lowerExprToIR(receiver, env, functions, seen)
+				if err != nil {
+					return nil, err
+				}
+				arg, err := lowerExprToIR(expr.Args[0], env, functions, seen)
+				if err != nil {
+					return nil, err
+				}
+				return &IRExpr{Kind: IRExprMapEntries, Left: left, Args: []*IRExpr{arg}, Pos: expr.Pos}, nil
+			case "getdata":
+				if len(expr.Args) != 0 {
+					return nil, fail("E_LOWER_CALL", expr.Pos, "getData() takes no arguments")
+				}
+				return &IRExpr{Kind: IRExprStateRead, Key: "", Pos: expr.Pos}, nil
+			case "tochunk":
+				if len(expr.Args) != 0 {
+					return nil, fail("E_LOWER_CALL", expr.Pos, "toChunk() takes no arguments")
+				}
+				return lowerExprToIR(receiver, env, functions, seen)
+			case "setdata", "touch", "save":
+				if len(expr.Args) > 1 {
+					return nil, fail("E_LOWER_CALL", expr.Pos, fmt.Sprintf("%s() has too many arguments", expr.Text))
+				}
+				if len(expr.Args) == 1 {
+					return lowerExprToIR(expr.Args[0], env, functions, seen)
+				}
+				if len(expr.Path) >= 2 {
+					receiver := Expr{Kind: ExprPath, Path: append([]string(nil), expr.Path[:len(expr.Path)-1]...), Pos: expr.Pos}
+					return lowerExprToIR(receiver, env, functions, seen)
+				}
+				return &IRExpr{Kind: IRExprConstU64, Pos: expr.Pos}, nil
+			}
+		}
+		if strings.EqualFold(expr.Text, "len") {
+			if len(expr.Args) != 1 {
+				return nil, fail("E_LOWER_CALL", expr.Pos, "len() requires one argument")
+			}
+			left, err := lowerExprToIR(expr.Args[0], env, functions, seen)
+			if err != nil {
+				return nil, err
+			}
+			return &IRExpr{Kind: IRExprLen, Left: left, Pos: expr.Pos}, nil
+		}
+		switch strings.ToLower(expr.Text) {
+		case "buildmessage":
+			if len(expr.Args) != 1 || expr.Args[0].Kind != ExprStruct {
+				return nil, fail("E_LOWER_CALL", expr.Pos, "buildMessage() requires one struct literal argument")
+			}
+			return lowerExprToIR(expr.Args[0], env, functions, seen)
+		case "wrapmessage":
+			if len(expr.Args) != 1 || expr.Args[0].Kind != ExprStruct || expr.Args[0].Text == "" {
+				return nil, fail("E_LOWER_CALL", expr.Pos, "wrapMessage() requires one struct literal argument")
+			}
+			opcode, ok := env.msgOpcodes[expr.Args[0].Text]
+			if !ok {
+				return nil, fail("E_LOWER_CALL", expr.Pos, fmt.Sprintf("wrapMessage() requires a @message struct literal argument, got %q", expr.Args[0].Text))
+			}
+			inner, err := lowerExprToIR(expr.Args[0], env, functions, seen)
+			if err != nil {
+				return nil, err
+			}
+			if inner.Kind != IRExprStruct {
+				return nil, fail("E_LOWER_CALL", expr.Pos, "wrapMessage() requires a struct literal argument")
+			}
+			// Carries the variant's opcode inside the value itself (rather
+			// than only in the envelope, like buildMessage's own opcode
+			// field) so a nested match — one whose scrutinee is not the
+			// handler's own top-level message — can recover the
+			// discriminant via a plain field read. See nestedMessageOpcodeField
+			// and the StatementMatch codegen in lowerStatementsToIR.
+			inner.Fields = append(inner.Fields, IRStructField{
+				Name: nestedMessageOpcodeField,
+				Expr: &IRExpr{Kind: IRExprConstU64, Value: uint64(opcode), Pos: expr.Pos},
+			})
+			return inner, nil
+		case "hash":
+			if len(expr.Args) != 1 {
+				return nil, fail("E_LOWER_CALL", expr.Pos, "hash() requires one argument")
+			}
+			left, err := lowerExprToIR(expr.Args[0], env, functions, seen)
+			if err != nil {
+				return nil, err
+			}
+			return &IRExpr{Kind: IRExprHash, Left: left, Pos: expr.Pos}, nil
+		case "address":
+			if len(expr.Args) != 1 || expr.Args[0].Kind != ExprString {
+				return nil, fail("E_LOWER_CALL", expr.Pos, "address() requires one string argument")
+			}
+			addr, err := parseAddressLiteral(expr.Args[0].Text)
+			if err != nil {
+				return nil, err
+			}
+			return &IRExpr{Kind: IRExprConstAddress, Text: addr, Pos: expr.Pos}, nil
+		case "getaddress":
+			if len(expr.Args) != 0 {
+				return nil, fail("E_LOWER_CALL", expr.Pos, "getAddress() takes no arguments")
+			}
+			return &IRExpr{Kind: IRExprContractAddress, Pos: expr.Pos}, nil
+		case "getoriginalbalance":
+			if len(expr.Args) != 0 {
+				return nil, fail("E_LOWER_CALL", expr.Pos, "getOriginalBalance() takes no arguments")
+			}
+			return &IRExpr{Kind: IRExprOriginalBalance, Pos: expr.Pos}, nil
+		case "getattachedvalue":
+			if len(expr.Args) != 0 {
+				return nil, fail("E_LOWER_CALL", expr.Pos, "getAttachedValue() takes no arguments")
+			}
+			return &IRExpr{Kind: IRExprAttachedValue, Pos: expr.Pos}, nil
+		case "now":
+			if len(expr.Args) != 0 {
+				return nil, fail("E_LOWER_CALL", expr.Pos, "now() takes no arguments")
+			}
+			return &IRExpr{Kind: IRExprBlockTimestamp, Pos: expr.Pos}, nil
+		case "logicaltime":
+			if len(expr.Args) != 0 {
+				return nil, fail("E_LOWER_CALL", expr.Pos, "logicalTime() takes no arguments")
+			}
+			return &IRExpr{Kind: IRExprLogicalTime, Pos: expr.Pos}, nil
+		case "currentblocklogicaltime":
+			if len(expr.Args) != 0 {
+				return nil, fail("E_LOWER_CALL", expr.Pos, "currentBlockLogicalTime() takes no arguments")
+			}
+			return &IRExpr{Kind: IRExprCurrentBlockLogicalTime, Pos: expr.Pos}, nil
+		case "issignaturevalid", "verifysignature":
+			if len(expr.Args) != 3 {
+				return nil, fail("E_LOWER_CALL", expr.Pos, expr.Text+"() requires three arguments")
+			}
+			data, err := lowerExprToIR(expr.Args[0], env, functions, seen)
+			if err != nil {
+				return nil, err
+			}
+			signature, err := lowerExprToIR(expr.Args[1], env, functions, seen)
+			if err != nil {
+				return nil, err
+			}
+			publicKey, err := lowerExprToIR(expr.Args[2], env, functions, seen)
+			if err != nil {
+				return nil, err
+			}
+			return &IRExpr{Kind: IRExprSignatureVerify, Args: []*IRExpr{data, signature, publicKey}, Pos: expr.Pos}, nil
+		case "counterfactualaddress", "autodeployaddress":
+			if len(expr.Args) != 1 || expr.Args[0].Kind != ExprStruct {
+				return nil, fail("E_LOWER_CALL", expr.Pos, expr.Text+"() requires one struct literal argument")
+			}
+			left, err := lowerExprToIR(expr.Args[0], env, functions, seen)
+			if err != nil {
+				return nil, err
+			}
+			kind := IRExprCounterfactualAddress
+			if strings.EqualFold(expr.Text, "autodeployaddress") {
+				kind = IRExprAutoDeployAddress
+			}
+			return &IRExpr{Kind: kind, Left: left, Pos: expr.Pos}, nil
+		case "getbalance":
+			if len(expr.Args) != 0 {
+				return nil, fail("E_LOWER_CALL", expr.Pos, "getBalance() takes no arguments")
+			}
+			return &IRExpr{Kind: IRExprOriginalBalance, Pos: expr.Pos}, nil
+		case "random":
+			// random() lowers to OpReadRandom, the deterministic block
+			// randomness beacon (SHA256 over previous state root, block hash,
+			// message hash, and a per-call domain). It is NOT process entropy:
+			// the forbidden OpRandom capability remains banned. All validators
+			// derive identical values, and successive calls within one execution
+			// are domain-separated so they differ.
+			if len(expr.Args) != 0 {
+				return nil, fail("E_LOWER_CALL", expr.Pos, "random() takes no arguments")
+			}
+			return &IRExpr{Kind: IRExprRandom, Pos: expr.Pos}, nil
+		}
 		value, ok := evalConstExpr(expr, env, functions, seen)
 		if !ok {
-			return nil, fail("E_LOWER_CALL", expr.Pos, fmt.Sprintf("call %q must be compile-time constant on AVM v1", expr.Text))
+			if inlined, handled, err := tryInlineUserFunctionCall(expr, env, functions, seen); handled {
+				return inlined, err
+			}
+			return nil, fail("E_LOWER_CALL", expr.Pos, fmt.Sprintf("call %q cannot be lowered by AVM v1", callDisplayName(expr)))
 		}
 		switch value.Kind {
 		case constKindU64:
@@ -1755,13 +4787,33 @@ func lowerExprToIR(expr Expr, env loweringEnv, functions map[string]*FunctionDec
 				return &IRExpr{Kind: IRExprConstU64, Value: 1, Pos: expr.Pos}, nil
 			}
 			return &IRExpr{Kind: IRExprConstU64, Pos: expr.Pos}, nil
+		case constKindBytes:
+			return &IRExpr{Kind: IRExprConstBytes, Data: append([]byte(nil), value.Bytes...), Pos: expr.Pos}, nil
+		case constKindAddr:
+			return &IRExpr{Kind: IRExprConstAddress, Text: value.Text, Pos: expr.Pos}, nil
+		case constKindText:
+			if strings.EqualFold(value.Type, "hash32") || strings.EqualFold(value.Type, "hash") {
+				decoded, err := hex.DecodeString(strings.TrimSpace(value.Text))
+				if err != nil {
+					return nil, fail("E_LOWER_CALL", expr.Pos, "invalid hex hash constant")
+				}
+				return &IRExpr{Kind: IRExprConstBytes, Data: decoded, Pos: expr.Pos}, nil
+			}
+			return &IRExpr{Kind: IRExprConstString, Text: value.Text, Pos: expr.Pos}, nil
 		default:
 			return nil, fail("E_LOWER_CALL", expr.Pos, "only numeric/boolean constant calls can be lowered")
 		}
-	case ExprBinary:
-		if expr.Op != "+" {
-			return nil, fail("E_LOWER_BINARY", expr.Pos, fmt.Sprintf("binary %q has no AVM v1 opcode", expr.Op))
+	case ExprStruct:
+		fields := make([]IRStructField, 0, len(expr.Fields))
+		for _, field := range expr.Fields {
+			value, err := lowerExprToIR(field.Value, env, functions, seen)
+			if err != nil {
+				return nil, err
+			}
+			fields = append(fields, IRStructField{Name: field.Name, Expr: value})
 		}
+		return &IRExpr{Kind: IRExprStruct, Text: expr.Text, Fields: fields, Pos: expr.Pos}, nil
+	case ExprBinary:
 		left, err := lowerExprToIR(*expr.Left, env, functions, seen)
 		if err != nil {
 			return nil, err
@@ -1770,19 +4822,137 @@ func lowerExprToIR(expr Expr, env loweringEnv, functions map[string]*FunctionDec
 		if err != nil {
 			return nil, err
 		}
-		return &IRExpr{Kind: IRExprAdd, Left: left, Right: right, Pos: expr.Pos}, nil
-	case ExprCompare, ExprLogic, ExprTry:
+		switch expr.Op {
+		case "+":
+			return &IRExpr{Kind: IRExprAdd, Left: left, Right: right, Pos: expr.Pos}, nil
+		case "-":
+			return &IRExpr{Kind: IRExprSub, Left: left, Right: right, Pos: expr.Pos}, nil
+		case "*":
+			return &IRExpr{Kind: IRExprMul, Left: left, Right: right, Pos: expr.Pos}, nil
+		case "/":
+			return &IRExpr{Kind: IRExprDiv, Left: left, Right: right, Pos: expr.Pos}, nil
+		case "%":
+			return &IRExpr{Kind: IRExprMod, Left: left, Right: right, Pos: expr.Pos}, nil
+		case "<<":
+			return &IRExpr{Kind: IRExprShl, Left: left, Right: right, Pos: expr.Pos}, nil
+		case ">>":
+			return &IRExpr{Kind: IRExprShr, Left: left, Right: right, Pos: expr.Pos}, nil
+		case "&":
+			return &IRExpr{Kind: IRExprBitAnd, Left: left, Right: right, Pos: expr.Pos}, nil
+		case "|":
+			return &IRExpr{Kind: IRExprBitOr, Left: left, Right: right, Pos: expr.Pos}, nil
+		case "^":
+			return &IRExpr{Kind: IRExprBitXor, Left: left, Right: right, Pos: expr.Pos}, nil
+		case "??":
+			return &IRExpr{Kind: IRExprCoalesce, Left: left, Right: right, Pos: expr.Pos}, nil
+		default:
+			return nil, fail("E_LOWER_BINARY", expr.Pos, fmt.Sprintf("binary %q has no AVM v1 opcode", expr.Op))
+		}
+	case ExprCompare:
+		left, err := lowerExprToIR(*expr.Left, env, functions, seen)
+		if err != nil {
+			return nil, err
+		}
+		right, err := lowerExprToIR(*expr.Right, env, functions, seen)
+		if err != nil {
+			return nil, err
+		}
+		switch expr.Op {
+		case "==":
+			return &IRExpr{Kind: IRExprEq, Left: left, Right: right, Pos: expr.Pos}, nil
+		case "!=":
+			return &IRExpr{Kind: IRExprNe, Left: left, Right: right, Pos: expr.Pos}, nil
+		case "<":
+			return &IRExpr{Kind: IRExprLt, Left: left, Right: right, Pos: expr.Pos}, nil
+		case "<=":
+			return &IRExpr{Kind: IRExprLe, Left: left, Right: right, Pos: expr.Pos}, nil
+		case ">":
+			return &IRExpr{Kind: IRExprGt, Left: left, Right: right, Pos: expr.Pos}, nil
+		case ">=":
+			return &IRExpr{Kind: IRExprGe, Left: left, Right: right, Pos: expr.Pos}, nil
+		case "<=>":
+			return &IRExpr{Kind: IRExprCompare, Text: expr.Op, Left: left, Right: right, Pos: expr.Pos}, nil
+		default:
+			return nil, fail("E_LOWER_COMPARE", expr.Pos, fmt.Sprintf("comparison %q has no AVM opcode", expr.Op))
+		}
+	case ExprLogic:
+		left, err := lowerExprToIR(*expr.Left, env, functions, seen)
+		if err != nil {
+			return nil, err
+		}
+		right, err := lowerExprToIR(*expr.Right, env, functions, seen)
+		if err != nil {
+			return nil, err
+		}
+		switch expr.Op {
+		case "&&":
+			return &IRExpr{Kind: IRExprAnd, Left: left, Right: right, Pos: expr.Pos}, nil
+		case "||":
+			return &IRExpr{Kind: IRExprOr, Left: left, Right: right, Pos: expr.Pos}, nil
+		default:
+			return nil, fail("E_LOWER_LOGIC", expr.Pos, fmt.Sprintf("logic %q has no AVM opcode", expr.Op))
+		}
+	case ExprTry:
 		value, ok := evalConstExpr(expr, env, functions, seen)
 		if !ok {
-			return nil, fail("E_LOWER_EXPR", expr.Pos, fmt.Sprintf("expression %q must be compile-time constant on AVM v1", expr.Kind))
+			return nil, fail("E_LOWER_EXPR", expr.Pos, "try expressions must be compile-time constant on AVM v1")
 		}
 		if value.Kind == constKindBool && value.Bool {
 			return &IRExpr{Kind: IRExprConstU64, Value: 1, Pos: expr.Pos}, nil
 		}
 		return &IRExpr{Kind: IRExprConstU64, Pos: expr.Pos}, nil
+	case ExprTernary:
+		if expr.Left == nil || expr.Right == nil || expr.Else == nil {
+			return nil, fail("E_LOWER_EXPR", expr.Pos, "ternary expression is incomplete")
+		}
+		cond, err := lowerExprToIR(*expr.Left, env, functions, seen)
+		if err != nil {
+			return nil, err
+		}
+		thenExpr, err := lowerExprToIR(*expr.Right, env, functions, seen)
+		if err != nil {
+			return nil, err
+		}
+		elseExpr, err := lowerExprToIR(*expr.Else, env, functions, seen)
+		if err != nil {
+			return nil, err
+		}
+		return &IRExpr{Kind: IRExprTernary, Left: cond, Right: thenExpr, Else: elseExpr, Pos: expr.Pos}, nil
 	default:
 		return nil, fail("E_LOWER_EXPR", expr.Pos, fmt.Sprintf("expression %q is ABI-only and cannot be executed by AVM v1", expr.Kind))
 	}
+}
+
+func lowerBuildMessageExpr(expr Expr, env loweringEnv, functions map[string]*FunctionDecl, msgOpcodes map[string]uint32) (*IRExpr, error) {
+	if expr.Kind != ExprCall || !strings.EqualFold(expr.Text, "buildMessage") || len(expr.Args) != 1 || expr.Args[0].Kind != ExprStruct {
+		return nil, fail("E_LOWER_CALL", expr.Pos, "buildMessage() requires one struct literal argument")
+	}
+	envelope := expr.Args[0]
+	fields := make([]IRStructField, 0, len(envelope.Fields)+1)
+	needsOpcode := uint32(0)
+	hasOpcode := false
+	for _, field := range envelope.Fields {
+		value, err := lowerExprToIR(field.Value, env, functions, map[string]bool{})
+		if err != nil {
+			return nil, err
+		}
+		fields = append(fields, IRStructField{Name: field.Name, Expr: value})
+		if strings.EqualFold(field.Name, "opcode") {
+			hasOpcode = true
+		}
+		if strings.EqualFold(field.Name, "body") && field.Value.Kind == ExprStruct && field.Value.Text != "" {
+			if opcode, ok := msgOpcodes[field.Value.Text]; ok {
+				needsOpcode = opcode
+			}
+		}
+	}
+	if needsOpcode != 0 && !hasOpcode {
+		fields = append(fields, IRStructField{
+			Name: "opcode",
+			Expr: &IRExpr{Kind: IRExprConstU64, Value: uint64(needsOpcode), Pos: expr.Pos},
+		})
+	}
+	return &IRExpr{Kind: IRExprStruct, Text: "MessageEnvelope", Fields: fields, Pos: expr.Pos}, nil
 }
 
 func emitIRExpr(expr *IRExpr, code *[]avm.Instruction) error {
@@ -1792,32 +4962,310 @@ func emitIRExpr(expr *IRExpr, code *[]avm.Instruction) error {
 	switch expr.Kind {
 	case IRExprConstU64:
 		*code = append(*code, avm.Instruction{Op: avm.OpPushU64, Arg: expr.Value})
+	case IRExprConstString:
+		*code = append(*code, avm.Instruction{Op: avm.OpPushString, Data: []byte(expr.Text)})
+	case IRExprConstAddress:
+		*code = append(*code, avm.Instruction{Op: avm.OpPushAddress, Data: []byte(expr.Text)})
+	case IRExprConstBytes:
+		*code = append(*code, avm.Instruction{Op: avm.OpPushBytes, Data: append([]byte(nil), expr.Data...)})
+	case IRExprLocalLoad:
+		*code = append(*code, avm.Instruction{Op: avm.OpLoadLocal, Arg: uint64(expr.Slot)})
+	case IRExprNull:
+		*code = append(*code, avm.Instruction{Op: avm.OpPushNull})
 	case IRExprStateRead:
 		*code = append(*code, avm.Instruction{Op: avm.OpReadStorage, Data: []byte(expr.Key)})
-	case IRExprAdd:
+	case IRExprAdd, IRExprSub, IRExprMul, IRExprDiv, IRExprMod, IRExprShl, IRExprShr, IRExprBitAnd, IRExprBitOr, IRExprBitXor:
 		if err := emitIRExpr(expr.Left, code); err != nil {
 			return err
 		}
 		if err := emitIRExpr(expr.Right, code); err != nil {
 			return err
 		}
-		*code = append(*code, avm.Instruction{Op: avm.OpAdd})
+		op := avm.OpAdd
+		switch expr.Kind {
+		case IRExprAdd:
+			op = avm.OpAdd
+		case IRExprSub:
+			op = avm.OpSub
+		case IRExprMul:
+			op = avm.OpMul
+		case IRExprDiv:
+			op = avm.OpDiv
+		case IRExprMod:
+			op = avm.OpMod
+		case IRExprShl:
+			op = avm.OpShl
+		case IRExprShr:
+			op = avm.OpShr
+		case IRExprBitAnd:
+			op = avm.OpBitAnd
+		case IRExprBitOr:
+			op = avm.OpBitOr
+		case IRExprBitXor:
+			op = avm.OpBitXor
+		}
+		*code = append(*code, avm.Instruction{Op: op})
+	case IRExprEq, IRExprNe, IRExprLt, IRExprLe, IRExprGt, IRExprGe, IRExprCompare, IRExprAnd, IRExprOr:
+		if err := emitIRExpr(expr.Left, code); err != nil {
+			return err
+		}
+		if err := emitIRExpr(expr.Right, code); err != nil {
+			return err
+		}
+		op := avm.OpEq
+		switch expr.Kind {
+		case IRExprEq:
+			op = avm.OpEq
+		case IRExprNe:
+			op = avm.OpNe
+		case IRExprLt:
+			op = avm.OpLt
+		case IRExprLe:
+			op = avm.OpLe
+		case IRExprGt:
+			op = avm.OpGt
+		case IRExprGe:
+			op = avm.OpGe
+		case IRExprCompare:
+			op = avm.OpCmp
+		case IRExprAnd:
+			op = avm.OpAnd
+		case IRExprOr:
+			op = avm.OpOr
+		}
+		*code = append(*code, avm.Instruction{Op: op})
+	case IRExprNot:
+		if err := emitIRExpr(expr.Left, code); err != nil {
+			return err
+		}
+		*code = append(*code, avm.Instruction{Op: avm.OpNot})
+	case IRExprNeg:
+		if err := emitIRExpr(expr.Left, code); err != nil {
+			return err
+		}
+		*code = append(*code, avm.Instruction{Op: avm.OpNeg})
+	case IRExprBitNot:
+		if err := emitIRExpr(expr.Left, code); err != nil {
+			return err
+		}
+		*code = append(*code, avm.Instruction{Op: avm.OpBitNot})
+	case IRExprCoalesce:
+		if expr.Left == nil || expr.Right == nil {
+			return fail("E_LOWER_EXPR", expr.Pos, "coalesce expression is incomplete")
+		}
+		if err := emitIRExpr(expr.Left, code); err != nil {
+			return err
+		}
+		*code = append(*code, avm.Instruction{Op: avm.OpDup})
+		*code = append(*code, avm.Instruction{Op: avm.OpIsEmpty})
+		jumpToKeepLeft := len(*code)
+		*code = append(*code, avm.Instruction{Op: avm.OpJumpIfZero, Arg: 0})
+		*code = append(*code, avm.Instruction{Op: avm.OpDrop})
+		if err := emitIRExpr(expr.Right, code); err != nil {
+			return err
+		}
+		patchJumpTarget(*code, jumpToKeepLeft, len(*code))
+	case IRExprTernary:
+		if expr.Left == nil || expr.Right == nil || expr.Else == nil {
+			return fail("E_LOWER_EXPR", expr.Pos, "ternary expression is incomplete")
+		}
+		if err := emitIRExpr(expr.Left, code); err != nil {
+			return err
+		}
+		condJump := len(*code)
+		*code = append(*code, avm.Instruction{Op: avm.OpJumpIfZero, Arg: 0})
+		if err := emitIRExpr(expr.Right, code); err != nil {
+			return err
+		}
+		endJump := len(*code)
+		*code = append(*code, avm.Instruction{Op: avm.OpJump, Arg: 0})
+		patchJumpTarget(*code, condJump, len(*code))
+		if err := emitIRExpr(expr.Else, code); err != nil {
+			return err
+		}
+		patchJumpTarget(*code, endJump, len(*code))
 	case IRExprMsgOpcode:
 		*code = append(*code, avm.Instruction{Op: avm.OpReadMsgOpcode})
 	case IRExprMsgQueryID:
 		*code = append(*code, avm.Instruction{Op: avm.OpReadMsgQueryID})
+	case IRExprMsgSender:
+		*code = append(*code, avm.Instruction{Op: avm.OpReadMsgSender})
+	case IRExprMsgValue:
+		*code = append(*code, avm.Instruction{Op: avm.OpReadMsgValue})
+	case IRExprMsgBody:
+		*code = append(*code, avm.Instruction{Op: avm.OpReadMsgBody})
+	case IRExprMsgField:
+		*code = append(*code, avm.Instruction{Op: avm.OpReadMsgField, Data: []byte(expr.Text)})
+	case IRExprField:
+		if expr.Left == nil {
+			return fail("E_LOWER_IR", expr.Pos, "field expression is missing receiver")
+		}
+		if err := emitIRExpr(expr.Left, code); err != nil {
+			return err
+		}
+		*code = append(*code, avm.Instruction{Op: avm.OpReadField, Data: []byte(expr.Text)})
+	case IRExprIsEmpty:
+		if err := emitIRExpr(expr.Left, code); err != nil {
+			return err
+		}
+		*code = append(*code, avm.Instruction{Op: avm.OpIsEmpty})
 	case IRExprBlockHeight:
 		*code = append(*code, avm.Instruction{Op: avm.OpReadBlock})
+	case IRExprCurrentBlockLogicalTime:
+		*code = append(*code, avm.Instruction{Op: avm.OpReadCurrentBlockLogicalTime})
+	case IRExprHash, IRExprBitsHash:
+		if err := emitIRExpr(expr.Left, code); err != nil {
+			return err
+		}
+		*code = append(*code, avm.Instruction{Op: avm.OpHash})
+	case IRExprSignatureVerify:
+		if len(expr.Args) != 3 {
+			return fail("E_LOWER_EXPR", expr.Pos, "signature verify expects exactly three arguments")
+		}
+		if err := emitIRExpr(expr.Args[0], code); err != nil {
+			return err
+		}
+		if err := emitIRExpr(expr.Args[1], code); err != nil {
+			return err
+		}
+		if err := emitIRExpr(expr.Args[2], code); err != nil {
+			return err
+		}
+		*code = append(*code, avm.Instruction{Op: avm.OpVerifySignature})
+	case IRExprCoinsCast:
+		if err := emitIRExpr(expr.Left, code); err != nil {
+			return err
+		}
+		*code = append(*code, avm.Instruction{Op: avm.OpCastCoins})
+	case IRExprStruct:
+		*code = append(*code, avm.Instruction{Op: avm.OpMapEmpty})
+		for _, field := range expr.Fields {
+			*code = append(*code, avm.Instruction{Op: avm.OpPushString, Data: []byte(field.Name)})
+			if err := emitIRExpr(field.Expr, code); err != nil {
+				return err
+			}
+			*code = append(*code, avm.Instruction{Op: avm.OpMapSet})
+		}
+	case IRExprContractAddress:
+		*code = append(*code, avm.Instruction{Op: avm.OpReadContractAddress})
+	case IRExprOriginalBalance:
+		*code = append(*code, avm.Instruction{Op: avm.OpReadOriginalBalance})
+	case IRExprAttachedValue:
+		*code = append(*code, avm.Instruction{Op: avm.OpReadAttachedValue})
+	case IRExprLogicalTime:
+		*code = append(*code, avm.Instruction{Op: avm.OpReadLogicalTime})
+	case IRExprBlockTimestamp:
+		*code = append(*code, avm.Instruction{Op: avm.OpReadBlockTimestamp})
+	case IRExprRandom:
+		*code = append(*code, avm.Instruction{Op: avm.OpReadRandom})
+	case IRExprCounterfactualAddress, IRExprAutoDeployAddress:
+		if err := emitIRExpr(expr.Left, code); err != nil {
+			return err
+		}
+		op := avm.OpCounterfactualAddress
+		if expr.Kind == IRExprAutoDeployAddress {
+			op = avm.OpAutoDeployAddress
+		}
+		*code = append(*code, avm.Instruction{Op: op})
+	case IRExprLen:
+		if err := emitIRExpr(expr.Left, code); err != nil {
+			return err
+		}
+		*code = append(*code, avm.Instruction{Op: avm.OpLen})
+	case IRExprMapEmpty:
+		*code = append(*code, avm.Instruction{Op: avm.OpMapEmpty})
+	case IRExprMapGet:
+		if err := emitIRExpr(expr.Left, code); err != nil {
+			return err
+		}
+		if len(expr.Args) != 1 {
+			return fail("E_LOWER_EXPR", expr.Pos, "map.get() expects exactly one argument")
+		}
+		if err := emitIRExpr(expr.Args[0], code); err != nil {
+			return err
+		}
+		*code = append(*code, avm.Instruction{Op: avm.OpMapGet})
+	case IRExprMapSet:
+		if err := emitIRExpr(expr.Left, code); err != nil {
+			return err
+		}
+		if len(expr.Args) != 2 {
+			return fail("E_LOWER_EXPR", expr.Pos, "map.set() expects exactly two arguments")
+		}
+		if err := emitIRExpr(expr.Args[0], code); err != nil {
+			return err
+		}
+		if err := emitIRExpr(expr.Args[1], code); err != nil {
+			return err
+		}
+		*code = append(*code, avm.Instruction{Op: avm.OpMapSet})
+	case IRExprMapHas:
+		if err := emitIRExpr(expr.Left, code); err != nil {
+			return err
+		}
+		if len(expr.Args) != 1 {
+			return fail("E_LOWER_EXPR", expr.Pos, "map.has() expects exactly one argument")
+		}
+		if err := emitIRExpr(expr.Args[0], code); err != nil {
+			return err
+		}
+		*code = append(*code, avm.Instruction{Op: avm.OpMapHas})
+	case IRExprMapDelete:
+		if err := emitIRExpr(expr.Left, code); err != nil {
+			return err
+		}
+		if len(expr.Args) != 1 {
+			return fail("E_LOWER_EXPR", expr.Pos, "map.delete() expects exactly one argument")
+		}
+		if err := emitIRExpr(expr.Args[0], code); err != nil {
+			return err
+		}
+		*code = append(*code, avm.Instruction{Op: avm.OpMapDelete})
+	case IRExprMapKeys:
+		if err := emitIRExpr(expr.Left, code); err != nil {
+			return err
+		}
+		if len(expr.Args) != 1 {
+			return fail("E_LOWER_EXPR", expr.Pos, "map.keys() expects exactly one argument")
+		}
+		if err := emitIRExpr(expr.Args[0], code); err != nil {
+			return err
+		}
+		*code = append(*code, avm.Instruction{Op: avm.OpMapKeys})
+	case IRExprMapEntries:
+		if err := emitIRExpr(expr.Left, code); err != nil {
+			return err
+		}
+		if len(expr.Args) != 1 {
+			return fail("E_LOWER_EXPR", expr.Pos, "map.entries() expects exactly one argument")
+		}
+		if err := emitIRExpr(expr.Args[0], code); err != nil {
+			return err
+		}
+		*code = append(*code, avm.Instruction{Op: avm.OpMapEntries})
 	default:
 		return fail("E_LOWER_EXPR", expr.Pos, fmt.Sprintf("unsupported IR expression %q", expr.Kind))
 	}
 	return nil
 }
 
+func patchJumpTarget(code []avm.Instruction, index int, target int) {
+	if index < 0 || index >= len(code) {
+		return
+	}
+	code[index].Arg = uint64(target)
+}
+
 func constU64(expr Expr) (uint64, bool) {
 	switch expr.Kind {
 	case ExprNumber:
-		v, err := strconv.ParseUint(expr.Text, 10, 64)
+		text := strings.TrimSpace(expr.Text)
+		base := 10
+		if strings.HasPrefix(text, "0x") || strings.HasPrefix(text, "0X") {
+			text = text[2:]
+			base = 16
+		}
+		v, err := strconv.ParseUint(text, base, 64)
 		return v, err == nil
 	case ExprBool:
 		if expr.Bool {
@@ -1829,12 +5277,138 @@ func constU64(expr Expr) (uint64, bool) {
 	}
 }
 
+func parseAetLiteral(text string) (uint64, error) {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return 0, fmt.Errorf("empty aet literal")
+	}
+	parts := strings.SplitN(trimmed, ".", 2)
+	whole, err := strconv.ParseUint(parts[0], 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	const base = uint64(1_000_000_000)
+	if len(parts) == 1 {
+		return mulU64(whole, base)
+	}
+	fraction := parts[1]
+	if len(fraction) == 0 || len(fraction) > 9 {
+		return 0, fmt.Errorf("fractional precision exceeds 9 digits")
+	}
+	for len(fraction) < 9 {
+		fraction += "0"
+	}
+	frac, err := strconv.ParseUint(fraction, 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	wholeScaled, err := mulU64(whole, base)
+	if err != nil {
+		return 0, err
+	}
+	return addU64(wholeScaled, frac)
+}
+
+func parseAddressLiteral(text string) (string, error) {
+	addr, err := addressing.ParseAccAddress(strings.TrimSpace(text))
+	if err != nil {
+		return "", err
+	}
+	return addressing.FormatAccAddress(addr), nil
+}
+
+func callNameIs(expr Expr, name string) bool {
+	if strings.EqualFold(expr.Text, name) {
+		return true
+	}
+	return len(expr.Path) == 1 && strings.EqualFold(expr.Path[0], name)
+}
+
+func builtinSendModeValue(name string) (uint32, bool) {
+	switch strings.ToUpper(strings.TrimSpace(name)) {
+	case "SEND_DEFAULT":
+		return 0, true
+	case "SEND_CARRY_REMAINDER":
+		return 64, true
+	case "SEND_DRAIN_BALANCE":
+		return 128, true
+	case "SEND_ESTIMATE_ONLY":
+		return 1024, true
+	case "SEND_FEE_FROM_BALANCE":
+		return 1, true
+	case "SEND_IGNORE_ERRORS":
+		return 2, true
+	case "SEND_BOUNCE_ON_FAIL":
+		return 16, true
+	case "SEND_DESTROY_IF_EMPTY":
+		return 32, true
+	default:
+		return 0, false
+	}
+}
+
+func builtinBounceModeValuePath(path []string) (uint64, bool) {
+	if len(path) != 2 || !strings.EqualFold(path[0], "BounceMode") {
+		return 0, false
+	}
+	switch strings.ToLower(strings.TrimSpace(path[1])) {
+	case "nobounce":
+		return 0, true
+	case "only256bitsofbody", "richbounce", "richbounceonlyrootchunk":
+		return 1, true
+	default:
+		return 0, false
+	}
+}
+
+func addU64(a, b uint64) (uint64, error) {
+	sum := a + b
+	if sum < a {
+		return 0, fmt.Errorf("aet literal overflows uint64")
+	}
+	return sum, nil
+}
+
+func mulU64(a, b uint64) (uint64, error) {
+	if a == 0 || b == 0 {
+		return 0, nil
+	}
+	if a > ^uint64(0)/b {
+		return 0, fmt.Errorf("aet literal overflows uint64")
+	}
+	return a * b, nil
+}
+
 func cloneConstEnv(in map[string]constValue) map[string]constValue {
 	out := make(map[string]constValue, len(in))
 	for k, v := range in {
 		out[k] = v
 	}
 	return out
+}
+
+func constValueToRuntimeValue(v constValue) (avm.RuntimeValue, bool) {
+	switch v.Kind {
+	case constKindU64:
+		return avm.ValueUint64(v.U64), true
+	case constKindBool:
+		return avm.ValueBool(v.Bool), true
+	case constKindNull:
+		return avm.ValueNull(), true
+	case constKindBytes:
+		return avm.ValueBytes(append([]byte(nil), v.Bytes...)), true
+	case constKindAddr:
+		return avm.ValueAddress(v.Text), true
+	case constKindText:
+		return avm.ValueString(v.Text), true
+	case constKindEnum:
+		if v.Type != "" {
+			return avm.ValueString(v.Type + "." + v.Text), true
+		}
+		return avm.ValueString(v.Text), true
+	default:
+		return avm.RuntimeValue{}, false
+	}
 }
 
 func evalConstU64(expr Expr, env loweringEnv, functions map[string]*FunctionDecl, seen map[string]bool) (uint64, bool) {
@@ -1884,9 +5458,51 @@ func evalConstValue(expr Expr, env loweringEnv, functions map[string]*FunctionDe
 		return constValue{Kind: constKindU64, U64: v}, true
 	case ExprBool:
 		return constValue{Kind: constKindBool, Bool: expr.Bool}, true
+	case ExprString:
+		return constValue{Kind: constKindText, Text: expr.Text}, true
+	case ExprBytes:
+		return constValue{Kind: constKindBytes, Bytes: append([]byte(nil), expr.Bytes...), Type: "bytes"}, true
+	case ExprNull:
+		return constValue{Kind: constKindNull}, true
+	case ExprUnary:
+		if expr.Left == nil {
+			return constValue{}, false
+		}
+		value, ok := evalConstValue(*expr.Left, env, functions, seen)
+		if !ok {
+			return constValue{}, false
+		}
+		switch expr.Op {
+		case "!":
+			switch value.Kind {
+			case constKindBool:
+				return constValue{Kind: constKindBool, Bool: !value.Bool}, true
+			case constKindU64:
+				return constValue{Kind: constKindBool, Bool: value.U64 == 0}, true
+			case constKindNull:
+				return constValue{Kind: constKindBool, Bool: true}, true
+			default:
+				return constValue{}, false
+			}
+		case "-":
+			if value.Kind != constKindU64 {
+				return constValue{}, false
+			}
+			return constValue{Kind: constKindU64, U64: ^value.U64 + 1}, true
+		case "~":
+			if value.Kind != constKindU64 {
+				return constValue{}, false
+			}
+			return constValue{Kind: constKindU64, U64: ^value.U64}, true
+		default:
+			return constValue{}, false
+		}
 	case ExprIdent:
 		if v, ok := env.consts[expr.Text]; ok {
 			return v, true
+		}
+		if mode, ok := builtinSendModeValue(expr.Text); ok {
+			return constValue{Kind: constKindU64, U64: uint64(mode)}, true
 		}
 		switch strings.ToLower(expr.Text) {
 		case "true":
@@ -1896,7 +5512,28 @@ func evalConstValue(expr Expr, env loweringEnv, functions map[string]*FunctionDe
 		}
 		return constValue{}, false
 	case ExprPath:
+		if v, ok := builtinBounceModeValuePath(expr.Path); ok {
+			return constValue{Kind: constKindU64, U64: v}, true
+		}
+		if len(expr.Path) == 1 {
+			if v, ok := env.consts[expr.Path[0]]; ok {
+				return v, true
+			}
+		}
 		if len(expr.Path) == 2 {
+			// A two-segment path is an enum constant only when its root is not
+			// a runtime binding; storage aliases, locals, and params are field
+			// reads that must lower as runtime expressions.
+			root := expr.Path[0]
+			if _, ok := env.storageAliases[root]; ok {
+				return constValue{}, false
+			}
+			if _, ok := env.locals[root]; ok {
+				return constValue{}, false
+			}
+			if _, ok := env.params[root]; ok {
+				return constValue{}, false
+			}
 			return constValue{Kind: constKindEnum, Type: expr.Path[0], Text: expr.Path[1]}, true
 		}
 		return constValue{}, false
@@ -1920,6 +5557,51 @@ func evalConstValue(expr Expr, env loweringEnv, functions map[string]*FunctionDe
 				return constValue{}, false
 			}
 			return constValue{Kind: constKindU64, U64: left.U64 - right.U64}, true
+		case "*":
+			if left.Kind != constKindU64 || right.Kind != constKindU64 {
+				return constValue{}, false
+			}
+			return constValue{Kind: constKindU64, U64: left.U64 * right.U64}, true
+		case "/":
+			if left.Kind != constKindU64 || right.Kind != constKindU64 || right.U64 == 0 {
+				return constValue{}, false
+			}
+			return constValue{Kind: constKindU64, U64: left.U64 / right.U64}, true
+		case "%":
+			if left.Kind != constKindU64 || right.Kind != constKindU64 || right.U64 == 0 {
+				return constValue{}, false
+			}
+			return constValue{Kind: constKindU64, U64: left.U64 % right.U64}, true
+		case "<<":
+			if left.Kind != constKindU64 || right.Kind != constKindU64 || right.U64 >= 64 {
+				return constValue{}, false
+			}
+			return constValue{Kind: constKindU64, U64: left.U64 << right.U64}, true
+		case ">>":
+			if left.Kind != constKindU64 || right.Kind != constKindU64 || right.U64 >= 64 {
+				return constValue{}, false
+			}
+			return constValue{Kind: constKindU64, U64: left.U64 >> right.U64}, true
+		case "&":
+			if left.Kind != constKindU64 || right.Kind != constKindU64 {
+				return constValue{}, false
+			}
+			return constValue{Kind: constKindU64, U64: left.U64 & right.U64}, true
+		case "|":
+			if left.Kind != constKindU64 || right.Kind != constKindU64 {
+				return constValue{}, false
+			}
+			return constValue{Kind: constKindU64, U64: left.U64 | right.U64}, true
+		case "^":
+			if left.Kind != constKindU64 || right.Kind != constKindU64 {
+				return constValue{}, false
+			}
+			return constValue{Kind: constKindU64, U64: left.U64 ^ right.U64}, true
+		case "??":
+			if left.Kind != constKindNull {
+				return left, true
+			}
+			return right, true
 		default:
 			return constValue{}, false
 		}
@@ -1978,10 +5660,143 @@ func evalConstValue(expr Expr, env loweringEnv, functions map[string]*FunctionDe
 			return evalConstValue(*expr.Else, env, functions, seen)
 		}
 		return constValue{}, false
-	case ExprCall:
-		switch strings.ToLower(expr.Text) {
-		case "hash", "len":
+	case ExprTernary:
+		if expr.Left == nil || expr.Right == nil || expr.Else == nil {
 			return constValue{}, false
+		}
+		cond, ok := evalConstBool(*expr.Left, env, functions, seen)
+		if !ok {
+			return constValue{}, false
+		}
+		if cond {
+			return evalConstValue(*expr.Right, env, functions, seen)
+		}
+		return evalConstValue(*expr.Else, env, functions, seen)
+	case ExprCall:
+		if callNameIs(expr, "address") {
+			if len(expr.Args) != 1 || expr.Args[0].Kind != ExprString {
+				return constValue{}, false
+			}
+			addr, err := parseAddressLiteral(expr.Args[0].Text)
+			if err != nil {
+				return constValue{}, false
+			}
+			return constValue{Kind: constKindAddr, Text: addr, Type: "address"}, true
+		}
+		if len(expr.Path) >= 2 {
+			method := strings.ToLower(expr.Path[len(expr.Path)-1])
+			receiver := strings.ToLower(expr.Path[0])
+			switch receiver {
+			case "chunk", "code":
+				switch method {
+				case "fromhex":
+					if len(expr.Args) != 1 || expr.Args[0].Kind != ExprString {
+						return constValue{}, false
+					}
+					data, err := hex.DecodeString(strings.TrimSpace(expr.Args[0].Text))
+					if err != nil {
+						return constValue{}, false
+					}
+					return constValue{Kind: constKindBytes, Bytes: data, Type: expr.Path[0]}, true
+				case "frombase64":
+					if len(expr.Args) != 1 || expr.Args[0].Kind != ExprString {
+						return constValue{}, false
+					}
+					data, err := base64.StdEncoding.DecodeString(strings.TrimSpace(expr.Args[0].Text))
+					if err != nil {
+						return constValue{}, false
+					}
+					return constValue{Kind: constKindBytes, Bytes: data, Type: expr.Path[0]}, true
+				case "fromchunk", "fromsegment", "fromstate":
+					if len(expr.Args) != 1 {
+						return constValue{}, false
+					}
+					arg, ok := evalConstValue(expr.Args[0], env, functions, seen)
+					if !ok {
+						return constValue{}, false
+					}
+					switch arg.Kind {
+					case constKindBytes:
+						return constValue{Kind: constKindBytes, Bytes: append([]byte(nil), arg.Bytes...), Type: expr.Path[0]}, true
+					case constKindText:
+						data, err := hex.DecodeString(strings.TrimSpace(arg.Text))
+						if err != nil {
+							return constValue{}, false
+						}
+						return constValue{Kind: constKindBytes, Bytes: data, Type: expr.Path[0]}, true
+					default:
+						return constValue{}, false
+					}
+				}
+			}
+		}
+		if len(expr.Path) >= 2 {
+			method := strings.ToLower(expr.Path[len(expr.Path)-1])
+			if len(expr.Path) == 2 {
+				if v, ok := env.consts[expr.Path[0]]; ok && v.Kind == constKindBytes {
+					switch method {
+					case "tochunk":
+						return constValue{Kind: constKindBytes, Bytes: append([]byte(nil), v.Bytes...), Type: "Chunk"}, true
+					case "hash":
+						root, err := avm.ToChunkPayload(v.Bytes, chunk.TypeNormal)
+						if err != nil {
+							return constValue{}, false
+						}
+						return constValue{Kind: constKindText, Text: fmt.Sprintf("%x", root.Hash()), Type: "hash32"}, true
+					}
+				}
+			}
+		}
+		switch strings.ToLower(expr.Text) {
+		case "hash":
+			if len(expr.Args) != 1 {
+				return constValue{}, false
+			}
+			arg, ok := evalConstValue(expr.Args[0], env, functions, seen)
+			if !ok {
+				return constValue{}, false
+			}
+			runtimeValue, ok := constValueToRuntimeValue(arg)
+			if !ok {
+				return constValue{}, false
+			}
+			switch runtimeValue.Tag {
+			case avm.TagHash:
+				hashBytes, err := runtimeValue.AsHash()
+				if err != nil {
+					return constValue{}, false
+				}
+				return constValue{Kind: constKindText, Text: fmt.Sprintf("%x", hashBytes), Type: "hash32"}, true
+			case avm.TagBytes, avm.TagString:
+				data, err := runtimeValue.AsBytes()
+				if err != nil {
+					return constValue{}, false
+				}
+				root, err := avm.ToChunkPayload(data, chunk.TypeNormal)
+				if err != nil {
+					sum := sha256.Sum256(data)
+					return constValue{Kind: constKindText, Text: fmt.Sprintf("%x", sum), Type: "hash32"}, true
+				}
+				return constValue{Kind: constKindText, Text: fmt.Sprintf("%x", root.Hash()), Type: "hash32"}, true
+			default:
+				encoded, err := avm.CanonicalEncode(runtimeValue)
+				if err != nil {
+					return constValue{}, false
+				}
+				sum := sha256.Sum256(encoded)
+				return constValue{Kind: constKindText, Text: fmt.Sprintf("%x", sum), Type: "hash32"}, true
+			}
+		case "len":
+			return constValue{}, false
+		case "aet":
+			if len(expr.Args) != 1 || expr.Args[0].Kind != ExprString {
+				return constValue{}, false
+			}
+			value, err := parseAetLiteral(expr.Args[0].Text)
+			if err != nil {
+				return constValue{}, false
+			}
+			return constValue{Kind: constKindU64, U64: value}, true
 		case "ok":
 			if len(expr.Args) != 1 {
 				return constValue{}, false
@@ -2026,7 +5841,7 @@ func evalConstExpr(expr Expr, env loweringEnv, functions map[string]*FunctionDec
 func evalConstStatements(stmts []Statement, env loweringEnv, functions map[string]*FunctionDecl, seen map[string]bool) (constValue, bool) {
 	for _, stmt := range stmts {
 		switch stmt.Kind {
-		case StatementLet:
+		case StatementBinding:
 			v, ok := evalConstValue(stmt.Value, env, functions, seen)
 			if !ok {
 				return constValue{}, false
@@ -2106,6 +5921,186 @@ func cloneSeen(in map[string]bool) map[string]bool {
 	return out
 }
 
+func callDisplayName(expr Expr) string {
+	if len(expr.Path) >= 2 {
+		return strings.Join(expr.Path, ".")
+	}
+	return expr.Text
+}
+
+// resolveUserFunction finds the declared function a call refers to, both for
+// plain calls (walletAddressFor(...)) and receiver-style calls
+// (TokenWalletStorage.zeroFor(...)).
+func resolveUserFunction(expr Expr, functions map[string]*FunctionDecl) *FunctionDecl {
+	if len(expr.Path) >= 2 {
+		if fn, ok := functions[strings.Join(expr.Path, ".")]; ok {
+			return fn
+		}
+	}
+	if fn, ok := functions[expr.Text]; ok {
+		return fn
+	}
+	return nil
+}
+
+// substituteExprForInline clones expr replacing parameter identifiers with
+// the caller's argument expressions. Only identifier/path arguments can be
+// spliced into nested paths; richer substitutions fail loudly.
+func substituteExprForInline(expr Expr, subst map[string]Expr) (Expr, error) {
+	out := expr
+	switch expr.Kind {
+	case ExprIdent:
+		if replacement, ok := subst[expr.Text]; ok {
+			return replacement, nil
+		}
+		return out, nil
+	case ExprPath:
+		if len(expr.Path) == 0 {
+			return out, nil
+		}
+		replacement, ok := subst[expr.Path[0]]
+		if !ok {
+			out.Path = append([]string(nil), expr.Path...)
+			return out, nil
+		}
+		switch replacement.Kind {
+		case ExprIdent:
+			out.Path = append([]string{replacement.Text}, expr.Path[1:]...)
+			return out, nil
+		case ExprPath:
+			out.Path = append(append([]string(nil), replacement.Path...), expr.Path[1:]...)
+			return out, nil
+		default:
+			if len(expr.Path) == 1 {
+				return replacement, nil
+			}
+			return Expr{}, fmt.Errorf("cannot substitute complex argument into field access %q", strings.Join(expr.Path, "."))
+		}
+	case ExprCall:
+		args := make([]Expr, len(expr.Args))
+		for i, arg := range expr.Args {
+			sub, err := substituteExprForInline(arg, subst)
+			if err != nil {
+				return Expr{}, err
+			}
+			args[i] = sub
+		}
+		out.Args = args
+		if len(expr.Path) > 0 {
+			if replacement, ok := subst[expr.Path[0]]; ok {
+				switch replacement.Kind {
+				case ExprIdent:
+					out.Path = append([]string{replacement.Text}, expr.Path[1:]...)
+				case ExprPath:
+					out.Path = append(append([]string(nil), replacement.Path...), expr.Path[1:]...)
+				default:
+					return Expr{}, fmt.Errorf("cannot substitute complex argument into call receiver %q", strings.Join(expr.Path, "."))
+				}
+			} else {
+				out.Path = append([]string(nil), expr.Path...)
+			}
+		}
+		return out, nil
+	case ExprStruct:
+		fields := make([]ExprField, len(expr.Fields))
+		for i, field := range expr.Fields {
+			sub, err := substituteExprForInline(field.Value, subst)
+			if err != nil {
+				return Expr{}, err
+			}
+			fields[i] = ExprField{Name: field.Name, Value: sub, Pos: field.Pos}
+		}
+		out.Fields = fields
+		return out, nil
+	case ExprBinary, ExprUnary, ExprTernary:
+		if expr.Left != nil {
+			sub, err := substituteExprForInline(*expr.Left, subst)
+			if err != nil {
+				return Expr{}, err
+			}
+			out.Left = &sub
+		}
+		if expr.Right != nil {
+			sub, err := substituteExprForInline(*expr.Right, subst)
+			if err != nil {
+				return Expr{}, err
+			}
+			out.Right = &sub
+		}
+		if expr.Else != nil {
+			sub, err := substituteExprForInline(*expr.Else, subst)
+			if err != nil {
+				return Expr{}, err
+			}
+			out.Else = &sub
+		}
+		return out, nil
+	default:
+		return out, nil
+	}
+}
+
+// tryInlineUserFunctionCall inlines calls to declared helper functions whose
+// bodies consist of optional `lazy Storage.load()` bindings followed by a
+// single return expression. The inlined expression is lowered in the caller
+// environment, so runtime arguments (message fields, locals, envelope data)
+// stay live instead of silently degrading. Returns handled=false when the
+// call does not refer to a declared function.
+func tryInlineUserFunctionCall(expr Expr, env loweringEnv, functions map[string]*FunctionDecl, seen map[string]bool) (*IRExpr, bool, error) {
+	fn := resolveUserFunction(expr, functions)
+	if fn == nil {
+		return nil, false, nil
+	}
+	name := callDisplayName(expr)
+	if seen[fn.Name] {
+		return nil, true, fail("E_LOWER_CALL", expr.Pos, fmt.Sprintf("recursive call %q cannot be inlined by AVM v1", name))
+	}
+	if len(expr.Args) != len(fn.Params) {
+		return nil, true, fail("E_LOWER_CALL", expr.Pos, fmt.Sprintf("call %q expects %d arguments, got %d", name, len(fn.Params), len(expr.Args)))
+	}
+
+	inlineEnv := cloneLoweringEnv(env)
+	var retExpr *Expr
+	for _, stmt := range fn.Body {
+		switch stmt.Kind {
+		case StatementBinding:
+			if isStorageLoadBinding(stmt.Value) {
+				inlineEnv.storageAliases[stmt.Name] = struct{}{}
+				continue
+			}
+			return nil, true, fail("E_LOWER_CALL", stmt.Pos, fmt.Sprintf("call %q cannot be inlined by AVM v1: only lazy storage bindings and a single return are supported", name))
+		case StatementReturn:
+			value := stmt.Value
+			retExpr = &value
+		default:
+			return nil, true, fail("E_LOWER_CALL", stmt.Pos, fmt.Sprintf("call %q cannot be inlined by AVM v1: unsupported statement in function body", name))
+		}
+		if retExpr != nil {
+			break
+		}
+	}
+	if retExpr == nil {
+		return nil, true, fail("E_LOWER_CALL", expr.Pos, fmt.Sprintf("call %q cannot be inlined by AVM v1: function has no return expression", name))
+	}
+
+	subst := make(map[string]Expr, len(fn.Params))
+	for i, param := range fn.Params {
+		subst[param.Name] = expr.Args[i]
+	}
+	substituted, err := substituteExprForInline(*retExpr, subst)
+	if err != nil {
+		return nil, true, fail("E_LOWER_CALL", expr.Pos, fmt.Sprintf("call %q cannot be inlined by AVM v1: %v", name, err))
+	}
+
+	nextSeen := cloneSeen(seen)
+	nextSeen[fn.Name] = true
+	lowered, err := lowerExprToIR(substituted, inlineEnv, functions, nextSeen)
+	if err != nil {
+		return nil, true, err
+	}
+	return lowered, true, nil
+}
+
 func staticOpcode(stmt Statement) (uint32, error) {
 	if stmt.Extra != nil {
 		if expr, ok := stmt.Extra["opcode"]; ok {
@@ -2175,18 +6170,18 @@ func findGetter(contract *ContractDecl, name string) *GetterDecl {
 	return nil
 }
 
-func selectorForMessage(msg *MessageDecl) uint32 {
+func selectorForMessage(contractName string, msg *MessageDecl) uint32 {
 	if msg.ExplicitSel != nil {
 		return *msg.ExplicitSel
 	}
-	return selectorFromSignature(signatureForMessage(msg))
+	return selectorFromSignature(signatureForMessage(contractName, msg))
 }
 
-func selectorForGetter(get *GetterDecl) uint32 {
+func selectorForGetter(contractName string, get *GetterDecl) uint32 {
 	if get.ExplicitSel != nil {
 		return *get.ExplicitSel
 	}
-	return selectorFromSignature(signatureForGetter(get))
+	return selectorFromSignature(signatureForGetter(contractName, get))
 }
 
 func (c *Compiler) buildStateInit(contract *ContractDecl, moduleHash [32]byte, storageCodec Codec, layout StorageLayout, lock DependencyLock) (*avm.StateInit, [32]byte, error) {
@@ -2267,10 +6262,11 @@ func (c *Compiler) collectHandlersForKind(contract *ContractDecl, kind MessageKi
 		if msg.Kind != kind {
 			continue
 		}
+		sig := signatureForMessage(contract.Name, msg)
 		out = append(out, canonicalHandle{
 			Name:       msg.Name,
-			Signature:  signatureForMessage(msg),
-			Selector:   selectorFromSignature(signatureForMessage(msg)),
+			Signature:  sig,
+			Selector:   selectorFromSignature(sig),
 			Entrypoint: messageKindEntrypointName(kind),
 			Params:     typeNamesFromParams(msg.Params),
 			Results:    typeNamesFromResults(msg.ReturnType),
@@ -2283,7 +6279,7 @@ func (c *Compiler) collectHandlersForKind(contract *ContractDecl, kind MessageKi
 func (c *Compiler) collectGetters(contract *ContractDecl) []canonicalHandle {
 	var out []canonicalHandle
 	for _, get := range contract.Getters {
-		sig := signatureForGetter(get)
+		sig := signatureForGetter(contract.Name, get)
 		out = append(out, canonicalHandle{
 			Name:       get.Name,
 			Signature:  sig,
@@ -2345,22 +6341,52 @@ func canonicalExprString(expr Expr) string {
 	switch expr.Kind {
 	case ExprNumber, ExprString, ExprIdent:
 		return expr.Text
+	case ExprBytes:
+		return "0x" + hex.EncodeToString(expr.Bytes)
 	case ExprBool:
 		return strconv.FormatBool(expr.Bool)
 	case ExprPath:
 		return strings.Join(expr.Path, ".")
 	case ExprCall:
-		return expr.Text + "(" + strings.Join(canonicalExprStrings(expr.Args), ",") + ")"
+		name := expr.Text
+		if len(expr.Path) > 1 {
+			name = strings.Join(expr.Path, ".")
+		}
+		return name + "(" + strings.Join(canonicalExprStrings(expr.Args), ",") + ")"
+	case ExprUnary:
+		out := expr.Op + canonicalExprString(*expr.Left)
+		if expr.Unwrap {
+			out += "!"
+		}
+		return out
 	case ExprBinary:
 		return "(" + canonicalExprString(*expr.Left) + expr.Op + canonicalExprString(*expr.Right) + ")"
 	case ExprCompare, ExprLogic:
 		return "(" + canonicalExprString(*expr.Left) + expr.Op + canonicalExprString(*expr.Right) + ")"
+	case ExprTernary:
+		return "(" + canonicalExprString(*expr.Left) + "?" + canonicalExprString(*expr.Right) + ":" + canonicalExprString(*expr.Else) + ")"
 	case ExprTry:
 		out := "try(" + canonicalExprString(*expr.Left) + ")"
 		if expr.Else != nil {
 			out += "else(" + canonicalExprString(*expr.Else) + ")"
 		}
 		return out
+	case ExprStruct:
+		var b strings.Builder
+		if expr.Text != "" {
+			b.WriteString(expr.Text)
+		}
+		b.WriteString("{")
+		for i, field := range expr.Fields {
+			if i > 0 {
+				b.WriteString(",")
+			}
+			b.WriteString(field.Name)
+			b.WriteString(":")
+			b.WriteString(canonicalExprString(field.Value))
+		}
+		b.WriteString("}")
+		return b.String()
 	default:
 		return string(expr.Kind)
 	}
@@ -2393,9 +6419,9 @@ func interfaceKindForType(typ TypeRef) avm.InterfaceValueKind {
 	switch strings.ToLower(typ.Name) {
 	case "bool":
 		return avm.InterfaceValueBool
-	case "u8", "u16", "u32", "u64", "i64", "coins":
+	case "u2", "u4", "u8", "u16", "u32", "u64", "uint2", "uint4", "uint8", "uint16", "uint32", "uint64", "i2", "i4", "i8", "i16", "i32", "i64", "int2", "int4", "int8", "int16", "int32", "int64", "timestamp", "coins":
 		return avm.InterfaceValueU64
-	case "bytes", "hash32":
+	case "bytes", "hash", "hash32", "stateinit", "code", "chunk":
 		return avm.InterfaceValueBytes
 	case "string":
 		return avm.InterfaceValueString
@@ -2406,16 +6432,60 @@ func interfaceKindForType(typ TypeRef) avm.InterfaceValueKind {
 	}
 }
 
-func signatureForMessage(msg *MessageDecl) string {
-	return "message " + msg.Kind.String() + " " + msg.Name + "(" + strings.Join(typeNamesFromParams(msg.Params), ",") + ")" + returnSignature(msg.ReturnType)
+func signatureForMessage(contractName string, msg *MessageDecl) string {
+	return strings.Join([]string{
+		"message",
+		msg.Kind.String(),
+		contractName,
+		msg.Name + "(" + strings.Join(typeNamesFromParams(msg.Params), ",") + ")" + returnSignature(msg.ReturnType),
+	}, ":")
 }
 
-func signatureForGetter(get *GetterDecl) string {
-	return "getter " + get.Name + "(" + strings.Join(typeNamesFromParams(get.Params), ",") + ")" + returnSignature(&get.ReturnType)
+func signatureForGetter(contractName string, get *GetterDecl) string {
+	return strings.Join([]string{
+		"getter",
+		contractName,
+		get.Name + "(" + strings.Join(typeNamesFromParams(get.Params), ",") + ")" + returnSignature(&get.ReturnType),
+	}, ":")
 }
 
-func signatureForEvent(event *EventDecl) string {
-	return "event " + event.Name + "(" + strings.Join(typeNamesFromParams(event.FieldsToParams()), ",") + ")"
+func signatureForGetterFunction(contractName string, fn *FunctionDecl) string {
+	return strings.Join([]string{
+		"getter",
+		contractName,
+		fn.Name + "(" + strings.Join(typeNamesFromParams(fn.Params), ",") + ")" + returnSignature(&fn.ReturnType),
+	}, ":")
+}
+
+func signatureForFunction(fn *FunctionDecl) string {
+	return strings.Join([]string{
+		"function",
+		fn.Name + "(" + strings.Join(typeNamesFromParams(fn.Params), ",") + ")" + returnSignature(&fn.ReturnType),
+	}, ":")
+}
+
+func signatureForEvent(contractName string, event *EventDecl) string {
+	return strings.Join([]string{
+		"event",
+		contractName,
+		event.Name + "(" + strings.Join(typeNamesFromParams(event.FieldsToParams()), ",") + ")",
+	}, ":")
+}
+
+func signatureForWalletAction(contractName string, wallet *WalletActionDecl) string {
+	metadata := []string{
+		"wallet_action",
+		contractName,
+		wallet.Name,
+		wallet.Title,
+		wallet.Risk,
+		wallet.ConfirmLabel,
+		wallet.WarningLevel,
+		strings.Join(wallet.ExpectedSideEffects, ","),
+		strconv.FormatBool(wallet.FundAccess),
+		wallet.ApprovalSemantics,
+	}
+	return strings.Join(metadata, ":")
 }
 
 func (e *EventDecl) FieldsToParams() []ParamDecl {
@@ -2451,6 +6521,22 @@ func returnSignature(ret *TypeRef) string {
 func selectorFromSignature(signature string) uint32 {
 	sum := blake3.Sum256([]byte(signature))
 	return binary.BigEndian.Uint32(sum[:4])
+}
+
+func messageUnionHashBytes(name string, variants []MessageUnionVariant) []byte {
+	var b bytes.Buffer
+	b.WriteString(name)
+	for _, variant := range variants {
+		b.WriteByte(0)
+		b.WriteString(variant.Name)
+		b.WriteByte(0)
+		b.WriteString(variant.Type)
+		b.WriteByte(0)
+		var buf [4]byte
+		binary.BigEndian.PutUint32(buf[:], variant.Opcode)
+		b.Write(buf[:])
+	}
+	return b.Bytes()
 }
 
 func messageKindOrder(kind MessageKind) int {
@@ -2588,6 +6674,7 @@ func registryHashBytes(reg SelectorRegistry) []byte {
 func layoutHashBytes(layout StorageLayout) []byte {
 	type field struct {
 		Name    string `json:"name"`
+		Lazy    bool   `json:"lazy,omitempty"`
 		Type    string `json:"type"`
 		Default string `json:"default"`
 	}
@@ -2736,11 +6823,11 @@ func buildChunkTree(data []byte) (*chunk.Chunk, error) {
 	if len(data) == 0 {
 		return chunk.NewEmptyChunk(), nil
 	}
-	if len(data) <= 256 {
+	if len(data) <= chunk.MaxDataBits/8 {
 		builder := chunk.NewBuilder().SetTypeTag(chunk.TypeNormal).SetData(data, uint16(len(data)*8))
 		return builder.Build()
 	}
-	parts := splitBytes(data, 8)
+	parts := splitBytes(data, chunk.MaxRefs)
 	builder := chunk.NewBuilder().SetTypeTag(chunk.TypeNormal)
 	for i, part := range parts {
 		child, err := buildChunkTree(part)
@@ -2768,9 +6855,9 @@ func splitBytes(data []byte, maxParts int) [][]byte {
 		}
 		out = append(out, append([]byte(nil), data[i:end]...))
 	}
-	for len(out) > 8 {
-		next := make([][]byte, 0, 8)
-		chunkSize := (len(out) + 7) / 8
+	for len(out) > maxParts {
+		next := make([][]byte, 0, maxParts)
+		chunkSize := (len(out) + maxParts - 1) / maxParts
 		for i := 0; i < len(out); i += chunkSize {
 			end := i + chunkSize
 			if end > len(out) {

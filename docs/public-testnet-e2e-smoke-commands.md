@@ -28,13 +28,23 @@ Focused e2e smoke commands:
 .\tests\e2e\execution_os_smoke.ps1
 .\tests\e2e\localnet_smoke.ps1
 .\tests\e2e\load_profile_smoke.ps1
+.\tests\e2e\avm_contract_smoke.ps1
 ```
 
 Runtime module checks:
 
 ```powershell
 go test ./x/native-account/... ./x/contracts/... ./x/nominator-pool/... ./x/storage-rent/...
-go test ./x/aetravm/avm ./x/aetravm/async ./x/vm/types
+go test ./x/aetravm/avm ./x/aetravm/async ./x/aetravm/compiler ./x/aetravm/conformance ./x/aetravm/messageabi
+```
+
+Launch evidence bundle:
+
+```powershell
+.\scripts\testnet\launch-evidence-bundle.ps1 `
+  -OutputDir .work\launch-evidence\release-check `
+  -Binary .\dist\prototype\<version>\aetra-<version>-windows-amd64\bin\aetrad.exe `
+  -Strict
 ```
 
 Public testnet is not ready if direct delegation is enabled, if AVM/contracts
@@ -43,3 +53,11 @@ gate does not pass, if official pool staking still lacks honest runtime
 evidence for deposit/claim/unbond through the real pool path, or if storage rent
 cannot freeze recoverable user/contract state while leaving protocol-critical
 state executable.
+
+AVM contract standard smoke is the contract-only developer/runtime bridge. It
+uses the current example contracts in `examples/avm/counter.avm` and
+`examples/avm/treasury.avm`, plus keeper/runtime tests that cover
+store/deploy/execute/query/migrate and the negative cases around invalid
+bytecode, selector collisions, getter-only mutation, bounce handling, and
+rollback-on-failure behavior. Until keeper wiring is fully production-gated,
+this smoke remains the canonical repeatable evidence path for AVM contracts.

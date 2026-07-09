@@ -127,7 +127,9 @@ func TestGoldenNativeEconomyLoopCoversFeesEmissionsPoolRewardsAndStorageRent(t *
 	require.LessOrEqual(t, rewardSummary.PoolUserRewards, rewardSummary.EmissionsAllocated+rewardSummary.FeesAllocated)
 	require.Equal(t, uint64(95_000_000), nextPool.RewardIndex)
 	require.Equal(t, uint64(5), nextPool.ValidatorCommissionAccrued)
-	require.Equal(t, uint64(1_095), nextPool.TotalBondedStake)
+	// Rewards are credited solely to RewardIndex (above); TotalBondedStake stays
+	// at principal (1000) and is not double-credited with the 95 user rewards.
+	require.Equal(t, uint64(1_000), nextPool.TotalBondedStake)
 
 	allocations, remainder, err := app.FeeCollectorKeeper.CollectAndDistributeProtocolIncomeFromAccount(ctx, rentPayer, sdk.NewCoins(sdk.NewInt64Coin(appparams.BaseDenom, 100)))
 	require.NoError(t, err)

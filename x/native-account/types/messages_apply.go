@@ -16,6 +16,8 @@ func ApplyMsgUpdateAuthPolicy(account Account, msg MsgUpdateAuthPolicy) (Account
 		AccountUser:	account.AddressUser,
 		Sequence:	account.Sequence,
 		Signers:	msg.Signers,
+		CoSignatures:	msg.CoSignatures,
+		PayloadHash:	CoSignaturePayloadHash(msg.NewAuthPolicy.Normalize()),
 		Operation:	AuthOperationAuthPolicyUpdate,
 		CurrentHeight:	msg.CurrentHeight,
 	}); err != nil {
@@ -38,6 +40,11 @@ func ApplyMsgRotateKey(account Account, msg MsgRotateKey) (Account, error) {
 		AccountUser:	account.AddressUser,
 		Sequence:	account.Sequence,
 		Signers:	msg.Signers,
+		CoSignatures:	msg.CoSignatures,
+		PayloadHash:	CoSignaturePayloadHash(struct {
+			OldKeyID	string
+			NewKey		AuthKey
+		}{OldKeyID: msg.OldKeyID, NewKey: msg.NewKey.Normalize()}),
 		Operation:	AuthOperationAuthPolicyUpdate,
 		CurrentHeight:	msg.CurrentHeight,
 	}); err != nil {
@@ -93,6 +100,7 @@ func ApplyMsgFreezeAccount(account Account, msg MsgFreezeAccount) (Account, erro
 		AccountUser:	account.AddressUser,
 		Sequence:	account.Sequence,
 		Signers:	msg.Signers,
+		CoSignatures:	msg.CoSignatures,
 		Operation:	AuthOperationFreezeAccount,
 		CurrentHeight:	msg.CurrentHeight,
 	}); err != nil {
@@ -117,6 +125,7 @@ func ApplyMsgUnfreezeAccount(account Account, msg MsgUnfreezeAccount) (Account, 
 		AccountUser:	account.AddressUser,
 		Sequence:	account.Sequence,
 		Signers:	msg.Signers,
+		CoSignatures:	msg.CoSignatures,
 		Operation:	AuthOperationUnfreezeAccount,
 		CurrentHeight:	msg.CurrentHeight,
 	}); err != nil {
@@ -141,7 +150,9 @@ func ApplyMsgPayStorageDebt(account Account, msg MsgPayStorageDebt) (Account, er
 		AccountUser:	account.AddressUser,
 		Sequence:	account.Sequence,
 		Signers:	msg.Signers,
+		CoSignatures:	msg.CoSignatures,
 		Operation:	AuthOperationPayStorageDebt,
+		Amount:		msg.Amount,
 		CurrentHeight:	msg.CurrentHeight,
 	}); err != nil {
 		return Account{}, err
@@ -166,6 +177,8 @@ func ApplyMsgUpdateAccountMetadata(account Account, msg MsgUpdateAccountMetadata
 		AccountUser:	account.AddressUser,
 		Sequence:	account.Sequence,
 		Signers:	msg.Signers,
+		CoSignatures:	msg.CoSignatures,
+		PayloadHash:	CoSignaturePayloadHash(msg.Metadata),
 		Operation:	AuthOperationMetadataUpdate,
 		CurrentHeight:	msg.CurrentHeight,
 	}); err != nil {
@@ -187,6 +200,8 @@ func ApplyMsgUpdateAccountParams(account Account, msg MsgUpdateAccountParams) (A
 		AccountUser:	account.AddressUser,
 		Sequence:	account.Sequence,
 		Signers:	msg.Signers,
+		CoSignatures:	msg.CoSignatures,
+		PayloadHash:	CoSignaturePayloadHash(msg.FeatureFlags),
 		Operation:	AuthOperationParamsUpdate,
 		CurrentHeight:	msg.CurrentHeight,
 	}); err != nil {

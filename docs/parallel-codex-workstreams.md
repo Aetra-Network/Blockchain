@@ -11,7 +11,7 @@ interfaces, fixtures, or TODOs instead of editing another workstream's package.
 Start every chat by reading:
 
 - `UPDATE.md`;
-- `architecture.md`;
+- `docs/architecture/core-module-architecture.md` and `docs/module-boundaries.md`;
 - `docs/cosmos-l1-skills.md`;
 - the packages listed under the selected workstream.
 

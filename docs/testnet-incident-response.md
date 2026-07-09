@@ -105,3 +105,30 @@ Each update should include:
 
 After resolution, publish a postmortem with root cause, impact, fix, tests added, and follow-up owner.
 
+## Operational Cadence
+
+These drills are part of the release-candidate loop and must be rerun on a
+clean machine or clean localnet before launch approval:
+
+- fresh-machine onboarding: owner `validator operations`;
+- incident response: owner `incident commander`;
+- rollback/restart: owner `release engineering`;
+- state-sync/snapshot restore: owner `release engineering`;
+- faucet/indexer coordination: owners `testnet ops` and `infra`.
+
+## Drill Evidence
+
+The incident and restart procedure was exercised on 2026-07-01 against the
+launch-evidence localnet archive:
+
+- Evidence archive: `.work/launch-evidence/snapshot-state-sync-onboarding.zip`
+- Snapshot/state-sync trust data: height `178`, hash
+  `659FF2B4E7B8DBEA7B4F9C7FE168C832CBCCF7AE9E53456697F234B38468164D`
+- Joined node result: state-sync join reached height `179` and caught up to
+  `false`
+- Observed recovery: the validator set resumed block production and the
+  persisted app hashes converged across the live nodes captured in the
+  dashboard artifact
+- Follow-up: rollback on a signed release binary remains deferred until it is
+  exercised explicitly in a separate drill
+

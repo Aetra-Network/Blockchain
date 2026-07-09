@@ -12,6 +12,8 @@ import (
 	"google.golang.org/grpc/status"
 	proto2 "google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
+
+	msgv1 "cosmossdk.io/api/cosmos/msg/v1"
 )
 
 const (
@@ -537,21 +539,173 @@ func buildContractsTxFileDescriptor() []byte {
 			GoPackage: descriptorString("github.com/sovereign-l1/l1/x/contracts/types"),
 		},
 		MessageType: []*descriptorpb.DescriptorProto{
-			messageDescriptor("MsgStoreCode"),
-			messageDescriptor("MsgStoreCodeResponse"),
-			messageDescriptor("MsgDeployContract"),
-			messageDescriptor("MsgDeployContractResponse"),
-			messageDescriptor("MsgExecuteExternal"),
-			messageDescriptor("MsgExecuteExternalResponse"),
-			messageDescriptor("MsgExecuteInternal"),
-			messageDescriptor("InternalMessage"),
-			messageDescriptor("MsgSendInternalMessage"),
-			messageDescriptor("MsgUpdateContractParams"),
-			messageDescriptor("MsgUpdateContractParamsResponse"),
-			messageDescriptor("MsgSubmitSecurityAttestation"),
-			messageDescriptor("MsgSubmitSecurityAttestationResponse"),
-			messageDescriptor("MsgRevokeSecurityAttestation"),
-			messageDescriptor("MsgRevokeSecurityAttestationResponse"),
+			withSigner(messageDescriptorFields("MsgStoreCode",
+				stringField("authority", 1),
+				bytesField("bytecode", 2),
+				stringField("code_hash", 3),
+				uint64Field("code_bytes", 4),
+			), "authority"),
+			messageDescriptorFields("MsgStoreCodeResponse",
+				stringField("code_id", 1),
+				stringField("state_root", 2),
+			),
+			withSigner(messageDescriptorFields("MsgDeployContract",
+				stringField("creator", 1),
+				stringField("code_id", 2),
+				stringField("salt", 3),
+				bytesField("init_payload", 4),
+				uint64Field("initial_balance", 5),
+				stringField("admin", 6),
+				bytesField("metadata", 7),
+				stringField("avm_chain_id", 8),
+				stringField("avm_namespace", 9),
+				messageField("state_init", 10, ".l1.contracts.v1.StateInit"),
+				boolField("upgradeable", 11),
+				boolField("system_owned", 12),
+				uint64Field("schema_version", 13),
+				uint64Field("height", 14),
+			), "creator"),
+			messageDescriptorFields("MsgDeployContractResponse",
+				stringField("contract_address_user", 1),
+				stringField("contract_address_raw", 2),
+				stringField("owner", 3),
+				stringField("admin", 4),
+				uint64Field("balance", 5),
+				repeatedMessageField("events", 6, ".l1.contracts.v1.ContractEvent"),
+			),
+			withSigner(messageDescriptorFields("MsgExecuteExternal",
+				stringField("sender", 1),
+				stringField("contract_address", 2),
+				bytesField("payload", 3),
+				uint64Field("funds", 4),
+				uint64Field("gas_limit", 5),
+				bytesField("metadata", 6),
+				stringField("avm_chain_id", 7),
+				stringField("avm_namespace", 8),
+				messageField("state_init", 9, ".l1.contracts.v1.StateInit"),
+				uint64Field("height", 10),
+			), "sender"),
+			messageDescriptorFields("MsgExecuteExternalResponse",
+				stringField("contract_address_user", 1),
+				stringField("owner", 2),
+				uint64Field("balance", 3),
+				repeatedMessageField("events", 4, ".l1.contracts.v1.ContractEvent"),
+			),
+			messageDescriptorFields("MsgExecuteInternal",
+				messageField("message", 1, ".l1.contracts.v1.InternalMessage"),
+				uint64Field("height", 2),
+			),
+			messageDescriptorFields("InternalMessage",
+				stringField("source_contract_user", 1),
+				stringField("destination_account", 2),
+				uint64Field("funds", 3),
+				uint32Field("opcode", 4),
+				uint64Field("query_id", 5),
+				bytesField("body", 6),
+				messageField("state_init", 7, ".l1.contracts.v1.StateInit"),
+				boolField("bounce", 8),
+				uint64Field("deadline", 9),
+				uint64Field("gas_limit", 10),
+				uint64Field("logical_time", 11),
+				stringField("message_id", 12),
+				boolField("refunded", 13),
+				uint64Field("height", 14),
+			),
+			messageDescriptorFields("MsgSendInternalMessage",
+				messageField("message", 1, ".l1.contracts.v1.InternalMessage"),
+				uint64Field("height", 2),
+			),
+			withSigner(messageDescriptorFields("MsgUpdateContractParams",
+				stringField("authority", 1),
+				messageField("params", 2, ".l1.contracts.v1.Params"),
+			), "authority"),
+			messageDescriptorFields("MsgUpdateContractParamsResponse",
+				stringField("state_root", 1),
+			),
+			withSigner(messageDescriptorFields("MsgSubmitSecurityAttestation",
+				stringField("authority", 1),
+				messageField("attestation", 2, ".l1.contracts.v1.ContractSecurityAttestation"),
+			), "authority"),
+			messageDescriptorFields("MsgSubmitSecurityAttestationResponse",
+				messageField("attestation", 1, ".l1.contracts.v1.ContractSecurityAttestation"),
+				stringField("state_root", 2),
+			),
+			withSigner(messageDescriptorFields("MsgRevokeSecurityAttestation",
+				stringField("authority", 1),
+				stringField("attestation_id", 2),
+				stringField("revoked_reason", 3),
+				uint64Field("height", 4),
+			), "authority"),
+			messageDescriptorFields("MsgRevokeSecurityAttestationResponse",
+				messageField("attestation", 1, ".l1.contracts.v1.ContractSecurityAttestation"),
+				stringField("state_root", 2),
+			),
+			messageDescriptorFields("StateInit",
+				uint32Field("abi_version", 1),
+				stringField("code_id", 2),
+				stringField("code_hash", 3),
+				bytesField("init_data", 4),
+				stringField("salt", 5),
+				bytesField("salt_bytes", 6),
+				stringField("owner", 7),
+				repeatedMessageField("libraries", 8, ".l1.contracts.v1.CodeDependency"),
+				stringField("initial_storage_root", 9),
+				uint64Field("initial_balance_naet", 10),
+				repeatedStringField("capabilities", 11),
+			),
+			messageDescriptorFields("CodeDependency",
+				stringField("code_id", 1),
+				stringField("code_hash", 2),
+			),
+			messageDescriptorFields("ContractEvent",
+				stringField("type", 1),
+				stringField("actor", 2),
+				stringField("contract", 3),
+				uint64Field("amount", 4),
+				stringField("internal_raw", 5),
+			),
+			// Params, SecurityGraphEdge, and ContractSecurityAttestation live in
+			// this (tx) file because tx messages reference them; the query file
+			// imports them via its Dependency on tx.proto. Defining them in both
+			// files would be a duplicate-registration error, and defining them
+			// only in query.proto would leave the tx messages unresolvable since
+			// proto imports cannot be circular.
+			messageDescriptorFields("Params",
+				stringField("authority", 1),
+				boolField("enabled", 2),
+				uint64Field("max_code_bytes", 3),
+				uint64Field("max_contract_storage_bytes", 4),
+				uint64Field("max_gas_per_execution", 5),
+				uint64Field("storage_rent_per_byte_block", 6),
+				uint64Field("max_init_data_bytes", 7),
+				uint64Field("max_state_init_salt_bytes", 8),
+				uint32Field("max_state_init_dependencies", 9),
+			),
+			messageDescriptorFields("SecurityGraphEdge",
+				stringField("from", 1),
+				stringField("to", 2),
+				stringField("relation", 3),
+			),
+			messageDescriptorFields("ContractSecurityAttestation",
+				stringField("attestation_id", 1),
+				stringField("contract_address_user", 2),
+				stringField("contract_address_raw", 3),
+				stringField("source", 4),
+				stringField("source_url", 5),
+				stringField("commit_hash", 6),
+				stringField("code_hash", 7),
+				stringField("evidence_hash", 8),
+				uint64Field("checked_height", 9),
+				uint64Field("updated_height", 10),
+				uint32Field("risk_score_bps", 11),
+				repeatedStringField("categories", 12),
+				repeatedStringField("flags", 13),
+				repeatedStringField("related_addresses", 14),
+				repeatedMessageField("graph_edges", 15, ".l1.contracts.v1.SecurityGraphEdge"),
+				stringField("status", 16),
+				stringField("revoked_reason", 17),
+				stringField("signed_by", 18),
+			),
 		},
 		Service: []*descriptorpb.ServiceDescriptorProto{
 			{
@@ -598,34 +752,167 @@ func buildContractsQueryFileDescriptor() []byte {
 		Name:    descriptorString("l1/contracts/v1/query.proto"),
 		Package: descriptorString("l1.contracts.v1"),
 		Syntax:  descriptorString("proto3"),
+		// Query messages reference StateInit, InternalMessage, Params, and
+		// ContractSecurityAttestation, which are defined in tx.proto (they are
+		// also referenced by tx messages, and proto imports cannot be
+		// circular). tx.proto is registered first in init() below.
+		Dependency: []string{"l1/contracts/v1/tx.proto"},
 		Options: &descriptorpb.FileOptions{
 			GoPackage: descriptorString("github.com/sovereign-l1/l1/x/contracts/types"),
 		},
 		MessageType: []*descriptorpb.DescriptorProto{
+			messageDescriptorFields("PageRequest",
+				uint32Field("limit", 1),
+			),
 			messageDescriptor("QueryParamsRequest"),
-			messageDescriptor("QueryParamsResponse"),
-			messageDescriptor("QueryCodeRequest"),
-			messageDescriptor("QueryCodeResponse"),
-			messageDescriptor("QueryCodesRequest"),
-			messageDescriptor("QueryCodesResponse"),
-			messageDescriptor("QueryContractRequest"),
-			messageDescriptor("QueryContractResponse"),
-			messageDescriptor("QueryContractsRequest"),
-			messageDescriptor("QueryContractsResponse"),
-			messageDescriptor("QueryContractStorageRequest"),
-			messageDescriptor("QueryContractStorageResponse"),
-			messageDescriptor("QueryContractReceiptsRequest"),
-			messageDescriptor("QueryContractReceiptsResponse"),
-			messageDescriptor("QueryContractQueueRequest"),
-			messageDescriptor("QueryContractQueueResponse"),
-			messageDescriptor("QueryContractEventsRequest"),
+			messageDescriptorFields("QueryParamsResponse",
+				messageField("params", 1, ".l1.contracts.v1.Params"),
+			),
+			messageDescriptorFields("QueryCodeRequest",
+				stringField("code_id", 1),
+			),
+			messageDescriptorFields("QueryCodeResponse",
+				messageField("code", 1, ".l1.contracts.v1.CodeRecord"),
+				boolField("found", 2),
+			),
+			messageDescriptorFields("CodeRecord",
+				stringField("code_id", 1),
+				stringField("code_hash", 2),
+				uint64Field("code_bytes", 3),
+				bytesField("bytecode", 4),
+				stringField("owner", 5),
+			),
+			messageDescriptorFields("QueryCodesRequest",
+				messageField("pagination", 1, ".l1.contracts.v1.PageRequest"),
+			),
+			messageDescriptorFields("QueryCodesResponse",
+				repeatedMessageField("codes", 1, ".l1.contracts.v1.CodeRecord"),
+			),
+			messageDescriptorFields("QueryContractRequest",
+				stringField("contract_address", 1),
+				stringField("chain_id", 2),
+				stringField("namespace", 3),
+				stringField("deployer", 4),
+				messageField("state_init", 5, ".l1.contracts.v1.StateInit"),
+			),
+			messageDescriptorFields("QueryContractResponse",
+				stringField("contract_address", 1),
+				stringField("state_root", 2),
+				boolField("found", 3),
+				boolField("virtual", 4),
+				messageField("contract", 5, ".l1.contracts.v1.Contract"),
+			),
+			messageDescriptorFields("Contract",
+				stringField("address_user", 1),
+				stringField("address_raw", 2),
+				stringField("code_id", 3),
+				stringField("code_hash", 4),
+				stringField("state_init_hash", 5),
+				messageField("state_init", 6, ".l1.contracts.v1.StateInit"),
+				stringField("creator", 7),
+				stringField("owner", 8),
+				stringField("admin", 9),
+				boolField("upgradeable", 10),
+				boolField("upgrades_disabled", 11),
+				boolField("system_owned", 12),
+				uint64Field("storage_schema_version", 13),
+				bytesField("init_msg", 14),
+				bytesField("data", 15),
+				uint64Field("balance", 16),
+				stringField("state_root", 17),
+				stringField("status", 18),
+				uint64Field("storage_bytes", 19),
+				uint64Field("last_storage_charge_height", 20),
+				uint64Field("storage_rent_debt", 21),
+				uint64Field("logical_time", 22),
+				uint64Field("created_height", 23),
+				uint64Field("updated_height", 24),
+			),
+			messageDescriptorFields("QueryContractsRequest",
+				messageField("pagination", 1, ".l1.contracts.v1.PageRequest"),
+			),
+			messageDescriptorFields("QueryContractsResponse",
+				repeatedMessageField("contracts", 1, ".l1.contracts.v1.Contract"),
+			),
+			messageDescriptorFields("QueryContractStorageRequest",
+				stringField("contract_address", 1),
+				bytesField("key_prefix", 2),
+				messageField("pagination", 3, ".l1.contracts.v1.PageRequest"),
+			),
+			messageDescriptorFields("QueryContractStorageResponse",
+				repeatedMessageField("entries", 1, ".l1.contracts.v1.ContractStorageEntry"),
+			),
+			messageDescriptorFields("ContractStorageEntry",
+				stringField("contract_address", 1),
+				bytesField("key", 2),
+				bytesField("value", 3),
+			),
+			messageDescriptorFields("QueryContractReceiptsRequest",
+				stringField("contract_address", 1),
+				messageField("pagination", 2, ".l1.contracts.v1.PageRequest"),
+			),
+			messageDescriptorFields("QueryContractReceiptsResponse",
+				repeatedMessageField("receipts", 1, ".l1.contracts.v1.ContractReceipt"),
+			),
+			messageDescriptorFields("ContractReceipt",
+				stringField("receipt_id", 1),
+				stringField("contract_address", 2),
+				stringField("actor", 3),
+				stringField("operation", 4),
+				uint32Field("exit_code", 5),
+				uint64Field("amount", 6),
+				uint64Field("gas_used", 7),
+				uint64Field("logical_time", 8),
+				uint64Field("height", 9),
+			),
+			messageDescriptorFields("QueryContractQueueRequest",
+				stringField("contract_address", 1),
+				messageField("pagination", 2, ".l1.contracts.v1.PageRequest"),
+			),
+			messageDescriptorFields("QueryContractQueueResponse",
+				repeatedMessageField("messages", 1, ".l1.contracts.v1.InternalMessage"),
+			),
+			messageDescriptorFields("QueryContractEventsRequest",
+				stringField("contract_address", 1),
+				messageField("pagination", 2, ".l1.contracts.v1.PageRequest"),
+			),
 			messageDescriptor("QueryContractEventsResponse"),
-			messageDescriptor("QueryContractStateRootRequest"),
-			messageDescriptor("QueryContractStateRootResponse"),
-			messageDescriptor("QuerySecurityAttestationsRequest"),
-			messageDescriptor("QuerySecurityAttestationsResponse"),
-			messageDescriptor("QuerySecurityBadgeRequest"),
-			messageDescriptor("QuerySecurityBadgeResponse"),
+			messageDescriptorFields("QueryContractStateRootRequest",
+				stringField("contract_address", 1),
+			),
+			messageDescriptorFields("QueryContractStateRootResponse",
+				stringField("state_root", 1),
+			),
+			messageDescriptorFields("QuerySecurityAttestationsRequest",
+				stringField("contract_address", 1),
+				boolField("include_revoked", 2),
+				messageField("pagination", 3, ".l1.contracts.v1.PageRequest"),
+			),
+			messageDescriptorFields("QuerySecurityAttestationsResponse",
+				repeatedMessageField("attestations", 1, ".l1.contracts.v1.ContractSecurityAttestation"),
+			),
+			messageDescriptorFields("QuerySecurityBadgeRequest",
+				stringField("contract_address", 1),
+			),
+			messageDescriptorFields("QuerySecurityBadgeResponse",
+				messageField("badge", 1, ".l1.contracts.v1.ContractSecurityBadge"),
+				boolField("found", 2),
+			),
+			messageDescriptorFields("ContractSecurityBadge",
+				stringField("contract_address", 1),
+				stringField("badge", 2),
+				boolField("verified", 3),
+				uint32Field("risk_score_bps", 4),
+				repeatedStringField("categories", 5),
+				repeatedStringField("flags", 6),
+				repeatedStringField("related_addresses", 7),
+				repeatedMessageField("graph_edges", 8, ".l1.contracts.v1.SecurityGraphEdge"),
+				uint32Field("attestation_count", 9),
+				uint32Field("active_attestation_count", 10),
+				uint32Field("revoked_attestation_count", 11),
+				uint64Field("latest_updated_height", 12),
+				repeatedStringField("attestation_ids", 13),
+			),
 		},
 		Service: []*descriptorpb.ServiceDescriptorProto{
 			{
@@ -664,6 +951,103 @@ func buildContractsQueryFileDescriptor() []byte {
 
 func messageDescriptor(name string) *descriptorpb.DescriptorProto {
 	return &descriptorpb.DescriptorProto{Name: descriptorString(name)}
+}
+
+func messageDescriptorFields(name string, fields ...*descriptorpb.FieldDescriptorProto) *descriptorpb.DescriptorProto {
+	return &descriptorpb.DescriptorProto{Name: descriptorString(name), Field: fields}
+}
+
+// withSigner marks msg with the cosmos.msg.v1.signer option naming
+// fieldName as the account whose signature authorizes this message, matching
+// the semantics used by proto-generated cosmos-sdk Msg types. Set via the
+// real protobuf-go extension API (not UninterpretedOption) so the SDK's
+// x/tx/signing.Context can resolve it via a plain descriptor lookup.
+func withSigner(msg *descriptorpb.DescriptorProto, fieldName string) *descriptorpb.DescriptorProto {
+	opts := &descriptorpb.MessageOptions{}
+	proto2.SetExtension(opts, msgv1.E_Signer, []string{fieldName})
+	msg.Options = opts
+	return msg
+}
+
+func descriptorLabel(label descriptorpb.FieldDescriptorProto_Label) *descriptorpb.FieldDescriptorProto_Label {
+	return &label
+}
+
+func descriptorFieldType(kind descriptorpb.FieldDescriptorProto_Type) *descriptorpb.FieldDescriptorProto_Type {
+	return &kind
+}
+
+func descriptorInt32(value int32) *int32 {
+	return &value
+}
+
+func scalarField(name string, number int32, kind descriptorpb.FieldDescriptorProto_Type, repeated bool) *descriptorpb.FieldDescriptorProto {
+	label := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL
+	if repeated {
+		label = descriptorpb.FieldDescriptorProto_LABEL_REPEATED
+	}
+	return &descriptorpb.FieldDescriptorProto{
+		Name:     descriptorString(name),
+		Number:   descriptorInt32(number),
+		Label:    descriptorLabel(label),
+		Type:     descriptorFieldType(kind),
+		JsonName: descriptorString(protoJSONName(name)),
+	}
+}
+
+func stringField(name string, number int32) *descriptorpb.FieldDescriptorProto {
+	return scalarField(name, number, descriptorpb.FieldDescriptorProto_TYPE_STRING, false)
+}
+
+func repeatedStringField(name string, number int32) *descriptorpb.FieldDescriptorProto {
+	return scalarField(name, number, descriptorpb.FieldDescriptorProto_TYPE_STRING, true)
+}
+
+func bytesField(name string, number int32) *descriptorpb.FieldDescriptorProto {
+	return scalarField(name, number, descriptorpb.FieldDescriptorProto_TYPE_BYTES, false)
+}
+
+func boolField(name string, number int32) *descriptorpb.FieldDescriptorProto {
+	return scalarField(name, number, descriptorpb.FieldDescriptorProto_TYPE_BOOL, false)
+}
+
+func uint32Field(name string, number int32) *descriptorpb.FieldDescriptorProto {
+	return scalarField(name, number, descriptorpb.FieldDescriptorProto_TYPE_UINT32, false)
+}
+
+func uint64Field(name string, number int32) *descriptorpb.FieldDescriptorProto {
+	return scalarField(name, number, descriptorpb.FieldDescriptorProto_TYPE_UINT64, false)
+}
+
+func messageField(name string, number int32, typeName string) *descriptorpb.FieldDescriptorProto {
+	f := scalarField(name, number, descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, false)
+	f.TypeName = descriptorString(typeName)
+	return f
+}
+
+func repeatedMessageField(name string, number int32, typeName string) *descriptorpb.FieldDescriptorProto {
+	f := scalarField(name, number, descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, true)
+	f.TypeName = descriptorString(typeName)
+	return f
+}
+
+// protoJSONName lower-camel-cases a snake_case proto field name, matching
+// protoc's default jsonName derivation (e.g. "code_hash" -> "codeHash").
+func protoJSONName(name string) string {
+	var buf bytes.Buffer
+	upperNext := false
+	for _, r := range name {
+		if r == '_' {
+			upperNext = true
+			continue
+		}
+		if upperNext && r >= 'a' && r <= 'z' {
+			r -= 'a' - 'A'
+		}
+		upperNext = false
+		buf.WriteRune(r)
+	}
+	return buf.String()
 }
 
 func serviceMethodDescriptor(name, input, output string) *descriptorpb.MethodDescriptorProto {

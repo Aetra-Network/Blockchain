@@ -23,6 +23,45 @@ func NewExecutor(params Params) (*Executor, error) {
 	}, nil
 }
 
+// TopUpContract credits a contract's balance, applies it to any outstanding
+// storage-rent debt, and unfreezes the contract once its debt is cleared. This
+// is the recovery path for a contract frozen by storage rent — without it a
+// frozen contract would be permanently bricked. Returns the resulting balance
+// and any unfreeze event.
+func (e *Executor) TopUpContract(address sdk.AccAddress, amount sdkmath.Int) (ContractAccount, []AVMEvent, error) {
+	if amount.IsNil() || amount.IsNegative() {
+		return ContractAccount{}, nil, errors.New("top-up amount must be non-negative")
+	}
+	contract, ok := e.contracts[string(address)]
+	if !ok {
+		return ContractAccount{}, nil, errors.New("cannot top up missing contract")
+	}
+	working := cloneContract(contract)
+	working.BalanceNaet = working.BalanceNaet.Add(amount)
+	debt := working.StorageRentDebtNaet
+	if debt.IsNil() {
+		debt = sdkmath.ZeroInt()
+	}
+	if debt.IsPositive() {
+		pay := debt
+		if working.BalanceNaet.LT(pay) {
+			pay = working.BalanceNaet
+		}
+		working.BalanceNaet = working.BalanceNaet.Sub(pay)
+		working.StorageRentDebtNaet = debt.Sub(pay)
+	} else {
+		working.StorageRentDebtNaet = sdkmath.ZeroInt()
+	}
+	var events []AVMEvent
+	if working.NormalizedStatus() == ContractStatusFrozen && working.StorageRentDebtNaet.IsZero() {
+		working.Status = ContractStatusActive
+		working.LastStorageChargeHeight = e.blockHeight
+		events = append(events, contractUnfrozenEvent(working, e.blockHeight))
+	}
+	e.contracts[string(address)] = working
+	return cloneContract(working), events, nil
+}
+
 func (e *Executor) RegisterHandler(address sdk.AccAddress, handler Handler) error {
 	if err := aetraaddress.RejectZeroAddress("contract handler", address); err != nil {
 		return err

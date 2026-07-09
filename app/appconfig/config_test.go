@@ -1,6 +1,7 @@
 package appconfig
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -32,7 +33,7 @@ func TestUserFacingAddressFormatIsAEBase64URLNotSDKBech32(t *testing.T) {
 	userFacing, err := addressing.FormatUserFriendly(addr)
 	require.NoError(t, err)
 	require.True(t, strings.HasPrefix(userFacing, "AE"))
-	require.Regexp(t, `^[A-Za-z0-9_-]{48}$`, userFacing)
+	require.Regexp(t, fmt.Sprintf(`^[A-Za-z0-9_-]{%d}$`, addressing.UserFriendlyLength), userFacing)
 	require.False(t, strings.HasPrefix(userFacing, SDKBech32AccountPrefix+"1"))
 	require.Equal(t, "AE", AccountAddressPrefix)
 	require.Equal(t, "AE", ValidatorAddressPrefix)

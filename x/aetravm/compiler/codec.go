@@ -2,12 +2,15 @@ package compiler
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"reflect"
-	"strconv"
 	"strings"
+
+	"github.com/sovereign-l1/l1/x/aetravm/avm"
+	"github.com/sovereign-l1/l1/x/aetravm/chunk"
 )
 
 type codecFieldValue struct {
@@ -29,7 +32,14 @@ func (c Codec) EncodeDefaults() ([]byte, error) {
 		}
 		values = append(values, codecFieldValue{Name: field.Name, Type: field.Type.String(), Value: encoded})
 	}
-	return json.Marshal(values)
+	out, err := json.Marshal(values)
+	if err != nil {
+		return nil, err
+	}
+	if c.MaxBytes > 0 && len(out) > c.MaxBytes {
+		return nil, fmt.Errorf("encoded default payload for %q is %d bytes, exceeds limit %d", c.Name, len(out), c.MaxBytes)
+	}
+	return out, nil
 }
 
 func (c Codec) Encode(value any) ([]byte, error) {
@@ -59,13 +69,23 @@ func (c Codec) Encode(value any) ([]byte, error) {
 		}
 		values = append(values, codecFieldValue{Name: field.Name, Type: field.Type.String(), Value: raw})
 	}
-	return json.Marshal(values)
+	out, err := json.Marshal(values)
+	if err != nil {
+		return nil, err
+	}
+	if c.MaxBytes > 0 && len(out) > c.MaxBytes {
+		return nil, fmt.Errorf("encoded payload for %q is %d bytes, exceeds limit %d", c.Name, len(out), c.MaxBytes)
+	}
+	return out, nil
 }
 
 func (c Codec) Decode(data []byte, out any) error {
 	var values []codecFieldValue
 	if err := json.Unmarshal(data, &values); err != nil {
 		return err
+	}
+	if len(values) != len(c.Fields) {
+		return fmt.Errorf("decode field count mismatch: expected %d, got %d", len(c.Fields), len(values))
 	}
 	if out == nil {
 		return nil
@@ -79,16 +99,16 @@ func (c Codec) Decode(data []byte, out any) error {
 		if rv.IsNil() {
 			rv.Set(reflect.MakeMap(rv.Type()))
 		}
-		for _, item := range values {
-			var fieldType TypeRef
-			for _, field := range c.Fields {
-				if strings.EqualFold(field.Name, item.Name) {
-					fieldType = field.Type
-					break
-				}
+		for i, item := range values {
+			field := c.Fields[i]
+			if item.Name != field.Name {
+				return fmt.Errorf("decode field %d name mismatch: expected %q, got %q", i, field.Name, item.Name)
+			}
+			if item.Type != field.Type.String() {
+				return fmt.Errorf("decode field %d type mismatch: expected %q, got %q", i, field.Type.String(), item.Type)
 			}
 			elem := reflect.New(rv.Type().Elem())
-			if err := assignDecodedValue(elem.Elem(), fieldType, item.Value); err != nil {
+			if err := assignDecodedValue(elem.Elem(), field.Type, item.Value); err != nil {
 				return fmt.Errorf("decode field %q: %w", item.Name, err)
 			}
 			key := reflect.ValueOf(item.Name)
@@ -109,19 +129,19 @@ func (c Codec) Decode(data []byte, out any) error {
 	if rv.Kind() != reflect.Struct {
 		return fmt.Errorf("decode target must be struct or map")
 	}
-	for _, item := range values {
-		var fieldType TypeRef
-		for _, field := range c.Fields {
-			if strings.EqualFold(field.Name, item.Name) {
-				fieldType = field.Type
-				break
-			}
+	for i, item := range values {
+		field := c.Fields[i]
+		if item.Name != field.Name {
+			return fmt.Errorf("decode field %d name mismatch: expected %q, got %q", i, field.Name, item.Name)
 		}
-		field := rv.FieldByNameFunc(func(name string) bool { return strings.EqualFold(name, item.Name) })
-		if !field.IsValid() || !field.CanSet() {
-			continue
+		if item.Type != field.Type.String() {
+			return fmt.Errorf("decode field %d type mismatch: expected %q, got %q", i, field.Type.String(), item.Type)
 		}
-		if err := assignDecodedValue(field, fieldType, item.Value); err != nil {
+		decodedField := rv.FieldByNameFunc(func(name string) bool { return strings.EqualFold(name, item.Name) })
+		if !decodedField.IsValid() || !decodedField.CanSet() {
+			return fmt.Errorf("decode field %q: cannot set target field", item.Name)
+		}
+		if err := assignDecodedValue(decodedField, field.Type, item.Value); err != nil {
 			return fmt.Errorf("decode field %q: %w", item.Name, err)
 		}
 	}
@@ -136,19 +156,21 @@ func defaultValueForField(field CodecField) (any, error) {
 }
 
 func zeroValueForType(typ TypeRef) any {
+	if typ.Optional {
+		return nil
+	}
 	switch strings.ToLower(typ.Name) {
 	case "bool":
 		return false
-	case "u8", "u16", "u32", "u64", "i64", "coins":
+	case "u2", "u4", "u8", "u16", "u32", "u64", "u128", "u256", "uint2", "uint4", "uint8", "uint16", "uint32", "uint64", "uint128", "uint256", "i2", "i4", "i8", "i16", "i32", "i64", "i128", "i256", "int2", "int4", "int8", "int16", "int32", "int64", "int128", "int256", "coins", "timestamp":
 		return 0
-	case "bytes", "hash32":
+	case "bytes", "hash", "hash32":
 		return ""
 	case "string", "address":
 		return ""
+	case "chunk", "code":
+		return zeroCodeSnapshot()
 	default:
-		if typ.Optional {
-			return nil
-		}
 		return map[string]any{}
 	}
 }
@@ -156,9 +178,20 @@ func zeroValueForType(typ TypeRef) any {
 func canonicalExprValue(expr Expr) (any, error) {
 	switch expr.Kind {
 	case ExprNumber:
-		return strconv.ParseUint(expr.Text, 10, 64)
+		return parseUintLiteral(expr.Text)
 	case ExprString:
 		return expr.Text, nil
+	case ExprBytes:
+		root, err := avm.ToChunkPayload(expr.Bytes, chunk.TypeNormal)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"hex":    hex.EncodeToString(expr.Bytes),
+			"base64": base64.StdEncoding.EncodeToString(expr.Bytes),
+			"hash":   fmt.Sprintf("%x", root.Hash()),
+			"chunks": chunk.RenderSource(root),
+		}, nil
 	case ExprBool:
 		return expr.Bool, nil
 	case ExprIdent:
@@ -171,6 +204,32 @@ func canonicalExprValue(expr Expr) (any, error) {
 	case ExprPath:
 		return strings.Join(expr.Path, "."), nil
 	case ExprCall:
+		if snapshot, ok, err := canonicalChunkLikeExprValue(expr); err != nil {
+			return nil, err
+		} else if ok {
+			return snapshot, nil
+		}
+		if hashText, ok, err := canonicalChunkLikeHashExprValue(expr); err != nil {
+			return nil, err
+		} else if ok {
+			return hashText, nil
+		}
+		if strings.EqualFold(expr.Text, "aet") && len(expr.Args) == 1 {
+			if expr.Args[0].Kind != ExprString {
+				return nil, fmt.Errorf("aet literal must use a string argument")
+			}
+			value, err := parseAetLiteral(expr.Args[0].Text)
+			if err != nil {
+				return nil, err
+			}
+			return value, nil
+		}
+		if callNameIs(expr, "address") && len(expr.Args) == 1 {
+			if expr.Args[0].Kind != ExprString {
+				return nil, fmt.Errorf("address literal must use a string argument")
+			}
+			return parseAddressLiteral(expr.Args[0].Text)
+		}
 		args := make([]any, 0, len(expr.Args))
 		for _, arg := range expr.Args {
 			v, err := canonicalExprValue(arg)
@@ -180,6 +239,19 @@ func canonicalExprValue(expr Expr) (any, error) {
 			args = append(args, v)
 		}
 		return map[string]any{"call": expr.Text, "args": args}, nil
+	case ExprStruct:
+		fields := make(map[string]any, len(expr.Fields))
+		for _, field := range expr.Fields {
+			v, err := canonicalExprValue(field.Value)
+			if err != nil {
+				return nil, err
+			}
+			fields[field.Name] = v
+		}
+		if expr.Text != "" {
+			return map[string]any{"type": expr.Text, "fields": fields}, nil
+		}
+		return fields, nil
 	case ExprBinary:
 		left, err := canonicalExprValue(*expr.Left)
 		if err != nil {
@@ -195,6 +267,77 @@ func canonicalExprValue(expr Expr) (any, error) {
 	}
 }
 
+func canonicalChunkLikeExprValue(expr Expr) (map[string]any, bool, error) {
+	data, ok, err := chunkLikeExprBytes(expr)
+	if err != nil || !ok {
+		return nil, ok, err
+	}
+	root, err := avm.ToChunkPayload(data, chunk.TypeNormal)
+	if err != nil {
+		return nil, false, err
+	}
+	return map[string]any{
+		"hex":    hex.EncodeToString(data),
+		"base64": base64.StdEncoding.EncodeToString(data),
+		"hash":   fmt.Sprintf("%x", root.Hash()),
+		"chunks": chunk.RenderSource(root),
+	}, true, nil
+}
+
+func canonicalChunkLikeHashExprValue(expr Expr) (string, bool, error) {
+	data, ok, err := chunkLikeExprBytes(expr)
+	if err != nil || !ok {
+		return "", ok, err
+	}
+	root, err := avm.ToChunkPayload(data, chunk.TypeNormal)
+	if err != nil {
+		return "", false, err
+	}
+	return fmt.Sprintf("%x", root.Hash()), true, nil
+}
+
+func chunkLikeExprBytes(expr Expr) ([]byte, bool, error) {
+	switch expr.Kind {
+	case ExprBytes:
+		return append([]byte(nil), expr.Bytes...), true, nil
+	case ExprCall:
+		if len(expr.Path) < 2 {
+			return nil, false, nil
+		}
+		receiver := strings.ToLower(expr.Path[0])
+		method := strings.ToLower(expr.Path[len(expr.Path)-1])
+		switch receiver {
+		case "chunk", "code":
+			switch method {
+			case "fromhex":
+				if len(expr.Args) != 1 || expr.Args[0].Kind != ExprString {
+					return nil, false, nil
+				}
+				data, err := hex.DecodeString(strings.TrimSpace(expr.Args[0].Text))
+				if err != nil {
+					return nil, false, err
+				}
+				return data, true, nil
+			case "frombase64":
+				if len(expr.Args) != 1 || expr.Args[0].Kind != ExprString {
+					return nil, false, nil
+				}
+				data, err := base64.StdEncoding.DecodeString(strings.TrimSpace(expr.Args[0].Text))
+				if err != nil {
+					return nil, false, err
+				}
+				return data, true, nil
+			case "fromchunk", "fromsegment", "fromstate":
+				if len(expr.Args) != 1 {
+					return nil, false, nil
+				}
+				return chunkLikeExprBytes(expr.Args[0])
+			}
+		}
+	}
+	return nil, false, nil
+}
+
 func canonicalCodecValue(typ TypeRef, value reflect.Value) (any, error) {
 	if !value.IsValid() {
 		return zeroValueForType(typ), nil
@@ -205,12 +348,18 @@ func canonicalCodecValue(typ TypeRef, value reflect.Value) (any, error) {
 		}
 		value = value.Elem()
 	}
+	for value.Kind() == reflect.Interface {
+		if value.IsNil() {
+			return zeroValueForType(typ), nil
+		}
+		value = value.Elem()
+	}
 	switch strings.ToLower(typ.Name) {
 	case "bool":
 		return value.Bool(), nil
-	case "u8", "u16", "u32", "u64", "i64", "coins":
-		return value.Convert(reflect.TypeOf(uint64(0))).Uint(), nil
-	case "bytes", "hash32":
+	case "u2", "u4", "u8", "u16", "u32", "u64", "u128", "u256", "uint2", "uint4", "uint8", "uint16", "uint32", "uint64", "uint128", "uint256", "i2", "i4", "i8", "i16", "i32", "i64", "i128", "i256", "int2", "int4", "int8", "int16", "int32", "int64", "int128", "int256", "coins", "timestamp":
+		return canonicalIntegerCodecValue(typ, value)
+	case "bytes", "hash", "hash32":
 		switch value.Kind() {
 		case reflect.Slice:
 			return hex.EncodeToString(value.Bytes()), nil
@@ -225,6 +374,8 @@ func canonicalCodecValue(typ TypeRef, value reflect.Value) (any, error) {
 		}
 	case "string", "address":
 		return value.String(), nil
+	case "chunk", "code":
+		return canonicalChunkLikeValue(value)
 	default:
 		if value.Kind() == reflect.Struct {
 			return structToMap(value)
@@ -245,6 +396,185 @@ func canonicalCodecValue(typ TypeRef, value reflect.Value) (any, error) {
 		}
 		return fmt.Sprintf("%v", value.Interface()), nil
 	}
+}
+
+// integerTypeRange returns the inclusive value range for bounded integer
+// types (widths up to 64 bits). 128/256-bit and coins values are unbounded
+// here and validated by their own big-integer paths.
+func integerTypeRange(name string) (minVal int64, maxVal uint64, signed bool, bounded bool) {
+	switch strings.ToLower(name) {
+	case "u2", "uint2":
+		return 0, 3, false, true
+	case "u4", "uint4":
+		return 0, 15, false, true
+	case "u8", "uint8":
+		return 0, 1<<8 - 1, false, true
+	case "u16", "uint16":
+		return 0, 1<<16 - 1, false, true
+	case "u32", "uint32":
+		return 0, 1<<32 - 1, false, true
+	case "i2", "int2":
+		return -2, 1, true, true
+	case "i4", "int4":
+		return -8, 7, true, true
+	case "i8", "int8":
+		return -1 << 7, 1<<7 - 1, true, true
+	case "i16", "int16":
+		return -1 << 15, 1<<15 - 1, true, true
+	case "i32", "int32":
+		return -1 << 31, 1<<31 - 1, true, true
+	default:
+		return 0, 0, false, false
+	}
+}
+
+func checkIntegerRange(typName string, signedValue int64, unsignedValue uint64, isSigned bool) error {
+	minVal, maxVal, rangeSigned, bounded := integerTypeRange(typName)
+	if !bounded {
+		return nil
+	}
+	if rangeSigned {
+		if !isSigned {
+			if unsignedValue > uint64(maxVal) {
+				return fmt.Errorf("value %d out of range for type %q", unsignedValue, typName)
+			}
+			return nil
+		}
+		if signedValue < minVal || (signedValue >= 0 && uint64(signedValue) > maxVal) {
+			return fmt.Errorf("value %d out of range for type %q", signedValue, typName)
+		}
+		return nil
+	}
+	if isSigned {
+		if signedValue < 0 || uint64(signedValue) > maxVal {
+			return fmt.Errorf("value %d out of range for type %q", signedValue, typName)
+		}
+		return nil
+	}
+	if unsignedValue > maxVal {
+		return fmt.Errorf("value %d out of range for type %q", unsignedValue, typName)
+	}
+	return nil
+}
+
+func canonicalIntegerCodecValue(typ TypeRef, value reflect.Value) (any, error) {
+	signed := strings.HasPrefix(strings.ToLower(typ.Name), "i") || strings.HasPrefix(strings.ToLower(typ.Name), "int")
+	switch value.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		if signed {
+			if err := checkIntegerRange(typ.Name, value.Int(), 0, true); err != nil {
+				return nil, err
+			}
+			return value.Int(), nil
+		}
+		if value.Int() < 0 {
+			return nil, fmt.Errorf("negative value for unsigned type %q", typ.Name)
+		}
+		if err := checkIntegerRange(typ.Name, 0, uint64(value.Int()), false); err != nil {
+			return nil, err
+		}
+		return uint64(value.Int()), nil
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		if signed {
+			if err := checkIntegerRange(typ.Name, int64(value.Uint()), 0, true); err != nil {
+				return nil, err
+			}
+			return int64(value.Uint()), nil
+		}
+		if err := checkIntegerRange(typ.Name, 0, value.Uint(), false); err != nil {
+			return nil, err
+		}
+		return value.Uint(), nil
+	default:
+		if value.CanInt() {
+			if signed {
+				return value.Int(), nil
+			}
+			if value.Int() < 0 {
+				return nil, fmt.Errorf("negative value for unsigned type %q", typ.Name)
+			}
+			return uint64(value.Int()), nil
+		}
+		if value.CanUint() {
+			if signed {
+				return int64(value.Uint()), nil
+			}
+			return value.Uint(), nil
+		}
+		return fmt.Sprintf("%v", value.Interface()), nil
+	}
+}
+
+func zeroCodeSnapshot() map[string]any {
+	return map[string]any{
+		"hex":    "",
+		"base64": "",
+		"hash":   "",
+		"chunks": "",
+	}
+}
+
+func canonicalChunkLikeValue(value reflect.Value) (any, error) {
+	data, root, err := chunkLikeBytesAndRoot(value)
+	if err != nil {
+		return nil, err
+	}
+	if root == nil {
+		return zeroCodeSnapshot(), nil
+	}
+	return map[string]any{
+		"hex":    hex.EncodeToString(data),
+		"base64": base64.StdEncoding.EncodeToString(data),
+		"hash":   fmt.Sprintf("%x", root.Hash()),
+		"chunks": chunk.RenderSource(root),
+	}, nil
+}
+
+func chunkLikeBytesAndRoot(value reflect.Value) ([]byte, *chunk.Chunk, error) {
+	if !value.IsValid() {
+		return nil, nil, nil
+	}
+	for value.Kind() == reflect.Pointer {
+		if value.IsNil() {
+			return nil, nil, nil
+		}
+		if chunkValue, ok := value.Interface().(*chunk.Chunk); ok {
+			data, err := avm.FromChunkPayload(chunkValue)
+			if err != nil {
+				return nil, nil, err
+			}
+			return data, chunkValue, nil
+		}
+		value = value.Elem()
+	}
+	if value.CanInterface() {
+		if chunkValue, ok := value.Interface().(chunk.Chunk); ok {
+			data, err := avm.FromChunkPayload(&chunkValue)
+			if err != nil {
+				return nil, nil, err
+			}
+			return data, &chunkValue, nil
+		}
+		if bytesValue, ok := value.Interface().([]byte); ok {
+			root, err := avm.ToChunkPayload(bytesValue, chunk.TypeNormal)
+			if err != nil {
+				return nil, nil, err
+			}
+			return append([]byte(nil), bytesValue...), root, nil
+		}
+		if strValue, ok := value.Interface().(string); ok {
+			decoded, err := hex.DecodeString(strings.TrimSpace(strValue))
+			if err != nil {
+				decoded = []byte(strValue)
+			}
+			root, err := avm.ToChunkPayload(decoded, chunk.TypeNormal)
+			if err != nil {
+				return nil, nil, err
+			}
+			return decoded, root, nil
+		}
+	}
+	return nil, nil, fmt.Errorf("invalid payload for chunk-like value: %s", value.Type())
 }
 
 func structToMap(value reflect.Value) (map[string]any, error) {

@@ -33,9 +33,9 @@ func TestAddressMessageAndStateInitBuilders(t *testing.T) {
 	require.Equal(t, uint64(11), msg.Opcode)
 	require.Equal(t, pair.Raw, msg.Sender.Raw)
 
-	cell, err := NewCell([]byte("hello"), chunk.TypeSystem)
+	chunkValue, err := NewChunk([]byte("hello"), chunk.TypeSystem)
 	require.NoError(t, err)
-	flattened, err := cell.Bytes()
+	flattened, err := chunkValue.Bytes()
 	require.NoError(t, err)
 	require.Equal(t, []byte("hello"), flattened)
 
@@ -46,7 +46,7 @@ func TestAddressMessageAndStateInitBuilders(t *testing.T) {
 		Deployer(addr).
 		ChainID("avm-local").
 		Namespace("demo").
-		InitialStateRoot(&cell).
+		InitialStateRoot(&chunkValue).
 		Build()
 	require.NoError(t, err)
 	require.NotNil(t, stateInit)
@@ -78,4 +78,17 @@ func TestSafeMathAndCollections(t *testing.T) {
 		return nil
 	}))
 	require.Equal(t, []string{"a", "b"}, order)
+}
+
+func TestChunkAndSegmentHashes(t *testing.T) {
+	chunkValue, err := NewChunk([]byte("payload"), chunk.TypeSystem)
+	require.NoError(t, err)
+
+	require.NotEqual(t, [32]byte{}, chunkValue.Hash())
+	require.NotEqual(t, [32]byte{}, chunkValue.BitsHash())
+
+	segment := chunkValue.Segment()
+	require.Equal(t, chunkValue.Hash(), segment.Hash())
+	require.Equal(t, chunkValue.BitsHash(), segment.BitsHash())
+	require.False(t, segment.IsZero())
 }

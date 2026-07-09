@@ -3,11 +3,13 @@ package keeper
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"reflect"
+	"strconv"
 	"strings"
 
 	corestore "cosmossdk.io/core/store"
@@ -15,6 +17,8 @@ import (
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	aetraaddress "github.com/sovereign-l1/l1/app/addressing"
 	coretypes "github.com/sovereign-l1/l1/x/aetracore/types"
+	"github.com/sovereign-l1/l1/x/aetravm/async"
+	"github.com/sovereign-l1/l1/x/aetravm/avm"
 	"github.com/sovereign-l1/l1/x/contracts/types"
 )
 
@@ -321,6 +325,7 @@ func (k *Keeper) ExecuteInternal(msg types.MsgExecuteInternal) (types.InternalMe
 		Opcode:             msg.Message.Opcode,
 		QueryID:            msg.Message.QueryID,
 		Body:               append([]byte(nil), msg.Message.Body...),
+		StateInit:          msg.Message.StateInit,
 		Bounce:             msg.Message.Bounce,
 		Deadline:           msg.Message.Deadline,
 		GasLimit:           msg.Message.GasLimit,
@@ -341,6 +346,7 @@ func (k *Keeper) SendInternalMessage(msg types.MsgSendInternalMessage) (types.In
 		Opcode:             msg.Message.Opcode,
 		QueryID:            msg.Message.QueryID,
 		Body:               append([]byte(nil), msg.Message.Body...),
+		StateInit:          msg.Message.StateInit,
 		Bounce:             msg.Message.Bounce,
 		Deadline:           msg.Message.Deadline,
 		GasLimit:           msg.Message.GasLimit,
@@ -467,6 +473,16 @@ func (k Keeper) ContractStorage(req types.QueryContractStorageRequest) ([]types.
 		Key:             []byte("data"),
 		Value:           append([]byte(nil), contract.Data...),
 	}}
+	if snapshot, decodable, err := decodeContractSnapshot(contract.Data); err == nil && decodable && len(snapshot) > 0 {
+		entries = make([]types.ContractStorageEntry, 0, len(snapshot))
+		for _, item := range avm.Snapshot(snapshot) {
+			entries = append(entries, types.ContractStorageEntry{
+				ContractAddress: contract.AddressUser,
+				Key:             []byte(item.Key),
+				Value:           append([]byte(nil), item.Value...),
+			})
+		}
+	}
 	out := make([]types.ContractStorageEntry, 0, len(entries))
 	for _, entry := range entries {
 		if len(req.KeyPrefix) != 0 && !bytes.HasPrefix(entry.Key, req.KeyPrefix) {
@@ -668,7 +684,10 @@ func (k *Keeper) instantiateContract(ctx context.Context, msg types.MsgInstantia
 	if err := next.Validate(); err != nil {
 		return types.InstantiateContractResponse{}, err
 	}
-	initialStorageFee := storageBytes * k.storageRentPerByteBlock()
+	initialStorageFee, err := checkedMul(storageBytes, k.storageRentPerByteBlock(), "contract storage fee overflow")
+	if err != nil {
+		return types.InstantiateContractResponse{}, err
+	}
 	if err := k.collectRentPayment(ctx, msg.Creator, initialStorageFee); err != nil {
 		return types.InstantiateContractResponse{}, err
 	}
@@ -733,7 +752,10 @@ func (k *Keeper) UpgradeContractCode(msg types.MsgUpgradeContractCode) (types.Co
 	}
 	if storageBytes > contract.StorageBytes {
 		diff := storageBytes - contract.StorageBytes
-		extraFee := diff * k.storageRentPerByteBlock()
+		extraFee, err := checkedMul(diff, k.storageRentPerByteBlock(), "contract storage fee overflow")
+		if err != nil {
+			return types.ContractReceipt{}, err
+		}
 		if err := k.collectRentPayment(k.runtimeCtx, msg.Actor, extraFee); err != nil {
 			return types.ContractReceipt{}, err
 		}
@@ -790,7 +812,10 @@ func (k *Keeper) MigrateContractState(msg types.MsgMigrateContractState) (types.
 	}
 	if storageBytes > contract.StorageBytes {
 		diff := storageBytes - contract.StorageBytes
-		extraFee := diff * k.storageRentPerByteBlock()
+		extraFee, err := checkedMul(diff, k.storageRentPerByteBlock(), "contract storage fee overflow")
+		if err != nil {
+			return types.ContractReceipt{}, err
+		}
 		if err := k.collectRentPayment(k.runtimeCtx, msg.Actor, extraFee); err != nil {
 			return types.ContractReceipt{}, err
 		}
@@ -902,6 +927,243 @@ func (k Keeper) stateInitForInstantiate(msg types.MsgInstantiateContract, code t
 	return stateInit, append([]byte(nil), stateInit.InitData...), stateInit.InitialBalanceNAET, nil
 }
 
+func findCodeRecord(codes []types.CodeRecord, codeID string) (types.CodeRecord, bool) {
+	for _, code := range codes {
+		if code.CodeID == codeID {
+			return code, true
+		}
+	}
+	return types.CodeRecord{}, false
+}
+
+func decodeContractSnapshot(data []byte) (avm.Storage, bool, error) {
+	if len(data) == 0 {
+		return avm.Storage{}, true, nil
+	}
+	if looksLikeAVMSnapshot(data) {
+		snapshot, err := avm.DecodeSnapshot(data)
+		if err != nil {
+			return nil, false, err
+		}
+		return snapshot, true, nil
+	}
+	var fields []struct {
+		Name  string          `json:"name"`
+		Type  string          `json:"type"`
+		Value json.RawMessage `json:"value"`
+	}
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return nil, false, nil
+	}
+	storage := make(avm.Storage, len(fields))
+	for _, field := range fields {
+		if strings.TrimSpace(field.Name) == "" {
+			continue
+		}
+		encoded, err := encodeJSONStorageValue(field.Type, field.Value)
+		if err != nil {
+			return nil, false, err
+		}
+		storage[field.Name] = encoded
+	}
+	return storage, true, nil
+}
+
+func looksLikeAVMSnapshot(data []byte) bool {
+	if len(data) < 4 {
+		return false
+	}
+	count := binary.BigEndian.Uint32(data[:4])
+	if count > uint32(len(data)) {
+		return false
+	}
+	remaining := len(data) - 4
+	if count == 0 {
+		return remaining == 0
+	}
+	minBytesPerEntry := 6
+	return int(count) <= remaining/minBytesPerEntry
+}
+
+func encodeJSONStorageValue(typeName string, raw json.RawMessage) ([]byte, error) {
+	kind := strings.ToLower(strings.TrimSpace(typeName))
+	kind = strings.TrimSuffix(kind, "?")
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return nil, nil
+	}
+	switch kind {
+	case "uint8", "uint16", "uint32", "uint64", "int64", "coins", "ticket", "countervalue", "packedstate":
+		value, err := parseJSONUint64(raw)
+		if err != nil {
+			return nil, err
+		}
+		return avm.EncodeU64(value), nil
+	case "bool":
+		var value bool
+		if err := json.Unmarshal(raw, &value); err != nil {
+			return nil, err
+		}
+		if value {
+			return avm.EncodeU64(1), nil
+		}
+		return avm.EncodeU64(0), nil
+	case "address":
+		var text string
+		if err := json.Unmarshal(raw, &text); err != nil {
+			return nil, err
+		}
+		encoded, err := avm.CanonicalEncode(avm.ValueAddress(text))
+		if err != nil {
+			return nil, err
+		}
+		return encoded, nil
+	case "string":
+		var text string
+		if err := json.Unmarshal(raw, &text); err != nil {
+			return nil, err
+		}
+		encoded, err := avm.CanonicalEncode(avm.ValueString(text))
+		if err != nil {
+			return nil, err
+		}
+		return encoded, nil
+	default:
+		if numericValue, ok := parseJSONNumericValue(raw); ok {
+			return avm.EncodeU64(numericValue), nil
+		}
+		var text string
+		if err := json.Unmarshal(raw, &text); err == nil {
+			return []byte(text), nil
+		}
+		return append([]byte(nil), raw...), nil
+	}
+}
+
+func parseJSONNumericValue(raw json.RawMessage) (uint64, bool) {
+	var num uint64
+	if err := json.Unmarshal(raw, &num); err == nil {
+		return num, true
+	}
+	var signed int64
+	if err := json.Unmarshal(raw, &signed); err == nil {
+		if signed < 0 {
+			return 0, false
+		}
+		return uint64(signed), true
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		text = strings.TrimSpace(text)
+		if strings.HasPrefix(strings.ToLower(text), "0x") {
+			value, err := strconv.ParseUint(text[2:], 16, 64)
+			if err == nil {
+				return value, true
+			}
+			return 0, false
+		}
+		value, err := strconv.ParseUint(text, 10, 64)
+		if err == nil {
+			return value, true
+		}
+	}
+	return 0, false
+}
+
+func parseJSONUint64(raw json.RawMessage) (uint64, error) {
+	var num uint64
+	if err := json.Unmarshal(raw, &num); err == nil {
+		return num, nil
+	}
+	var signed int64
+	if err := json.Unmarshal(raw, &signed); err == nil {
+		if signed < 0 {
+			return 0, fmt.Errorf("negative value %d cannot be encoded as uint64", signed)
+		}
+		return uint64(signed), nil
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		text = strings.TrimSpace(text)
+		if strings.HasPrefix(strings.ToLower(text), "0x") {
+			return strconv.ParseUint(text[2:], 16, 64)
+		}
+		return strconv.ParseUint(text, 10, 64)
+	}
+	return 0, fmt.Errorf("unsupported numeric storage value %s", string(raw))
+}
+
+func encodeSnapshotStorage(storage avm.Storage) []byte {
+	if len(storage) == 0 {
+		return nil
+	}
+	return avm.EncodeSnapshot(storage)
+}
+
+// blockBeaconInputs returns the consensus entropy feeding contract randomness:
+// the previous block's committed app hash (previousStateRoot) and the current
+// block hash (block entropy). Both come only from the live consensus header, so
+// every validator derives identical random() values, and the current block hash
+// is not known when a transaction is submitted. Returns nil inputs when no SDK
+// header is bound (unit tests, genesis, off-chain tooling); randomness then
+// still resolves deterministically from the message discriminator alone.
+func blockBeaconInputs(ctx context.Context) (prevStateRoot, blockEntropy []byte) {
+	defer func() { _ = recover() }()
+	info := sdk.UnwrapSDKContext(ctx).HeaderInfo()
+	return info.AppHash, info.Hash
+}
+
+func (k Keeper) buildAVMContext(entry avm.Entrypoint, contract types.Contract, sender string, payload []byte, funds, gasLimit, height, logicalTime uint64, opcode uint32, queryID uint64, bounced bool) (avm.RuntimeContext, error) {
+	contractAddress, err := aetraaddress.ParseAccAddress(contract.AddressUser)
+	if err != nil {
+		return avm.RuntimeContext{}, err
+	}
+	sourceAddress, err := aetraaddress.ParseAccAddress(sender)
+	if err != nil {
+		return avm.RuntimeContext{}, err
+	}
+	if gasLimit == 0 {
+		gasLimit = 100_000
+	}
+	prevStateRoot, blockEntropy := blockBeaconInputs(k.runtimeCtx)
+	return avm.RuntimeContext{
+		Entry:           entry,
+		ContractAddress: contractAddress,
+		Message: async.MessageEnvelope{
+			Source:      sourceAddress,
+			Destination: contractAddress,
+			Opcode:      opcode,
+			QueryID:     queryID,
+			Body:        append([]byte(nil), payload...),
+			Bounce:      true,
+			Bounced:     bounced,
+			GasLimit:    gasLimit,
+			Value:       sdk.NewCoin(storageRentBaseDenom, sdkmath.NewIntFromUint64(funds)),
+			ForwardFee:  sdk.NewCoin(storageRentBaseDenom, sdkmath.ZeroInt()),
+			CreatedLogicalTime: logicalTime,
+		},
+		BlockHeight:             height,
+		BlockTimestamp:          height,
+		LogicalTime:             logicalTime,
+		CurrentBlockLogicalTime: height,
+		OriginalBalance:         sdkmath.NewIntFromUint64(contract.Balance),
+		AttachedValue:           sdkmath.NewIntFromUint64(funds),
+		GasLimit:                gasLimit,
+		PrevStateRoot:           prevStateRoot,
+		BlockEntropy:            blockEntropy,
+	}, nil
+}
+
+func loadAVMModule(code types.CodeRecord) (avm.Module, bool, error) {
+	if len(code.Bytecode) == 0 {
+		return avm.Module{}, false, nil
+	}
+	module, err := avm.DecodeModule(code.Bytecode)
+	if err != nil {
+		return avm.Module{}, false, nil
+	}
+	return module, true, nil
+}
+
 func (k *Keeper) ExecuteContract(msg types.MsgExecuteContract) (types.ExecuteContractResponse, error) {
 	return k.executeContract(k.runtimeCtx, msg)
 }
@@ -926,7 +1188,7 @@ func (k *Keeper) executeContract(ctx context.Context, msg types.MsgExecuteContra
 	if err := types.EnsureContractLifecycleAction(contract, types.ContractLifecycleActionExecuteExternal); err != nil {
 		return types.ExecuteContractResponse{}, err
 	}
-	contract, err := k.chargeContractRentAt(ctx, idx, contract, msg.Height)
+	contract, rentCharged, err := k.chargeContractRentAt(ctx, idx, contract, msg.Height)
 	if err != nil {
 		return types.ExecuteContractResponse{}, errors.New(types.ErrStorageRent + ": contract has storage rent debt")
 	}
@@ -935,7 +1197,43 @@ func (k *Keeper) executeContract(ctx context.Context, msg types.MsgExecuteContra
 		return types.ExecuteContractResponse{}, err
 	}
 	contract.Balance = balance
-	contract.Data = append([]byte(nil), msg.Msg...)
+	code, found := findCodeRecord(k.genesis.State.Codes, contract.CodeID)
+	if !found {
+		return types.ExecuteContractResponse{}, errors.New(types.ErrInvalidBytecode + ": stored code not found for contract")
+	}
+	module, executable, err := loadAVMModule(code)
+	if err != nil {
+		return types.ExecuteContractResponse{}, err
+	}
+	var outgoing []async.MessageEnvelope
+	if executable {
+		storage, decodable, err := decodeContractSnapshot(contract.Data)
+		if err != nil {
+			return types.ExecuteContractResponse{}, err
+		}
+		if !decodable {
+			return types.ExecuteContractResponse{}, errors.New(types.ErrExecutionFailed + ": contract state is not AVM snapshot compatible")
+		}
+		runner, err := avm.NewRunner(avm.DefaultParams())
+		if err != nil {
+			return types.ExecuteContractResponse{}, err
+		}
+		runtimeCtx, err := k.buildAVMContext(avm.EntryReceiveExternal, contract, msg.Sender, msg.Msg, msg.Funds, k.genesis.Params.MaxGasPerExecution, msg.Height, contract.LogicalTime, 0, 0, false)
+		if err != nil {
+			return types.ExecuteContractResponse{}, err
+		}
+		exec, err := runner.Run(module, storage, runtimeCtx)
+		if err != nil {
+			return types.ExecuteContractResponse{}, err
+		}
+		if exec.ResultCode != async.ResultOK {
+			return types.ExecuteContractResponse{}, fmt.Errorf("%s: avm external execution failed with code %d", types.ErrExecutionFailed, exec.ResultCode)
+		}
+		contract.Data = encodeSnapshotStorage(exec.State)
+		outgoing = append([]async.MessageEnvelope(nil), exec.Outgoing...)
+	} else {
+		contract.Data = append([]byte(nil), msg.Msg...)
+	}
 	contract.LogicalTime++
 	storageBytes, err := k.contractStorageBytes(contract)
 	if err != nil {
@@ -949,10 +1247,18 @@ func (k *Keeper) executeContract(ctx context.Context, msg types.MsgExecuteContra
 	contract.StateRoot = types.ComputeContractStateRoot(contract)
 	next := k.genesis
 	next.State.Contracts[idx] = contract
+	if err := k.appendAVMOutgoingMessages(&next, contract, outgoing, msg.Height); err != nil {
+		return types.ExecuteContractResponse{}, err
+	}
 	next.State.Receipts = append(next.State.Receipts, newContractReceipt(contract.AddressUser, msg.Sender, "execute", types.ExitCodeOK, msg.Funds, 0, contract.LogicalTime, msg.Height))
 	next = types.RefreshStateRoot(next)
 	if err := next.Validate(); err != nil {
 		return types.ExecuteContractResponse{}, err
+	}
+	if rentCharged > 0 {
+		if err := k.chargeRentToReserve(ctx, contract, rentCharged); err != nil {
+			return types.ExecuteContractResponse{}, err
+		}
 	}
 	k.genesis = next
 	return types.ExecuteContractResponse{
@@ -1029,11 +1335,19 @@ func (k *Keeper) PayContractStorageDebt(msg types.MsgPayContractStorageDebt) (ty
 	if err := types.EnsureContractLifecycleAction(contract, types.ContractLifecycleActionPayRentDebt); err != nil {
 		return types.Contract{}, err
 	}
-	if msg.Amount >= contract.StorageRentDebt {
-		contract.StorageRentDebt = 0
-	} else {
-		contract.StorageRentDebt -= msg.Amount
+	// Only the portion that actually reduces the debt is collected; any
+	// overpayment beyond the outstanding debt is ignored (not charged).
+	applied := msg.Amount
+	if applied > contract.StorageRentDebt {
+		applied = contract.StorageRentDebt
 	}
+	// Move the coins into the storage-rent reserve BEFORE reducing the debt.
+	// If the bank transfer fails, return the error and leave the debt intact
+	// so the freeze cannot be cleared for free.
+	if err := k.collectRentPayment(k.runtimeCtx, msg.Sender, applied); err != nil {
+		return types.Contract{}, err
+	}
+	contract.StorageRentDebt -= applied
 	contract.UpdatedHeight = msg.Height
 	next := k.genesis
 	next.State.Contracts[idx] = contract
@@ -1142,11 +1456,12 @@ func (k *Keeper) InjectNativeStaking(msg types.MsgInjectNativeStaking) (types.Na
 	if err := types.EnsureContractLifecycleAction(contract, types.ContractLifecycleActionExecuteExternal); err != nil {
 		return types.NativeStakingInjectionRecord{}, err
 	}
-	if _, err := k.chargeContractRentAt(k.runtimeCtx, idx, contract, msg.Height); err != nil {
-		return types.NativeStakingInjectionRecord{}, errors.New(types.ErrStorageRent + ": contract has storage rent debt")
-	}
 	if !hasCapability(k.genesis.State.StakingCapabilities, msg.CallerContractUser, msg.PoolID) {
 		return types.NativeStakingInjectionRecord{}, errors.New(types.ErrUnauthorized + ": contract lacks native staking capability")
+	}
+	contract, rentCharged, err := k.chargeContractRentAt(k.runtimeCtx, idx, contract, msg.Height)
+	if err != nil {
+		return types.NativeStakingInjectionRecord{}, errors.New(types.ErrStorageRent + ": contract has storage rent debt")
 	}
 	record := types.NativeStakingInjectionRecord{
 		ContractAddressUser: msg.CallerContractUser,
@@ -1156,23 +1471,46 @@ func (k *Keeper) InjectNativeStaking(msg types.MsgInjectNativeStaking) (types.Na
 		Height:              msg.Height,
 	}
 	next := k.genesis
+	next.State.Contracts[idx] = contract
 	next.State.NativeStakingInjects = append(next.State.NativeStakingInjects, record)
 	next = types.RefreshStateRoot(next)
 	if err := next.Validate(); err != nil {
 		return types.NativeStakingInjectionRecord{}, err
+	}
+	if rentCharged > 0 {
+		if err := k.chargeRentToReserve(k.runtimeCtx, contract, rentCharged); err != nil {
+			return types.NativeStakingInjectionRecord{}, err
+		}
 	}
 	k.genesis = next
 	return record, nil
 }
 
 func (k *Keeper) ReceiveInternalMessage(msg types.MsgReceiveInternalMessage) (types.InternalMessage, error) {
-	record := types.InternalMessage{
+	// Honor the module kill switch on the internal-message path too. StoreCode,
+	// instantiate and external-execute already gate on Params.Enabled; without
+	// this guard the publicly-routable ExecuteInternal/SendInternalMessage
+	// handlers keep executing contract code after governance disables the module
+	// for an incident. See SEC-LOW: kill-switch not enforced on internal handlers.
+	if !k.genesis.Params.Enabled {
+		return types.InternalMessage{}, errors.New(types.ErrExecutionFailed + ": module disabled")
+	}
+	// Internal messages are DELIVERED, never authored from the caller record.
+	// The only writer of the pending queue is appendAVMOutgoingMessages, which
+	// stamps the verified AddressUser of a genuinely-executing contract as the
+	// source. Recompute the message ID over the caller fields and require an
+	// exact queued match: a forged source (or any other field bound into the
+	// ID) yields an ID absent from the queue, so delivery is rejected. This is
+	// what authenticates the source without a tx signer. See SEC-HIGH:
+	// authenticate internal contract messages.
+	lookup := types.InternalMessage{
 		SourceContractUser: msg.SourceContractUser,
 		DestinationAccount: msg.DestinationAccount,
 		Funds:              msg.Funds,
 		Opcode:             msg.Opcode,
 		QueryID:            msg.QueryID,
 		Body:               append([]byte(nil), msg.Body...),
+		StateInit:          msg.StateInit,
 		Bounce:             msg.Bounce,
 		Deadline:           msg.Deadline,
 		GasLimit:           msg.GasLimit,
@@ -1180,39 +1518,329 @@ func (k *Keeper) ReceiveInternalMessage(msg types.MsgReceiveInternalMessage) (ty
 		MessageID:          msg.MessageID,
 		Height:             msg.Height,
 	}
-	if record.LogicalTime == 0 {
-		record.LogicalTime = msg.Height
+	if lookup.LogicalTime == 0 {
+		lookup.LogicalTime = msg.Height
 	}
+	wantID := lookup.MessageID
+	if wantID == "" {
+		wantID = types.ComputeInternalMessageID(lookup)
+	}
+	queuedIdx := -1
+	for i := range k.genesis.State.InternalMessages {
+		queued := k.genesis.State.InternalMessages[i]
+		id := queued.MessageID
+		if id == "" {
+			id = types.ComputeInternalMessageID(queued)
+		}
+		if id == wantID {
+			queuedIdx = i
+			break
+		}
+	}
+	if queuedIdx == -1 {
+		return types.InternalMessage{}, errors.New(types.ErrUnauthorized + ": internal message is not present in the pending queue")
+	}
+	record := k.genesis.State.InternalMessages[queuedIdx]
+	record.Body = append([]byte(nil), record.Body...)
 	if record.MessageID == "" {
-		record.MessageID = types.ComputeInternalMessageID(record)
+		record.MessageID = wantID
+	}
+	if record.LogicalTime == 0 {
+		record.LogicalTime = record.Height
+	}
+	// Clamp the queued gas to the module maximum before it reaches the
+	// interpreter. See SEC-CRIT: uncapped AVM gas on internal messages.
+	if maxGas := k.genesis.Params.MaxGasPerExecution; maxGas > 0 && record.GasLimit > maxGas {
+		record.GasLimit = maxGas
 	}
 	if err := record.Validate(); err != nil {
 		return types.InternalMessage{}, err
 	}
-	idx, contract, found := findContractWithIndex(k.genesis.State.Contracts, msg.SourceContractUser)
+	idx, contract, found := findContractWithIndex(k.genesis.State.Contracts, record.SourceContractUser)
 	if !found {
 		return types.InternalMessage{}, errors.New(types.ErrContractNotFound + ": source contract not found")
 	}
 	if err := types.EnsureContractLifecycleAction(contract, types.ContractLifecycleActionEmitInternalMessage); err != nil {
 		return types.InternalMessage{}, err
 	}
-	if _, destination, found := findContractWithIndex(k.genesis.State.Contracts, msg.DestinationAccount); found {
+	destinationIdx := -1
+	var destination types.Contract
+	if didx, foundContract, ok := findContractWithIndex(k.genesis.State.Contracts, record.DestinationAccount); ok {
+		destinationIdx = didx
+		destination = foundContract
 		if err := types.EnsureContractLifecycleAction(destination, types.ContractLifecycleActionReceiveInternal); err != nil {
 			return types.InternalMessage{}, err
 		}
 	}
-	if _, err := k.chargeContractRentAt(k.runtimeCtx, idx, contract, msg.Height); err != nil {
+	contract, rentCharged, err := k.chargeContractRentAt(k.runtimeCtx, idx, contract, record.Height)
+	if err != nil {
 		return types.InternalMessage{}, errors.New(types.ErrStorageRent + ": contract has storage rent debt")
 	}
 	next := k.genesis
-	next.State.InternalMessages = append(next.State.InternalMessages, record)
-	next.State.Receipts = append(next.State.Receipts, newContractReceipt(record.SourceContractUser, record.SourceContractUser, "internal_message_queued", types.ExitCodeOK, record.Funds, record.GasLimit, record.LogicalTime, record.Height))
+	// Work on a private copy of the contract set so balances mutated below never
+	// corrupt the live genesis on the error paths that follow. The per-branch
+	// fund debit/credit is applied inside the destination branches.
+	next.State.Contracts = append([]types.Contract(nil), k.genesis.State.Contracts...)
+	next.State.Contracts[idx] = contract
+	receiptOp := "internal_message_delivered"
+	var code types.CodeRecord
+	var module avm.Module
+	var executable bool
+	if destinationIdx >= 0 {
+		// Conserve funds: debit the verified source, then credit the destination.
+		// Writing the debit first and re-reading the destination makes a self-send
+		// (source == destination) net to zero, and rejects underfunded messages
+		// rather than minting value. See SEC-HIGH: fund debit on internal messages.
+		if record.Funds > 0 {
+			src := next.State.Contracts[idx]
+			if src.Balance < record.Funds {
+				return types.InternalMessage{}, errors.New(types.ErrExecutionFailed + ": source contract has insufficient balance")
+			}
+			src.Balance -= record.Funds
+			next.State.Contracts[idx] = src
+			destination = next.State.Contracts[destinationIdx]
+			creditedBalance, err := checkedAdd(destination.Balance, record.Funds, "destination contract balance overflow")
+			if err != nil {
+				return types.InternalMessage{}, err
+			}
+			destination.Balance = creditedBalance
+			next.State.Contracts[destinationIdx] = destination
+		}
+		code, found := findCodeRecord(k.genesis.State.Codes, destination.CodeID)
+		if !found {
+			return types.InternalMessage{}, errors.New(types.ErrInvalidBytecode + ": stored code not found for internal destination")
+		}
+		module, executable, err = loadAVMModule(code)
+		if err != nil {
+			return types.InternalMessage{}, err
+		}
+		if executable {
+			storage, decodable, err := decodeContractSnapshot(destination.Data)
+			if err != nil {
+				return types.InternalMessage{}, err
+			}
+			if !decodable {
+				return types.InternalMessage{}, errors.New(types.ErrExecutionFailed + ": destination contract state is not AVM snapshot compatible")
+			}
+			runner, err := avm.NewRunner(avm.DefaultParams())
+			if err != nil {
+				return types.InternalMessage{}, err
+			}
+			runtimeCtx, err := k.buildAVMContext(avm.EntryReceiveInternal, destination, record.SourceContractUser, record.Body, record.Funds, record.GasLimit, record.Height, record.LogicalTime, record.Opcode, record.QueryID, false)
+			if err != nil {
+				return types.InternalMessage{}, err
+			}
+			exec, err := runner.Run(module, storage, runtimeCtx)
+			if err != nil {
+				return types.InternalMessage{}, err
+			}
+			if exec.ResultCode != async.ResultOK {
+				return types.InternalMessage{}, fmt.Errorf("%s: avm internal execution failed with code %d", types.ErrExecutionFailed, exec.ResultCode)
+			}
+			destination.Data = encodeSnapshotStorage(exec.State)
+			destination.LogicalTime++
+			destination.UpdatedHeight = record.Height
+			destination.StateRoot = types.ComputeContractStateRoot(destination)
+			destinationStorageBytes, err := k.contractStorageBytes(destination)
+			if err != nil {
+				return types.InternalMessage{}, err
+			}
+			if destinationStorageBytes > k.genesis.Params.MaxContractStorageBytes {
+				return types.InternalMessage{}, errors.New(types.ErrStorageRent + ": destination contract storage exceeds configured limit")
+			}
+			destination.StorageBytes = destinationStorageBytes
+			next.State.Contracts[destinationIdx] = destination
+			if err := k.appendAVMOutgoingMessages(&next, destination, exec.Outgoing, record.Height); err != nil {
+				return types.InternalMessage{}, err
+			}
+			receiptOp = "internal_message_executed"
+		}
+	} else if record.StateInit != nil {
+		if record.SourceContractUser == "" {
+			return types.InternalMessage{}, errors.New(types.ErrContractNotFound + ": internal auto-deploy requires source contract user")
+		}
+		expectedUser, _, err := types.DeriveContractAddressFromStateInit(types.DefaultContractChainID, types.DefaultContractNamespace, record.SourceContractUser, *record.StateInit, k.genesis.Params)
+		if err != nil {
+			return types.InternalMessage{}, err
+		}
+		if expectedUser != record.DestinationAccount {
+			return types.InternalMessage{}, errors.New(types.ErrContractNotFound + ": internal state init address does not match destination")
+		}
+		// Verify the source can cover the attached funds BEFORE instantiate, which
+		// credits the auto-deployed contract with record.Funds and self-commits to
+		// k.genesis. Without this pre-check an insufficient-balance error after
+		// instantiate would leave the new contract holding fabricated funds with no
+		// matching source debit — minting value. See SEC-HIGH: fund debit.
+		if record.Funds > 0 && next.State.Contracts[idx].Balance < record.Funds {
+			return types.InternalMessage{}, errors.New(types.ErrExecutionFailed + ": source contract has insufficient balance")
+		}
+		_, err = k.instantiateContract(k.runtimeCtx, types.MsgInstantiateContract{
+			Creator:       record.SourceContractUser,
+			CodeID:        record.StateInit.Normalize().CodeID,
+			ChainID:       types.DefaultContractChainID,
+			Namespace:     types.DefaultContractNamespace,
+			StateInit:     record.StateInit,
+			InitMsg:       append([]byte(nil), record.StateInit.InitData...),
+			Funds:         record.Funds,
+			Height:        record.Height,
+			SchemaVersion: 1,
+		})
+		if err != nil {
+			return types.InternalMessage{}, err
+		}
+		next = k.genesis
+		next.State.Contracts = append([]types.Contract(nil), k.genesis.State.Contracts...)
+		// The auto-deployed contract already received record.Funds as its initial
+		// balance; apply the matching source debit now that instantiate re-synced
+		// next (value conserved).
+		if record.Funds > 0 {
+			srcNowIdx, srcNow, srcFound := findContractWithIndex(next.State.Contracts, record.SourceContractUser)
+			if !srcFound {
+				return types.InternalMessage{}, errors.New(types.ErrContractNotFound + ": source contract not found")
+			}
+			if srcNow.Balance < record.Funds {
+				return types.InternalMessage{}, errors.New(types.ErrExecutionFailed + ": source contract has insufficient balance")
+			}
+			srcNow.Balance -= record.Funds
+			next.State.Contracts[srcNowIdx] = srcNow
+		}
+		destinationIdx, destination, found = findContractWithIndex(k.genesis.State.Contracts, record.DestinationAccount)
+		if !found {
+			return types.InternalMessage{}, errors.New(types.ErrContractNotFound + ": auto-deployed contract not found")
+		}
+		code, found = findCodeRecord(k.genesis.State.Codes, destination.CodeID)
+		if !found {
+			return types.InternalMessage{}, errors.New(types.ErrInvalidBytecode + ": stored code not found for auto-deployed destination")
+		}
+		module, executable, err = loadAVMModule(code)
+		if err != nil {
+			return types.InternalMessage{}, err
+		}
+		if executable {
+			storage, decodable, err := decodeContractSnapshot(destination.Data)
+			if err != nil {
+				return types.InternalMessage{}, err
+			}
+			if !decodable {
+				return types.InternalMessage{}, errors.New(types.ErrExecutionFailed + ": destination contract state is not AVM snapshot compatible")
+			}
+			runner, err := avm.NewRunner(avm.DefaultParams())
+			if err != nil {
+				return types.InternalMessage{}, err
+			}
+			runtimeCtx, err := k.buildAVMContext(avm.EntryReceiveInternal, destination, record.SourceContractUser, record.Body, record.Funds, record.GasLimit, record.Height, record.LogicalTime, record.Opcode, record.QueryID, false)
+			if err != nil {
+				return types.InternalMessage{}, err
+			}
+			exec, err := runner.Run(module, storage, runtimeCtx)
+			if err != nil {
+				return types.InternalMessage{}, err
+			}
+			if exec.ResultCode != async.ResultOK {
+				return types.InternalMessage{}, fmt.Errorf("%s: avm internal execution failed with code %d", types.ErrExecutionFailed, exec.ResultCode)
+			}
+			destination.Data = encodeSnapshotStorage(exec.State)
+			destination.LogicalTime++
+			destination.UpdatedHeight = record.Height
+			destination.StateRoot = types.ComputeContractStateRoot(destination)
+			destinationStorageBytes, err := k.contractStorageBytes(destination)
+			if err != nil {
+				return types.InternalMessage{}, err
+			}
+			if destinationStorageBytes > k.genesis.Params.MaxContractStorageBytes {
+				return types.InternalMessage{}, errors.New(types.ErrStorageRent + ": destination contract storage exceeds configured limit")
+			}
+			destination.StorageBytes = destinationStorageBytes
+			next.State.Contracts[destinationIdx] = destination
+			if err := k.appendAVMOutgoingMessages(&next, destination, exec.Outgoing, record.Height); err != nil {
+				return types.InternalMessage{}, err
+			}
+			receiptOp = "internal_message_executed"
+		}
+	} else {
+		return types.InternalMessage{}, errors.New(types.ErrContractNotFound + ": internal message destination not found")
+	}
+	// Dequeue the delivered message. Messages the destination emitted during
+	// execution carry a different source (hence a different ID) and remain
+	// queued; only the single entry matching the delivered ID is drained.
+	dequeued := false
+	remaining := make([]types.InternalMessage, 0, len(next.State.InternalMessages))
+	for i := range next.State.InternalMessages {
+		if !dequeued {
+			qid := next.State.InternalMessages[i].MessageID
+			if qid == "" {
+				qid = types.ComputeInternalMessageID(next.State.InternalMessages[i])
+			}
+			if qid == wantID {
+				dequeued = true
+				continue
+			}
+		}
+		remaining = append(remaining, next.State.InternalMessages[i])
+	}
+	if !dequeued {
+		return types.InternalMessage{}, errors.New(types.ErrExecutionFailed + ": delivered internal message missing from queue")
+	}
+	next.State.InternalMessages = remaining
+	next.State.Receipts = append(next.State.Receipts, newContractReceipt(record.SourceContractUser, record.SourceContractUser, receiptOp, types.ExitCodeOK, record.Funds, record.GasLimit, record.LogicalTime, record.Height))
 	next = types.RefreshStateRoot(next)
 	if err := next.Validate(); err != nil {
 		return types.InternalMessage{}, err
 	}
+	if rentCharged > 0 {
+		if err := k.chargeRentToReserve(k.runtimeCtx, contract, rentCharged); err != nil {
+			return types.InternalMessage{}, err
+		}
+	}
 	k.genesis = next
 	return record, nil
+}
+
+func (k *Keeper) appendAVMOutgoingMessages(next *types.GenesisState, source types.Contract, outgoing []async.MessageEnvelope, height uint64) error {
+	if len(outgoing) == 0 {
+		return nil
+	}
+	for i, envelope := range outgoing {
+		if envelope.Value.Denom != "" && envelope.Value.Denom != storageRentBaseDenom {
+			return fmt.Errorf("%s: emitted message denom must be %q", types.ErrExecutionFailed, storageRentBaseDenom)
+		}
+		if !envelope.Value.Amount.IsUint64() {
+			return fmt.Errorf("%s: emitted message value exceeds uint64", types.ErrExecutionFailed)
+		}
+		msgHeight := height
+		if envelope.DeliverAtBlock != 0 {
+			msgHeight = envelope.DeliverAtBlock
+		}
+		msgLogicalTime := source.LogicalTime + uint64(i) + 1
+		if envelope.CreatedLogicalTime != 0 {
+			msgLogicalTime = envelope.CreatedLogicalTime
+		}
+		internal := types.InternalMessage{
+			SourceContractUser: source.AddressUser,
+			DestinationAccount: aetraaddress.FormatAccAddress(envelope.Destination),
+			Funds:              envelope.Value.Amount.Uint64(),
+			Opcode:             envelope.Opcode,
+			QueryID:            envelope.QueryID,
+			Body:               append([]byte(nil), envelope.Body...),
+			StateInit:          envelope.StateInit,
+			Bounce:             envelope.Bounce,
+			Deadline:           envelope.DeadlineBlock,
+			GasLimit:           envelope.GasLimit,
+			LogicalTime:        msgLogicalTime,
+			Height:             msgHeight,
+		}
+		if internal.MessageID == "" {
+			internal.MessageID = types.ComputeInternalMessageID(internal)
+		}
+		if err := internal.Validate(); err != nil {
+			return err
+		}
+		if len(next.State.InternalMessages) >= types.MaxInternalMessageQueueDepth {
+			return fmt.Errorf("%s: internal message queue at capacity (%d)", types.ErrExecutionFailed, types.MaxInternalMessageQueueDepth)
+		}
+		next.State.InternalMessages = append(next.State.InternalMessages, internal)
+	}
+	return nil
 }
 
 func newContractReceipt(contractAddress, actor, operation string, exitCode uint32, amount, gasUsed, logicalTime, height uint64) types.ContractReceipt {
@@ -1282,29 +1910,23 @@ func (k *Keeper) ensureActiveWallet(ctx context.Context, address string, operati
 	return nil
 }
 
-func (k *Keeper) chargeContractRentAt(ctx context.Context, idx int, contract types.Contract, height uint64) (types.Contract, error) {
+func (k *Keeper) chargeContractRentAt(ctx context.Context, idx int, contract types.Contract, height uint64) (types.Contract, uint64, error) {
 	prevBalance := contract.Balance
 	contract, changed, err := k.chargeRent(contract, height)
 	if err != nil {
-		return types.Contract{}, err
+		return types.Contract{}, 0, err
 	}
 	if contract.StorageRentDebt > 0 {
 		contract.Status = k.storageRentFrozenStatus(contract)
 		if err := k.persistContractAt(idx, contract); err != nil {
-			return types.Contract{}, err
+			return types.Contract{}, 0, err
 		}
-		return contract, errors.New(types.ErrStorageRent + ": contract has storage rent debt")
+		return contract, 0, errors.New(types.ErrStorageRent + ": contract has storage rent debt")
 	}
 	if changed {
-		rentCharged := prevBalance - contract.Balance
-		if err := k.chargeRentToReserve(ctx, contract, rentCharged); err != nil {
-			return types.Contract{}, err
-		}
-		if err := k.persistContractAt(idx, contract); err != nil {
-			return types.Contract{}, err
-		}
+		return contract, prevBalance - contract.Balance, nil
 	}
-	return contract, nil
+	return contract, 0, nil
 }
 
 func (k Keeper) storageRentFrozenStatus(contract types.Contract) string {
@@ -1382,7 +2004,7 @@ func (k *Keeper) collectRentPayment(ctx context.Context, payer string, amount ui
 	if err != nil {
 		return err
 	}
-	coin := sdk.NewCoins(sdk.NewCoin(storageRentBaseDenom, sdkmath.NewInt(int64(amount))))
+	coin := sdk.NewCoins(sdk.NewCoin(storageRentBaseDenom, sdkmath.NewIntFromUint64(amount)))
 	return k.bankKeeper.SendCoinsFromAccountToModule(ctx, payerAddr, storageRentReserveModule, coin)
 }
 
@@ -1534,6 +2156,38 @@ func hasAnyNativeStakingCapability(caps []types.ContractCapability, contract str
 		}
 	}
 	return false
+}
+
+// loadForBlock hydrates the in-memory genesis from the committed store using the
+// live block context, and points runtimeCtx at it. It MUST run at the start of
+// every state-changing handler so a restarted or state-synced node — where
+// InitGenesis is not re-run — operates on the same committed state as a
+// continuously-running node instead of the empty default. Reading through the
+// block context observes writes made earlier in the same block, so sequential
+// handlers within a block stay consistent. See SEC-HIGH: contracts keeper drives
+// state off in-memory genesis never restored on restart/state-sync.
+func (k *Keeper) loadForBlock(ctx context.Context) error {
+	k.runtimeCtx = ctx
+	if k.storeService == nil {
+		return nil
+	}
+	bz, err := k.storeService.OpenKVStore(ctx).Get(genesisKey)
+	if err != nil {
+		return err
+	}
+	if len(bz) == 0 {
+		return nil
+	}
+	var gs types.GenesisState
+	if err := json.Unmarshal(bz, &gs); err != nil {
+		return err
+	}
+	gs = types.RefreshStateRoot(gs)
+	if err := gs.Validate(); err != nil {
+		return err
+	}
+	k.genesis = gs
+	return nil
 }
 
 func (k Keeper) writeGenesis(ctx context.Context) error {

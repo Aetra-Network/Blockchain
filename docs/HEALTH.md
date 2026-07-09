@@ -1,35 +1,50 @@
 # Aetra Testnet Health Check Documentation
 
-## Overview
+This document defines the canonical health checks for Aetra localnet and
+public testnet operator runs. Prefer the bundled script first; use the manual
+commands below when you need to inspect a specific surface.
 
-This document defines health endpoints, commands, and monitoring procedures for Aetra testnet validators and operators.
+## Canonical Localnet Check
 
-## Health Check Categories
+Run the bundled health script against the localnet output directory:
+
+```powershell
+.\scripts\localnet\health.ps1 -OutputDir .localnet
+.\scripts\localnet\health.ps1 -OutputDir .localnet -Json
+```
+
+The script checks:
+
+- RPC status
+- block height progress
+- `catching_up` state
+- peer count
+- validator signing info
+- REST health
+- gRPC health
+- recent logs and process snapshot metadata
+
+## Manual Checks
 
 ### 1. Process Alive
 
-**Command:**
-```bash
-curl http://localhost:26657/status
+```powershell
+Invoke-RestMethod http://127.0.0.1:26657/status
 ```
 
-**Expected:**
-- HTTP 200 response
-- JSON body with `result.sync_info` field present
+Expected:
 
-**Alert Conditions:**
-- HTTP non-200 response
-- Connection refused
-- Timeout
+- HTTP 200
+- `result.sync_info` present
 
 ### 2. RPC Status
 
-**Command:**
-```bash
-aetrad status --node http://localhost:26657
+```powershell
+build\aetrad.exe status --node tcp://127.0.0.1:26657 --output json
 ```
 
-**Expected Response Fields:**
+Expected fields:
+
 ```json
 {
   "NodeInfo": {
@@ -49,154 +64,102 @@ aetrad status --node http://localhost:26657
 
 ### 3. Block Height Increasing
 
-**Command:**
-```bash
-# Poll twice with 10 second interval
-HEIGHT1=$(curl -s http://localhost:26657/status | jq -r '.result.sync_info.latest_block_height')
-sleep 10
-HEIGHT2=$(curl -s http://localhost:26657/status | jq -r '.result.sync_info.latest_block_height')
-[ "$HEIGHT2" -gt "$HEIGHT1" ]
+```powershell
+$height1 = (Invoke-RestMethod http://127.0.0.1:26657/status).result.sync_info.latest_block_height
+Start-Sleep -Seconds 10
+$height2 = (Invoke-RestMethod http://127.0.0.1:26657/status).result.sync_info.latest_block_height
+[int64]$height2 -gt [int64]$height1
 ```
 
-**Expected:**
-- `HEIGHT2 > HEIGHT1` within 10 seconds
+Expected:
 
-**Alert Conditions:**
-- Height not increasing
-- Height decreasing
+- later height is greater than earlier height
 
-### 4. Catching Up False
+### 4. Catching Up
 
-**Command:**
-```bash
-curl -s http://localhost:26657/status | jq -r '.result.sync_info.catching_up'
+```powershell
+(Invoke-RestMethod http://127.0.0.1:26657/status).result.sync_info.catching_up
 ```
 
-**Expected:**
-```
-false
-```
+Expected:
 
-**Alert Conditions:**
-- `true` - node is syncing
-- Response parsing error
+- `False`
 
 ### 5. Peer Count
 
-**Command:**
-```bash
-curl -s http://localhost:26657/net_info | jq '.result.n_peers'
+```powershell
+(Invoke-RestMethod http://127.0.0.1:26657/net_info).result.n_peers
 ```
 
-**Expected:**
-- Minimum 1 peer for testnet
-- Recommended 3+ peers for production
+Expected:
 
-**Alert Conditions:**
-- 0 peers (isolated)
-- Peer count lower than expected
+- `1+` peers for a multi-validator localnet
+- `0` only when the node is intentionally isolated
 
-### 6. Validator Signing Info
-
-**Command:**
-```bash
-# Get validator consensus address
-curl -s http://localhost:26657/dumps | jq -r '.validators[] | select(.address == "YOUR_VALOPER")'
-
-# Check signing status
-curl -s http://localhost:26657/validators | jq '.result.validators[].jailed'
-```
-
-**Expected:**
-- `jailed: false`
-- `tombstoned: false`
-- `missed_blocks` within acceptable range
-
-### 7. App Invariant Command
-
-**Command:**
-```bash
-aetrad export --for-export > /dev/null 2>&1
-echo $?
-```
-
-**Expected:**
-- Exit code 0
-- No panic or assertion failure
-
-## Health Check Script
-
-Use the included health script for automated monitoring:
+### 6. Validator Signing
 
 ```powershell
-# Basic health check
-.\scripts\localnet\health.ps1 -OutputDir .localnet
-
-# With JSON output for monitoring systems
-.\scripts\localnet\health.ps1 -OutputDir .localnet -Json
-
-# Specify validator count
-.\scripts\localnet\health.ps1 -OutputDir .localnet -ValidatorCount 4
-
-# Extended check with log tail
-.\scripts\localnet\health.ps1 -OutputDir .localnet -LogTailLines 100
+build\aetrad.exe query staking validators --node tcp://127.0.0.1:26657 --output json
+build\aetrad.exe query slashing signing-infos --node tcp://127.0.0.1:26657 --output json
+Invoke-RestMethod http://127.0.0.1:26657/validators?per_page=100
 ```
+
+Expected:
+
+- bonded validators are present
+- `jailed` is `false` for healthy validators
+- missed blocks stay within the configured alert threshold
+
+### 7. App Invariant
+
+```powershell
+build\aetrad.exe export --home $HOME
+```
+
+Expected:
+
+- command exits `0`
+- export does not panic
+- exported state can be used for later import / restart evidence
 
 ## Prometheus Metrics
 
-Expose metrics at `http://localhost:26660/metrics`:
+Expose metrics at `http://localhost:27780/metrics` when observability metrics
+are enabled:
 
 | Metric | Description |
 |--------|-------------|
 | `aetrad_block_height` | Current block height |
 | `aetrad_validator_voting_power` | Validator voting power |
 | `aetrad_peers` | Number of connected peers |
-| `aetrad_missed_blocks` | Missed blocks in current window |
-
-## Health Check Interval Recommendations
-
-| Check | Interval | Timeout |
-|-------|----------|---------|
-| Process Alive | 30s | 5s |
-| RPC Status | 30s | 10s |
-| Block Height | 60s | 30s |
-| Catching Up | 60s | 10s |
-| Peer Count | 5m | 30s |
-| Invariant Check | 1h | 300s |
+| `aetrad_missed_blocks` | Missed blocks in the current window |
 
 ## Alert Thresholds
 
 | Condition | Severity | Action |
 |-----------|----------|--------|
 | Node unreachable > 60s | Critical | Restart process |
-| Catching up > 5min | Warning | Check peer connections |
+| Catching up > 5 min | Warning | Check peer connections |
 | Peers < 2 | Warning | Check network configuration |
 | Height not increasing > 120s | Critical | Check consensus |
 | Missed blocks > 50% | Critical | Check validator status |
 
-## Network Peer List
-
-See `docs/testnet/peers.example.json` for peer configuration template.
-
 ## Troubleshooting
 
 ### Node Not Producing Blocks
-1. Check `aetrad status --node <rpc>` for catching_up status
-2. Verify peer connections with `curl http://localhost:26657/net_info`
-3. Check validator signing info at `curl http://localhost:26657/signing_info`
+
+1. Check `.\scripts\localnet\health.ps1 -OutputDir .localnet -Json`.
+2. Verify peer connections with `Invoke-RestMethod http://127.0.0.1:26657/net_info`.
+3. Check validator signing info with `build\aetrad.exe query slashing signing-infos --node tcp://127.0.0.1:26657 --output json`.
 
 ### Peers Not Connecting
-1. Verify firewall rules allow port 26656
-2. Check seed nodes are accessible
-3. Verify node ID and IP in peer list
+
+1. Verify firewall rules allow port `26656`.
+2. Check seed nodes are accessible.
+3. Verify node ID and peer list in the launch announcement.
 
 ### Invariant Check Failing
-1. Check logs for panic or assertion messages
-2. Verify genesis configuration
-3. Run `aetrad export` to identify state corruption
 
-## Revision History
-
-| Version | Date | Changes |
-|---------|------|---------|
-| 1.0 | 2026-06-09 | Initial health check documentation |
+1. Check logs for panic or assertion messages.
+2. Verify genesis configuration.
+3. Run `build\aetrad.exe export --home $HOME` to confirm whether state export still works.

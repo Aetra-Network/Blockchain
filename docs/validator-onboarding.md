@@ -4,36 +4,63 @@ This guide is for a clean public testnet validator join. Localnet examples use P
 
 ## Hardware Target
 
-Aetra validator hardware should be medium, not extreme. The public testnet baseline is:
+An Aetra validator runs on an average consumer PC. Decentralization and
+security are the design priority — block time is deliberately relaxed (5-8s)
+so that ordinary hardware stays sufficient even as the validator set grows.
 
 ```text
-CPU: 4-8 modern cores
-RAM: 16-32 GB
-Storage: NVMe SSD
+CPU: 4-8 modern cores (mid-range desktop CPU)
+RAM: 16 GB minimum (32 GB recommended for archive/heavy indexing)
+Storage: 500 GB - 1 TB NVMe SSD
 Network: stable 100 Mbps+, low packet loss
 OS: Linux recommended, Windows local tooling supported for development
 ```
 
-Mainnet requirements should be finalized after load testing. Do not treat these testnet numbers as final mainnet requirements until AVM execution, state growth, snapshot, state sync, and 100-300 validator load profiles are measured.
+This spec is final for the public testnet. AVM execution is gas-capped and
+lightweight (a simple metered bytecode interpreter), so consensus gossip and
+state growth — not contract execution — are the binding resources, and both
+fit this profile at the target block time.
+
+## Validator Set Size
+
+The validator set grows in phases. Each phase ceiling is raised by
+governance only after the previous phase is proven under load:
+
+```text
+Genesis phase: 100 minimum, 128 maximum   (genesis max_validators = 128)
+Growth phase:  150-200                    (raised via governance)
+Mature phase:  250-300                    (raised via governance)
+Hard reject:   500+ is not a supported validator-set size
+```
+
+The 100 floor provides a meaningful decentralization margin far above the
+BFT safety minimum; the 300 ceiling is a load-test-gated target that keeps
+per-node consensus overhead (vote gossip and commit verification) trivially
+affordable on the consumer hardware profile above at 5-8s blocks.
 
 ## Build
 
 ```powershell
-git clone https://github.com/SoftwareMaestro16/L1-Blockchain.git
-cd L1-Blockchain
+git clone https://github.com/Aetra-Network/Blockchain.git
+cd Blockchain
 .\scripts\build-aetrad.ps1
 build\aetrad.exe version --long --output json
 ```
 
 Verify that the commit matches the published testnet release commit.
 
-### Testnet Chain ID
+### Chain IDs
 
-```
-CHAIN_ID = "aetra-testnet-1"
+Public Aetra networks use plain numeric chain IDs:
+
+```text
+Mainnet: CHAIN_ID = "1"
+Testnet: CHAIN_ID = "2"
 ```
 
-This chain ID must match the published genesis exactly. Do not invent a custom chain ID for public join.
+Development networks keep the dash-separated form (e.g. `aetra-local-1`).
+The chain ID must match the published genesis exactly. Do not invent a
+custom chain ID for public join.
 
 ## Initialize Node
 
@@ -50,6 +77,29 @@ build\aetrad.exe genesis validate-genesis $HOME\config\genesis.json --home $HOME
 ```
 
 Configure peers and persistent peers from the launch announcement. Do not reuse localnet keys.
+
+### Clean-Machine Drill
+
+Before publishing a validator runbook as ready, run the local clean-machine
+drill. It starts an existing trusted validator set, initializes a separate
+fresh node home, copies only the published genesis, configures published peers,
+creates a new validator key, funds it, joins the node, sends
+`staking create-validator`, verifies validator-set membership, signing-info,
+peer connectivity, status, restart safety, and the unjail command path:
+
+```powershell
+.\scripts\localnet\validator-onboarding-drill.ps1 `
+  -OutputDir .work\validator-onboarding-drill `
+  -Binary .\build\aetrad.exe `
+  -ChainId aetra-local-validator-onboarding-1 `
+  -SkipBuild
+```
+
+The evidence file is written to
+`.work\validator-onboarding-drill\evidence\validator-onboarding-drill.json`.
+The drill is passing only when `result = "passed"`, the validator set increases
+by one, the fresh node has peers, signing-info includes the expanded set, and
+the node restarts without deleting validator state.
 
 ### Port Configuration
 
@@ -140,25 +190,44 @@ pruning = "everything"
 
 For public testnet, operators must use published snapshot/state-sync endpoints and verify trust height, trust hash, and trust period values from the launch announcement.
 
+The launch announcement must publish at least two RPC servers, the trust
+height, trust hash, trust period, snapshot archive checksum, and source
+validator identity. A validator should not follow an unpublished trust hash or
+single-RPC state-sync path.
+
 ## Create Validator
 
-Fund the validator account from the faucet or launch allocation first. Then create the validator using `naet`:
+Fund the validator account from the faucet or launch allocation first. Then create the validator using `naet`. The
+current CLI expects a validator JSON file, not legacy inline
+`--amount/--pubkey` flags:
 
 ```powershell
 $VAL_PUBKEY = build\aetrad.exe comet show-validator --home $HOME
+$VALIDATOR_JSON = "$HOME\config\validator.json"
+@"
+{
+  "pubkey": $VAL_PUBKEY,
+  "amount": "100000000naet",
+  "moniker": "<moniker>",
+  "identity": "",
+  "website": "",
+  "security": "",
+  "details": "",
+  "commission-rate": "0.05",
+  "commission-max-rate": "0.20",
+  "commission-max-change-rate": "0.01",
+  "min-self-delegation": "1"
+}
+"@ | Set-Content -Encoding utf8NoBOM -LiteralPath $VALIDATOR_JSON
+
 build\aetrad.exe tx staking create-validator `
-  --amount 100000000naet `
-  --pubkey $VAL_PUBKEY `
-  --moniker <moniker> `
+  $VALIDATOR_JSON `
   --chain-id $CHAIN_ID `
   --from <key-name> `
   --home $HOME `
   --keyring-backend os `
+  --gas 500000 `
   --fees 1000000naet `
-  --commission-rate 0.05 `
-  --commission-max-rate 0.20 `
-  --commission-max-change-rate 0.01 `
-  --min-self-delegation 1 `
   --node tcp://127.0.0.1:26657 `
   -y
 ```

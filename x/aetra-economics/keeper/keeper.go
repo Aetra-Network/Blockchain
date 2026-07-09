@@ -12,9 +12,13 @@ import (
 var genesisKey = []byte{0x01}
 
 type Keeper struct {
-	state		types.GenesisState
-	storeService	corestore.KVStoreService
-	runtimeCtx	context.Context
+	// state holds the genesis defaults and, for the non-persistent (test) keeper
+	// with no storeService, the in-memory state. For the persistent keeper the
+	// authoritative state lives in the KV store and is read/written through the
+	// live block context on every access — never through a cached context.
+	// See SEC-MED: aetra-economics persists through a stale genesis context.
+	state        types.GenesisState
+	storeService corestore.KVStoreService
 }
 
 func NewKeeper(authority string) Keeper {
@@ -25,50 +29,124 @@ func NewPersistentKeeper(storeService corestore.KVStoreService, authority string
 	return Keeper{state: types.DefaultGenesisState(authority), storeService: storeService}
 }
 
+// Authority returns the constitutional (genesis) authority. It is fixed at
+// genesis and is not changed by parameter updates, so it does not require the
+// block context.
 func (k Keeper) Authority() string {
 	return k.state.Params.Authority
 }
 
-func (k Keeper) Params() types.Params {
-	return k.state.Params
+// getState returns the authoritative state for the given block context. For the
+// persistent keeper it reads from the KV store (falling back to the genesis
+// defaults before the first write); for the in-memory keeper it returns k.state.
+func (k Keeper) getState(ctx context.Context) (types.GenesisState, error) {
+	if k.storeService == nil {
+		return k.state, nil
+	}
+	bz, err := k.storeService.OpenKVStore(ctx).Get(genesisKey)
+	if err != nil {
+		return types.GenesisState{}, err
+	}
+	if len(bz) == 0 {
+		return k.state, nil
+	}
+	var gs types.GenesisState
+	if err := json.Unmarshal(bz, &gs); err != nil {
+		return types.GenesisState{}, err
+	}
+	if err := gs.Validate(); err != nil {
+		return types.GenesisState{}, err
+	}
+	return gs, nil
 }
 
-func (k *Keeper) SetParams(params types.Params) error {
+// setState persists the state through the given block context. For the in-memory
+// keeper it updates k.state; for the persistent keeper it writes to the block's
+// KV store so the change is committed and identical across all nodes.
+func (k *Keeper) setState(ctx context.Context, gs types.GenesisState) error {
+	if err := gs.Validate(); err != nil {
+		return err
+	}
+	if k.storeService == nil {
+		k.state = gs
+		return nil
+	}
+	bz, err := json.Marshal(gs)
+	if err != nil {
+		return err
+	}
+	return k.storeService.OpenKVStore(ctx).Set(genesisKey, bz)
+}
+
+func (k Keeper) Params(ctx context.Context) (types.Params, error) {
+	state, err := k.getState(ctx)
+	if err != nil {
+		return types.Params{}, err
+	}
+	return state.Params, nil
+}
+
+func (k *Keeper) SetParams(ctx context.Context, params types.Params) error {
 	if err := params.Validate(); err != nil {
 		return types.ErrInvalidParams.Wrap(err.Error())
 	}
-	next := k.state
+	next, err := k.getState(ctx)
+	if err != nil {
+		return err
+	}
 	next.Params = params
 	if err := next.Validate(); err != nil {
 		return types.ErrInvalidParams.Wrap(err.Error())
 	}
-	k.state = next
-	return k.save()
+	return k.setState(ctx, next)
 }
 
-func (k *Keeper) ApplyEpoch(input types.EpochEconomicsInput) (types.EpochRewardSummary, error) {
-	next, summary, err := types.ApplyEpoch(k.state.Params, k.state.State, input)
+func (k *Keeper) ApplyEpoch(ctx context.Context, input types.EpochEconomicsInput) (types.EpochRewardSummary, error) {
+	state, err := k.getState(ctx)
 	if err != nil {
 		return types.EpochRewardSummary{}, err
 	}
-	k.state.State = next
-	return summary, k.save()
+	nextState, summary, err := types.ApplyEpoch(state.Params, state.State, input)
+	if err != nil {
+		return types.EpochRewardSummary{}, err
+	}
+	state.State = nextState
+	if err := k.setState(ctx, state); err != nil {
+		return types.EpochRewardSummary{}, err
+	}
+	return summary, nil
 }
 
-func (k Keeper) QueryCurrentInflation(req types.QueryCurrentInflationRequest) (types.QueryCurrentInflationResponse, error) {
-	return types.QueryCurrentInflationResponse{InflationBps: k.state.State.CurrentInflationBps}, nil
+func (k Keeper) QueryCurrentInflation(ctx context.Context, req types.QueryCurrentInflationRequest) (types.QueryCurrentInflationResponse, error) {
+	state, err := k.getState(ctx)
+	if err != nil {
+		return types.QueryCurrentInflationResponse{}, err
+	}
+	return types.QueryCurrentInflationResponse{InflationBps: state.State.CurrentInflationBps}, nil
 }
 
-func (k Keeper) QueryCurrentBondedRatio(req types.QueryCurrentBondedRatioRequest) (types.QueryCurrentBondedRatioResponse, error) {
-	return types.QueryCurrentBondedRatioResponse{BondedRatioBps: k.state.State.CurrentBondedRatioBps}, nil
+func (k Keeper) QueryCurrentBondedRatio(ctx context.Context, req types.QueryCurrentBondedRatioRequest) (types.QueryCurrentBondedRatioResponse, error) {
+	state, err := k.getState(ctx)
+	if err != nil {
+		return types.QueryCurrentBondedRatioResponse{}, err
+	}
+	return types.QueryCurrentBondedRatioResponse{BondedRatioBps: state.State.CurrentBondedRatioBps}, nil
 }
 
-func (k Keeper) QueryEstimatedAPR(req types.QueryEstimatedAPRRequest) (types.QueryEstimatedAPRResponse, error) {
-	return types.EstimateAPRBreakdown(k.state.Params, k.state.State, req)
+func (k Keeper) QueryEstimatedAPR(ctx context.Context, req types.QueryEstimatedAPRRequest) (types.QueryEstimatedAPRResponse, error) {
+	state, err := k.getState(ctx)
+	if err != nil {
+		return types.QueryEstimatedAPRResponse{}, err
+	}
+	return types.EstimateAPRBreakdown(state.Params, state.State, req)
 }
 
-func (k Keeper) QueryFeeSplitParams(req types.QueryFeeSplitParamsRequest) (types.QueryFeeSplitParamsResponse, error) {
-	params := k.state.Params
+func (k Keeper) QueryFeeSplitParams(ctx context.Context, req types.QueryFeeSplitParamsRequest) (types.QueryFeeSplitParamsResponse, error) {
+	state, err := k.getState(ctx)
+	if err != nil {
+		return types.QueryFeeSplitParamsResponse{}, err
+	}
+	params := state.Params
 	return types.QueryFeeSplitParamsResponse{
 		BurnMinBps:			params.BurnMinBps,
 		BurnMaxBps:			params.BurnMaxBps,
@@ -83,16 +161,28 @@ func (k Keeper) QueryFeeSplitParams(req types.QueryFeeSplitParamsRequest) (types
 	}, nil
 }
 
-func (k Keeper) QueryBurnedSupply(req types.QueryBurnedSupplyRequest) (types.QueryBurnedSupplyResponse, error) {
-	return types.QueryBurnedSupplyResponse{BurnedSupply: k.state.State.BurnedSupply}, nil
+func (k Keeper) QueryBurnedSupply(ctx context.Context, req types.QueryBurnedSupplyRequest) (types.QueryBurnedSupplyResponse, error) {
+	state, err := k.getState(ctx)
+	if err != nil {
+		return types.QueryBurnedSupplyResponse{}, err
+	}
+	return types.QueryBurnedSupplyResponse{BurnedSupply: state.State.BurnedSupply}, nil
 }
 
-func (k Keeper) QueryTreasuryBalance(req types.QueryTreasuryBalanceRequest) (types.QueryTreasuryBalanceResponse, error) {
-	return types.QueryTreasuryBalanceResponse{TreasuryBalance: k.state.State.TreasuryBalance}, nil
+func (k Keeper) QueryTreasuryBalance(ctx context.Context, req types.QueryTreasuryBalanceRequest) (types.QueryTreasuryBalanceResponse, error) {
+	state, err := k.getState(ctx)
+	if err != nil {
+		return types.QueryTreasuryBalanceResponse{}, err
+	}
+	return types.QueryTreasuryBalanceResponse{TreasuryBalance: state.State.TreasuryBalance}, nil
 }
 
-func (k Keeper) QueryEpochRewardSummary(req types.QueryEpochRewardSummaryRequest) (types.QueryEpochRewardSummaryResponse, error) {
-	for _, summary := range k.state.State.RewardHistory {
+func (k Keeper) QueryEpochRewardSummary(ctx context.Context, req types.QueryEpochRewardSummaryRequest) (types.QueryEpochRewardSummaryResponse, error) {
+	state, err := k.getState(ctx)
+	if err != nil {
+		return types.QueryEpochRewardSummaryResponse{}, err
+	}
+	for _, summary := range state.State.RewardHistory {
 		if summary.Epoch == req.Epoch {
 			return types.QueryEpochRewardSummaryResponse{Summary: summary}, nil
 		}
@@ -113,11 +203,10 @@ func (k *Keeper) InitGenesisState(ctx context.Context, gs types.GenesisState) er
 		return err
 	}
 	k.state = gs
-	k.runtimeCtx = ctx
 	if k.storeService == nil {
 		return nil
 	}
-	return k.saveWithCtx(ctx)
+	return k.setState(ctx, gs)
 }
 
 func (k Keeper) ExportGenesis() (types.GenesisState, error) {
@@ -131,21 +220,7 @@ func (k Keeper) ExportGenesisState(ctx context.Context) (types.GenesisState, err
 	if k.storeService == nil {
 		return k.ExportGenesis()
 	}
-	bz, err := k.storeService.OpenKVStore(ctx).Get(genesisKey)
-	if err != nil {
-		return types.GenesisState{}, err
-	}
-	if len(bz) == 0 {
-		return k.ExportGenesis()
-	}
-	var gs types.GenesisState
-	if err := json.Unmarshal(bz, &gs); err != nil {
-		return types.GenesisState{}, err
-	}
-	if err := gs.Validate(); err != nil {
-		return types.GenesisState{}, err
-	}
-	return gs, nil
+	return k.getState(ctx)
 }
 
 func (k Keeper) MarshalGenesis() ([]byte, error) {
@@ -162,19 +237,4 @@ func (k *Keeper) UnmarshalGenesis(bz []byte) error {
 		return err
 	}
 	return k.InitGenesis(gs)
-}
-
-func (k *Keeper) save() error {
-	if k.storeService == nil || k.runtimeCtx == nil {
-		return nil
-	}
-	return k.saveWithCtx(k.runtimeCtx)
-}
-
-func (k *Keeper) saveWithCtx(ctx context.Context) error {
-	bz, err := json.Marshal(k.state)
-	if err != nil {
-		return err
-	}
-	return k.storeService.OpenKVStore(ctx).Set(genesisKey, bz)
 }

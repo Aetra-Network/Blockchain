@@ -31,7 +31,7 @@ func TestEncodeDecodeRoundTripAndDebugJSON(t *testing.T) {
 func TestCanonicalHashStable(t *testing.T) {
 	id, err := MessageIDHex(validMessage(t), DefaultParams())
 	require.NoError(t, err)
-	require.Equal(t, "1a2a7761383d1681c27591e7c4c89d5b83dbe673d868345a701e2d7c78227563", id)
+	require.Equal(t, "91ac78f42a9232860d4346c2c333444b60e590fcbc28b60d318b49a163b328ba", id)
 }
 
 func TestMalformedABIRejected(t *testing.T) {

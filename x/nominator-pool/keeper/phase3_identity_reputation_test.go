@@ -66,7 +66,9 @@ func TestPhase35IdentityReputationClaimIdempotentAndRecordsSlashingExposure(t *t
 	})
 	require.NoError(t, err)
 	gs := k.ExportGenesis()
-	gs.State.Pools[0].SlashIndex = types.RewardDelta(123, gs.State.Pools[0].TotalShares)
+	slashIdx, err := types.RewardDelta(123, gs.State.Pools[0].TotalShares)
+	require.NoError(t, err)
+	gs.State.Pools[0].SlashIndex = slashIdx
 	gs.State.LiquidStakingPools[0].TotalActiveStake = types.DefaultMinPoolDeposit - 123
 	require.NoError(t, k.InitGenesis(gs))
 

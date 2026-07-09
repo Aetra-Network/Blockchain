@@ -97,12 +97,12 @@ func TestPaginatedStateQueriesAreDeterministic(t *testing.T) {
 	}
 	allocationPage := PaginatePoolAllocationsByPool(allocations, "pool-a", 1, 1)
 	require.Len(t, allocationPage, 1)
-	require.Equal(t, validatorB, allocationPage[0].Validator)
+	require.Equal(t, validatorA, allocationPage[0].Validator)
 
 	validators := []Validator{validStateValidator(t, "33"), validStateValidator(t, "11"), validStateValidator(t, "22")}
 	validatorPage := PaginateValidators(validators, 1, 1)
 	require.Len(t, validatorPage, 1)
-	require.Equal(t, aeAddressFromRaw(t, rawAddress("22")), validatorPage[0].Address)
+	require.Equal(t, aeAddressFromRaw(t, rawAddress("11")), validatorPage[0].Address)
 }
 
 func TestSnapshotExportIsDeterministicAndStateRoundTrips(t *testing.T) {

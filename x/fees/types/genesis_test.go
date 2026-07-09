@@ -19,8 +19,12 @@ func TestDefaultParamsValidate(t *testing.T) {
 	if params.MinFeeAmount != "1" {
 		t.Fatalf("expected min fee amount 1, got %q", params.MinFeeAmount)
 	}
-	if params.BaseFeeAmount != "1" || params.MaxFeeAmount != "5000000" {
-		t.Fatalf("expected capped low-fee defaults, got base=%q max=%q", params.BaseFeeAmount, params.MaxFeeAmount)
+	// 0.5 AET transfer-fee policy: 0.4 AET flat transfer anchor, 5 AET hard cap.
+	if params.BaseFeeAmount != "400000000" || params.MaxFeeAmount != "5000000000" {
+		t.Fatalf("expected 0.4 AET anchor and 5 AET cap defaults, got base=%q max=%q", params.BaseFeeAmount, params.MaxFeeAmount)
+	}
+	if params.BaseFeeAmount != DefaultBaseFeeAmount || params.MaxFeeAmount != DefaultMaxFeeAmount {
+		t.Fatalf("expected defaults to use exported anchors, got base=%q max=%q", params.BaseFeeAmount, params.MaxFeeAmount)
 	}
 	if params.FeeCollectorModule != FeeCollectorModuleName {
 		t.Fatalf("expected fee collector %s, got %q", FeeCollectorModuleName, params.FeeCollectorModule)
@@ -189,8 +193,12 @@ func TestQuoteFeeIncludesEconomicControlSurface(t *testing.T) {
 
 func TestValidateAdmissionRejectsSpamWithoutUnboundedFeeEscalation(t *testing.T) {
 	params := DefaultParams()
+	maxFee, err := params.MaxFeeInt()
+	if err != nil {
+		t.Fatalf("max fee should parse: %v", err)
+	}
 	quote, err := ValidateAdmission(params, AdmissionInput{
-		Fee:			sdk.NewCoins(sdk.NewInt64Coin(BondDenom, 5000000)),
+		Fee:			sdk.NewCoins(sdk.NewCoin(BondDenom, maxFee)),
 		GasLimit:		params.MaxTxGas,
 		BlockGasConsumed:	params.MaxBlockGas - params.MaxTxGas,
 		BlockTxCount:		1,
@@ -200,12 +208,12 @@ func TestValidateAdmissionRejectsSpamWithoutUnboundedFeeEscalation(t *testing.T)
 	if err != nil {
 		t.Fatalf("max capped fee should be accepted at full utilization: %v", err)
 	}
-	if !quote.AtHardCap || quote.RequiredFee.Amount.Int64() != 5000000 {
+	if !quote.AtHardCap || !quote.RequiredFee.Amount.Equal(maxFee) {
 		t.Fatalf("expected hard cap quote, got %+v", quote)
 	}
 
 	_, err = ValidateAdmission(params, AdmissionInput{
-		Fee:			sdk.NewCoins(sdk.NewInt64Coin(BondDenom, 5000001)),
+		Fee:			sdk.NewCoins(sdk.NewCoin(BondDenom, maxFee.AddRaw(1))),
 		GasLimit:		100_000,
 		BlockGasConsumed:	0,
 		BlockTxCount:		1,

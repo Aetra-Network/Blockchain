@@ -80,6 +80,31 @@ jobs:
           printf 'govulncheck reported only triaged findings:\n'
           printf '  %s\n' "${findings[@]}"
 
+  determinism-gate:
+    name: AVM determinism gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run determinism gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Executable gate: scans the consensus-critical AVM/contracts source
+          # for forbidden non-determinism (wall-clock, process randomness,
+          # goroutines, map iteration, floats, network/env access) and proves
+          # the runtime keeps stable state roots. This runs on every PR and on
+          # pushes to main so nondeterminism cannot merge.
+          go test ./tests/avm_determinism_gate/... -count=1
+          go test ./app -run 'TestAVMRuntimeDeterminismGateRejectsNondeterminismAndKeepsStableRoots|TestConsensusCriticalSourceRejectsNondeterminismAndExternalNetworkCalls' -count=1
+
   gosec:
     name: gosec high severity
     runs-on: ubuntu-latest

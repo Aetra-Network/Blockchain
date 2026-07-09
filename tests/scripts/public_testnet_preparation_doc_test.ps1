@@ -54,6 +54,11 @@ foreach ($term in @(
     "Explorer And Indexer Plan",
     "Minimum Hardware",
     "Snapshot And State-Sync Plan",
+    "state-sync-drill.ps1",
+    "launch-evidence-bundle.ps1",
+    "trusted_rpcs",
+    "trust_height",
+    "snapshot_sha256",
     "CosmWasm Test Contract",
     "async contracts are enabled",
     "Rollback And Restart Procedure",
@@ -61,7 +66,8 @@ foreach ($term in @(
     "go test -p=1 ./...",
     "go vet -p=1 ./...",
     "buf lint",
-    "bufbuild/buf-setup-action@v1",
+    "scripts\tooling\ensure-buf.ps1",
+    "BUF_VERSION",
     "1000000naet",
     "aetrad"
   )) {
@@ -70,6 +76,7 @@ foreach ($term in @(
 
 foreach ($term in @(
     "Validator Onboarding",
+    "validator-onboarding-drill.ps1",
     "scripts\build-aetrad.ps1",
     ".aetra",
     "100000000naet",
@@ -98,6 +105,10 @@ foreach ($term in @(
     "aetra-testnet-preflight-1",
     "build\aetrad.exe",
     "scripts\build-aetrad.ps1",
+    "EvidenceRoot",
+    "ArchiveEvidence",
+    "public-testnet-preflight-evidence",
+    "KeepLogsOnFailure",
     "ValidatorCount `$validators",
     "cosmwasm_smoke.ps1"
   )) {

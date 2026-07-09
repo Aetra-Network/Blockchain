@@ -24,8 +24,14 @@ function Assert-Contains {
   if ($Text -notmatch $Pattern) { throw $Message }
 }
 
+# -SkipLiveGates keeps this a fast doc/structure test: it proves the report
+# emits the right check surface and doc content without paying for a real
+# go build/vet/test/buf-lint run every invocation. The live gates themselves
+# (go build, go vet, module-wiring test, invariants, determinism gate, buf
+# lint) are proven to actually pass by running public-testnet-readiness-report.ps1
+# without -SkipLiveGates, e.g. in the release/CI evidence flow.
 $scriptPath = Resolve-RepoPath $ReadinessScript
-$json = & $scriptPath -OutputFormat Json -AllowFailures
+$json = & $scriptPath -OutputFormat Json -AllowFailures -SkipLiveGates
 $report = $json | ConvertFrom-Json
 
 if ($report.status -ne "PASS" -and $report.status -ne "FAIL") {
@@ -33,7 +39,7 @@ if ($report.status -ne "PASS" -and $report.status -ne "FAIL") {
 }
 
 foreach ($check in $report.checks) {
-  if ($check.status -ne "PASS" -and $check.status -ne "FAIL") {
+  if ($check.status -ne "PASS" -and $check.status -ne "FAIL" -and $check.status -ne "SKIPPED") {
     throw "readiness check $($check.id) has invalid status: $($check.status)"
   }
   if ($check.status -eq "FAIL" -and [string]::IsNullOrWhiteSpace([string]$check.error)) {
@@ -43,15 +49,18 @@ foreach ($check in $report.checks) {
 
 $ids = @($report.checks | ForEach-Object { $_.id })
 foreach ($id in @(
-  "avm_runtime_wired",
-  "native_account_wired",
+  "live_build",
+  "live_vet",
+  "live_module_wiring",
+  "live_invariants",
+  "live_determinism_gate",
+  "live_buf_lint",
+  "full_gates_not_run",
   "direct_delegation_disabled",
   "official_pool_staking",
   "storage_rent_enforcement",
   "system_governance_safety",
-  "app_invariants_registered",
-  "export_import_roundtrip",
-  "buf_lint_gate",
+  "launch_evidence_bundle",
   "no_native_asset_modules",
   "docs_match_behavior",
   "localnet_profiles",
@@ -60,6 +69,13 @@ foreach ($id in @(
   )) {
   if ($ids -notcontains $id) {
     throw "readiness report missing check id: $id"
+  }
+}
+
+$liveIds = @("live_build", "live_vet", "live_module_wiring", "live_invariants", "live_determinism_gate", "live_buf_lint")
+foreach ($check in $report.checks) {
+  if ($liveIds -contains $check.id -and $check.status -ne "SKIPPED") {
+    throw "readiness check $($check.id) should be SKIPPED when -SkipLiveGates is set, got $($check.status)"
   }
 }
 
@@ -78,10 +94,15 @@ foreach ($term in @(
 }
 
 foreach ($term in @(
-    "bufbuild/buf-setup-action@v1",
-    "same command",
+    "scripts\tooling\ensure-buf.ps1",
+    "BUF_VERSION",
+    "launch-evidence-bundle.ps1",
+    "same pinned helper",
     "direct user delegation rejection",
+    "state-sync-drill.ps1",
+    "validator-onboarding-drill.ps1",
     "staking/slashing query surfaces",
+    'Archive `public-testnet-preflight.ps1` evidence bundles for the release',
     "Official liquid staking pool deposit/claim/unbond, validator operator self-bond compatibility, and storage-rent recovery still require their own focused runtime evidence",
     "Token, NFT, and DEX-style behavior must be exercised through AVM contracts"
   )) {
@@ -94,7 +115,9 @@ foreach ($term in @(
     "public-testnet-preflight.ps1 -ValidatorProfile 10",
     "export_import_smoke.ps1",
     "pos_smoke.ps1",
-    "execution_os_smoke.ps1"
+    "execution_os_smoke.ps1",
+    "avm_contract_smoke.ps1",
+    "launch-evidence-bundle.ps1"
   )) {
   Assert-Contains -Text $smokeText -Pattern ([regex]::Escape($term)) -Message "smoke command doc missing: $term"
 }

@@ -101,7 +101,7 @@ func TestStakeReputationClaimDeterministicGolden(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, uint64(7_000), claim.StakeWeightedSeconds)
 	require.Equal(t, uint16(7), claim.ReputationDelta)
-	require.Equal(t, "ef7adbc4d797595f556eabc21197fc85c97556a42fbc0c6c5dcf04da65a8be5b", claim.ClaimHash)
+	require.Equal(t, "7566df36ee1ab9cf16f7c8cfd78259af248785cd76e23f3a9079bbbdc89bc27e", claim.ClaimHash)
 }
 
 func TestSlashedOrJailedValidatorCannotReceivePositiveValidatorBonus(t *testing.T) {

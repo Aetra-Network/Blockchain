@@ -143,15 +143,18 @@ func (gs GenesisState) Validate() error {
 }
 
 func (b FeeBalances) Validate(baseDenom string) error {
-	for name, coins := range map[string]sdk.Coins{
-		"gas_fees":		b.GasFees,
-		"forwarding_fees":	b.ForwardingFees,
-		"protocol_fees":	b.ProtocolFees,
-		"total_collected":	b.TotalCollected,
-		"total_distributed":	b.TotalDistributed,
-		"total_burned":		b.TotalBurned,
+	for _, entry := range []struct {
+		name  string
+		coins sdk.Coins
+	}{
+		{name: "gas_fees", coins: b.GasFees},
+		{name: "forwarding_fees", coins: b.ForwardingFees},
+		{name: "protocol_fees", coins: b.ProtocolFees},
+		{name: "total_collected", coins: b.TotalCollected},
+		{name: "total_distributed", coins: b.TotalDistributed},
+		{name: "total_burned", coins: b.TotalBurned},
 	} {
-		if err := validateBaseCoins(name, baseDenom, coins); err != nil {
+		if err := validateBaseCoins(entry.name, baseDenom, entry.coins); err != nil {
 			return err
 		}
 	}
@@ -166,13 +169,16 @@ func (b FeeBalances) AccountingBalance() sdk.Coins {
 }
 
 func (p PendingDistribution) Validate(baseDenom string) error {
-	for name, coins := range map[string]sdk.Coins{
-		"treasury":	p.Treasury,
-		"protection":	p.Protection,
-		"validators":	p.Validators,
-		"burn":		p.Burn,
+	for _, entry := range []struct {
+		name  string
+		coins sdk.Coins
+	}{
+		{name: "treasury", coins: p.Treasury},
+		{name: "protection", coins: p.Protection},
+		{name: "validators", coins: p.Validators},
+		{name: "burn", coins: p.Burn},
 	} {
-		if err := validateBaseCoins(name, baseDenom, coins); err != nil {
+		if err := validateBaseCoins(entry.name, baseDenom, entry.coins); err != nil {
 			return err
 		}
 	}
@@ -184,15 +190,18 @@ func (p PendingDistribution) Total() sdk.Coins {
 }
 
 func (e FeeHistoryEntry) Validate(baseDenom string) error {
-	for name, coins := range map[string]sdk.Coins{
-		"collected":		e.Collected,
-		"treasury":		e.Treasury,
-		"protection":		e.Protection,
-		"validators":		e.Validators,
-		"burn":			e.Burn,
-		"rounding_remainder":	e.RoundingRemainder,
+	for _, entry := range []struct {
+		name  string
+		coins sdk.Coins
+	}{
+		{name: "collected", coins: e.Collected},
+		{name: "treasury", coins: e.Treasury},
+		{name: "protection", coins: e.Protection},
+		{name: "validators", coins: e.Validators},
+		{name: "burn", coins: e.Burn},
+		{name: "rounding_remainder", coins: e.RoundingRemainder},
 	} {
-		if err := validateBaseCoins(name, baseDenom, coins); err != nil {
+		if err := validateBaseCoins(entry.name, baseDenom, entry.coins); err != nil {
 			return err
 		}
 	}

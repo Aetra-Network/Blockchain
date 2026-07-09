@@ -33,6 +33,7 @@ foreach ($term in @(
     "Explorer And Indexer Plan",
     "Minimum Hardware",
     "Snapshot And State-Sync Plan",
+    "state-sync-drill.ps1",
     "CosmWasm Test Contract",
     "Validator Onboarding",
     "Incident response"
@@ -42,6 +43,7 @@ foreach ($term in @(
 
 foreach ($term in @(
     "genesis validate-genesis",
+    "validator-onboarding-drill.ps1",
     "keys add",
     "keyring-backend os",
     "staking create-validator",

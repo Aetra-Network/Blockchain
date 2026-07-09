@@ -11,6 +11,7 @@ Selectors are namespaced by kind:
 - `getter`
 - `event`
 - `async_handler`
+- `wallet_action` for metadata-only ABI records
 
 The same text MAY appear in different domains, but the `(kind, selector)` pair
 MUST be unique inside one ABI package.
@@ -28,6 +29,9 @@ Rules:
 - the kind token is mandatory;
 - contract or interface name is mandatory;
 - parameter and return types are canonical type names;
+- selectors are always derived by the compiler: message opcodes come from
+  `@message(opcode)` annotations and getter selectors from the canonical
+  getter name — source syntax has no explicit selector pin;
 - whitespace is forbidden inside the canonical selector text;
 - changing any part of the signature changes the selector.
 
@@ -44,6 +48,10 @@ Rules:
   hashing;
 - `async_handler_selector` uses the `async_handler` domain;
 - `getter_selector` uses the `getter` domain.
+- source syntax has no explicit selector pins; every registry entry MUST be
+  derived from the canonical rules above;
+- numeric collisions inside one ABI package are hard errors;
+- unknown selector resolution MUST fail closed before execution.
 
 Implementations MUST preserve the full selector text even when using the 32-bit
 ID as a fast dispatch key.
@@ -73,8 +81,11 @@ Each registry entry MUST include:
 - `deprecated`
 - `replaced_by_optional`
 
-Deprecated records MAY remain in the registry, but they MUST NOT be callable
-unless the ABI explicitly keeps them active.
+Deprecated records MAY remain in the registry only as transitional aliases.
+They MUST NOT be callable in new public syntax or documentation, and they MUST
+be guarded by an explicit compatibility profile if runtime support is kept.
+The replacement term MUST be the canonical public term in all new ABI
+packages, docs, and examples.
 
 ## 6. Example Registry
 
@@ -110,3 +121,7 @@ Wallets and explorers MAY use the registry to:
 - show event names;
 - map selectors to high-level documentation;
 - warn about deprecated or replaced actions.
+
+Compatibility-only selector entries MUST be treated as deprecated alias
+records and MUST be hidden from new-project code generation once the migration
+cutoff version is reached.

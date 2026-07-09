@@ -8,27 +8,27 @@ import (
 )
 
 const (
-	maxTrieDepth	= 86	// ceil(256/3)
-	gasBaseLookup	= 100
-	gasBaseInsert	= 200
-	gasBaseDelete	= 150
-	gasBaseProof	= 500
-	gasPerDepthStep	= 10
-	gasPerChunkByte	= 1
+	maxTrieDepth    = 86 // ceil(256/3)
+	gasBaseLookup   = 100
+	gasBaseInsert   = 200
+	gasBaseDelete   = 150
+	gasBaseProof    = 500
+	gasPerDepthStep = 10
+	gasPerChunkByte = 1
 )
 
 var (
-	ErrMaxDepthExceeded	= fmt.Errorf("chunk map: max trie depth %d exceeded", maxTrieDepth)
-	ErrInvalidMap		= errors.New("chunk map: invalid structure")
-	ErrEmptyBranch		= errors.New("chunk map: non-canonical empty branch")
+	ErrMaxDepthExceeded = fmt.Errorf("chunk map: max trie depth %d exceeded", maxTrieDepth)
+	ErrInvalidMap       = errors.New("chunk map: invalid structure")
+	ErrEmptyBranch      = errors.New("chunk map: non-canonical empty branch")
 )
 
 // GasCost holds the gas cost estimates for Map operations.
 type GasCost struct {
-	Lookup	uint64
-	Insert	uint64
-	Delete	uint64
-	Proof	uint64
+	Lookup uint64
+	Insert uint64
+	Delete uint64
+	Proof  uint64
 }
 
 // GasCostFor returns gas cost estimates based on trie depth.
@@ -36,17 +36,17 @@ type GasCost struct {
 func GasCostFor(depth int) GasCost {
 	d := uint64(depth)
 	return GasCost{
-		Lookup:	gasBaseLookup + d*gasPerDepthStep,
-		Insert:	gasBaseInsert + d*gasPerDepthStep,
-		Delete:	gasBaseDelete + d*gasPerDepthStep,
-		Proof:	gasBaseProof + d*gasPerDepthStep*gasPerChunkByte,
+		Lookup: gasBaseLookup + d*gasPerDepthStep,
+		Insert: gasBaseInsert + d*gasPerDepthStep,
+		Delete: gasBaseDelete + d*gasPerDepthStep,
+		Proof:  gasBaseProof + d*gasPerDepthStep*gasPerChunkByte,
 	}
 }
 
 // Entry represents a single key-value pair in iteration output.
 type Entry struct {
-	Key	[]byte
-	Value	*Chunk
+	Key   []byte
+	Value *Chunk
 }
 
 // Map represents a persistent, immutable Merkle Trie with 8-fanout.
@@ -61,8 +61,8 @@ type Entry struct {
 //  5. Max depth = ceil(256/3) = 86. Deeper trees are rejected.
 //  6. Updates in disjoint top-level buckets (different first 3 bits) have no write conflicts.
 type Map struct {
-	root	*Chunk
-	version	uint64
+	root    *Chunk
+	version uint64
 }
 
 // NewEmptyMap returns a Map with a canonical empty root.
@@ -384,28 +384,47 @@ func (m *Map) compressRecursive(node *Chunk) *Chunk {
 // Iterate returns all entries with their Chunk values.
 // Keys are not recoverable from the trie — iteration returns key hashes.
 func (m *Map) Iterate() []Entry {
-	if m.root == nil {
-		return nil
-	}
-	var entries []Entry
-	m.collectEntries(m.root, &entries)
+	entries, _ := m.IterateLimit(int(^uint(0) >> 1))
 	return entries
 }
 
-func (m *Map) collectEntries(node *Chunk, entries *[]Entry) {
+// IterateLimit returns at most limit entries in deterministic traversal order.
+// A non-positive limit rejects iteration, and a full traversal that exceeds the
+// limit fails instead of materializing an unbounded collection.
+func (m *Map) IterateLimit(limit int) ([]Entry, error) {
+	if limit <= 0 {
+		return nil, fmt.Errorf("chunk map: iteration limit must be positive")
+	}
+	if m.root == nil {
+		return nil, nil
+	}
+	entries := make([]Entry, 0)
+	if err := m.collectEntriesLimit(m.root, &entries, limit); err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
+func (m *Map) collectEntriesLimit(node *Chunk, entries *[]Entry, limit int) error {
 	if node == nil {
-		return
+		return nil
 	}
 	isLeaf := true
 	for i := 0; i < MaxRefs; i++ {
 		if node.RefAt(i) != nil {
 			isLeaf = false
-			m.collectEntries(node.RefAt(i), entries)
+			if err := m.collectEntriesLimit(node.RefAt(i), entries, limit); err != nil {
+				return err
+			}
 		}
 	}
 	if isLeaf && node.BitCount() > 0 {
+		if len(*entries) >= limit {
+			return fmt.Errorf("chunk map: iteration exceeds limit %d", limit)
+		}
 		*entries = append(*entries, Entry{Key: nil, Value: node})
 	}
+	return nil
 }
 
 // NewEmptyChunk returns a canonical empty chunk with type System.

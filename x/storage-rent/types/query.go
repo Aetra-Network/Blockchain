@@ -194,8 +194,6 @@ func registerQueryTypes() {
 	gogoproto.RegisterType((*QueryStorageRentParamsResponse)(nil), "l1.storagerent.v1.QueryStorageRentParamsResponse")
 }
 
-var fileDescriptorStorageRentQuery = buildStorageRentQueryFileDescriptor()
-
 func buildStorageRentQueryFileDescriptor() []byte {
 	queryMessageNames := []string{
 		"QueryContractRentRequest",

@@ -360,13 +360,16 @@ func (r PaymentObservabilityReport) Validate() error {
 	if err := ValidateHash("payments observability report id", report.ReportID); err != nil {
 		return err
 	}
-	for label, value := range map[string]string{
-		"total locked naet":		report.TotalLockedNaet,
-		"settlement volume naet":	report.SettlementVolumeNaet,
-		"routing fees naet":		report.RoutingFeesNaet,
-		"largest locked channel naet":	report.LargestLockedChannelNaet,
+	for _, entry := range []struct {
+		label string
+		value string
+	}{
+		{label: "total locked naet", value: report.TotalLockedNaet},
+		{label: "settlement volume naet", value: report.SettlementVolumeNaet},
+		{label: "routing fees naet", value: report.RoutingFeesNaet},
+		{label: "largest locked channel naet", value: report.LargestLockedChannelNaet},
 	} {
-		if err := validateNonNegativeInt("payments observability report "+label, value); err != nil {
+		if err := validateNonNegativeInt("payments observability report "+entry.label, entry.value); err != nil {
 			return err
 		}
 	}

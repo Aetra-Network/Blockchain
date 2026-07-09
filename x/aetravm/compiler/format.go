@@ -2,13 +2,17 @@ package compiler
 
 import (
 	"encoding/hex"
-	"strconv"
+	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 )
 
 func FormatSource(file *SourceFile) string {
 	if file == nil {
+		return ""
+	}
+	if _, err := normalizeSourceFile(file, SurfaceCompatibilityWarnings); err != nil {
 		return ""
 	}
 	var b strings.Builder
@@ -30,6 +34,10 @@ func FormatSource(file *SourceFile) string {
 	}
 	for _, en := range file.Enums {
 		b.WriteString(formatEnumDecl(en))
+		b.WriteString("\n\n")
+	}
+	for _, td := range file.Types {
+		b.WriteString(formatTypeDecl(td))
 		b.WriteString("\n\n")
 	}
 	for _, fn := range file.Functions {
@@ -76,6 +84,7 @@ func formatStructDecl(st *StructDecl) string {
 		return ""
 	}
 	var b strings.Builder
+	b.WriteString(formatAnnotationPrefix(st.Annotations))
 	b.WriteString("struct ")
 	b.WriteString(st.Name)
 	b.WriteString(" {\n")
@@ -83,6 +92,9 @@ func formatStructDecl(st *StructDecl) string {
 		b.WriteString("  ")
 		b.WriteString(field.Name)
 		b.WriteString(": ")
+		if field.Lazy {
+			b.WriteString("lazy ")
+		}
 		b.WriteString(formatTypeRef(field.Type))
 		if field.Default.Kind != "" {
 			b.WriteString(" = ")
@@ -129,12 +141,30 @@ func formatEnumDecl(en *EnumDecl) string {
 	return b.String()
 }
 
+func formatTypeDecl(td *TypeDecl) string {
+	if td == nil {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("type ")
+	b.WriteString(td.Name)
+	b.WriteString(" = ")
+	for i, member := range td.Members {
+		if i > 0 {
+			b.WriteString(" | ")
+		}
+		b.WriteString(formatTypeRef(member))
+	}
+	return b.String()
+}
+
 func formatFunctionDecl(fn *FunctionDecl) string {
 	if fn == nil {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("fn ")
+	b.WriteString(formatAnnotationPrefix(fn.Annotations))
+	b.WriteString("func ")
 	b.WriteString(fn.Name)
 	b.WriteString(formatParamList(fn.Params))
 	if fn.ReturnType.Name != "" {
@@ -154,9 +184,38 @@ func formatContractDecl(contract *ContractDecl) string {
 	b.WriteString("contract ")
 	b.WriteString(contract.Name)
 	b.WriteString(" {\n")
+	// Metadata keys that the parser requires to be written with a colon
+	// (storage/author/description/version/incomingMessages/incomingExternal) must
+	// be emitted with it so a format round-trip re-parses. namespace/chain/etc.
+	// below are parsed WITHOUT a colon and are left as-is.
 	if contract.StorageTypeName != "" {
-		b.WriteString("  storage ")
+		b.WriteString("  storage: ")
 		b.WriteString(contract.StorageTypeName)
+		b.WriteString("\n")
+	}
+	if contract.Author != "" {
+		b.WriteString("  author: ")
+		b.WriteString(strconv.Quote(contract.Author))
+		b.WriteString("\n")
+	}
+	if contract.Description != "" {
+		b.WriteString("  description: ")
+		b.WriteString(strconv.Quote(contract.Description))
+		b.WriteString("\n")
+	}
+	if contract.Version != "" {
+		b.WriteString("  version: ")
+		b.WriteString(strconv.Quote(contract.Version))
+		b.WriteString("\n")
+	}
+	if contract.IncomingMessagesType != "" {
+		b.WriteString("  incomingMessages: ")
+		b.WriteString(contract.IncomingMessagesType)
+		b.WriteString("\n")
+	}
+	if contract.IncomingExternalType != "" {
+		b.WriteString("  incomingExternal: ")
+		b.WriteString(contract.IncomingExternalType)
 		b.WriteString("\n")
 	}
 	if contract.Namespace != "" {
@@ -184,6 +243,10 @@ func formatContractDecl(contract *ContractDecl) string {
 		b.WriteString(strconv.FormatUint(contract.InitialBalance, 10))
 		b.WriteString("\n")
 	}
+	for _, fn := range contract.Functions {
+		b.WriteString(formatFunctionDecl(fn))
+		b.WriteString("\n")
+	}
 	for _, msg := range contract.Messages {
 		b.WriteString(formatMessageDecl(msg))
 		b.WriteString("\n")
@@ -208,11 +271,10 @@ func formatMessageDecl(msg *MessageDecl) string {
 	if msg == nil {
 		return ""
 	}
-	if msg.Kind == MessageKindDeploy {
-		return "  deploy " + formatBlock(msg.Body, 1)
-	}
 	var b strings.Builder
-	b.WriteString("  message ")
+	b.WriteString("  ")
+	b.WriteString(formatAnnotationPrefix(msg.Annotations))
+	b.WriteString("message ")
 	b.WriteString(msg.Kind.String())
 	b.WriteString(" ")
 	b.WriteString(msg.Name)
@@ -235,7 +297,9 @@ func formatGetterDecl(get *GetterDecl) string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("  getter ")
+	b.WriteString("  ")
+	b.WriteString(formatAnnotationPrefix(get.Annotations))
+	b.WriteString("getter ")
 	b.WriteString(get.Name)
 	b.WriteString(formatParamList(get.Params))
 	if get.ReturnType.Name != "" {
@@ -303,12 +367,38 @@ func writeWalletField(b *strings.Builder, name, value string) {
 	b.WriteString("\n")
 }
 
+func formatAnnotationPrefix(annotations []Annotation) string {
+	if len(annotations) == 0 {
+		return ""
+	}
+	anns := canonicalAnnotations(annotations)
+	if len(anns) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for _, annotation := range anns {
+		b.WriteString(formatAnnotation(annotation))
+		b.WriteString(" ")
+	}
+	return b.String()
+}
+
+func formatAnnotation(annotation Annotation) string {
+	if annotation.Value == nil {
+		return annotation.Name
+	}
+	return fmt.Sprintf("%s(0x%x)", annotation.Name, *annotation.Value)
+}
+
 func formatParamList(params []ParamDecl) string {
 	var b strings.Builder
 	b.WriteString("(")
 	for i, param := range params {
 		if i > 0 {
 			b.WriteString(", ")
+		}
+		if param.Mutate {
+			b.WriteString("mutate ")
 		}
 		b.WriteString(param.Name)
 		b.WriteString(": ")
@@ -333,8 +423,12 @@ func formatBlock(stmts []Statement, indent int) string {
 
 func formatStatement(stmt Statement, indent int) string {
 	switch stmt.Kind {
-	case StatementLet:
-		return "let " + stmt.Name + " = " + formatExpr(stmt.Value, 0)
+	case StatementBinding:
+		keyword := "const"
+		if stmt.Mutable {
+			keyword = "var"
+		}
+		return keyword + " " + stmt.Name + " = " + formatExpr(stmt.Value, 0)
 	case StatementSet:
 		return "set " + strings.Join(stmt.Path, ".") + " = " + formatExpr(stmt.Value, 0)
 	case StatementEmit:
@@ -343,6 +437,20 @@ func formatStatement(stmt Statement, indent int) string {
 		return "return " + formatExpr(stmt.Value, 0)
 	case StatementRefund:
 		return "refund " + formatExpr(stmt.Value, 0)
+	case StatementAssert:
+		code := Expr{}
+		if stmt.Extra != nil {
+			if value, ok := stmt.Extra["throw"]; ok {
+				code = value
+			}
+		}
+		return "assert (" + formatExpr(stmt.Value, 0) + ") throw " + formatExpr(code, 0)
+	case StatementThrow:
+		return "throw " + formatExpr(stmt.Value, 0)
+	case StatementBreak:
+		return "break"
+	case StatementContinue:
+		return "continue"
 	case StatementSend:
 		var b strings.Builder
 		b.WriteString("send ")
@@ -386,6 +494,12 @@ func formatStatement(stmt Statement, indent int) string {
 			b.WriteString(formatBlock(stmt.Else, indent))
 		}
 		return b.String()
+	case StatementWhile:
+		return "while " + formatExpr(stmt.Value, 0) + " " + formatBlock(stmt.Then, indent)
+	case StatementDo:
+		return "do " + formatBlock(stmt.Then, indent) + " while " + formatExpr(stmt.Value, 0)
+	case StatementRepeat:
+		return "repeat " + formatExpr(stmt.Value, 0) + " " + formatBlock(stmt.Then, indent)
 	case StatementMatch:
 		var b strings.Builder
 		b.WriteString("match ")
@@ -471,9 +585,28 @@ func formatExpr(expr Expr, parentPrec int) string {
 		return strings.Join(expr.Path, ".")
 	case ExprNull:
 		return "null"
+	case ExprStruct:
+		var b strings.Builder
+		if expr.Text != "" {
+			b.WriteString(expr.Text)
+			b.WriteString(" ")
+		}
+		b.WriteString("{")
+		for i, field := range expr.Fields {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString(field.Name)
+			b.WriteString(": ")
+			b.WriteString(formatExpr(field.Value, 0))
+		}
+		b.WriteString("}")
+		return b.String()
 	case ExprCall:
 		name := expr.Text
-		if name == "" {
+		if len(expr.Path) > 1 {
+			name = strings.Join(expr.Path, ".")
+		} else if name == "" {
 			name = strings.Join(expr.Path, ".")
 		}
 		return name + formatExprList(expr.Args)
@@ -483,12 +616,27 @@ func formatExpr(expr Expr, parentPrec int) string {
 			out += " else " + formatExpr(*expr.Else, 0)
 		}
 		return out
+	case ExprUnary:
+		out := expr.Op + formatExpr(*expr.Left, 4)
+		if expr.Unwrap {
+			out += "!"
+		}
+		if 4 < parentPrec {
+			return "(" + out + ")"
+		}
+		return out
 	case ExprBinary, ExprCompare, ExprLogic:
 		prec := exprPrecedence(expr.Kind)
 		left := formatExpr(*expr.Left, prec)
 		right := formatExpr(*expr.Right, prec+1)
 		out := left + " " + expr.Op + " " + right
 		if prec < parentPrec {
+			return "(" + out + ")"
+		}
+		return out
+	case ExprTernary:
+		out := formatExpr(*expr.Left, 0) + " ? " + formatExpr(*expr.Right, 0) + " : " + formatExpr(*expr.Else, 0)
+		if 0 < parentPrec {
 			return "(" + out + ")"
 		}
 		return out
@@ -504,6 +652,8 @@ func exprPrecedence(kind ExprKind) int {
 	switch kind {
 	case ExprLogic:
 		return 1
+	case ExprTernary:
+		return 0
 	case ExprCompare:
 		return 2
 	case ExprBinary:

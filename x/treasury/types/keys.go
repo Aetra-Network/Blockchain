@@ -32,3 +32,10 @@ var (
 )
 
 const DefaultMaxMetadataBytes = uint32(512)
+
+// SpendEpochLengthBlocks is the number of blocks per treasury spend epoch. The
+// per-epoch spend cap and vesting timelock are enforced against the epoch
+// DERIVED from block height (height/SpendEpochLengthBlocks), never a
+// caller-supplied value. It matches the chain's daily reward-epoch cadence
+// (86400s / 6s block time). See SEC-LOW: treasury spend epoch is caller-supplied.
+const SpendEpochLengthBlocks = uint64(14_400)

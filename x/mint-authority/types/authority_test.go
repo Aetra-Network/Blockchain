@@ -179,7 +179,7 @@ func TestMintAuthorityInvariantsRejectTampering(t *testing.T) {
 	tampered := next
 	tampered.MintedLifetime[0].Amount = sdkmath.NewInt(99)
 	tampered.MintedLifetime[0].LifetimeHash = ComputeMintedLifetimeHash(tampered.MintedLifetime[0])
-	require.ErrorContains(t, CheckMintAuthorityInvariants(tampered), "counter must equal mint events")
+	require.ErrorContains(t, CheckMintAuthorityInvariants(tampered), "exceed lifetime minted counter")
 
 	tampered = next
 	tampered.Events = append(tampered.Events, event)
@@ -189,6 +189,29 @@ func TestMintAuthorityInvariantsRejectTampering(t *testing.T) {
 	tampered.Caps = []MintCap{defaultCap(tampered.Params, 1_000, 10_000), {Denom: "uatom", EpochCap: sdkmath.NewInt(1), LifetimeCap: sdkmath.NewInt(1)}}
 	tampered.Caps = normalizeCaps(tampered.Caps)
 	require.ErrorContains(t, CheckMintAuthorityInvariants(tampered), "exactly one base denom cap")
+}
+
+// TestApplyMintProtocolCoinsBoundsEventHistory is the regression guard for
+// SEC-MED: mint-authority Events grow unbounded. Minting past MaxMintEvents
+// epochs must not halt (the retained history is pruned to a bounded window),
+// and the lifetime counter remains the authoritative running total.
+func TestApplyMintProtocolCoinsBoundsEventHistory(t *testing.T) {
+	params := DefaultMintAuthorityParams()
+	params.MaxMintEvents = 5
+	state, err := NewMintAuthorityState(params, DefaultMintAuthorityRegistration(), []MintCap{defaultCap(params, 1_000, 100_000)})
+	require.NoError(t, err)
+
+	const epochs = uint64(12)
+	for epoch := uint64(1); epoch <= epochs; epoch++ {
+		decision := emissionDecision(DefaultEmissionCaller, DefaultBaseDenom, 100, epoch, epoch*10, true)
+		state, _, err = ApplyMintProtocolCoins(state, mintMsg(DefaultEmissionCaller, DefaultBaseDenom, 100, epoch, epoch*10, decision.DecisionHash), decision, ConstitutionEmergencyAuthorization{})
+		require.NoError(t, err, "epoch %d must not halt once history exceeds MaxMintEvents", epoch)
+	}
+
+	require.Len(t, state.Events, 5, "event history must stay bounded at MaxMintEvents")
+	require.Len(t, state.MintedByEpoch, 5, "epoch counters must stay bounded")
+	require.Equal(t, sdkmath.NewInt(1_200), state.MintedLifetime[0].Amount, "lifetime counter remains authoritative")
+	require.NoError(t, CheckMintAuthorityInvariants(state))
 }
 
 func newMintAuthorityState(t *testing.T) MintAuthorityState {

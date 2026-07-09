@@ -12,13 +12,14 @@ import (
 
 func TestMsgActivateAccountRequiresDerivedAEAddress(t *testing.T) {
 	pubKey := activationTestPubKey()
-	pair, err := ActivationAddressPair(pubKey)
+	msg, err := NewMsgActivateAccountFromPubKey(pubKey, 0)
 	require.NoError(t, err)
 
-	require.NoError(t, MsgActivateAccount{AddressUser: pair.User, PublicKey: pubKey}.ValidateBasic())
+	require.NoError(t, msg.ValidateBasic())
 
 	other := addressing.FormatAccAddress(sdk.AccAddress(virtualBytes20(0x99)))
-	require.ErrorContains(t, MsgActivateAccount{AddressUser: other, PublicKey: pubKey}.ValidateBasic(), "must equal derived")
+	msg.AddressUser = other
+	require.ErrorContains(t, msg.ValidateBasic(), "must equal derived")
 }
 
 func TestMsgActivateAccountRejectsLegacyAndForeignAddressFormats(t *testing.T) {
@@ -32,7 +33,10 @@ func TestMsgActivateAccountRejectsLegacyAndForeignAddressFormats(t *testing.T) {
 		"4:ABCDEFabcdef0000000000000000000000000000000000000000000000000000",
 		"AE-not-a-valid-address",
 	} {
-		require.Error(t, MsgActivateAccount{AddressUser: text, PublicKey: pubKey}.ValidateBasic(), text)
+		msg, err := NewMsgActivateAccountFromPubKey(pubKey, 0)
+		require.NoError(t, err)
+		msg.AddressUser = text
+		require.Error(t, msg.ValidateBasic(), text)
 	}
 }
 
@@ -41,9 +45,11 @@ func TestMsgActivateAccountRejectsReservedSystemAddress(t *testing.T) {
 	mint, found := addressing.SystemAddressByName(addressing.SystemAddressAETMintName)
 	require.True(t, found)
 
-	err := MsgActivateAccount{AddressUser: mint.UserFriendly, PublicKey: pubKey}.ValidateBasic()
+	msg, err := NewMsgActivateAccountFromPubKey(pubKey, 0)
+	require.NoError(t, err)
+	msg.AddressUser = mint.UserFriendly
 
-	require.ErrorContains(t, err, "reserved system address")
+	require.ErrorContains(t, msg.ValidateBasic(), "reserved system address")
 }
 
 func TestQueryUnactivatedAddressReturnsVirtualInactiveWithoutState(t *testing.T) {

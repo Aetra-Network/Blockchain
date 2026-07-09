@@ -12,12 +12,18 @@ import (
 	"strings"
 )
 
+// ProductionDirs are the CONSENSUS-executed runtime paths that must be
+// deterministic. The AVM compiler (x/aetravm/compiler) is deliberately excluded:
+// contracts are deployed on-chain as bytecode, so compilation is off-chain
+// tooling and legitimately uses the filesystem. The consensus path is the AVM
+// interpreter (x/aetravm/avm), the async message runtime (x/aetravm/async), and
+// the contracts keeper (x/contracts).
 var ProductionDirs = []string{
-	filepath.FromSlash("x/aetravm"),
+	filepath.FromSlash("x/aetravm/avm"),
+	filepath.FromSlash("x/aetravm/async"),
+	filepath.FromSlash("x/aetravm/chunk"),
+	filepath.FromSlash("x/aetravm/messageabi"),
 	filepath.FromSlash("x/contracts"),
-	filepath.FromSlash("x/vm"),
-	filepath.FromSlash("x/messages"),
-	filepath.FromSlash("x/messaging"),
 }
 
 type Violation struct {

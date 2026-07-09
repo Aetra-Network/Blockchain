@@ -2,7 +2,7 @@ param(
   [ValidateSet("list", "show", "apply")]
   [string]$Action = "show",
   [string]$OutputDir = "",
-  [ValidateSet("base", "execution-os-sim", "zones-prototype", "mesh-prototype", "identity-prototype")]
+  [ValidateSet("base", "execution-os-sim", "zones-prototype", "mesh-prototype")]
   [string]$Profile = "base",
   [string]$ChainId = "aetra-local-1",
   [int]$ValidatorCount = 3

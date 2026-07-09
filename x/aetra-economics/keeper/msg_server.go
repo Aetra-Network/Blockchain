@@ -1,6 +1,10 @@
 package keeper
 
-import "github.com/sovereign-l1/l1/x/aetra-economics/types"
+import (
+	"context"
+
+	"github.com/sovereign-l1/l1/x/aetra-economics/types"
+)
 
 type MsgServer struct {
 	Keeper *Keeper
@@ -10,18 +14,18 @@ func NewMsgServerImpl(k *Keeper) MsgServer {
 	return MsgServer{Keeper: k}
 }
 
-func (m MsgServer) UpdateEconomicsParams(msg types.MsgUpdateEconomicsParams) error {
+func (m MsgServer) UpdateEconomicsParams(ctx context.Context, msg types.MsgUpdateEconomicsParams) error {
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return err
 	}
-	return m.Keeper.SetParams(msg.Params)
+	return m.Keeper.SetParams(ctx, msg.Params)
 }
 
-func (m MsgServer) ApplyEpochEconomics(msg types.MsgApplyEpochEconomics) error {
+func (m MsgServer) ApplyEpochEconomics(ctx context.Context, msg types.MsgApplyEpochEconomics) error {
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return err
 	}
-	_, err := m.Keeper.ApplyEpoch(msg.Input)
+	_, err := m.Keeper.ApplyEpoch(ctx, msg.Input)
 	return err
 }
 

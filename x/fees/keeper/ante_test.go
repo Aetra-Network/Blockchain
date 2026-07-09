@@ -13,6 +13,7 @@ import (
 	authtypes "github.com/cosmos/cosmos-sdk/x/auth/types"
 	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
 	distrtypes "github.com/cosmos/cosmos-sdk/x/distribution/types"
+	minttypes "github.com/cosmos/cosmos-sdk/x/mint/types"
 	stakingtypes "github.com/cosmos/cosmos-sdk/x/staking/types"
 	"github.com/stretchr/testify/require"
 
@@ -107,6 +108,26 @@ func reservedBytes(t *testing.T, name string) []byte {
 	return bz
 }
 
+// requiredFullFee mirrors keeper.AdmitTx: the deterministic full-formula fee
+// for a tx under default params with no tx bytes, no congestion, unknown
+// reputation, and no storage rent side effects.
+func requiredFullFee(t *testing.T, gas, msgCount uint64) sdkmath.Int {
+	t.Helper()
+	required, err := types.ComputeFullTransferFee(
+		types.DefaultParams(),
+		types.DefaultFeeFormulaParams(),
+		gas,
+		0,
+		msgCount,
+		0,
+		types.ReputationNeutralScore,
+		false,
+		sdkmath.ZeroInt(),
+	)
+	require.NoError(t, err)
+	return required
+}
+
 func TestAnteHandlerDecoratorFeePolicy(t *testing.T) {
 	validSender := validRawAddress(1)
 	validRecipient := validRawAddress(2)
@@ -114,7 +135,9 @@ func TestAnteHandlerDecoratorFeePolicy(t *testing.T) {
 
 	fee := sdk.NewCoins(sdk.NewInt64Coin(types.BondDenom, 1))
 
-	sufficientFee := sdk.NewCoins(sdk.NewInt64Coin(types.BondDenom, 110_000))
+	// Covers the full-formula requirement for every accepted tx here
+	// (default 100k gas, at most one message).
+	sufficientFee := sdk.NewCoins(sdk.NewCoin(types.BondDenom, requiredFullFee(t, 100_000, 1)))
 	require.True(t, burn.CanReceiveUserFunds)
 
 	tests := []struct {
@@ -320,8 +343,12 @@ func TestAnteHandlerDecoratorFeePolicy(t *testing.T) {
 			}
 
 			called := false
-			next := func(ctx sdk.Context, _ sdk.Tx, _ bool) (sdk.Context, error) {
+			next := func(ctx sdk.Context, tx sdk.Tx, _ bool) (sdk.Context, error) {
 				called = true
+				if feeTx, ok := tx.(sdk.FeeTx); ok && !feeTx.GetFee().Empty() {
+					require.NoError(t, app.BankKeeper.MintCoins(ctx, minttypes.ModuleName, feeTx.GetFee()))
+					require.NoError(t, app.BankKeeper.SendCoinsFromModuleToModule(ctx, minttypes.ModuleName, authtypes.FeeCollectorName, feeTx.GetFee()))
+				}
 				return ctx, nil
 			}
 
@@ -350,7 +377,7 @@ func TestAnteHandlerDecoratorPropagatesNextError(t *testing.T) {
 		return ctx, nextErr
 	}
 
-	_, err := app.FeesKeeper.AnteHandlerDecorator(next)(ctx, feeTx{fees: sdk.NewCoins(sdk.NewInt64Coin(types.BondDenom, 110_000))}, false)
+	_, err := app.FeesKeeper.AnteHandlerDecorator(next)(ctx, feeTx{fees: sdk.NewCoins(sdk.NewCoin(types.BondDenom, requiredFullFee(t, 100_000, 0)))}, false)
 	require.ErrorIs(t, err, nextErr)
 }
 
@@ -435,9 +462,8 @@ func TestAnteHandlerDecoratorRejectsOverHardFeeCap(t *testing.T) {
 	app := l1app.Setup(t, false)
 	ctx := app.NewContext(false).WithBlockHeight(1)
 
-	params := types.DefaultParams()
-	params.MaxFeeAmount = "1000"
-	require.NoError(t, app.FeesKeeper.SetParams(ctx, params))
+	maxFee, err := types.DefaultParams().MaxFeeInt()
+	require.NoError(t, err)
 
 	called := false
 	next := func(ctx sdk.Context, _ sdk.Tx, _ bool) (sdk.Context, error) {
@@ -445,7 +471,8 @@ func TestAnteHandlerDecoratorRejectsOverHardFeeCap(t *testing.T) {
 		return ctx, nil
 	}
 
-	_, err := app.FeesKeeper.AnteHandlerDecorator(next)(ctx, feeTx{fees: sdk.NewCoins(sdk.NewInt64Coin(types.BondDenom, 1001)), gas: 1}, false)
+	// One naet above the default 5 AET hard cap must be rejected.
+	_, err = app.FeesKeeper.AnteHandlerDecorator(next)(ctx, feeTx{fees: sdk.NewCoins(sdk.NewCoin(types.BondDenom, maxFee.AddRaw(1))), gas: 1}, false)
 	require.ErrorIs(t, err, types.ErrInvalidFee)
 	require.Contains(t, err.Error(), "fee must not exceed hard cap")
 	require.False(t, called)
@@ -462,12 +489,15 @@ func TestAnteHandlerDecoratorEnforcesSenderRateLimit(t *testing.T) {
 	require.NoError(t, app.FeesKeeper.SetParams(ctx, params))
 
 	payer := sdk.AccAddress{1, 2, 3}
-	next := func(ctx sdk.Context, _ sdk.Tx, _ bool) (sdk.Context, error) {
+	next := func(ctx sdk.Context, tx sdk.Tx, _ bool) (sdk.Context, error) {
+		feeTx := tx.(sdk.FeeTx)
+		require.NoError(t, app.BankKeeper.MintCoins(ctx, minttypes.ModuleName, feeTx.GetFee()))
+		require.NoError(t, app.BankKeeper.SendCoinsFromModuleToModule(ctx, minttypes.ModuleName, authtypes.FeeCollectorName, feeTx.GetFee()))
 		return ctx, nil
 	}
 	handler := app.FeesKeeper.AnteHandlerDecorator(next)
 
-	tx := feeTx{fees: sdk.NewCoins(sdk.NewInt64Coin(types.BondDenom, 100_101)), payer: payer}
+	tx := feeTx{fees: sdk.NewCoins(sdk.NewCoin(types.BondDenom, requiredFullFee(t, 100_000, 0))), payer: payer}
 
 	_, err := handler(ctx, tx, false)
 	require.NoError(t, err)
@@ -489,12 +519,15 @@ func TestAnteHandlerDecoratorResetsRateLimitByBlockHeight(t *testing.T) {
 	require.NoError(t, app.FeesKeeper.SetParams(ctx, params))
 
 	payer := sdk.AccAddress{9, 9, 9}
-	next := func(ctx sdk.Context, _ sdk.Tx, _ bool) (sdk.Context, error) {
+	next := func(ctx sdk.Context, tx sdk.Tx, _ bool) (sdk.Context, error) {
+		feeTx := tx.(sdk.FeeTx)
+		require.NoError(t, app.BankKeeper.MintCoins(ctx, minttypes.ModuleName, feeTx.GetFee()))
+		require.NoError(t, app.BankKeeper.SendCoinsFromModuleToModule(ctx, minttypes.ModuleName, authtypes.FeeCollectorName, feeTx.GetFee()))
 		return ctx, nil
 	}
 	handler := app.FeesKeeper.AnteHandlerDecorator(next)
 
-	tx := feeTx{fees: sdk.NewCoins(sdk.NewInt64Coin(types.BondDenom, 100_101)), payer: payer}
+	tx := feeTx{fees: sdk.NewCoins(sdk.NewCoin(types.BondDenom, requiredFullFee(t, 100_000, 0))), payer: payer}
 
 	_, err := handler(ctx, tx, false)
 	require.NoError(t, err)
@@ -514,9 +547,11 @@ func TestAnteHandlerDecoratorRecordsFeesAfterDeduction(t *testing.T) {
 	params.MaxFeeAmount = "1000000000000000000"
 	require.NoError(t, app.FeesKeeper.SetParams(ctx, params))
 
-	payer := l1app.AddTestAddrsIncremental(app, ctx, 1, sdkmath.NewInt(10_000_000))[0]
+	payer := l1app.AddTestAddrsIncremental(app, ctx, 1, sdkmath.NewInt(1_000_000_000))[0]
 
-	feeAmount := int64(100_101)
+	// 0.6 AET: comfortably above the ~0.425 AET full-formula requirement for a
+	// message-less 100k-gas tx under the 0.5 AET transfer-fee policy.
+	feeAmount := int64(600_000_000)
 	fee := sdk.NewCoins(sdk.NewInt64Coin(types.BondDenom, feeAmount))
 	feeCollector := app.AccountKeeper.GetModuleAddress(authtypes.FeeCollectorName)
 	before := app.BankKeeper.GetBalance(ctx, feeCollector, types.BondDenom)
@@ -536,8 +571,8 @@ func TestAnteHandlerDecoratorRecordsFeesAfterDeduction(t *testing.T) {
 	state, err := app.FeesKeeper.GetProtocolFeeState(newCtx)
 	require.NoError(t, err)
 
-	validatorExpected := sdk.NewCoins(sdk.NewInt64Coin(types.BondDenom, 98_099))
-	communityExpected := sdk.NewCoins(sdk.NewInt64Coin(types.BondDenom, 2_002))
+	validatorExpected := sdk.NewCoins(sdk.NewInt64Coin(types.BondDenom, 588_000_000))	// 98%
+	communityExpected := sdk.NewCoins(sdk.NewInt64Coin(types.BondDenom, 12_000_000))	// 2%
 	require.Equal(t, sdk.NewCoins(sdk.NewInt64Coin(types.BondDenom, feeAmount)), state.TotalCollected)
 	require.Equal(t, validatorExpected, state.ValidatorRewards)
 	require.Equal(t, communityExpected, state.CommunityPool)

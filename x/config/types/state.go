@@ -213,14 +213,17 @@ func (c ConfigChange) Validate(params Params) error {
 	if err := addressing.ValidateAuthorityAddress("config change submitter", c.SubmittedBy); err != nil {
 		return err
 	}
-	for label, value := range map[string]string{
-		"config change approver":	c.ApprovedBy,
-		"config change rejector":	c.RejectedBy,
-		"config change canceller":	c.CancelledBy,
-		"config change executor":	c.ExecutedBy,
+	for _, entry := range []struct {
+		label string
+		value string
+	}{
+		{label: "config change approver", value: c.ApprovedBy},
+		{label: "config change rejector", value: c.RejectedBy},
+		{label: "config change canceller", value: c.CancelledBy},
+		{label: "config change executor", value: c.ExecutedBy},
 	} {
-		if strings.TrimSpace(value) != "" {
-			if err := addressing.ValidateAuthorityAddress(label, value); err != nil {
+		if strings.TrimSpace(entry.value) != "" {
+			if err := addressing.ValidateAuthorityAddress(entry.label, entry.value); err != nil {
 				return err
 			}
 		}

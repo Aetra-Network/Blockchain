@@ -32,6 +32,7 @@ func TestUserFacingAddressFormats(t *testing.T) {
 
 	text := addressing.FormatAccAddress(addr)
 	requireUserFriendlyAddress(t, text)
+	require.Equal(t, "AEJkAs7HLyb3MltB8GgiIiIiIiIiIiIiIiIiIiIiIiIiIg", text)
 
 	parsed, err := addressing.ParseAccAddress(text)
 	require.NoError(t, err)
@@ -196,8 +197,9 @@ func TestDerivePubKeyAddressGoldenVectors(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Equal(t, addressing.AddressRoleAccount, account.Role)
-	require.Equal(t, "AEAAAQAAAAAAAAAAAAAAAHUedugZkZbUVJQcRdGzoyPxQzvW", account.User)
-	require.Equal(t, "4:000000000000000000000000751e76e8199196d454941c45d1b3a323f1433bd6", account.Raw)
+	require.Equal(t, "AEJkAmWJMy8C610WXuOHXy8gau5U1YrjvPUXF70Dm-xQ4Pt8t-Y4NkVtpC-wIA", account.User)
+	require.Equal(t, "4:875f2f206aee54d58ae3bcf51717bd039bec50e0fb7cb7e63836456da42fb020", account.Raw)
+	require.False(t, addressing.IsLegacyPaddedRawAddress(mustParseRaw(t, account.Raw)), "derived raw address must not use legacy zero-padding")
 	require.Equal(t, account.User, validator.User)
 	require.Equal(t, account.Raw, validator.Raw)
 	require.Equal(t, account.User, consensus.User)
@@ -205,7 +207,14 @@ func TestDerivePubKeyAddressGoldenVectors(t *testing.T) {
 	require.NoError(t, account.Validate())
 	require.NoError(t, validator.Validate())
 	require.NoError(t, consensus.Validate())
-	require.Equal(t, account.User, "AEAAAQAAAAAAAAAAAAAAAHUedugZkZbUVJQcRdGzoyPxQzvW")
+	require.Equal(t, account.User, "AEJkAmWJMy8C610WXuOHXy8gau5U1YrjvPUXF70Dm-xQ4Pt8t-Y4NkVtpC-wIA")
+}
+
+func mustParseRaw(t *testing.T, raw string) []byte {
+	t.Helper()
+	bz, err := addressing.Parse(raw)
+	require.NoError(t, err)
+	return bz
 }
 
 func mustDecodeHex(t *testing.T, text string) []byte {
@@ -213,6 +222,42 @@ func mustDecodeHex(t *testing.T, text string) []byte {
 	out, err := hex.DecodeString(text)
 	require.NoError(t, err)
 	return out
+}
+
+// TestUserFriendlyLongAddressRejectsSingleCharTypo is the regression guard for
+// SEC-MED #13: the 32-byte v2 user-friendly address (the primary form of every
+// pubkey-derived account) must carry a checksum so a single-character typo can
+// never silently decode into a DIFFERENT valid address (fund loss).
+func TestUserFriendlyLongAddressRejectsSingleCharTypo(t *testing.T) {
+	raw := mustDecodeHex(t, "875f2f206aee54d58ae3bcf51717bd039bec50e0fb7cb7e63836456da42fb020")
+
+	text, err := addressing.FormatUserFriendly(raw)
+	require.NoError(t, err)
+	// magic(3)+version(1)+checksum(10)+payload(32) = 46 bytes -> 62 base64url chars.
+	require.Len(t, text, 62)
+	require.True(t, strings.HasPrefix(text, "AEJk"))
+
+	parsed, err := addressing.Parse(text)
+	require.NoError(t, err)
+	require.Equal(t, raw, parsed)
+
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+	variants := 0
+	for i := 0; i < len(text); i++ {
+		for j := 0; j < len(alphabet); j++ {
+			if alphabet[j] == text[i] {
+				continue
+			}
+			candidate := text[:i] + string(alphabet[j]) + text[i+1:]
+			variants++
+			bz, perr := addressing.Parse(candidate)
+			if perr == nil {
+				require.Equalf(t, raw, bz,
+					"1-char typo %q decoded to a DIFFERENT valid address %x (fund-loss risk)", candidate, bz)
+			}
+		}
+	}
+	require.Positive(t, variants)
 }
 
 func bytes20(fill byte) []byte {
@@ -228,6 +273,6 @@ func requireUserFriendlyAddress(t *testing.T, text string) {
 
 	require.Len(t, text, addressing.UserFriendlyLength)
 	require.True(t, strings.HasPrefix(text, addressing.UserFriendlyPrefix))
-	require.Regexp(t, `^[A-Za-z0-9_-]{48}$`, text)
+	require.Regexp(t, `^[A-Za-z0-9_-]{46}$`, text)
 	require.NotRegexp(t, `^[a-z]+1`, text)
 }

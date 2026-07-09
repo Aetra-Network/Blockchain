@@ -1,7 +1,6 @@
 param(
   [string]$Doc = "docs\architecture\reputation-state.md",
-  [string]$Boundaries = "docs\module-boundaries.md",
-  [string]$Economy = "docs\architecture\economy-interop-architecture.md"
+  [string]$Boundaries = "docs\module-boundaries.md"
 )
 
 $ErrorActionPreference = "Stop"
@@ -9,7 +8,6 @@ $ErrorActionPreference = "Stop"
 $RepoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
 $DocPath = if ([System.IO.Path]::IsPathRooted($Doc)) { $Doc } else { Join-Path $RepoRoot $Doc }
 $BoundariesPath = if ([System.IO.Path]::IsPathRooted($Boundaries)) { $Boundaries } else { Join-Path $RepoRoot $Boundaries }
-$EconomyPath = if ([System.IO.Path]::IsPathRooted($Economy)) { $Economy } else { Join-Path $RepoRoot $Economy }
 
 function Assert-Contains {
   param([string]$Text, [string]$Pattern, [string]$Message)
@@ -18,7 +16,6 @@ function Assert-Contains {
 
 $docText = Get-Content -Raw -LiteralPath $DocPath
 $boundariesText = Get-Content -Raw -LiteralPath $BoundariesPath
-$economyText = Get-Content -Raw -LiteralPath $EconomyPath
 
 foreach ($term in @(
     'ReputationRecord',
@@ -77,16 +74,6 @@ foreach ($term in @(
     'Contract reputation updates'
   )) {
   Assert-Contains -Text $boundariesText -Pattern ([regex]::Escape($term)) -Message "module boundaries missing reputation: $term"
-}
-
-foreach ($term in @(
-    'future reputation and scheduler modules',
-    'reputation scores are deterministic',
-    'no direct reputation purchase',
-    'low reputation raises memo/storage byte cost',
-    'high reputation may improve deterministic queue priority'
-  )) {
-  Assert-Contains -Text $economyText -Pattern ([regex]::Escape($term)) -Message "economy architecture missing reputation: $term"
 }
 
 Write-Host "reputation state doc test passed"

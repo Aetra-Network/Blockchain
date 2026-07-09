@@ -286,4 +286,4 @@ Build a local prototype package after the checks pass:
 .\scripts\release\prototype-package.ps1 -Version prototype-local -TargetOS windows -TargetArch amd64
 ```
 
-See also [Executable Prototype Contract](prototype-contract.md), [Operator Troubleshooting Runbook](operator-troubleshooting.md), [Prototype Acceptance Suite](prototype-acceptance-suite.md), [Prototype Release Package](release/prototype-package.md), [Prototype Query Surface](query-surface.md), and [Prototype Observability](observability.md).
+See also [Operator Troubleshooting Runbook](operator-troubleshooting.md), [Prototype Release Package](release/prototype-package.md), [Prototype Query Surface](query-surface.md), and [Prototype Observability](observability.md).

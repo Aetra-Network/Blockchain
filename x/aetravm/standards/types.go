@@ -26,14 +26,22 @@ type Registry struct {
 func DefaultRegistry() Registry {
 	types := []TypeDescriptor{
 		{Name: "Address", Version: CanonicalVersion, Kind: "scalar", Arity: 0, Description: "chain-bound account or contract address"},
+		{Name: "Bytes", Version: CanonicalVersion, Kind: "scalar", Arity: 0, Description: "arbitrary byte payload"},
 		{Name: "Coins", Version: CanonicalVersion, Kind: "scalar", Arity: 0, Description: "non-negative coin amount in base units"},
-		{Name: "Cell", Version: CanonicalVersion, Kind: "cell", Arity: 0, Description: "canonical chunk/cell payload root"},
-		{Name: "Slice", Version: CanonicalVersion, Kind: "cell", Arity: 0, Description: "bounded view over a Cell payload"},
-		{Name: "Ref", Version: CanonicalVersion, Kind: "generic", Arity: 1, Description: "typed reference to an out-of-line payload"},
+		{Name: "Chunk", Version: CanonicalVersion, Kind: "chunk", Arity: 0, Description: "canonical public payload root"},
+		{Name: "Code", Version: CanonicalVersion, Kind: "chunk", Arity: 0, Description: "canonical contract bytecode snapshot"},
+		{Name: "Hash", Version: CanonicalVersion, Kind: "scalar", Arity: 0, Description: "deterministic 32-byte digest"},
+		{Name: "Segment", Version: CanonicalVersion, Kind: "chunk", Arity: 0, Description: "bounded read-only view over a Chunk"},
+		{Name: "StateInit", Version: CanonicalVersion, Kind: "struct", Arity: 0, Description: "canonical deployment descriptor"},
+		{Name: "Timestamp", Version: CanonicalVersion, Kind: "scalar", Arity: 0, Description: "block or transaction timestamp"},
+		{Name: "ChunkRef", Version: CanonicalVersion, Kind: "generic", Arity: 1, Description: "typed out-of-line reference optimized for deferred loading"},
+		{Name: "ChunkLink", Version: CanonicalVersion, Kind: "generic", Arity: 1, Description: "typed out-of-line reference used when the relationship is part of the public ABI"},
 		{Name: "Result", Version: CanonicalVersion, Kind: "generic", Arity: 2, Description: "success or error value"},
 		{Name: "Option", Version: CanonicalVersion, Kind: "generic", Arity: 1, Description: "optional value"},
 		{Name: "List", Version: CanonicalVersion, Kind: "generic", Arity: 1, Description: "bounded canonical list"},
 		{Name: "Map", Version: CanonicalVersion, Kind: "generic", Arity: 2, Description: "deterministically ordered key/value map"},
+		{Name: "Dict", Version: CanonicalVersion, Kind: "generic", Arity: 2, Description: "alias of Map for ordered key/value dictionaries"},
+		{Name: "MapEntry", Version: CanonicalVersion, Kind: "generic", Arity: 2, Description: "key/value pair yielded by map iteration"},
 	}
 	sort.Slice(types, func(i, j int) bool { return strings.ToLower(types[i].Name) < strings.ToLower(types[j].Name) })
 	return Registry{Version: CanonicalVersion, Types: types}

@@ -105,6 +105,34 @@ func TestPerEpochSpendCapEnforced(t *testing.T) {
 	require.ErrorIs(t, err, types.ErrSpendCapExceeded)
 }
 
+// TestSpendCapUsesDerivedEpochNotCallerField is the regression guard for
+// SEC-LOW: treasury spend epoch is caller-supplied. Two spends executed in the
+// same on-chain epoch must accumulate against the per-epoch cap even when the
+// caller passes different Epoch values to try to reset the accumulator.
+func TestSpendCapUsesDerivedEpochNotCallerField(t *testing.T) {
+	app := l1app.Setup(t, false)
+	ctx := app.NewContext(false) // height 0 -> derived epoch 1
+	addrs := l1app.AddTestAddrsWithCoins(t, app, ctx, 2, sdk.NewCoins())
+	proposer, recipient := addrs[0], addrs[1]
+	l1app.FundTestAddr(t, app, ctx, proposer, sdk.NewCoins(coin(10)))
+	fundTreasury(t, app, ctx, 1_000)
+	params, err := app.TreasuryKeeper.GetParams(ctx)
+	require.NoError(t, err)
+	params.PerEpochSpendCap = coin(100)
+	require.NoError(t, app.TreasuryKeeper.SetParams(ctx, params))
+	msgServer := treasurykeeper.NewMsgServerImpl(app.TreasuryKeeper)
+
+	first := submitAndApprove(t, ctx, msgServer, app.TreasuryKeeper.Authority(), proposer, recipient, 80, 1, 0)
+	_, err = msgServer.ExecuteTreasurySpend(ctx, &types.MsgExecuteTreasurySpend{Authority: app.TreasuryKeeper.Authority(), SpendId: first.Id, Epoch: 8})
+	require.NoError(t, err)
+
+	// The caller tries a fresh epoch number to dodge the cap; the derived epoch
+	// (still 1) is unchanged, so the accumulator applies and the spend fails.
+	second := submitAndApprove(t, ctx, msgServer, app.TreasuryKeeper.Authority(), proposer, recipient, 30, 1, 0)
+	_, err = msgServer.ExecuteTreasurySpend(ctx, &types.MsgExecuteTreasurySpend{Authority: app.TreasuryKeeper.Authority(), SpendId: second.Id, Epoch: 999})
+	require.ErrorIs(t, err, types.ErrSpendCapExceeded)
+}
+
 func TestVestingReleaseSchedule(t *testing.T) {
 	app := l1app.Setup(t, false)
 	ctx := app.NewContext(false)
@@ -115,11 +143,19 @@ func TestVestingReleaseSchedule(t *testing.T) {
 	msgServer := treasurykeeper.NewMsgServerImpl(app.TreasuryKeeper)
 	spend := submitAndApprove(t, ctx, msgServer, app.TreasuryKeeper.Authority(), proposer, recipient, 50, 9, 10)
 
-	_, err := msgServer.ExecuteTreasurySpend(ctx, &types.MsgExecuteTreasurySpend{Authority: app.TreasuryKeeper.Authority(), SpendId: spend.Id, Epoch: 9})
+	// The enforcement epoch is derived from block height, not the msg field.
+	atEpoch := func(epoch uint64) sdk.Context {
+		return ctx.WithBlockHeight(int64((epoch - 1) * types.SpendEpochLengthBlocks))
+	}
+
+	// On-chain epoch 9 (< VestingEndEpoch 10): release is rejected even though
+	// the caller claims epoch 10 in the message.
+	_, err := msgServer.ExecuteTreasurySpend(atEpoch(9), &types.MsgExecuteTreasurySpend{Authority: app.TreasuryKeeper.Authority(), SpendId: spend.Id, Epoch: 10})
 	require.ErrorIs(t, err, types.ErrInvalidSpend)
 	require.True(t, app.BankKeeper.GetBalance(ctx, recipient, types.BaseDenom).IsZero())
 
-	_, err = msgServer.ExecuteTreasurySpend(ctx, &types.MsgExecuteTreasurySpend{Authority: app.TreasuryKeeper.Authority(), SpendId: spend.Id, Epoch: 10})
+	// On-chain epoch 10 (>= VestingEndEpoch 10): release is allowed.
+	_, err = msgServer.ExecuteTreasurySpend(atEpoch(10), &types.MsgExecuteTreasurySpend{Authority: app.TreasuryKeeper.Authority(), SpendId: spend.Id, Epoch: 10})
 	require.NoError(t, err)
 	require.Equal(t, sdkmath.NewInt(50), app.BankKeeper.GetBalance(ctx, recipient, types.BaseDenom).Amount)
 }

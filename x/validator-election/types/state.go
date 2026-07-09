@@ -233,12 +233,15 @@ func (s State) Validate(params Params) error {
 	if err := s.ElectionWindow.Validate(); err != nil {
 		return err
 	}
-	for label, set := range map[string][]ValidatorPower{
-		"previous": s.PreviousValidatorSet,
-		"current":  s.CurrentValidatorSet,
-		"next":     s.NextValidatorSet,
+	for _, entry := range []struct {
+		label string
+		set   []ValidatorPower
+	}{
+		{label: "previous", set: s.PreviousValidatorSet},
+		{label: "current", set: s.CurrentValidatorSet},
+		{label: "next", set: s.NextValidatorSet},
 	} {
-		if err := validateValidatorSet(label, set, params, label == "next"); err != nil {
+		if err := validateValidatorSet(entry.label, entry.set, params, entry.label == "next"); err != nil {
 			return err
 		}
 	}

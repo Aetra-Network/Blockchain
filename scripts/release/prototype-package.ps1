@@ -1,6 +1,7 @@
 param(
   [string]$Version = "",
   [string]$Commit = "",
+  [string]$BufVersion = "",
   [ValidateSet("windows", "linux")]
   [string]$TargetOS = "windows",
   [ValidateSet("amd64", "arm64")]
@@ -116,6 +117,13 @@ function Invoke-ReleaseCompressArchive {
 }
 
 $RepoRoot = Get-ReleaseRepoRoot
+$BufVersion = if ([string]::IsNullOrWhiteSpace($BufVersion)) {
+  if ($env:BUF_VERSION) { $env:BUF_VERSION } else { "1.70.0" }
+} else {
+  $BufVersion
+}
+$Buf = & (Join-Path $RepoRoot "scripts\tooling\ensure-buf.ps1") -Version $BufVersion
+
 Push-Location $RepoRoot
 try {
   if ([string]::IsNullOrWhiteSpace($Commit)) {
@@ -133,7 +141,7 @@ try {
   if ($RunChecks) {
     Invoke-ReleaseCheck -Name "go test" -Script { go test -p=1 ./... }
     Invoke-ReleaseCheck -Name "go vet" -Script { go vet -p=1 ./... }
-    Invoke-ReleaseCheck -Name "buf lint" -Script { buf lint }
+    Invoke-ReleaseCheck -Name "buf lint" -Script { & $Buf lint }
     Invoke-ReleaseCheck -Name "prototype audit" -Script { & .\scripts\security\prototype-audit.ps1 -Profile Fast }
   }
   if ($RunAcceptanceSmoke) {
@@ -244,13 +252,14 @@ Prototype tx fees use `naet`, for example `--fees 1000000naet`.
     required_checks = @(
       "go test -p=1 ./...",
       "go vet -p=1 ./...",
-      "buf lint",
+      "scripts/tooling/ensure-buf.ps1 + buf lint",
       "scripts/security/prototype-audit.ps1 -Profile Fast or stronger",
       "tests/e2e/prototype_acceptance.ps1 -Profile Smoke"
     )
     checks_executed = [ordered]@{
       run_checks           = [bool]$RunChecks
       run_acceptance_smoke = [bool]$RunAcceptanceSmoke
+      buf_version          = $BufVersion
     }
     evidence        = @($EvidencePath | ForEach-Object { Split-Path $_ -Leaf })
     excluded        = @(".work", ".localnet", "keyrings", "mnemonics", "validator private keys", "node keys", ".env files", "diagnostic bundles")
@@ -271,7 +280,7 @@ Required before publishing:
 
 - `go test -p=1 ./...`
 - `go vet -p=1 ./...`
-- `buf lint`
+- `scripts\tooling\ensure-buf.ps1` pinned by `BUF_VERSION`, then `buf lint`
 - `scripts\security\prototype-audit.ps1 -Profile Fast` or stronger
 - `tests\e2e\prototype_acceptance.ps1 -Profile Smoke`
 

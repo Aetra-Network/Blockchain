@@ -46,6 +46,7 @@ func BuildBounceMessage(msg MessageEnvelope, refund RefundCalculation, forwardin
 		Destination:		append(sdk.AccAddress(nil), msg.Source...),
 		Value:			sdk.NewCoin(appparams.BaseDenom, refund.Amount),
 		Opcode:			BounceOpcode,
+		OriginalOpcode:		msg.Opcode,
 		QueryID:		msg.QueryID,
 		Body:			append([]byte(nil), msg.Body...),
 		Bounce:			false,

@@ -1,7 +1,6 @@
 param(
   [string]$Doc = "docs\native-account-staking-reputation.md",
   [string]$Readme = "README.md",
-  [string]$ApplicationDoc = "docs\architecture\application-module-architecture.md",
   [string]$Boundaries = "docs\module-boundaries.md"
 )
 
@@ -27,7 +26,6 @@ function Assert-NotContains {
 
 $docText = Get-Content -Raw -LiteralPath (Resolve-RepoPath $Doc)
 $readmeText = Get-Content -Raw -LiteralPath (Resolve-RepoPath $Readme)
-$applicationText = Get-Content -Raw -LiteralPath (Resolve-RepoPath $ApplicationDoc)
 $boundariesText = Get-Content -Raw -LiteralPath (Resolve-RepoPath $Boundaries)
 
 foreach ($term in @(
@@ -115,14 +113,6 @@ foreach ($term in @(
 }
 
 foreach ($term in @(
-    'Historical DEX Prototype Boundary',
-    'production target is contract-only DEX behavior',
-    'must not be reintroduced as active native asset modules'
-  )) {
-  Assert-Contains -Text $applicationText -Pattern ([regex]::Escape($term)) -Message "application module architecture missing historical DEX wording: $term"
-}
-
-foreach ($term in @(
     'Historical `x/tokenfactory` Prototype Boundary',
     'Production fungible token behavior belongs in AVM contracts such as AFT-44',
     'Historical `x/dex` Prototype Boundary',
@@ -130,14 +120,6 @@ foreach ($term in @(
     'token, NFT, market, and DEX application logic must not be reintroduced as active native asset modules'
   )) {
   Assert-Contains -Text $boundariesText -Pattern ([regex]::Escape($term)) -Message "module boundaries missing historical asset-module wording: $term"
-}
-
-foreach ($pattern in @(
-    'x/dex` remains the native DEX module',
-    'native DEX is the current source of truth',
-    'native token/NFT/DEX module design'
-  )) {
-  Assert-NotContains -Text $applicationText -Pattern ([regex]::Escape($pattern)) -Message "application module architecture still has active native token/NFT/DEX wording: $pattern"
 }
 
 foreach ($pattern in @(

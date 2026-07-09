@@ -154,17 +154,17 @@ func TestAllocationWeightsAreDeterministicAndPolicyBounded(t *testing.T) {
 	}
 	weights, err := params.AllocationWeights(candidates)
 	require.NoError(t, err)
-	require.Equal(t, aePoolAddress(t, "22"), weights[0].ValidatorAddress)
-	require.Equal(t, aePoolAddress(t, "33"), weights[1].ValidatorAddress)
-	require.Equal(t, aePoolAddress(t, "44"), weights[2].ValidatorAddress)
-	require.Equal(t, uint32(10_000), weights[0].WeightBps)
+	require.Equal(t, aePoolAddress(t, "33"), weights[0].ValidatorAddress)
+	require.Equal(t, aePoolAddress(t, "44"), weights[1].ValidatorAddress)
+	require.Equal(t, aePoolAddress(t, "22"), weights[2].ValidatorAddress)
+	require.Zero(t, weights[0].WeightBps)
 	require.Zero(t, weights[1].WeightBps)
-	require.Zero(t, weights[2].WeightBps)
+	require.Equal(t, uint32(10_000), weights[2].WeightBps)
 
 	candidates[1].UptimeBps = 1_000
 	changed, err := params.AllocationWeights(candidates)
 	require.NoError(t, err)
-	require.Less(t, changed[0].Score, weights[0].Score)
+	require.Less(t, changed[2].Score, weights[2].Score)
 }
 
 func TestGovernanceParamsUpdateAuthorizationAndRoundTrip(t *testing.T) {
@@ -561,8 +561,12 @@ func TestSyncPoolRewardsProportionalSharesAndDeterministicRounding(t *testing.T)
 	deposit(t, &k, pool.PoolID, a, 1_000, 2)
 	deposit(t, &k, pool.PoolID, b, 3_000, 3)
 
-	require.Equal(t, uint64(333_333_333), types.RewardDelta(1, 3))
-	require.Equal(t, uint64(0), types.IndexedRewardAmount(types.RewardDelta(1, 3), 3))
+	rd13, err := types.RewardDelta(1, 3)
+	require.NoError(t, err)
+	require.Equal(t, uint64(333_333_333), rd13)
+	ira, err := types.IndexedRewardAmount(rd13, 3)
+	require.NoError(t, err)
+	require.Equal(t, uint64(0), ira)
 
 	summary, err := k.SyncPoolRewards(types.MsgSyncPoolRewards{
 		Authority:          prototype.DefaultAuthority,
@@ -838,8 +842,12 @@ func TestSlashAppliesProportionally(t *testing.T) {
 	require.True(t, found)
 	shareB, found := k.PoolDelegator(pool.PoolID, b)
 	require.True(t, found)
-	require.Equal(t, uint64(800), types.ShareValue(slashed, shareA.Shares))
-	require.Equal(t, uint64(2_400), types.ShareValue(slashed, shareB.Shares))
+	shareAValue, err := types.ShareValue(slashed, shareA.Shares)
+	require.NoError(t, err)
+	require.Equal(t, uint64(800), shareAValue)
+	shareBValue, err := types.ShareValue(slashed, shareB.Shares)
+	require.NoError(t, err)
+	require.Equal(t, uint64(2_400), shareBValue)
 }
 
 func TestPoolCannotWithdrawMoreThanTotalStake(t *testing.T) {

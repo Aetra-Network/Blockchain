@@ -28,14 +28,15 @@ func TestValidatorAboveCapRejectsNewDelegation(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	require.Equal(t, operator(0x11), res.Network.Validators[0].OperatorAddress)
-	require.Equal(t, uint32(5_000), res.Network.Validators[0].RawVotingPowerBps)
-	require.Equal(t, uint32(300), res.Network.Validators[0].EffectiveVotingPowerBps)
-	require.Equal(t, uint32(4_700), res.Network.Validators[0].OverflowVotingPowerBps())
-	require.Equal(t, uint64(3), res.Network.Validators[0].RewardableVotingPower(res.Network.TotalVotingPower))
-	require.Equal(t, uint64(47), res.Network.Validators[0].OverflowVotingPower(res.Network.TotalVotingPower))
-	require.True(t, res.Network.Validators[0].AboveHardCap)
-	require.False(t, res.Network.Validators[0].DelegationAllowed)
+	validator, found := findConcentration(res.Network.Validators, operator(0x11))
+	require.True(t, found)
+	require.Equal(t, uint32(5_000), validator.RawVotingPowerBps)
+	require.Equal(t, uint32(300), validator.EffectiveVotingPowerBps)
+	require.Equal(t, uint32(4_700), validator.OverflowVotingPowerBps())
+	require.Equal(t, uint64(3), validator.RewardableVotingPower(res.Network.TotalVotingPower))
+	require.Equal(t, uint64(47), validator.OverflowVotingPower(res.Network.TotalVotingPower))
+	require.True(t, validator.AboveHardCap)
+	require.False(t, validator.DelegationAllowed)
 
 	allowed, err := app.StakeConcentrationKeeper.CanAcceptDelegation(ctx, operator(0x11))
 	require.NoError(t, err)
@@ -81,7 +82,8 @@ func TestRewardModifierApplies(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	metric := res.Network.Validators[0]
+	metric, found := findConcentration(res.Network.Validators, operator(0x11))
+	require.True(t, found)
 	require.Equal(t, uint32(4_000), metric.RawVotingPowerBps)
 	require.Equal(t, uint32(8_847), metric.RewardModifierBps)
 	require.Less(t, metric.RewardModifierBps, types.BasisPoints)

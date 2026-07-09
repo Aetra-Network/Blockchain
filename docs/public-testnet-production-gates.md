@@ -2,9 +2,7 @@
 
 This file is the release gate ledger for Aetra public testnet and later
 production readiness. It is stricter than the prototype acceptance suite and
-does not replace module-specific security checklists. The full Track 10 test
-matrix, production gate, build order, and economic summary are recorded in
-[Test And Production Gates](test-production-gates.md).
+does not replace module-specific security checklists.
 
 ## Public Testnet Gate
 
@@ -18,7 +16,7 @@ Required checks:
   - `scripts\testnet\public-testnet-readiness-report.ps1 -OutputFormat Json`
 - Proto lint is mandatory and reproducible:
   - `buf lint` passes in CI and in the local readiness workflow.
-  - The testnet readiness CI job installs `buf` with `bufbuild/buf-setup-action@v1`.
+  - The testnet readiness CI job installs `buf` through `scripts\tooling\ensure-buf.ps1`, pinned by `BUF_VERSION`.
 - `go test ./...` passes.
 - `go vet ./...` passes.
 - Security scans pass or findings are triaged:
@@ -27,6 +25,7 @@ Required checks:
   - CodeQL
   - gitleaks
   - dependency review
+  - triage ledger: `docs\security\security-gates-triage.md`
 - Deterministic execution gate passes:
   - `scripts\security\determinism-gate.ps1`
 - 3-validator, 5-validator, and 10-validator localnet profiles pass:
@@ -34,6 +33,9 @@ Required checks:
   - `scripts\testnet\public-testnet-preflight.ps1 -ValidatorProfile 5`
   - `scripts\testnet\public-testnet-preflight.ps1 -ValidatorProfile 10`
   - `scripts\testnet\public-testnet-preflight.ps1 -ValidatorProfile All`
+  - archived release-binary evidence for those profiles is kept with logs,
+    binary version JSON, chain-id, genesis hash, checksum, and run summary
+    under `.work\public-testnet-preflight-evidence\release-evidence-*`
 - Snapshot and state-sync work from published trust height, trust hash, and at
   least two RPC servers.
 - Validator onboarding docs are clean and tested from a fresh machine or clean
@@ -43,11 +45,23 @@ Required checks:
 - Incident response and rollback docs are tested.
 - CosmWasm smoke passes if CosmWasm is enabled:
   - `tests\e2e\cosmwasm_smoke.ps1 -EnableWasm`
-- AVM smoke passes if AVM is enabled:
+- AVM gates pass if the gated AVM contract track is enabled:
   - `go test ./x/aetravm/compiler ./x/aetravm/avm ./x/aetravm/async ./cmd/l1d/cmd`
+  - `go test ./x/aetravm/compiler ./x/aetravm/avm ./x/aetravm/async ./x/aetravm/conformance ./x/contracts/types ./x/contracts/keeper ./cmd/l1d/cmd`
   - AVM developer tooling exists, but production AVM runtime wiring is still
-    behind the keeper gate.
-- Contract standard smoke passes if async contracts are enabled:
+    behind the keeper gate until the keeper/export-import/malicious-contract
+    evidence is green.
+- AVM contract smoke passes if AVM contracts are enabled:
+  - `tests\e2e\avm_contract_smoke.ps1`
+  - `go test ./x/contracts/types ./x/contracts/keeper ./x/aetravm/conformance`
+  - contract standards must prove upload, instantiate, execute, query,
+    migrate, and negative-case coverage through AVM contracts rather than
+    native asset modules.
+  - contract smoke now includes counter, treasury, token, NFT, and DEX-style
+    lifecycle coverage plus a measured-limits review gate for gas, memory,
+    code size, queue depth, and state growth.
+- Launch evidence bundle exists for operators:
+  - `scripts\testnet\launch-evidence-bundle.ps1`
 - E2E smoke command list is current:
   - `docs\public-testnet-e2e-smoke-commands.md`
 - Long-running evidence checklist exists and has owners before launch:
@@ -57,6 +71,13 @@ Blocking rule:
 
 - Any untriaged `Critical` or `High` fund-safety, consensus-safety, or
   secret-leak finding blocks public testnet.
+- The same rule blocks production: any untriaged `Critical` or `High`
+  finding in `docs\security\security-gates-triage.md` is a production blocker
+  until it has owner, severity, impact bucket, mitigation, target milestone,
+  and status.
+- A finding is not triaged unless it has owner, severity, impact bucket,
+  mitigation, target milestone, and status in
+  `docs\security\security-gates-triage.md`.
 - Any required runtime module that is only prototype/spec state blocks public
   testnet. The readiness report must explicitly fail if AVM/contracts,
   native-account, official pool staking, storage rent enforcement, governance
@@ -86,14 +107,10 @@ Required gates:
 - Load score and routing simulator pass:
   - `go test ./x/load/... ./x/routing/...`
   - `aetrad execution-os smoke --profile execution-os-sim`
-- Sharding simulator pass:
-  - `go test ./x/sharding/sim`
 - Mesh simulator pass:
   - `go test ./x/mesh/...`
-- Identity executable spec pass:
-  - `go test ./x/identity/types`
 - VM readiness tests pass:
-  - `go test ./x/aetravm/avm ./x/aetravm/async ./x/vm/types`
+  - `go test ./x/aetravm/avm ./x/aetravm/async ./x/aetravm/messageabi`
 - Security scans pass or findings are owner-triaged:
   - `govulncheck`
   - `gosec`
@@ -182,8 +199,8 @@ Required production evidence:
 
 Production exclusions:
 
-- Sharding remains `sharding R&D` or `experimental sharding` until
-  `docs/architecture/sharding-rd.md` production gate is complete.
+- Sharding is out of scope for launch; any future sharding work restarts from a
+  new R&D gate before any production claim.
 - CosmWasm remains disabled unless explicitly enabled by config and gate tests.
 - AVM remains non-production until keeper wiring, adversarial tests, fuzz
   tests, export/import, and audit gates are complete.
@@ -201,8 +218,6 @@ Production exclusions:
    - Implement ASBT-67 soulbound item
 6. Implement contract standards for user-created assets.
 9. Gate CosmWasm behind explicit config and tests.
-10. Start sharding simulator and spec.
-11. Only after simulator and audit, prototype masterchain/workchain/shardchain.
 
 ## Evidence Map
 
@@ -212,20 +227,19 @@ Production exclusions:
 | Security scans | `docs/security/security-audit-pack.md`, `.github/workflows/security.yml` |
 | Determinism | `scripts\security\determinism-gate.ps1`, `docs/security/prototype-audit-gate.md` |
 | Localnet 3/5/10 profiles | `scripts\testnet\public-testnet-preflight.ps1` |
-| Snapshot/state-sync | `docs/public-testnet-preparation.md`, `scripts\localnet\snapshot.ps1`, `scripts\localnet\statesync.ps1` |
+| Snapshot/state-sync | `docs/public-testnet-preparation.md`, `scripts\localnet\snapshot.ps1`, `scripts\localnet\statesync.ps1`, `scripts\localnet\state-sync-drill.ps1`, `scripts\localnet\snapshot-restore-drill.ps1` |
+| Fresh validator onboarding | `docs/validator-onboarding.md`, `scripts\localnet\validator-onboarding-drill.ps1` |
 | Load/routing simulator | `x/load`, `x/routing`, `aetrad execution-os smoke --profile execution-os-sim` |
-| Sharding simulator | `x/sharding/sim`, `docs/architecture/sharding-rd.md` |
 | Mesh simulator | `x/mesh`, `tests/adversarial/modular_execution_invariants_test.go` |
-| Identity executable spec | `x/identity/types` |
-| VM readiness | `x/aetravm/avm`, `x/aetravm/async`, `x/vm/types`, `app/wasmconfig` |
+| VM readiness | `x/aetravm/avm`, `x/aetravm/async`, `x/aetravm/messageabi`, `app/wasmconfig` |
 | Validator onboarding | `docs/validator-onboarding.md` |
+| Launch evidence bundle | `scripts\testnet\launch-evidence-bundle.ps1` |
 | Faucet | `docs/public-testnet-preparation.md#faucet-plan` |
 | Explorer/indexer | `docs/public-testnet-preparation.md#explorer-and-indexer-plan` |
 | Incident/rollback | `docs/testnet-incident-response.md`, `docs/public-testnet-preparation.md#rollback-and-restart-procedure` |
 | CosmWasm | `app/wasmconfig`, `tests\e2e\cosmwasm_smoke.ps1`, `docs/security/cosmwasm-readiness.md` |
 | AVM | `x/aetravm/avm`, `docs/architecture/avm.md` |
 | Contract standards | `docs/standards` |
-| Sharding R&D | `x/sharding/sim`, `docs/architecture/sharding-rd.md` |
 
 ## Decision Record
 

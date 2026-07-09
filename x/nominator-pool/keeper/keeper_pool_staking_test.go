@@ -277,8 +277,8 @@ func TestInjectAndRebalanceAllocationsAreDeterministicAndBounded(t *testing.T) {
 	require.Len(t, injected.Allocations, 2)
 	require.Equal(t, []string{
 		string(types.PoolKey(pool.PoolID)),
-		string(types.PoolAllocationKey(pool.PoolID, v1)),
 		string(types.PoolAllocationKey(pool.PoolID, v2)),
+		string(types.PoolAllocationKey(pool.PoolID, v1)),
 	}, injected.InternalMetadata.TouchedKeys)
 
 	beforeShare, found := k.PoolDelegator(pool.PoolID, rawPoolAddress("40"))
@@ -296,17 +296,17 @@ func TestInjectAndRebalanceAllocationsAreDeterministicAndBounded(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Len(t, rebalanced.Allocations, 3)
-	require.Equal(t, v1, rebalanced.Allocations[0].Validator)
-	require.Equal(t, v2, rebalanced.Allocations[1].Validator)
-	require.Equal(t, v3, rebalanced.Allocations[2].Validator)
+	require.Equal(t, v2, rebalanced.Allocations[0].Validator)
+	require.Equal(t, v3, rebalanced.Allocations[1].Validator)
+	require.Equal(t, v1, rebalanced.Allocations[2].Validator)
 	afterShare, found := k.PoolDelegator(pool.PoolID, rawPoolAddress("40"))
 	require.True(t, found)
 	require.Equal(t, beforeShare.Shares, afterShare.Shares)
 	require.Equal(t, []string{
 		string(types.PoolKey(pool.PoolID)),
-		string(types.PoolAllocationKey(pool.PoolID, v1)),
 		string(types.PoolAllocationKey(pool.PoolID, v2)),
 		string(types.PoolAllocationKey(pool.PoolID, v3)),
+		string(types.PoolAllocationKey(pool.PoolID, v1)),
 	}, rebalanced.InternalMetadata.TouchedKeys)
 }
 

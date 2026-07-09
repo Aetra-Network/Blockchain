@@ -39,7 +39,7 @@ func TestStakingEventGoldenForEveryType(t *testing.T) {
 				StateKey:		AccountActivationEventStateKey(actor),
 				ProofMetadataHash:	proof.MetadataHash,
 			},
-			hash:	"cb35cf762ba9afe342a65c6712e190fa8e61765292a10028e6481e7b45d98a6c",
+			hash:	"1948638abbacfcf0db2f4e8f9bf4d1ac40d9927ab1a233e443a613c08d677ecd",
 		},
 		{
 			name:	"pool stake deposited",
@@ -55,7 +55,7 @@ func TestStakingEventGoldenForEveryType(t *testing.T) {
 				StateKey:		PoolDepositProofStateKey("pool-a", actor),
 				ProofMetadataHash:	proof.MetadataHash,
 			},
-			hash:	"0578d0bc5949915f193715bb907c6a1d3a195f5fef3073d711ace0130c1e2af4",
+			hash:	"ab6b6ebde3b77619d694b4d6b45f145aef3cad47aee1178a2a11089e78cb85f1",
 		},
 		{
 			name:	"pool shares minted",
@@ -70,7 +70,7 @@ func TestStakingEventGoldenForEveryType(t *testing.T) {
 				StateKey:		PoolShareProofStateKey("pool-a", actor),
 				ProofMetadataHash:	proof.MetadataHash,
 			},
-			hash:	"b910df7323e49e1d2a35056c447653ea49d4fc9c1c8e0f7e03a28214ee3fe91a",
+			hash:	"c1affdbf34a5f6c00fa343adce2a40c3fa1bd0cde55f390557b48e223c53a492",
 		},
 		{
 			name:	"pool allocation updated",
@@ -86,7 +86,7 @@ func TestStakingEventGoldenForEveryType(t *testing.T) {
 				StateKey:		PoolAllocationProofStateKey("pool-a", 3),
 				ProofMetadataHash:	proof.MetadataHash,
 			},
-			hash:	"22314ed670c83e4580d563c1d35a06b7d963d5b118ccdd7f3e3c55d064b0b7a7",
+			hash:	"e8e3ec6fcffac49a287b160c150830d04dfd71b20d25d75eded9d667fbca42e9",
 		},
 		{
 			name:	"pool unbonding requested",
@@ -101,7 +101,7 @@ func TestStakingEventGoldenForEveryType(t *testing.T) {
 				StateKey:		string(PoolUnbondingKey("pool-a", actor, "req-1")),
 				ProofMetadataHash:	proof.MetadataHash,
 			},
-			hash:	"35a58960e4010e9dabe969fa74a6470388bcad7a9d52934cbb7e098e448c0279",
+			hash:	"53402951330f6345ca66cadc97be001cb6105b1add159a1aa1c7341a3528da05",
 		},
 		{
 			name:	"pool unbonding completed",
@@ -116,7 +116,7 @@ func TestStakingEventGoldenForEveryType(t *testing.T) {
 				StateKey:		string(PoolUnbondingKey("pool-a", actor, "req-1")),
 				ProofMetadataHash:	proof.MetadataHash,
 			},
-			hash:	"1b1e11ddafcbda3ef340d583c909a001893365561a972d05e47eccca6d59b5ba",
+			hash:	"272b13827a49967c30b835543cbf4bef688b66224b9da83777b5c5c0c134125e",
 		},
 		{
 			name:	"pool rewards claimed",
@@ -131,7 +131,7 @@ func TestStakingEventGoldenForEveryType(t *testing.T) {
 				StateKey:		PoolRewardProofStateKey("pool-a", actor),
 				ProofMetadataHash:	proof.MetadataHash,
 			},
-			hash:	"756a782c85cdfbbd8a20e83d01933244305d95b37128f4e598ee7a5d56cda942",
+			hash:	"360e07160ae624eadecaa559aa1c29ddceee1ffc4662f934bb6bb24fedfa5a1b",
 		},
 		{
 			name:	"stake reputation claimed",
@@ -146,7 +146,7 @@ func TestStakingEventGoldenForEveryType(t *testing.T) {
 				StateKey:		StakeReputationProofStateKey(actor),
 				ProofMetadataHash:	proof.MetadataHash,
 			},
-			hash:	"d8c8dfc7b3c7cf461f949d20eb8fb535d8e126ac66f9b7e41aeb6a1e7f59acb4",
+			hash:	"2fab48cf0e70ee174e99b759c7dca2fd2a6855481332c9633eb05725cc8c9ce0",
 		},
 		{
 			name:	"validator registered",
@@ -160,7 +160,7 @@ func TestStakingEventGoldenForEveryType(t *testing.T) {
 				Sequence:	8,
 				StateKey:	string(ValidatorKey(validator)),
 			},
-			hash:	"182e61b2e422aef770bf83a7535656345f9470ed3c5d9ff2af01a27206e8d4a3",
+			hash:	"55dab42ead708c8d1d587448188732ddab2602a5ebb62469aaee2bd76f113c7b",
 		},
 		{
 			name:	"validator updated",
@@ -173,7 +173,7 @@ func TestStakingEventGoldenForEveryType(t *testing.T) {
 				Sequence:	9,
 				StateKey:	string(ValidatorKey(validator)),
 			},
-			hash:	"ee5e87bd9d5215840beb2f06d10fb80bb325ba8dec6cd1b5397cddf94e660687",
+			hash:	"6dda5b94d6a7aeacf7384bd12701b6cbc800b1d3d4a2ff1924b883aa98cf31f0",
 		},
 		{
 			name:	"advanced stake delegated",
@@ -187,7 +187,7 @@ func TestStakingEventGoldenForEveryType(t *testing.T) {
 				Sequence:	10,
 				StateKey:	AdvancedStakeEventStateKey(actor, validator),
 			},
-			hash:	"365df643540507dc7f9a1af51851c3f047ffa5286c4ebc1ce1f37ff5953eefcf",
+			hash:	"1a2b0a7669683bc1f9476601e691d042cdb22d0352417d63133ada852cc32f6d",
 		},
 		{
 			name:	"advanced stake undelegated",
@@ -201,7 +201,7 @@ func TestStakingEventGoldenForEveryType(t *testing.T) {
 				Sequence:	11,
 				StateKey:	AdvancedStakeEventStateKey(actor, validator),
 			},
-			hash:	"ba518386cfa0cb9c0de1ffccac14023b582898d803c87437c536b557ecf0cbd9",
+			hash:	"fc55734841c6c51d2ffcaec063d5a0e14f743e242c889947a2997e5a4d788054",
 		},
 		{
 			name:	"advanced stake redelegated",
@@ -215,7 +215,7 @@ func TestStakingEventGoldenForEveryType(t *testing.T) {
 				Sequence:	12,
 				StateKey:	AdvancedStakeRedelegationEventStateKey(actor, eventAEAddress(0x44), validator),
 			},
-			hash:	"c5d1dec04139f2824f65094c4aef5a310c0c8068f33118af57045c37051f0d16",
+			hash:	"99acff71ec4c71050819c0b83724e28844794c2906580a0343635d7b1f07a031",
 		},
 	}
 
@@ -272,7 +272,7 @@ func TestStakingReceiptEventOrderDeterministicForMultiMessageTx(t *testing.T) {
 	require.Equal(t, first.EventHash, a.Events[0].EventHash)
 	require.Equal(t, second.EventHash, a.Events[1].EventHash)
 	require.Equal(t, b.ReceiptHash, a.ReceiptHash)
-	require.Equal(t, "66554346fe964d6a61ba78e565ee20d73c16d4d08e77f90f21636495280592f2", a.ReceiptHash)
+	require.Equal(t, "5afb58c0257d5b43c65fa657555682875543a262759f34f54957707938f3d94f", a.ReceiptHash)
 }
 
 func TestStakingEventsRejectSecretsAndMisplacedValidator(t *testing.T) {
@@ -337,8 +337,8 @@ func TestAccountActivationAndRewardClaimEventsAreStable(t *testing.T) {
 	rewardAgain := mustEvent(t, reward)
 	require.Equal(t, account.EventHash, accountAgain.EventHash)
 	require.Equal(t, reward.EventHash, rewardAgain.EventHash)
-	require.Equal(t, "4a8f689c06b1a466f44ff48d36d7a7dc3b52fc559d3b79e29a0cb78ed3e72f1f", account.EventHash)
-	require.Equal(t, "c9bd403df613c311bc81b0425a8f4319e0c7c43b9ca701d3ebae80dd70080402", reward.EventHash)
+	require.Equal(t, "5cc8a8f9ae9f1bba0a9dda81aee1552aad4b5f1f9e8ff724a9c188c4762f5ca7", account.EventHash)
+	require.Equal(t, "bf3f88e0e05eb1ca8b825ee47197424fc1ef03efcaba18f305b91486ab2b4b96", reward.EventHash)
 }
 
 func mustEvent(t *testing.T, event StakingEvent) StakingEvent {

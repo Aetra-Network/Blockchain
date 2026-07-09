@@ -1,0 +1,44 @@
+// Shared declarations for the token family.
+//
+// Both token_master.atlx and token_wallet.atlx import this file, so the
+// wallet storage schema and the master<->wallet message bodies exist exactly
+// once. This is the canonical way to split a contract project:
+//
+//   import "token_shared.atlx"
+//
+// Shared error codes.
+const ERR_NOT_OWNER = 1001
+const ERR_BAD_MSG = 0xFFFF
+const ERR_BAD_SENDER = 1004
+const ERR_BAD_AMOUNT = 1005
+
+// Outbound internal messages must fund the destination's gas/storage rent —
+// a freshly auto-deployed wallet contract created with amount: 0 would have
+// no balance and get frozen for unpaid storage rent immediately.
+const MSG_FORWARD_VALUE = aet("0.0001")
+
+// Wallet storage is shared: the master builds it to derive counterfactual
+// wallet addresses, the wallet persists it as its own state root.
+@storage
+struct TokenWalletStorage {
+    master: address
+    owner: address
+    walletCode: Code
+    balance: uint64
+}
+
+// Master -> wallet credit (mint or incoming transfer).
+@message(0x5102)
+struct WalletInternalTransfer {
+    from: address
+    amount: uint64
+    responseTo: address?
+}
+
+// Wallet -> master burn accounting.
+@message(0x5103)
+struct WalletBurnNotification {
+    owner: address
+    amount: uint64
+    responseTo: address?
+}

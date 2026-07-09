@@ -298,14 +298,17 @@ func (input ValidatorReputationInput) Validate() error {
 	if input.ValidatorID == "" {
 		return fmt.Errorf("validator_id is required")
 	}
-	for name, values := range map[string][]int64{
-		"uptime_history_bps":			input.UptimeHistoryBps,
-		"missed_block_rate_history_bps":	input.MissedBlockRateHistoryBps,
-		"commission_change_history_bps":	input.CommissionChangeHistoryBps,
-		"historical_reward_performance_bps":	input.HistoricalRewardPerformanceBps,
+	for _, entry := range []struct {
+		name   string
+		values []int64
+	}{
+		{name: "uptime_history_bps", values: input.UptimeHistoryBps},
+		{name: "missed_block_rate_history_bps", values: input.MissedBlockRateHistoryBps},
+		{name: "commission_change_history_bps", values: input.CommissionChangeHistoryBps},
+		{name: "historical_reward_performance_bps", values: input.HistoricalRewardPerformanceBps},
 	} {
-		for i, value := range values {
-			if err := validateBps(fmt.Sprintf("%s[%d]", name, i), value, 0, DefaultMaxLoadMultiplierBps); err != nil {
+		for i, value := range entry.values {
+			if err := validateBps(fmt.Sprintf("%s[%d]", entry.name, i), value, 0, DefaultMaxLoadMultiplierBps); err != nil {
 				return err
 			}
 		}

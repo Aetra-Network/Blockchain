@@ -72,10 +72,12 @@ func TestDefaultGenesisValidatesAndSetsCustomModuleDefaults(t *testing.T) {
 	var mintGenState minttypes.GenesisState
 	app.AppCodec().MustUnmarshalJSON(genesis[minttypes.ModuleName], &mintGenState)
 	require.Equal(t, appparams.BaseDenom, mintGenState.Params.MintDenom)
-	require.Equal(t, appparams.BpsToLegacyDec(appparams.DefaultTargetInflationBps), mintGenState.Minter.Inflation)
+	// x/mint is neutered to zero inflation; native emissions is the sole
+	// protocol inflation source (SEC-CRIT: double inflation).
+	require.True(t, mintGenState.Minter.Inflation.IsZero())
 	require.Equal(t, appparams.BpsToLegacyDec(appparams.DefaultResponsivenessBps), mintGenState.Params.InflationRateChange)
-	require.Equal(t, appparams.BpsToLegacyDec(appparams.MinInflationBps), mintGenState.Params.InflationMin)
-	require.Equal(t, appparams.BpsToLegacyDec(appparams.MaxInflationBps), mintGenState.Params.InflationMax)
+	require.True(t, mintGenState.Params.InflationMin.IsZero())
+	require.True(t, mintGenState.Params.InflationMax.IsZero())
 	require.Equal(t, appparams.BpsToLegacyDec(appparams.DefaultTargetStakeBps), mintGenState.Params.GoalBonded)
 	require.True(t, mintGenState.Params.MaxSupply.IsZero())
 

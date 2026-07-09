@@ -9,17 +9,14 @@ import (
 	"os"
 	"sort"
 
-	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/spf13/cobra"
 
-	identitytypes "github.com/sovereign-l1/l1/x/identity/types"
 	loadkeeper "github.com/sovereign-l1/l1/x/load/keeper"
 	loadtypes "github.com/sovereign-l1/l1/x/load/types"
 	meshkeeper "github.com/sovereign-l1/l1/x/mesh/keeper"
 	meshtypes "github.com/sovereign-l1/l1/x/mesh/types"
 	routingkeeper "github.com/sovereign-l1/l1/x/routing/keeper"
 	routingtypes "github.com/sovereign-l1/l1/x/routing/types"
-	shardsim "github.com/sovereign-l1/l1/x/sharding/sim"
 	zoneskeeper "github.com/sovereign-l1/l1/x/zones/keeper"
 	zonestypes "github.com/sovereign-l1/l1/x/zones/types"
 )
@@ -29,7 +26,6 @@ const (
 	executionOSProfileSim			= "execution-os-sim"
 	executionOSProfileZonesPrototype	= "zones-prototype"
 	executionOSProfileMeshPrototype		= "mesh-prototype"
-	executionOSProfileIdentityPrototype	= "identity-prototype"
 )
 
 var executionOSProfiles = []string{
@@ -37,17 +33,14 @@ var executionOSProfiles = []string{
 	executionOSProfileSim,
 	executionOSProfileZonesPrototype,
 	executionOSProfileMeshPrototype,
-	executionOSProfileIdentityPrototype,
 }
 
 type executionOSReport struct {
 	Profile		string			`json:"profile"`
 	Load		executionOSLoadReport	`json:"load"`
 	Routing		executionOSRouteReport	`json:"routing"`
-	Sharding	executionOSShardReport	`json:"sharding"`
 	Zones		executionOSZonesReport	`json:"zones"`
 	Mesh		executionOSMeshReport	`json:"mesh"`
-	Identity	executionOSIDReport	`json:"identity"`
 	RestartSafe	bool			`json:"restart_safe"`
 	FeatureGated	bool			`json:"feature_gated"`
 	ProductionLive	bool			`json:"production_live"`
@@ -67,14 +60,6 @@ type executionOSRouteReport struct {
 	ActiveShards	uint32	`json:"active_shards"`
 }
 
-type executionOSShardReport struct {
-	WorkchainID		int32		`json:"workchain_id"`
-	ActiveShardCount	uint32		`json:"active_shard_count"`
-	ShardIDs		[]string	`json:"shard_ids"`
-	RoutingEpoch		uint64		`json:"routing_epoch"`
-	DataAvailable		bool		`json:"data_available"`
-}
-
 type executionOSZonesReport struct {
 	ActiveZones	[]string	`json:"active_zones"`
 	CommitmentRoots	[]string	`json:"commitment_roots"`
@@ -86,13 +71,6 @@ type executionOSMeshReport struct {
 	ReceiptHash		string	`json:"receipt_hash"`
 	ReplayMarkerCount	int	`json:"replay_marker_count"`
 	PendingMessages		int	`json:"pending_messages"`
-}
-
-type executionOSIDReport struct {
-	Domain		string	`json:"domain"`
-	NFTID		string	`json:"nft_id"`
-	ResolvedAddress	string	`json:"resolved_address"`
-	Lifecycle	string	`json:"lifecycle"`
 }
 
 type executionOSDiagnostics struct {
@@ -107,7 +85,6 @@ type executionOSDiagnostics struct {
 	ReplayMarkerCount	int			`json:"replay_marker_count"`
 	MeshReceiptCount	int			`json:"mesh_receipt_count"`
 	ZoneCommitmentRoots	[]string		`json:"zone_commitment_roots"`
-	IdentityPrototype	bool			`json:"identity_prototype"`
 	ProductionLive		bool			`json:"production_live"`
 }
 
@@ -192,7 +169,7 @@ func newExecutionOSDiagnosticsCmd() *cobra.Command {
 }
 
 func buildExecutionOSSmokeReport(profile string) (executionOSReport, error) {
-	loadResult, simState, err := runShardingSmoke()
+	loadResult, err := runLoadSmoke()
 	if err != nil {
 		return executionOSReport{}, err
 	}
@@ -203,9 +180,9 @@ func buildExecutionOSSmokeReport(profile string) (executionOSReport, error) {
 		ReputationClass:	99,
 		AdmissionHeight:	12,
 		TxHash:			hashBytes("operator-smoke-tx"),
-		RoutingEpoch:		simState.LoadStates[shardsim.BaseWorkchain].RoutingEpoch,
+		RoutingEpoch:		1,
 		ActiveShards: map[routingtypes.ZoneID]uint32{
-			routingtypes.ZoneFinancial: uint32(len(simState.Shards)),
+			routingtypes.ZoneFinancial: 2,
 		},
 		Locality: routingtypes.Locality{
 			AccountKey:	[]byte("operator-account"),
@@ -223,15 +200,6 @@ func buildExecutionOSSmokeReport(profile string) (executionOSReport, error) {
 	if err != nil {
 		return executionOSReport{}, err
 	}
-	identityState, domain, resolved, err := runIdentitySmoke()
-	if err != nil {
-		return executionOSReport{}, err
-	}
-	lifecycle, err := identitytypes.DomainLifecycle(identityState, domain.Name, domain.RegisteredHeight+2)
-	if err != nil {
-		return executionOSReport{}, err
-	}
-	loadState := simState.LoadStates[shardsim.BaseWorkchain]
 	return executionOSReport{
 		Profile:	profile,
 		Load: executionOSLoadReport{
@@ -246,13 +214,6 @@ func buildExecutionOSSmokeReport(profile string) (executionOSReport, error) {
 			ShardID:	uint32(route.ShardID),
 			ActiveShards:	route.ActiveShards,
 		},
-		Sharding: executionOSShardReport{
-			WorkchainID:		shardsim.BaseWorkchain,
-			ActiveShardCount:	loadState.ActiveShardCount,
-			ShardIDs:		shardKeys(simState),
-			RoutingEpoch:		loadState.RoutingEpoch,
-			DataAvailable:		allShardsAvailable(simState),
-		},
 		Zones: executionOSZonesReport{
 			ActiveZones:		zoneIDs(zoneState.ActiveZones),
 			CommitmentRoots:	zoneCommitmentRoots(zoneState.Commitments),
@@ -263,12 +224,6 @@ func buildExecutionOSSmokeReport(profile string) (executionOSReport, error) {
 			ReceiptHash:		meshReceipt.ReceiptHash,
 			ReplayMarkerCount:	len(meshState.ReplayMarkers),
 			PendingMessages:	0,
-		},
-		Identity: executionOSIDReport{
-			Domain:			domain.Name,
-			NFTID:			domain.NFTID,
-			ResolvedAddress:	hex.EncodeToString(resolved),
-			Lifecycle:		string(lifecycle),
 		},
 		RestartSafe:	true,
 		FeatureGated:	profile != executionOSProfileBase,
@@ -286,8 +241,7 @@ func buildExecutionOSDiagnostics(profile, genesisPath string) (executionOSDiagno
 			"zones":	{},
 			"mesh":		{},
 		},
-		IdentityPrototype:	profile == executionOSProfileIdentityPrototype,
-		ProductionLive:		false,
+		ProductionLive: false,
 	}
 	if genesisPath == "" {
 		return diag, nil
@@ -359,49 +313,19 @@ func buildExecutionOSDiagnostics(profile, genesisPath string) (executionOSDiagno
 	return diag, nil
 }
 
-func runShardingSmoke() (loadtypes.Result, shardsim.MasterchainState, error) {
-	sim, err := shardsim.New([]shardsim.Validator{
-		{Address: "val-a", Power: 100},
-		{Address: "val-b", Power: 100},
-		{Address: "val-c", Power: 100},
-	}, "operator-smoke")
-	if err != nil {
-		return loadtypes.Result{}, shardsim.MasterchainState{}, err
-	}
-	if err := sim.AddWorkchain(shardsim.WorkchainConfig{
-		ID:			shardsim.BaseWorkchain,
-		AllowedVMs:		[]string{"AVM", "COSMWASM_GATED", "NATIVE_MODULE"},
-		FeeDenom:		shardsim.FeeDenomNaet,
-		AddressFormat:		"ae",
-		GenesisStateHash:	hashString("operator-workchain-genesis"),
-		UpgradePolicy:		"GOVERNANCE",
-	}); err != nil {
-		return loadtypes.Result{}, shardsim.MasterchainState{}, err
-	}
+func runLoadSmoke() (loadtypes.Result, error) {
 	params := loadtypes.DefaultParams()
 	params.AlphaNumerator = 1
 	params.AlphaDenominator = 1
 	params.MaxDeltaBps = loadtypes.BasisPoints
-	policy := shardsim.ShardActivationPolicy{
-		WorkchainID:		shardsim.BaseWorkchain,
-		LoadParams:		params,
-		PartialShardCount:	2,
-		MaxShardCount:		4,
-		CooldownBlocks:		2,
-		RoutingEpoch:		1,
-	}
-	transition, err := sim.UpdateLoadAndShards(policy, loadtypes.Metrics{
+	return loadtypes.ComputeLoadScore(params, loadtypes.EMAState{}, loadtypes.Metrics{
 		CanonicalMempoolSize:		params.TargetMempoolSize,
 		UsedBlockGas:			params.TargetBlockGas,
 		AverageInclusionDelayBlocks:	params.TargetLatencyBlocks,
 		FailedTxCount:			1,
 		TotalTxCount:			1,
 		ExecutionStepCount:		params.TargetExecutionSteps,
-	}, 10)
-	if err != nil {
-		return loadtypes.Result{}, shardsim.MasterchainState{}, err
-	}
-	return transition.LoadResult, sim.Export(), nil
+	})
 }
 
 func buildZonesSmokeState() (zonestypes.ZoneRegistryState, error) {
@@ -498,33 +422,6 @@ func runMeshSmoke() (meshtypes.MeshState, meshtypes.MeshMessage, meshtypes.MeshR
 	return next, msg, receipt, nil
 }
 
-func runIdentitySmoke() (identitytypes.IdentityState, identitytypes.Domain, sdk.AccAddress, error) {
-	owner := sampleAddress(1)
-	primary := sampleAddress(2)
-	state := identitytypes.EmptyIdentityState(identitytypes.DefaultIdentityParams())
-	commitment, err := identitytypes.ComputeRegistrationCommitment("operator.aet", owner, "operator-salt")
-	if err != nil {
-		return identitytypes.IdentityState{}, identitytypes.Domain{}, nil, err
-	}
-	state, err = identitytypes.CommitDomainRegistration(state, "operator.aet", owner, commitment, 10)
-	if err != nil {
-		return identitytypes.IdentityState{}, identitytypes.Domain{}, nil, err
-	}
-	state, domain, err := identitytypes.RevealRegisterDomain(state, "operator.aet", owner, "operator-salt", 11)
-	if err != nil {
-		return identitytypes.IdentityState{}, identitytypes.Domain{}, nil, err
-	}
-	state, _, err = identitytypes.SetIdentityResolver(state, domain.Name, owner, identitytypes.ResolverUpdate{Primary: primary}, 12)
-	if err != nil {
-		return identitytypes.IdentityState{}, identitytypes.Domain{}, nil, err
-	}
-	resolved, err := identitytypes.ResolveIdentityAddress(state, domain.Name, 13)
-	if err != nil {
-		return identitytypes.IdentityState{}, identitytypes.Domain{}, nil, err
-	}
-	return state, domain, resolved, nil
-}
-
 func operatorZone(id zonestypes.ZoneID, kind zonestypes.ZoneKind, vm zonestypes.VMPolicy) zonestypes.Zone {
 	return zonestypes.Zone{
 		ID:			id,
@@ -538,27 +435,6 @@ func operatorZone(id zonestypes.ZoneID, kind zonestypes.ZoneKind, vm zonestypes.
 		AuditStatus:		zonestypes.AuditStatusExperimental,
 		ActivationHeight:	1,
 	}
-}
-
-func shardKeys(state shardsim.MasterchainState) []string {
-	keys := make([]string, 0, len(state.Shards))
-	for key := range state.Shards {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
-}
-
-func allShardsAvailable(state shardsim.MasterchainState) bool {
-	if len(state.Shards) == 0 {
-		return false
-	}
-	for _, shard := range state.Shards {
-		if !shard.Available {
-			return false
-		}
-	}
-	return true
 }
 
 func zoneIDs(ids []zonestypes.ZoneID) []string {
@@ -577,12 +453,6 @@ func zoneCommitmentRoots(commitments []zonestypes.ZoneCommitment) []string {
 	}
 	sort.Strings(out)
 	return out
-}
-
-func sampleAddress(seed byte) sdk.AccAddress {
-	out := make([]byte, 20)
-	out[19] = seed
-	return sdk.AccAddress(out)
 }
 
 func hashBytes(value string) []byte {

@@ -3,7 +3,6 @@ package compiler
 import (
 	"fmt"
 	"strings"
-	"unicode"
 	"unicode/utf8"
 )
 
@@ -16,26 +15,42 @@ const (
 	tokenString
 	tokenLBrace
 	tokenRBrace
+	tokenAt
 	tokenLParen
 	tokenRParen
 	tokenComma
 	tokenColon
 	tokenSemicolon
 	tokenArrow
+	tokenFatArrow
 	tokenEqual
 	tokenLess
 	tokenGreater
 	tokenQuestion
+	tokenQuestionQuestion
 	tokenPlus
 	tokenMinus
+	tokenStar
+	tokenSlash
+	tokenPercent
+	tokenAmpersand
+	tokenCaret
+	tokenTilde
+	tokenPlusEqual
+	tokenMinusEqual
+	tokenLessLess
+	tokenGreaterGreater
 	tokenDot
 	tokenDotDot
 	tokenEqualEqual
 	tokenBangEqual
 	tokenLessEqual
 	tokenGreaterEqual
+	tokenSpaceship
 	tokenAndAnd
 	tokenOrOr
+	tokenBang
+	tokenPipe
 	tokenLBracket
 	tokenRBracket
 )
@@ -55,6 +70,9 @@ type lexer struct {
 }
 
 func newLexer(file, src string) *lexer {
+	if strings.HasPrefix(src, "\ufeff") {
+		src = strings.TrimPrefix(src, "\ufeff")
+	}
 	return &lexer{file: file, src: src, line: 1, col: 1}
 }
 
@@ -72,6 +90,9 @@ func (l *lexer) nextToken() (token, error) {
 	case '}':
 		l.advance(size)
 		return token{kind: tokenRBrace, text: "}", pos: start}, nil
+	case '@':
+		l.advance(size)
+		return token{kind: tokenAt, text: "@", pos: start}, nil
 	case '(':
 		l.advance(size)
 		return token{kind: tokenLParen, text: "(", pos: start}, nil
@@ -88,6 +109,10 @@ func (l *lexer) nextToken() (token, error) {
 		l.advance(size)
 		return token{kind: tokenSemicolon, text: ";", pos: start}, nil
 	case '=':
+		if strings.HasPrefix(l.src[l.offset:], "=>") {
+			l.advance(2)
+			return token{kind: tokenFatArrow, text: "=>", pos: start}, nil
+		}
 		if strings.HasPrefix(l.src[l.offset:], "==") {
 			l.advance(2)
 			return token{kind: tokenEqualEqual, text: "==", pos: start}, nil
@@ -95,9 +120,17 @@ func (l *lexer) nextToken() (token, error) {
 		l.advance(size)
 		return token{kind: tokenEqual, text: "=", pos: start}, nil
 	case '<':
+		if strings.HasPrefix(l.src[l.offset:], "<=>") {
+			l.advance(3)
+			return token{kind: tokenSpaceship, text: "<=>", pos: start}, nil
+		}
 		if strings.HasPrefix(l.src[l.offset:], "<=") {
 			l.advance(2)
 			return token{kind: tokenLessEqual, text: "<=", pos: start}, nil
+		}
+		if strings.HasPrefix(l.src[l.offset:], "<<") {
+			l.advance(2)
+			return token{kind: tokenLessLess, text: "<<", pos: start}, nil
 		}
 		l.advance(size)
 		return token{kind: tokenLess, text: "<", pos: start}, nil
@@ -106,21 +139,46 @@ func (l *lexer) nextToken() (token, error) {
 			l.advance(2)
 			return token{kind: tokenGreaterEqual, text: ">=", pos: start}, nil
 		}
+		if strings.HasPrefix(l.src[l.offset:], ">>") {
+			l.advance(2)
+			return token{kind: tokenGreaterGreater, text: ">>", pos: start}, nil
+		}
 		l.advance(size)
 		return token{kind: tokenGreater, text: ">", pos: start}, nil
 	case '?':
+		if strings.HasPrefix(l.src[l.offset:], "??") {
+			l.advance(2)
+			return token{kind: tokenQuestionQuestion, text: "??", pos: start}, nil
+		}
 		l.advance(size)
 		return token{kind: tokenQuestion, text: "?", pos: start}, nil
 	case '+':
+		if strings.HasPrefix(l.src[l.offset:], "+=") {
+			l.advance(2)
+			return token{kind: tokenPlusEqual, text: "+=", pos: start}, nil
+		}
 		l.advance(size)
 		return token{kind: tokenPlus, text: "+", pos: start}, nil
 	case '-':
+		if strings.HasPrefix(l.src[l.offset:], "-=") {
+			l.advance(2)
+			return token{kind: tokenMinusEqual, text: "-=", pos: start}, nil
+		}
 		if strings.HasPrefix(l.src[l.offset:], "->") {
 			l.advance(2)
 			return token{kind: tokenArrow, text: "->", pos: start}, nil
 		}
 		l.advance(size)
 		return token{kind: tokenMinus, text: "-", pos: start}, nil
+	case '*':
+		l.advance(size)
+		return token{kind: tokenStar, text: "*", pos: start}, nil
+	case '/':
+		l.advance(size)
+		return token{kind: tokenSlash, text: "/", pos: start}, nil
+	case '%':
+		l.advance(size)
+		return token{kind: tokenPercent, text: "%", pos: start}, nil
 	case '.':
 		if strings.HasPrefix(l.src[l.offset:], "..") {
 			l.advance(2)
@@ -133,29 +191,62 @@ func (l *lexer) nextToken() (token, error) {
 			l.advance(2)
 			return token{kind: tokenBangEqual, text: "!=", pos: start}, nil
 		}
-		return token{}, fmt.Errorf("unexpected character %q at %s", r, start)
+		l.advance(size)
+		return token{kind: tokenBang, text: "!", pos: start}, nil
 	case '&':
 		if strings.HasPrefix(l.src[l.offset:], "&&") {
 			l.advance(2)
 			return token{kind: tokenAndAnd, text: "&&", pos: start}, nil
 		}
-		return token{}, fmt.Errorf("unexpected character %q at %s", r, start)
+		l.advance(size)
+		return token{kind: tokenAmpersand, text: "&", pos: start}, nil
 	case '|':
 		if strings.HasPrefix(l.src[l.offset:], "||") {
 			l.advance(2)
 			return token{kind: tokenOrOr, text: "||", pos: start}, nil
 		}
-		return token{}, fmt.Errorf("unexpected character %q at %s", r, start)
+		l.advance(size)
+		return token{kind: tokenPipe, text: "|", pos: start}, nil
+	case '^':
+		l.advance(size)
+		return token{kind: tokenCaret, text: "^", pos: start}, nil
+	case '~':
+		l.advance(size)
+		return token{kind: tokenTilde, text: "~", pos: start}, nil
 	case '[':
 		l.advance(size)
 		return token{kind: tokenLBracket, text: "[", pos: start}, nil
 	case ']':
 		l.advance(size)
 		return token{kind: tokenRBracket, text: "]", pos: start}, nil
+	// Unicode operator aliases. The Aetralis editor extension live-substitutes
+	// these four ASCII digraphs for their math glyphs as you type (see
+	// ecosystem/extension/src/unicodeSubstitution.js). Accept the glyphs and
+	// emit the IDENTICAL token (same kind, canonical ASCII text) as the ASCII
+	// form so a Unicode source and its ASCII twin lex to the same token stream
+	// — and therefore compile to identical Module/Manifest/StateInit hashes.
+	// Only reached in operator position: comments are consumed by
+	// skipSpaceAndComments and string bodies by scanString, so glyphs inside
+	// either are preserved verbatim and never remapped.
+	// advance() counts RUNES, not bytes; each glyph below is a single rune, so
+	// advance(1) — using size (byte length 3) would wrongly skip the next two
+	// runes.
+	case '≠': // U+2260 -> "!="
+		l.advance(1)
+		return token{kind: tokenBangEqual, text: "!=", pos: start}, nil
+	case '⇒': // U+21D2 -> "=>"
+		l.advance(1)
+		return token{kind: tokenFatArrow, text: "=>", pos: start}, nil
+	case '≤': // U+2264 -> "<="
+		l.advance(1)
+		return token{kind: tokenLessEqual, text: "<=", pos: start}, nil
+	case '≥': // U+2265 -> ">="
+		l.advance(1)
+		return token{kind: tokenGreaterEqual, text: ">=", pos: start}, nil
 	case '"':
 		return l.scanString()
 	default:
-		if unicode.IsDigit(r) {
+		if isASCIIDigit(r) {
 			return l.scanNumber()
 		}
 		if isIdentStart(r) {
@@ -181,9 +272,20 @@ func (l *lexer) scanIdent() (token, error) {
 func (l *lexer) scanNumber() (token, error) {
 	start := Position{File: l.file, Line: l.line, Column: l.col}
 	begin := l.offset
+	if strings.HasPrefix(strings.ToLower(l.src[l.offset:]), "0x") {
+		l.advance(2)
+		for l.offset < len(l.src) {
+			r, size := utf8.DecodeRuneInString(l.src[l.offset:])
+			if !isASCIIHexDigit(r) {
+				break
+			}
+			l.advance(size)
+		}
+		return token{kind: tokenNumber, text: l.src[begin:l.offset], pos: start}, nil
+	}
 	for l.offset < len(l.src) {
 		r, size := utf8.DecodeRuneInString(l.src[l.offset:])
-		if !unicode.IsDigit(r) {
+		if !isASCIIDigit(r) {
 			break
 		}
 		l.advance(size)
@@ -243,7 +345,7 @@ func (l *lexer) skipSpaceAndComments() {
 			continue
 		}
 		r, size := utf8.DecodeRuneInString(l.src[l.offset:])
-		if unicode.IsSpace(r) {
+		if isASCIISpace(r) {
 			l.advance(size)
 			continue
 		}
@@ -264,10 +366,33 @@ func (l *lexer) advance(n int) {
 	}
 }
 
+// Identifiers are ASCII-only: the first character is a latin letter or an
+// underscore, the rest are latin letters, digits, or underscores. A digit can
+// never start an identifier (digit-leading input lexes as a number).
 func isIdentStart(r rune) bool {
-	return unicode.IsLetter(r) || r == '_'
+	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_'
 }
 
 func isIdentPart(r rune) bool {
-	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '-'
+	return isIdentStart(r) || (r >= '0' && r <= '9')
+}
+
+// The language surface is ASCII-only. These helpers replace unicode.IsDigit /
+// unicode.IsSpace so the lexer does not accept non-ASCII digits or spaces and
+// stays independent of the Go unicode tables version.
+func isASCIIDigit(r rune) bool {
+	return r >= '0' && r <= '9'
+}
+
+func isASCIIHexDigit(r rune) bool {
+	return isASCIIDigit(r) || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')
+}
+
+func isASCIISpace(r rune) bool {
+	switch r {
+	case ' ', '\t', '\r', '\n':
+		return true
+	default:
+		return false
+	}
 }

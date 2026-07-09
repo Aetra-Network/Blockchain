@@ -6,6 +6,8 @@ import (
 
 	proto2 "google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
+
+	msgv1 "cosmossdk.io/api/cosmos/msg/v1"
 )
 
 var fileDescriptorNativeAccountTx = buildNativeAccountTxFileDescriptor()
@@ -20,7 +22,7 @@ func buildNativeAccountTxFileDescriptor() []byte {
 			GoPackage: descriptorString("github.com/sovereign-l1/l1/x/native-account/types"),
 		},
 		MessageType: []*descriptorpb.DescriptorProto{
-			{
+			withSigner(&descriptorpb.DescriptorProto{
 				Name: descriptorString("MsgActivateAccount"),
 				Field: []*descriptorpb.FieldDescriptorProto{
 					descriptorField("address_user", 1, descriptorpb.FieldDescriptorProto_TYPE_STRING),
@@ -29,7 +31,7 @@ func buildNativeAccountTxFileDescriptor() []byte {
 					descriptorField("public_key_hex", 4, descriptorpb.FieldDescriptorProto_TYPE_STRING),
 					descriptorField("fee_paid", 5, descriptorpb.FieldDescriptorProto_TYPE_UINT64),
 				},
-			},
+			}, "address_user"),
 			{
 				Name: descriptorString("MsgActivateAccountResponse"),
 				Field: []*descriptorpb.FieldDescriptorProto{
@@ -39,7 +41,7 @@ func buildNativeAccountTxFileDescriptor() []byte {
 					descriptorField("sequence", 4, descriptorpb.FieldDescriptorProto_TYPE_UINT64),
 				},
 			},
-			{
+			withSigner(&descriptorpb.DescriptorProto{
 				Name: descriptorString("MsgUpdateAuthPolicy"),
 				Field: []*descriptorpb.FieldDescriptorProto{
 					descriptorField("account_user", 1, descriptorpb.FieldDescriptorProto_TYPE_STRING),
@@ -47,9 +49,9 @@ func buildNativeAccountTxFileDescriptor() []byte {
 					descriptorRepeatedField("signers", 3, descriptorpb.FieldDescriptorProto_TYPE_STRING),
 					descriptorField("current_height", 4, descriptorpb.FieldDescriptorProto_TYPE_UINT64),
 				},
-			},
+			}, "account_user"),
 			responseDescriptor("MsgUpdateAuthPolicyResponse", false),
-			{
+			withSigner(&descriptorpb.DescriptorProto{
 				Name: descriptorString("MsgRotateKey"),
 				Field: []*descriptorpb.FieldDescriptorProto{
 					descriptorField("account_user", 1, descriptorpb.FieldDescriptorProto_TYPE_STRING),
@@ -58,13 +60,13 @@ func buildNativeAccountTxFileDescriptor() []byte {
 					descriptorRepeatedField("signers", 4, descriptorpb.FieldDescriptorProto_TYPE_STRING),
 					descriptorField("current_height", 5, descriptorpb.FieldDescriptorProto_TYPE_UINT64),
 				},
-			},
+			}, "account_user"),
 			responseDescriptor("MsgRotateKeyResponse", false),
-			messageWithSignersDescriptor("MsgRecoverAccount"),
+			withSigner(messageWithSignersDescriptor("MsgRecoverAccount"), "account_user"),
 			responseDescriptor("MsgRecoverAccountResponse", false),
-			messageWithSignersDescriptor("MsgFreezeAccount"),
+			withSigner(messageWithSignersDescriptor("MsgFreezeAccount"), "account_user"),
 			responseDescriptor("MsgFreezeAccountResponse", false),
-			{
+			withSigner(&descriptorpb.DescriptorProto{
 				Name: descriptorString("MsgPayStorageDebt"),
 				Field: []*descriptorpb.FieldDescriptorProto{
 					descriptorField("account_user", 1, descriptorpb.FieldDescriptorProto_TYPE_STRING),
@@ -72,9 +74,9 @@ func buildNativeAccountTxFileDescriptor() []byte {
 					descriptorRepeatedField("signers", 3, descriptorpb.FieldDescriptorProto_TYPE_STRING),
 					descriptorField("current_height", 4, descriptorpb.FieldDescriptorProto_TYPE_UINT64),
 				},
-			},
+			}, "account_user"),
 			responseDescriptor("MsgPayStorageDebtResponse", true),
-			{
+			withSigner(&descriptorpb.DescriptorProto{
 				Name: descriptorString("MsgUnfreezeAccount"),
 				Field: []*descriptorpb.FieldDescriptorProto{
 					descriptorField("account_user", 1, descriptorpb.FieldDescriptorProto_TYPE_STRING),
@@ -83,9 +85,9 @@ func buildNativeAccountTxFileDescriptor() []byte {
 					descriptorField("storage_debt_paid", 4, descriptorpb.FieldDescriptorProto_TYPE_BOOL),
 					descriptorField("other_freeze_reason", 5, descriptorpb.FieldDescriptorProto_TYPE_BOOL),
 				},
-			},
+			}, "account_user"),
 			responseDescriptor("MsgUnfreezeAccountResponse", true),
-			{
+			withSigner(&descriptorpb.DescriptorProto{
 				Name: descriptorString("MsgUpdateAccountMetadata"),
 				Field: []*descriptorpb.FieldDescriptorProto{
 					descriptorField("account_user", 1, descriptorpb.FieldDescriptorProto_TYPE_STRING),
@@ -93,7 +95,7 @@ func buildNativeAccountTxFileDescriptor() []byte {
 					descriptorRepeatedField("signers", 3, descriptorpb.FieldDescriptorProto_TYPE_STRING),
 					descriptorField("current_height", 4, descriptorpb.FieldDescriptorProto_TYPE_UINT64),
 				},
-			},
+			}, "account_user"),
 			responseDescriptor("MsgUpdateAccountMetadataResponse", false),
 			authKeyDescriptor(),
 			authWeightDescriptor(),
@@ -262,6 +264,17 @@ func accountMetadataDescriptor() *descriptorpb.DescriptorProto {
 			descriptorField("created_height", 4, descriptorpb.FieldDescriptorProto_TYPE_UINT64),
 		},
 	}
+}
+
+// withSigner marks msg with the cosmos.msg.v1.signer option naming fieldName
+// as the account whose signature authorizes this message. Without this, the
+// SDK's x/tx/signing.Context has no way to resolve a signer for the message
+// and any real broadcast fails with "no cosmos.msg.v1.signer option found".
+func withSigner(msg *descriptorpb.DescriptorProto, fieldName string) *descriptorpb.DescriptorProto {
+	opts := &descriptorpb.MessageOptions{}
+	proto2.SetExtension(opts, msgv1.E_Signer, []string{fieldName})
+	msg.Options = opts
+	return msg
 }
 
 func descriptorField(name string, number int32, typ descriptorpb.FieldDescriptorProto_Type) *descriptorpb.FieldDescriptorProto {

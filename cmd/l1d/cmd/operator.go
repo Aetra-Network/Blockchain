@@ -31,9 +31,10 @@ type operatorCommandPlan struct {
 func NewFaucetCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "faucet",
-		Short: "Localnet faucet helpers using genesis-funded test keys",
+		Short: "Faucet helpers: localnet dry-run plans and the public testnet faucet service",
 	}
 	cmd.AddCommand(newFaucetSendCmd())
+	cmd.AddCommand(newFaucetServeCmd())
 	return cmd
 }
 
@@ -90,8 +91,8 @@ func newFaucetSendCmd() *cobra.Command {
 	}
 	cmd.Flags().String(flags.FlagChainID, "aetra-local-1", "local chain id; non-local chain ids are rejected")
 	cmd.Flags().String(flags.FlagNode, "tcp://127.0.0.1:26657", "RPC node")
-	cmd.Flags().String(flagFaucetAmount, "1000000"+appparams.BaseDenom, "faucet transfer amount")
-	cmd.Flags().String(flagFaucetFees, "1000000"+appparams.BaseDenom, "bank send fees")
+	cmd.Flags().String(flagFaucetAmount, "5000000000"+appparams.BaseDenom, "faucet transfer amount (5 AET)")
+	cmd.Flags().String(flagFaucetFees, "600000000"+appparams.BaseDenom, "bank send fees (0.6 AET covers the 0.5 AET average dynamic fee)")
 	cmd.Flags().String(flagFaucetFromKey, "node0", "localnet key name that funds faucet sends")
 	cmd.Flags().String(flagFaucetFromHome, ".localnet/node0/aetrad", "localnet key home")
 	addAddressRiskFlags(cmd)
@@ -178,6 +179,10 @@ func NewSystemTxCmd() *cobra.Command {
 	for _, spec := range systemModuleSpecs() {
 		moduleCmd := &cobra.Command{Use: spec.module, Short: spec.short + " transaction helpers"}
 		for _, txName := range spec.txs {
+			if spec.module == "native-account" && txName == "activate-account" {
+				moduleCmd.AddCommand(newNativeAccountActivateCmd())
+				continue
+			}
 			moduleCmd.AddCommand(newSystemPlanLeaf(txName, "tx", spec.module))
 		}
 		cmd.AddCommand(moduleCmd)

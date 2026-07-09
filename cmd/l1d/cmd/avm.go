@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -14,10 +15,12 @@ import (
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/spf13/cobra"
 
+	"github.com/cosmos/cosmos-sdk/client"
 	"github.com/cosmos/cosmos-sdk/client/flags"
 
 	appparams "github.com/sovereign-l1/l1/app/params"
 	"github.com/sovereign-l1/l1/x/aetravm/async"
+	contractstypes "github.com/sovereign-l1/l1/x/contracts/types"
 )
 
 const (
@@ -184,6 +187,15 @@ func newAVMStoreCodeCmd() *cobra.Command {
 					req.CodeHash = canonicalCodeHash(req.Bytecode)
 				}
 			}
+			broadcast, _ := cmd.Flags().GetBool(flagBroadcast)
+			if broadcast {
+				return runAVMBroadcast(cmd, &contractstypes.MsgStoreCode{
+					Authority: req.Authority,
+					CodeHash:  req.CodeHash,
+					CodeBytes: req.CodeBytes,
+					Bytecode:  req.Bytecode,
+				})
+			}
 			return writeCommandJSON(cmd, avmServicePayload{
 				Service:    avmMsgService,
 				Method:     "StoreCode",
@@ -199,6 +211,7 @@ func newAVMStoreCodeCmd() *cobra.Command {
 		},
 	}
 	addAVMTxFlags(cmd)
+	addBroadcastFlag(cmd)
 	cmd.Flags().String(flagAVMAuthority, "", "governance/system authority; defaults to --from")
 	cmd.Flags().String(flagAVMBytecodeFile, "", "AVM bytecode file")
 	cmd.Flags().String(flagAVMBytecodeHex, "", "hex-encoded AVM bytecode")
@@ -224,12 +237,24 @@ func newAVMDeployCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			broadcast, _ := cmd.Flags().GetBool(flagBroadcast)
+			var clientCtx client.Context
+			height, _ := cmd.Flags().GetUint64(flagAVMHeight)
+			if broadcast {
+				clientCtx, err = client.GetClientTxContext(cmd)
+				if err != nil {
+					return err
+				}
+				height, err = avmBroadcastHeight(cmd, clientCtx)
+				if err != nil {
+					return err
+				}
+			}
 			chainID, _ := cmd.Flags().GetString(flags.FlagChainID)
 			namespace, _ := cmd.Flags().GetString(flagAVMNamespace)
 			salt, _ := cmd.Flags().GetString(flagAVMSalt)
 			initialBalance, _ := cmd.Flags().GetUint64(flagAVMInitialBalance)
 			admin, _ := cmd.Flags().GetString(flagAVMAdmin)
-			height, _ := cmd.Flags().GetUint64(flagAVMHeight)
 			req := avmDeployRequest{
 				Creator:        creator,
 				CodeID:         strings.TrimSpace(args[0]),
@@ -246,6 +271,19 @@ func newAVMDeployCmd() *cobra.Command {
 			}
 			if req.Height == 0 {
 				return errors.New("deploy height must be positive")
+			}
+			if broadcast {
+				return runAVMBroadcast(cmd, &contractstypes.MsgDeployContract{
+					Creator:        req.Creator,
+					CodeID:         req.CodeID,
+					ChainID:        req.ChainID,
+					Namespace:      req.Namespace,
+					Salt:           req.Salt,
+					InitPayload:    body,
+					InitialBalance: req.InitialBalance,
+					Admin:          req.Admin,
+					Height:         req.Height,
+				})
 			}
 			return writeCommandJSON(cmd, struct {
 				avmServicePayload
@@ -270,12 +308,13 @@ func newAVMDeployCmd() *cobra.Command {
 		},
 	}
 	addAVMTxFlags(cmd)
+	addBroadcastFlag(cmd)
 	addAVMBodyFlags(cmd)
 	cmd.Flags().String(flagAVMNamespace, "", "contract namespace")
 	cmd.Flags().String(flagAVMSalt, "", "contract salt")
 	cmd.Flags().Uint64(flagAVMInitialBalance, 0, "initial native balance in naet")
 	cmd.Flags().String(flagAVMAdmin, "", "contract admin AE address")
-	cmd.Flags().Uint64(flagAVMHeight, 1, "execution height")
+	cmd.Flags().Uint64(flagAVMHeight, 1, "execution height (with --broadcast, defaults to the chain's current height when not set explicitly)")
 	return cmd
 }
 
@@ -296,9 +335,21 @@ func newAVMExecuteCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			broadcast, _ := cmd.Flags().GetBool(flagBroadcast)
+			var clientCtx client.Context
+			height, _ := cmd.Flags().GetUint64(flagAVMHeight)
+			if broadcast {
+				clientCtx, err = client.GetClientTxContext(cmd)
+				if err != nil {
+					return err
+				}
+				height, err = avmBroadcastHeight(cmd, clientCtx)
+				if err != nil {
+					return err
+				}
+			}
 			funds, _ := cmd.Flags().GetUint64(flagAVMFunds)
 			gasLimit, _ := cmd.Flags().GetUint64(flagAVMGasLimit)
-			height, _ := cmd.Flags().GetUint64(flagAVMHeight)
 			req := avmExecuteRequest{
 				Sender:          sender,
 				ContractAddress: strings.TrimSpace(args[0]),
@@ -315,6 +366,16 @@ func newAVMExecuteCmd() *cobra.Command {
 			}
 			if req.Height == 0 {
 				return errors.New("execute height must be positive")
+			}
+			if broadcast {
+				return runAVMBroadcast(cmd, &contractstypes.MsgExecuteExternal{
+					Sender:          req.Sender,
+					ContractAddress: req.ContractAddress,
+					Payload:         body,
+					Funds:           req.Funds,
+					GasLimit:        req.GasLimit,
+					Height:          req.Height,
+				})
 			}
 			return writeCommandJSON(cmd, struct {
 				avmServicePayload
@@ -339,10 +400,11 @@ func newAVMExecuteCmd() *cobra.Command {
 		},
 	}
 	addAVMTxFlags(cmd)
+	addBroadcastFlag(cmd)
 	addAVMBodyFlags(cmd)
 	cmd.Flags().Uint64(flagAVMFunds, 0, "native funds in naet")
 	cmd.Flags().Uint64(flagAVMGasLimit, 100_000, "AVM gas limit")
-	cmd.Flags().Uint64(flagAVMHeight, 1, "execution height")
+	cmd.Flags().Uint64(flagAVMHeight, 1, "execution height (with --broadcast, defaults to the chain's current height when not set explicitly)")
 	return cmd
 }
 
@@ -507,6 +569,54 @@ func addAVMBodyFlags(cmd *cobra.Command) {
 	cmd.Flags().String(flagAVMBodyJSON, "", "JSON message body")
 	cmd.Flags().String(flagAVMBodyFile, "", "file containing JSON message body")
 	cmd.Flags().String(flagAVMBodyHex, "", "hex-encoded message body")
+}
+
+// avmBroadcastHeight resolves the height an AVM tx message should carry: the
+// contracts keeper stores this value verbatim as the contract's
+// created/updated/last-rent-charge height (see x/contracts/keeper/keeper.go),
+// so submitting a stale or placeholder height (e.g. the CLI's dry-run default
+// of 1) against a chain that is actually thousands of blocks in means the
+// very first rent charge sees a huge elapsed block span and can freeze the
+// contract immediately. When broadcasting for real and the caller did not
+// explicitly override --height, fetch the chain's current height instead.
+func avmBroadcastHeight(cmd *cobra.Command, clientCtx client.Context) (uint64, error) {
+	if cmd.Flags().Changed(flagAVMHeight) {
+		return cmd.Flags().GetUint64(flagAVMHeight)
+	}
+	if clientCtx.Client == nil {
+		return cmd.Flags().GetUint64(flagAVMHeight)
+	}
+	status, err := clientCtx.Client.Status(cmd.Context())
+	if err != nil {
+		return 0, fmt.Errorf("query current chain height: %w", err)
+	}
+	height := status.SyncInfo.LatestBlockHeight
+	if height <= 0 {
+		return 0, errors.New("chain reports non-positive latest block height")
+	}
+	return uint64(height), nil
+}
+
+type avmBroadcastResult struct {
+	TxHash string `json:"txhash"`
+	Code   uint32 `json:"code"`
+	RawLog string `json:"raw_log,omitempty"`
+}
+
+func runAVMBroadcast(cmd *cobra.Command, msg sdk.Msg) error {
+	clientCtx, err := client.GetClientTxContext(cmd)
+	if err != nil {
+		return err
+	}
+	res, err := signAndBroadcast(context.Background(), clientCtx, cmd.Flags(), msg)
+	if err != nil && res == nil {
+		return err
+	}
+	result := avmBroadcastResult{TxHash: res.TxHash, Code: res.Code, RawLog: res.RawLog}
+	if writeErr := writeCommandJSON(cmd, result); writeErr != nil {
+		return writeErr
+	}
+	return err
 }
 
 func validateAVMTxFees(cmd *cobra.Command) error {

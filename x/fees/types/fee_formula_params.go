@@ -21,7 +21,7 @@ import (
 //	  - bounded_reputation_discount_naet
 type FeeFormulaParams struct {
 	// TargetTransferFeeNaet is the anchor fee for a normal transfer (Requirement 1.2).
-	// Default: 10_000_000 naet == 0.01 AET.
+	// Default: 500_000_000 naet == 0.5 AET (~$0.005 at the reference peg).
 	TargetTransferFeeNaet	string	`json:"target_transfer_fee_naet"`
 
 	// BaseFeePerGasNaet is the cost per gas unit in naet.
@@ -57,7 +57,7 @@ func DefaultFeeFormulaParams() FeeFormulaParams {
 		BaseFeePerGasNaet:		DefaultBaseGasFeePerGas,
 		ByteFeeNaet:			DefaultByteFeeNaet,
 		MessageFeeNaet:			DefaultMessageFeeNaet,
-		MaxCongestionSurchargeNaet:	"2000000",
+		MaxCongestionSurchargeNaet:	"1000000000", // up to 1 AET at full congestion
 		LowReputationPremiumCapNaet:	DefaultLowReputationPremiumCap,
 		HighReputationDiscountCapNaet:	DefaultHighReputationDiscountCap,
 		StorageRentSideEffectsNaet:	DefaultStorageRentSideEffectsNaet,

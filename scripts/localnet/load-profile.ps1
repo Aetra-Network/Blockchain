@@ -8,7 +8,7 @@ param(
   [decimal]$RatePerSecond = 2,
   [int]$RPCPort = 26657,
   [int]$TimeoutSeconds = 90,
-  [string]$Fees = "1000000naet",
+  [string]$Fees = "600000000naet",
   [string]$FactorySubdenom = "loadasset",
   [switch]$Json
 )

@@ -7,136 +7,158 @@ import (
 )
 
 const (
-	MaxContractMetadataBytes	= 1024
-	MaxContractPayloadBytes		= 64 * 1024
-	MaxContractQueryLimit		= 100
+	MaxContractMetadataBytes = 1024
+	MaxContractPayloadBytes  = 64 * 1024
+	MaxContractQueryLimit    = 100
+
+	// MaxInternalMessageQueueDepth bounds the pending internal-message queue.
+	// The queue is currently append-only (no autonomous drain), so without a
+	// ceiling contract activity grows module state without bound until block
+	// production stalls. Enqueue is rejected once the queue is at this depth,
+	// turning an unbounded-growth halt into a bounded, deterministic rejection.
+	// See SEC-HIGH: whole-module state re-serialized with unbounded queue growth.
+	MaxInternalMessageQueueDepth = 65536
+
+	// MaxRetainedReceipts bounds the per-module contract receipt log. Receipts
+	// are appended by every handler and the whole module state is re-serialized
+	// each block, so without a ceiling the store grows without bound. Pruning
+	// keeps only the most recent MaxRetainedReceipts entries and is applied
+	// inside RefreshStateRoot so the in-memory genesis and the persisted store
+	// prune to the identical set on every node. See SEC-HIGH: bound receipt log.
+	MaxRetainedReceipts = 8192
 )
 
 type MsgDeployContract struct {
-	Creator		string
-	CodeID		string
-	ChainID		string
-	Namespace	string
-	Salt		string
-	StateInit	*StateInit
-	InitPayload	[]byte
-	InitialBalance	uint64
-	Admin		string
-	Upgradeable	bool
-	SystemOwned	bool
-	SchemaVersion	uint64
-	Metadata	[]byte
-	Height		uint64
+	Creator        string `protobuf:"bytes,1,opt,name=creator,proto3" json:"creator,omitempty"`
+	CodeID         string `protobuf:"bytes,2,opt,name=code_id,json=codeId,proto3" json:"code_id,omitempty"`
+	Salt           string `protobuf:"bytes,3,opt,name=salt,proto3" json:"salt,omitempty"`
+	InitPayload    []byte `protobuf:"bytes,4,opt,name=init_payload,json=initPayload,proto3" json:"init_payload,omitempty"`
+	InitialBalance uint64 `protobuf:"varint,5,opt,name=initial_balance,json=initialBalance,proto3" json:"initial_balance,omitempty"`
+	Admin          string `protobuf:"bytes,6,opt,name=admin,proto3" json:"admin,omitempty"`
+	Metadata       []byte `protobuf:"bytes,7,opt,name=metadata,proto3" json:"metadata,omitempty"`
+	// Proto field/JSON names are avm_chain_id/avm_namespace (not chain_id/
+	// namespace) so autocli's Msg-field-derived flags don't collide with the
+	// standard --chain-id tx flag every autocli tx command already gets from
+	// flags.AddTxFlagsToCmd; see cosmossdk.io/client/v2/autocli.
+	ChainID       string     `protobuf:"bytes,8,opt,name=avm_chain_id,json=avmChainId,proto3" json:"avm_chain_id,omitempty"`
+	Namespace     string     `protobuf:"bytes,9,opt,name=avm_namespace,json=avmNamespace,proto3" json:"avm_namespace,omitempty"`
+	StateInit     *StateInit `protobuf:"bytes,10,opt,name=state_init,json=stateInit,proto3" json:"state_init,omitempty"`
+	Upgradeable   bool       `protobuf:"varint,11,opt,name=upgradeable,proto3" json:"upgradeable,omitempty"`
+	SystemOwned   bool       `protobuf:"varint,12,opt,name=system_owned,json=systemOwned,proto3" json:"system_owned,omitempty"`
+	SchemaVersion uint64     `protobuf:"varint,13,opt,name=schema_version,json=schemaVersion,proto3" json:"schema_version,omitempty"`
+	Height        uint64     `protobuf:"varint,14,opt,name=height,proto3" json:"height,omitempty"`
 }
 
 type MsgExecuteExternal struct {
-	Sender		string
-	ContractAddress	string
-	ChainID		string
-	Namespace	string
-	StateInit	*StateInit
-	Payload		[]byte
-	Funds		uint64
-	GasLimit	uint64
-	Metadata	[]byte
-	Height		uint64
+	Sender          string `protobuf:"bytes,1,opt,name=sender,proto3" json:"sender,omitempty"`
+	ContractAddress string `protobuf:"bytes,2,opt,name=contract_address,json=contractAddress,proto3" json:"contract_address,omitempty"`
+	Payload         []byte `protobuf:"bytes,3,opt,name=payload,proto3" json:"payload,omitempty"`
+	Funds           uint64 `protobuf:"varint,4,opt,name=funds,proto3" json:"funds,omitempty"`
+	GasLimit        uint64 `protobuf:"varint,5,opt,name=gas_limit,json=gasLimit,proto3" json:"gas_limit,omitempty"`
+	Metadata        []byte `protobuf:"bytes,6,opt,name=metadata,proto3" json:"metadata,omitempty"`
+	// See the matching comment on MsgDeployContract for why these use
+	// avm_chain_id/avm_namespace instead of chain_id/namespace.
+	ChainID   string     `protobuf:"bytes,7,opt,name=avm_chain_id,json=avmChainId,proto3" json:"avm_chain_id,omitempty"`
+	Namespace string     `protobuf:"bytes,8,opt,name=avm_namespace,json=avmNamespace,proto3" json:"avm_namespace,omitempty"`
+	StateInit *StateInit `protobuf:"bytes,9,opt,name=state_init,json=stateInit,proto3" json:"state_init,omitempty"`
+	Height    uint64     `protobuf:"varint,10,opt,name=height,proto3" json:"height,omitempty"`
 }
 
 type MsgExecuteInternal struct {
-	Message	InternalMessage
-	Height	uint64
+	Message InternalMessage `protobuf:"bytes,1,opt,name=message,proto3" json:"message"`
+	Height  uint64          `protobuf:"varint,2,opt,name=height,proto3" json:"height,omitempty"`
 }
 
 type MsgSendInternalMessage struct {
-	Message	InternalMessage
-	Height	uint64
+	Message InternalMessage `protobuf:"bytes,1,opt,name=message,proto3" json:"message"`
+	Height  uint64          `protobuf:"varint,2,opt,name=height,proto3" json:"height,omitempty"`
 }
 
 type MsgUpdateContractParams struct {
-	Authority	string
-	Params		Params
+	Authority string `protobuf:"bytes,1,opt,name=authority,proto3" json:"authority,omitempty"`
+	Params    Params `protobuf:"bytes,2,opt,name=params,proto3" json:"params"`
 }
 
 type MsgUpdateContractParamsResponse struct {
-	StateRoot string
+	StateRoot string `protobuf:"bytes,1,opt,name=state_root,json=stateRoot,proto3" json:"state_root,omitempty"`
 }
 
 type PageRequest struct {
-	Limit uint32
+	Limit uint32 `protobuf:"varint,1,opt,name=limit,proto3" json:"limit,omitempty"`
 }
 
 type QueryParamsRequest struct{}
 
 type QueryParamsResponse struct {
-	Params Params
+	Params Params `protobuf:"bytes,1,opt,name=params,proto3" json:"params"`
 }
 
 type QueryCodeRequest struct {
-	CodeID string
+	CodeID string `protobuf:"bytes,1,opt,name=code_id,json=codeId,proto3" json:"code_id,omitempty"`
 }
 
 type QueryCodeResponse struct {
-	Code	CodeRecord
-	Found	bool
+	Code  CodeRecord `protobuf:"bytes,1,opt,name=code,proto3" json:"code"`
+	Found bool       `protobuf:"varint,2,opt,name=found,proto3" json:"found,omitempty"`
 }
 
 type QueryCodesRequest struct {
-	Pagination PageRequest
+	Pagination PageRequest `protobuf:"bytes,1,opt,name=pagination,proto3" json:"pagination"`
 }
 
 type QueryCodesResponse struct {
-	Codes []CodeRecord
+	Codes []CodeRecord `protobuf:"bytes,1,rep,name=codes,proto3" json:"codes"`
 }
 
 type QueryContractsRequest struct {
-	Pagination PageRequest
+	Pagination PageRequest `protobuf:"bytes,1,opt,name=pagination,proto3" json:"pagination"`
 }
 
 type QueryContractsResponse struct {
-	Contracts []Contract
+	Contracts []Contract `protobuf:"bytes,1,rep,name=contracts,proto3" json:"contracts"`
 }
 
 type QueryContractStorageRequest struct {
-	ContractAddress	string
-	KeyPrefix	[]byte
-	Pagination	PageRequest
+	ContractAddress string      `protobuf:"bytes,1,opt,name=contract_address,json=contractAddress,proto3" json:"contract_address,omitempty"`
+	KeyPrefix       []byte      `protobuf:"bytes,2,opt,name=key_prefix,json=keyPrefix,proto3" json:"key_prefix,omitempty"`
+	Pagination      PageRequest `protobuf:"bytes,3,opt,name=pagination,proto3" json:"pagination"`
 }
 
 type QueryContractStorageResponse struct {
-	Entries []ContractStorageEntry
+	Entries []ContractStorageEntry `protobuf:"bytes,1,rep,name=entries,proto3" json:"entries"`
 }
 
 type QueryContractReceiptsRequest struct {
-	ContractAddress	string
-	Pagination	PageRequest
+	ContractAddress string      `protobuf:"bytes,1,opt,name=contract_address,json=contractAddress,proto3" json:"contract_address,omitempty"`
+	Pagination      PageRequest `protobuf:"bytes,2,opt,name=pagination,proto3" json:"pagination"`
 }
 
 type QueryContractReceiptsResponse struct {
-	Receipts []ContractReceipt
+	Receipts []ContractReceipt `protobuf:"bytes,1,rep,name=receipts,proto3" json:"receipts"`
 }
 
 type QueryContractQueueRequest struct {
-	ContractAddress	string
-	Pagination	PageRequest
+	ContractAddress string      `protobuf:"bytes,1,opt,name=contract_address,json=contractAddress,proto3" json:"contract_address,omitempty"`
+	Pagination      PageRequest `protobuf:"bytes,2,opt,name=pagination,proto3" json:"pagination"`
 }
 
 type QueryContractQueueResponse struct {
-	Messages []InternalMessage
+	Messages []InternalMessage `protobuf:"bytes,1,rep,name=messages,proto3" json:"messages"`
 }
 
 type QueryContractEventsRequest struct {
-	ContractAddress	string
-	Pagination	PageRequest
+	ContractAddress string      `protobuf:"bytes,1,opt,name=contract_address,json=contractAddress,proto3" json:"contract_address,omitempty"`
+	Pagination      PageRequest `protobuf:"bytes,2,opt,name=pagination,proto3" json:"pagination"`
 }
 
 type QueryContractEventsResponse struct{}
 
 type QueryContractStateRootRequest struct {
-	ContractAddress string
+	ContractAddress string `protobuf:"bytes,1,opt,name=contract_address,json=contractAddress,proto3" json:"contract_address,omitempty"`
 }
 
 type QueryContractStateRootResponse struct {
-	StateRoot string
+	StateRoot string `protobuf:"bytes,1,opt,name=state_root,json=stateRoot,proto3" json:"state_root,omitempty"`
 }
 
 func (m MsgStoreCode) ValidateBasic(params Params) error {
@@ -208,7 +230,7 @@ func (m MsgExecuteExternal) ValidateBasic(params Params) error {
 	return nil
 }
 
-func (m MsgExecuteInternal) ValidateBasic(_ Params) error {
+func (m MsgExecuteInternal) ValidateBasic(params Params) error {
 	if m.Height == 0 {
 		return errors.New("internal execute height must be positive")
 	}
@@ -216,10 +238,20 @@ func (m MsgExecuteInternal) ValidateBasic(_ Params) error {
 	if msg.Height == 0 {
 		msg.Height = m.Height
 	}
-	return msg.Validate()
+	if err := msg.Validate(); err != nil {
+		return err
+	}
+	// A zero gas limit means "use the module default"; any explicit limit must
+	// stay within the per-execution ceiling so a permissionless internal
+	// message cannot run the AVM effectively forever and halt the chain.
+	// See SEC-CRIT: uncapped AVM gas on internal messages.
+	if msg.GasLimit > params.MaxGasPerExecution {
+		return errors.New("internal execute gas limit exceeds maximum")
+	}
+	return nil
 }
 
-func (m MsgSendInternalMessage) ValidateBasic(_ Params) error {
+func (m MsgSendInternalMessage) ValidateBasic(params Params) error {
 	if m.Height == 0 {
 		return errors.New("send internal height must be positive")
 	}
@@ -227,7 +259,13 @@ func (m MsgSendInternalMessage) ValidateBasic(_ Params) error {
 	if msg.Height == 0 {
 		msg.Height = m.Height
 	}
-	return msg.Validate()
+	if err := msg.Validate(); err != nil {
+		return err
+	}
+	if msg.GasLimit > params.MaxGasPerExecution {
+		return errors.New("send internal gas limit exceeds maximum")
+	}
+	return nil
 }
 
 func (m MsgUpgradeContractCode) ValidateBasic(params Params) error {
