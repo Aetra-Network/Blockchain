@@ -152,7 +152,7 @@ Accepts any form (AE / `4:` / `-7:` / hex), normalizes, classifies:
     "creator": "AEJk…", "admin": "AEJk…", "storage_bytes": 1234,
     "created_height": 100, "updated_height": 200, "state_root": "…",
     "bytecode": { "size": 1050, "hex": "…", "base64": "…", "hash": "<sha256>", "code_hash": "…",
-                  "instructions": [ { "offset": 0, "op": "read_msg_body", "arg": 0, "data": "" }, ... ] },
+                  "chunks": [ { "depth": 0, "bits": 0, "hash": "…", "refs": 8, "hex": "" }, ... ] },
     "data":     { "size": 47,   "hex": "…", "base64": "…", "hash": "<sha256>",
                   "storage": [ { "key": "counter", "type": "uint64", "value": 41 } ] }
   }
@@ -163,16 +163,16 @@ A native account (`kind: wallet`) has no AVM bytecode or storage snapshot —
 those exist only for deployed contracts — so `contract` is absent and
 `wallet.description` explains the entity instead.
 
-`bytecode.instructions` is the real AVM instruction stream (avm.DisassembleModule)
-— opcode mnemonic, argument and any inline data, in execution order; this is
-what the interpreter actually executes, not a generic byte grouping. `data.storage`
-is the contract's decoded state: either the {name,type,value} JSON field array
-most deployed contracts actually store on-chain (the same shape message-body
-fields use), or — for the binary AVM snapshot format — a list of
-`{key, size, hex, chunks?}` entries, where `chunks` appears only when that
-specific value is itself a serialized Aetralis chunk tree (the
-`toChunk()`/`getData()` convention). Neither field repacks unrelated bytes
-into an arbitrary chunk tree the way an earlier version of this API did.
+`bytecode.chunks` is the canonical Aetralis chunk-tree packing of the module
+bytes (`chunk.BuildTree` — the same packing the compiler uses for
+`CodeChunkHash`), i.e. the chunk representation AVM's code-commitment scheme
+actually consumes. `data.storage` is the contract's decoded state: either the
+{name,type,value} JSON field array most deployed contracts actually store
+on-chain (the same shape message-body fields use), or — for the binary AVM
+snapshot format — a list of `{key, size, hex, chunks?}` entries, where
+`chunks` appears only when that specific value is itself a serialized
+Aetralis chunk tree (the `toChunk()`/`getData()` convention). Neither field
+repacks unrelated bytes into a meaningless tree.
 
 ---
 
