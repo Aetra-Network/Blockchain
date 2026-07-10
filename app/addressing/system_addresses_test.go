@@ -137,3 +137,16 @@ func TestReservedSystemAddressCatalogRejectsDuplicateAndZeroFixtures(t *testing.
 	zero[0].UserFriendly = addressing.ZeroUserFriendly
 	require.ErrorContains(t, addressing.ValidateSystemAddressCatalog(zero), "zero address")
 }
+
+// TestSystemAddressDescriptionsCoverAllModules guards against a silent
+// generic fallback: every reserved system entity must have its own
+// human-facing Description so an explorer/wallet never shows the bare
+// "Aetra system module account." placeholder for a real entity.
+func TestSystemAddressDescriptionsCoverAllModules(t *testing.T) {
+	for _, addr := range addressing.AllSystemAddresses() {
+		desc := addr.Description()
+		require.NotEqual(t, "Aetra system module account.", desc,
+			"module %q (%s) has no specific description", addr.ModuleName, addr.Name)
+		require.NotEmpty(t, desc)
+	}
+}

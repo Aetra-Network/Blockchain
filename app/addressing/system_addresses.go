@@ -38,6 +38,50 @@ type SystemAddress struct {
 	Status			string
 }
 
+// Description returns a short, human-facing explanation of what this system
+// entity is and does, keyed by module — so an explorer or wallet can label a
+// reserved address clearly instead of showing a bare module name. Every
+// module in reservedSystemAddresses must have an entry here;
+// TestSystemAddressDescriptionsCoverAllModules enforces it.
+func (s SystemAddress) Description() string {
+	if d, ok := systemAddressDescriptions[s.ModuleName]; ok {
+		return d
+	}
+	return "Aetra system module account."
+}
+
+var systemAddressDescriptions = map[string]string{
+	"validator-election":    "Elects and rotates the active validator set each epoch.",
+	"config":                "Holds the chain's live, governance-adjustable parameters.",
+	"constitution":          "Anchors the chain's constitutional rules and amendment history.",
+	"system-registry":       "Registry of record for every reserved system entity on the chain.",
+	"validator-registry":    "Tracks registered validator operators and their metadata.",
+	"config-voting":         "Runs governance votes that change chain parameters.",
+	"mint-authority":        "Mints new AET under the chain's emission schedule.",
+	"burn":                  "Destination for AET permanently removed from supply.",
+	"evidence":              "Records slashing / misbehavior evidence against validators.",
+	"reporter":              "Pays rewards to reporters of validated evidence.",
+	"nominator-pool":        "Pools nominator (delegator) stake behind validators.",
+	"single-nominator-pool": "A single-nominator variant of the staking pool.",
+	"validator-insurance":   "Insurance fund covering validator-side slashing risk.",
+	"delegator-protection":  "Protects delegators from certain validator-side losses.",
+	"reputation":            "Tracks validator reputation scores derived from performance.",
+	"performance-oracle":    "Feeds validator performance metrics into the scoring system.",
+	"stake-concentration":   "Monitors and discourages excessive stake concentration.",
+	"dynamic-commission":    "Adjusts validator commission rates dynamically.",
+	"emissions":             "Accounts for the chain's block-reward emission schedule.",
+	"fee-collector":         "Collects transaction fees before distribution.",
+	"treasury":              "Chain treasury: holds funds for governance-directed spending.",
+	"scheduler":             "Schedules deferred / autonomous protocol-level actions.",
+	"avm-scheduler":         "Schedules deferred AVM contract message delivery.",
+	"actor-registry":        "Registry of on-chain actors participating in protocol modules.",
+	"storage-rent":          "Collects contract storage rent and manages frozen / expired contracts.",
+	"identity-root":         "Root of the chain's on-chain identity system.",
+	"bridge-hub":            "Coordinates cross-chain bridge message routing.",
+	"cross-chain-registry":  "Registry of external chains recognized for bridging.",
+	"sharding-coordinator":  "Coordinates zone/shard assignment and load distribution.",
+}
+
 var reservedSystemAddresses = []SystemAddress{
 	systemAddress(SystemAddressAETElectorName, "validator-election", SystemAddressAETElectorRaw, SystemAddressAETElectorUserFriendly, true, false, false, false),
 	systemAddress(SystemAddressAETConfigName, "config", SystemAddressAETConfigRaw, SystemAddressAETConfigUserFriendly, true, false, false, false),
