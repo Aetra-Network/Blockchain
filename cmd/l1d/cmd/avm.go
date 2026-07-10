@@ -98,6 +98,7 @@ type avmExecuteRequest struct {
 	Funds           uint64 `json:"funds,omitempty"`
 	GasLimit        uint64 `json:"gas_limit"`
 	Height          uint64 `json:"height"`
+	Opcode          uint32 `json:"opcode,omitempty"`
 }
 
 type avmQueryRequest struct {
@@ -340,9 +341,19 @@ func newAVMExecuteCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			body, err := readBodyBytes(cmd)
+			body, abiOpcode, abiOpcodeKnown, err := resolveAVMBody(cmd)
 			if err != nil {
 				return err
+			}
+			// Route a union-typed external message: prefer the compiled
+			// opcode from --source/--message; else an explicit --opcode; else
+			// 0 (valid for a single-variant external union).
+			opcode, _ := cmd.Flags().GetUint32(flagAVMOpcode)
+			if abiOpcodeKnown {
+				if cmd.Flags().Changed(flagAVMOpcode) && opcode != abiOpcode {
+					return fmt.Errorf("--opcode %d conflicts with the compiled opcode %d for --message", opcode, abiOpcode)
+				}
+				opcode = abiOpcode
 			}
 			broadcast, _ := cmd.Flags().GetBool(flagBroadcast)
 			var clientCtx client.Context
@@ -366,6 +377,7 @@ func newAVMExecuteCmd() *cobra.Command {
 				Funds:           funds,
 				GasLimit:        gasLimit,
 				Height:          height,
+				Opcode:          opcode,
 			}
 			if req.ContractAddress == "" {
 				return errors.New("execute contract address is required")
@@ -384,6 +396,7 @@ func newAVMExecuteCmd() *cobra.Command {
 					Funds:           req.Funds,
 					GasLimit:        req.GasLimit,
 					Height:          req.Height,
+					Opcode:          req.Opcode,
 				})
 			}
 			return writeCommandJSON(cmd, struct {
@@ -415,6 +428,7 @@ func newAVMExecuteCmd() *cobra.Command {
 	cmd.Flags().Uint64(flagAVMFunds, 0, "native funds in naet")
 	cmd.Flags().Uint64(flagAVMGasLimit, 100_000, "AVM gas limit")
 	cmd.Flags().Uint64(flagAVMHeight, 1, "execution height (with --broadcast, defaults to the chain's current height when not set explicitly)")
+	cmd.Flags().Uint32(flagAVMOpcode, 0, "external message @message opcode to route a union-typed incomingExternal; auto-filled from --source/--message")
 	return cmd
 }
 

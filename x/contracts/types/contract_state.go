@@ -161,6 +161,10 @@ type MsgExecuteContract struct {
 	Msg             []byte
 	Funds           uint64
 	Height          uint64
+	// Opcode is the external message's @message discriminator, threaded into
+	// the AVM runtime context so a union-typed incomingExternal routes to the
+	// right variant (see MsgExecuteExternal.Opcode).
+	Opcode uint32
 }
 
 type ExecuteContractResponse struct {

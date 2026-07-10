@@ -315,6 +315,7 @@ func (k *Keeper) executeExternal(ctx context.Context, msg types.MsgExecuteExtern
 		Msg:             append([]byte(nil), msg.Payload...),
 		Funds:           msg.Funds,
 		Height:          msg.Height,
+		Opcode:          msg.Opcode,
 	})
 }
 
@@ -1297,7 +1298,7 @@ func (k *Keeper) executeContract(ctx context.Context, msg types.MsgExecuteContra
 		if err != nil {
 			return types.ExecuteContractResponse{}, err
 		}
-		runtimeCtx, err := k.buildAVMContext(avm.EntryReceiveExternal, contract, msg.Sender, msg.Msg, msg.Funds, k.genesis.Params.MaxGasPerExecution, msg.Height, contract.LogicalTime, 0, 0, false)
+		runtimeCtx, err := k.buildAVMContext(avm.EntryReceiveExternal, contract, msg.Sender, msg.Msg, msg.Funds, k.genesis.Params.MaxGasPerExecution, msg.Height, contract.LogicalTime, msg.Opcode, 0, false)
 		if err != nil {
 			return types.ExecuteContractResponse{}, err
 		}

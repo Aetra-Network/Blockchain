@@ -584,6 +584,7 @@ func buildContractsTxFileDescriptor() []byte {
 				stringField("avm_namespace", 8),
 				messageField("state_init", 9, ".l1.contracts.v1.StateInit"),
 				uint64Field("height", 10),
+				uint32Field("opcode", 11),
 			), "sender"),
 			messageDescriptorFields("MsgExecuteExternalResponse",
 				stringField("contract_address_user", 1),

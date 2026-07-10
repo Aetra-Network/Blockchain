@@ -62,6 +62,12 @@ type MsgExecuteExternal struct {
 	Namespace string     `protobuf:"bytes,8,opt,name=avm_namespace,json=avmNamespace,proto3" json:"avm_namespace,omitempty"`
 	StateInit *StateInit `protobuf:"bytes,9,opt,name=state_init,json=stateInit,proto3" json:"state_init,omitempty"`
 	Height    uint64     `protobuf:"varint,10,opt,name=height,proto3" json:"height,omitempty"`
+	// Opcode is the @message discriminator of the external message body. The
+	// AVM routes a union-typed incomingExternal via OpReadMsgOpcode, which
+	// reads this value from the runtime context; without it a multi-variant
+	// ExternalMsg cannot be matched and every external call silently falls to
+	// the `else` arm. A single-variant union with opcode 0 keeps working.
+	Opcode uint32 `protobuf:"varint,11,opt,name=opcode,proto3" json:"opcode,omitempty"`
 }
 
 type MsgExecuteInternal struct {
