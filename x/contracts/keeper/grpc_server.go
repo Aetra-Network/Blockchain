@@ -167,6 +167,14 @@ func (q grpcQueryServer) Codes(_ context.Context, req *types.QueryCodesRequest) 
 	return &types.QueryCodesResponse{Codes: codes}, err
 }
 
+func (q grpcQueryServer) ContractGet(_ context.Context, req *types.QueryContractGetRequest) (*types.QueryContractGetResponse, error) {
+	if req == nil {
+		return nil, errors.New("empty contracts get-method query")
+	}
+	res, err := q.keeper.ContractGet(*req)
+	return &res, err
+}
+
 func (q grpcQueryServer) Contract(_ context.Context, req *types.QueryContractRequest) (*types.QueryContractResponse, error) {
 	if req == nil {
 		return nil, errors.New("empty contracts contract query")

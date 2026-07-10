@@ -114,6 +114,7 @@ type QueryServer interface {
 	Code(QueryCodeRequest) (CodeRecord, bool, error)
 	Codes(QueryCodesRequest) ([]CodeRecord, error)
 	Contract(QueryContractRequest) (QueryContractResponse, error)
+	ContractGet(QueryContractGetRequest) (QueryContractGetResponse, error)
 	Contracts(QueryContractsRequest) ([]Contract, error)
 	ContractStorage(QueryContractStorageRequest) ([]ContractStorageEntry, error)
 	ContractReceipts(QueryContractReceiptsRequest) ([]ContractReceipt, error)

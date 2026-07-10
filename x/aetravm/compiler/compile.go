@@ -3279,7 +3279,10 @@ func (c *Compiler) buildModule(file *SourceFile, contract *ContractDecl, manifes
 		entryBase := uint32(len(code))
 		module.Exports[entrypoint] = entryBase
 		combined := entries[0]
-		if len(entries) > 1 {
+		// EntryQuery always dispatches — even with a single getter — so an
+		// unknown method selector aborts instead of silently running whichever
+		// getter happens to be compiled in.
+		if len(entries) > 1 || entrypoint == avm.EntryQuery {
 			// Several entries share one entrypoint (e.g. multiple getters on
 			// EntryQuery). Dispatch by selector and fail closed on unknown
 			// selectors instead of silently dropping entries.
@@ -3298,6 +3301,19 @@ func (c *Compiler) buildModule(file *SourceFile, contract *ContractDecl, manifes
 					Left:  &IRExpr{Kind: IRExprMsgOpcode, Pos: e.Pos},
 					Right: &IRExpr{Kind: IRExprConstU64, Value: uint64(e.Selector), Pos: e.Pos},
 					Pos:   e.Pos,
+				}
+				if entrypoint == avm.EntryQuery {
+					// A getter is also callable by its NAME alone: the
+					// name-alias selector (avm.GetterNameSelector) routes to
+					// the same body, binding explorer/wallet calls to the
+					// exact source-level function name.
+					aliasCond := &IRExpr{
+						Kind:  IRExprEq,
+						Left:  &IRExpr{Kind: IRExprMsgOpcode, Pos: e.Pos},
+						Right: &IRExpr{Kind: IRExprConstU64, Value: uint64(avm.GetterNameSelector(e.Name)), Pos: e.Pos},
+						Pos:   e.Pos,
+					}
+					cond = &IRExpr{Kind: IRExprOr, Left: cond, Right: aliasCond, Pos: e.Pos}
 				}
 				stmts = append(stmts, IRStmt{Kind: IRStmtJumpIfZero, Target: skip, Expr: cond, Position: e.Pos})
 				stmts = append(stmts, e.Statements...)
@@ -6928,59 +6944,11 @@ func isValidName(name string) bool {
 	return true
 }
 
+// buildChunkTree delegates to the canonical packing in the chunk package so
+// the compiler's CodeChunkHash and any off-chain "cells" rendering of the same
+// bytes always agree.
 func buildChunkTree(data []byte) (*chunk.Chunk, error) {
-	if len(data) == 0 {
-		return chunk.NewEmptyChunk(), nil
-	}
-	if len(data) <= chunk.MaxDataBits/8 {
-		builder := chunk.NewBuilder().SetTypeTag(chunk.TypeNormal).SetData(data, uint16(len(data)*8))
-		return builder.Build()
-	}
-	parts := splitBytes(data, chunk.MaxRefs)
-	builder := chunk.NewBuilder().SetTypeTag(chunk.TypeNormal)
-	for i, part := range parts {
-		child, err := buildChunkTree(part)
-		if err != nil {
-			return nil, err
-		}
-		builder.SetRef(i, child)
-	}
-	return builder.Build()
-}
-
-func splitBytes(data []byte, maxParts int) [][]byte {
-	if len(data) == 0 {
-		return nil
-	}
-	if maxParts <= 1 {
-		return [][]byte{append([]byte(nil), data...)}
-	}
-	partSize := (len(data) + maxParts - 1) / maxParts
-	var out [][]byte
-	for i := 0; i < len(data); i += partSize {
-		end := i + partSize
-		if end > len(data) {
-			end = len(data)
-		}
-		out = append(out, append([]byte(nil), data[i:end]...))
-	}
-	for len(out) > maxParts {
-		next := make([][]byte, 0, maxParts)
-		chunkSize := (len(out) + maxParts - 1) / maxParts
-		for i := 0; i < len(out); i += chunkSize {
-			end := i + chunkSize
-			if end > len(out) {
-				end = len(out)
-			}
-			var merged []byte
-			for _, part := range out[i:end] {
-				merged = append(merged, part...)
-			}
-			next = append(next, merged)
-		}
-		out = next
-	}
-	return out
+	return chunk.BuildTree(data)
 }
 
 func encodeStateInit(si *avm.StateInit) ([]byte, error) {

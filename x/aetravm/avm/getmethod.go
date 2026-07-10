@@ -1,6 +1,7 @@
 package avm
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,17 @@ func ComputeMethodSelector(signature string) [4]byte {
 	var sel [4]byte
 	copy(sel[:], h[:4])
 	return sel
+}
+
+// GetterNameSelector derives the name-only dispatch selector of a @get
+// function: BLAKE3("getter-name:" + name)[:4], big-endian. The compiler emits
+// this alias into the EntryQuery dispatch alongside the full-signature
+// selector, so a caller can invoke a getter knowing only its exact
+// source-level name (currentCounter, lpBalanceOf, …) — the binding is to the
+// function NAME, character for character.
+func GetterNameSelector(name string) uint32 {
+	h := blake3.Sum256([]byte("getter-name:" + name))
+	return binary.BigEndian.Uint32(h[:4])
 }
 
 // GetMethodABI defines a get method in the contract ABI.

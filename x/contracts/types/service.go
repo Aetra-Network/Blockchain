@@ -78,6 +78,7 @@ type GRPCQueryServer interface {
 	ContractStateRoot(context.Context, *QueryContractStateRootRequest) (*QueryContractStateRootResponse, error)
 	SecurityAttestations(context.Context, *QuerySecurityAttestationsRequest) (*QuerySecurityAttestationsResponse, error)
 	SecurityBadge(context.Context, *QuerySecurityBadgeRequest) (*QuerySecurityBadgeResponse, error)
+	ContractGet(context.Context, *QueryContractGetRequest) (*QueryContractGetResponse, error)
 }
 
 type UnimplementedGRPCQueryServer struct{}
@@ -117,6 +118,9 @@ func (UnimplementedGRPCQueryServer) SecurityAttestations(context.Context, *Query
 }
 func (UnimplementedGRPCQueryServer) SecurityBadge(context.Context, *QuerySecurityBadgeRequest) (*QuerySecurityBadgeResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SecurityBadge not implemented")
+}
+func (UnimplementedGRPCQueryServer) ContractGet(context.Context, *QueryContractGetRequest) (*QueryContractGetResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ContractGet not implemented")
 }
 
 func RegisterMsgServer(s grpc.Server, srv GRPCMsgServer) {
@@ -200,6 +204,9 @@ var Query_serviceDesc = grpcgo.ServiceDesc{
 		{MethodName: "SecurityBadge", Handler: queryHandler(func(s GRPCQueryServer, ctx context.Context, req any) (any, error) {
 			return s.SecurityBadge(ctx, req.(*QuerySecurityBadgeRequest))
 		}, newQuerySecurityBadgeRequest)},
+		{MethodName: "ContractGet", Handler: queryHandler(func(s GRPCQueryServer, ctx context.Context, req any) (any, error) {
+			return s.ContractGet(ctx, req.(*QueryContractGetRequest))
+		}, newQueryContractGetRequest)},
 	},
 	Streams:  []grpcgo.StreamDesc{},
 	Metadata: "l1/contracts/v1/query.proto",
@@ -263,6 +270,7 @@ func newQueryContractStateRootRequest() any {
 }
 func newQuerySecurityAttestationsRequest() any { return new(QuerySecurityAttestationsRequest) }
 func newQuerySecurityBadgeRequest() any        { return new(QuerySecurityBadgeRequest) }
+func newQueryContractGetRequest() any          { return new(QueryContractGetRequest) }
 
 func init() {
 	gogoproto.RegisterType((*MsgStoreCode)(nil), "l1.contracts.v1.MsgStoreCode")
@@ -304,6 +312,9 @@ func init() {
 	gogoproto.RegisterType((*QuerySecurityAttestationsResponse)(nil), "l1.contracts.v1.QuerySecurityAttestationsResponse")
 	gogoproto.RegisterType((*QuerySecurityBadgeRequest)(nil), "l1.contracts.v1.QuerySecurityBadgeRequest")
 	gogoproto.RegisterType((*QuerySecurityBadgeResponse)(nil), "l1.contracts.v1.QuerySecurityBadgeResponse")
+	gogoproto.RegisterType((*GetMethodArg)(nil), "l1.contracts.v1.GetMethodArg")
+	gogoproto.RegisterType((*QueryContractGetRequest)(nil), "l1.contracts.v1.QueryContractGetRequest")
+	gogoproto.RegisterType((*QueryContractGetResponse)(nil), "l1.contracts.v1.QueryContractGetResponse")
 	gogoproto.RegisterFile("l1/contracts/v1/tx.proto", fileDescriptorContractsTx)
 	gogoproto.RegisterFile("l1/contracts/v1/query.proto", fileDescriptorContractsQuery)
 }
@@ -416,6 +427,18 @@ func (*QueryContractRequest) Descriptor() ([]byte, []int) {
 func (m *QueryContractResponse) Reset()         { *m = QueryContractResponse{} }
 func (m *QueryContractResponse) String() string { return gogoproto.CompactTextString(m) }
 func (*QueryContractResponse) ProtoMessage()    {}
+
+func (m *GetMethodArg) Reset()         { *m = GetMethodArg{} }
+func (m *GetMethodArg) String() string { return gogoproto.CompactTextString(m) }
+func (*GetMethodArg) ProtoMessage()    {}
+
+func (m *QueryContractGetRequest) Reset()         { *m = QueryContractGetRequest{} }
+func (m *QueryContractGetRequest) String() string { return gogoproto.CompactTextString(m) }
+func (*QueryContractGetRequest) ProtoMessage()    {}
+
+func (m *QueryContractGetResponse) Reset()         { *m = QueryContractGetResponse{} }
+func (m *QueryContractGetResponse) String() string { return gogoproto.CompactTextString(m) }
+func (*QueryContractGetResponse) ProtoMessage()    {}
 
 func (m *QueryContractsRequest) Reset()         { *m = QueryContractsRequest{} }
 func (m *QueryContractsRequest) String() string { return gogoproto.CompactTextString(m) }
@@ -903,6 +926,26 @@ func buildContractsQueryFileDescriptor() []byte {
 				messageField("badge", 1, ".l1.contracts.v1.ContractSecurityBadge"),
 				boolField("found", 2),
 			),
+			messageDescriptorFields("GetMethodArg",
+				stringField("type", 1),
+				stringField("value", 2),
+			),
+			messageDescriptorFields("QueryContractGetRequest",
+				stringField("contract_address", 1),
+				stringField("method", 2),
+				repeatedMessageField("args", 3, ".l1.contracts.v1.GetMethodArg"),
+				uint64Field("gas_limit", 4),
+			),
+			messageDescriptorFields("QueryContractGetResponse",
+				boolField("success", 1),
+				uint32Field("exit_code", 2),
+				uint64Field("gas_used", 3),
+				stringField("result", 4),
+				stringField("result_type", 5),
+				stringField("method", 6),
+				uint32Field("selector", 7),
+				stringField("error", 8),
+			),
 			messageDescriptorFields("ContractSecurityBadge",
 				stringField("contract_address", 1),
 				stringField("badge", 2),
@@ -935,6 +978,7 @@ func buildContractsQueryFileDescriptor() []byte {
 					serviceMethodDescriptor("ContractStateRoot", "QueryContractStateRootRequest", "QueryContractStateRootResponse"),
 					serviceMethodDescriptor("SecurityAttestations", "QuerySecurityAttestationsRequest", "QuerySecurityAttestationsResponse"),
 					serviceMethodDescriptor("SecurityBadge", "QuerySecurityBadgeRequest", "QuerySecurityBadgeResponse"),
+					serviceMethodDescriptor("ContractGet", "QueryContractGetRequest", "QueryContractGetResponse"),
 				},
 			},
 		},
