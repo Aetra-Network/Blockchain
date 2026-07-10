@@ -88,7 +88,7 @@ write-shaped route relays already-signed bytes.
 | `GET /accounts/{addr}/txs` | tx history for an address (paginated) |
 | `GET /address/{addr}` | **unified view** for any address form — see below |
 | `GET /contracts`, `GET /contracts/{addr}` | deployed AVM contracts / one contract |
-| `POST /contracts/{addr}/get` | execute a read-only **@get method by its exact name**: `{"method":"currentCounter","args":[{"type":"uint64","value":"9"}]}` → success, exit code, gas used, typed result. The name is the binding (`currentCounter` ≠ `current_counter`); AVM v1 passes at most one numeric argument |
+| `POST /contracts/{addr}/get` | execute a read-only **@get method by its exact name** — the name is subjective per contract, not a universal method: `{"method":"<your @get function's exact name>","args":[{"type":"number","value":"9"}]}` → success, exit code, gas used, typed result. Names bind character for character (a contract's `currentCounter` will not answer to `current_counter`); AVM v1 passes at most one argument, and it must be `number` (covers int/uint/coins/timestamp — parsed as a plain decimal integer) |
 | `GET /validators`, `GET /supply` | validator set / total supply |
 | `GET /search?q=` | resolve a height, block/tx hash, or any address form |
 | `GET /healthz` | liveness + indexed height |
@@ -114,7 +114,7 @@ write-shaped route relays already-signed bytes.
 
 | Route | Returns |
 | --- | --- |
-| `GET /system/addresses` | the full catalog of reserved system-entity accounts (name, module, both address forms, workchain, fund capabilities) |
+| `GET /system/addresses` | the full catalog of reserved system-entity accounts — name, **human-facing description**, module, both address forms, workchain, fund capabilities, and **live balance** |
 
 `GET /address/{addr}` also classifies a reserved system entity as
 `kind: "system"` and returns its metadata under a `system` object.
@@ -131,20 +131,37 @@ Accepts any form (AE / `4:` / `-7:` / hex), normalizes, classifies:
   "balance": "<naet integer string>",
   "status": "active | frozen | … | uninit | nonexistent",
   "forms": {
-    "user_friendly": "AEJk…",        // base64url; MAY contain - and _
-    "raw": "4:<64hex>",
-    "hex": "<64hex>",
-    "system_raw": "-7:<64hex>"        // present ONLY for system entities
+    "user_friendly": "AEJk…",   // base64url; MAY contain - and _; always present
+    "bech32": "ae1…",           // native bech32 form; always present
+    "hex": "<hex>",             // the address's actual bytes: 20 (wallet) or 32 (contract) — no zero padding
+    "raw": "4:<64hex>",         // present ONLY for 32-byte addresses (contracts / v2)
+    "system_raw": "-7:<64hex>"  // present ONLY for system entities
+  },
+  "wallet": {                          // present only when kind == wallet
+    "type": "native_wallet",
+    "description": "A standard Aetra account. It has no deployed code …"
+  },
+  "system": {                          // present only when kind == system
+    "name": "AETFeeCollector", "module": "fee-collector",
+    "description": "Collects transaction fees before distribution.",
+    "core": false, "can_hold_funds": true, "can_receive_user_funds": false,
+    "can_send_funds": false, "status": "active"
   },
   "contract": {                        // present only when kind == contract
     "status": "active", "code_id": "…", "code_hash": "…",
     "creator": "AEJk…", "admin": "AEJk…", "storage_bytes": 1234,
     "created_height": 100, "updated_height": 200, "state_root": "…",
-    "bytecode": { "size": 1050, "hex": "…", "base64": "…", "hash": "<sha256>", "code_hash": "…" },
+    "bytecode": { "size": 1050, "hex": "…", "base64": "…", "hash": "<sha256>", "code_hash": "…", "chunks": [...] },
     "data":     { "size": 184,  "hex": "…", "base64": "…", "hash": "<sha256>", "chunks": [ { "depth": 0, "bits": 64, "hash": "…", "refs": 1, "hex": "…" } ] }
   }
 }
 ```
+
+A native account (`kind: wallet`) has no AVM bytecode or storage snapshot —
+those exist only for deployed contracts — so `contract` is absent and
+`wallet.description` explains the entity instead. `chunks` is always attempted
+for both `bytecode` and `data` (canonical Aetralis chunk-tree packing), empty
+when the blob doesn't parse as one (e.g. linear module bytecode).
 
 ---
 
