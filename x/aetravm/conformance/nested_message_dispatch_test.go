@@ -12,8 +12,8 @@ import (
 	"github.com/sovereign-l1/l1/x/aetravm/compiler"
 )
 
-// nestedMessageDispatchSource models the generic TON-style "notification
-// carries a differently-typed inner message in its forward payload" pattern:
+// nestedMessageDispatchSource models the generic "notification carries a
+// differently-typed inner message in its forward payload" pattern:
 // AllowedMessageToNftCollection.TransferNotificationForRecipient carries a
 // forwardPayload field holding an AllowedInnerMessage (DeployNft or
 // BatchDeployNfts), wrapped with wrapMessage() so its own opcode travels on

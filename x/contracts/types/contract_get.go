@@ -27,9 +27,9 @@ type QueryContractGetRequest struct {
 	GasLimit        uint64         `protobuf:"varint,4,opt,name=gas_limit,json=gasLimit,proto3" json:"gas_limit,omitempty"`
 }
 
-// QueryContractGetResponse carries the get-method outcome: TON-style exit
-// code, gas used, and the returned value rendered as a string plus its
-// runtime type name.
+// QueryContractGetResponse carries the get-method outcome: an exit code,
+// gas used, and the returned value rendered as a string plus its runtime
+// type name.
 type QueryContractGetResponse struct {
 	Success    bool   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
 	ExitCode   uint32 `protobuf:"varint,2,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"`
