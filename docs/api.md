@@ -47,7 +47,24 @@ DIRECT), with Aetra's addresses and the deterministic fee (below).
 | `l1.contracts.v1.Query` | `Contract`, `Contracts`, `Code`, `Codes`, `ContractStorage`, `ContractReceipts`, `ContractQueue`, `ContractEvents`, `ContractStateRoot`, `SecurityAttestations`, `SecurityBadge`, `Params` |
 | `l1.contracts.v1.Msg` | `StoreCode`, `DeployContract`, `ExecuteExternal`, `ExecuteInternal`, `SendInternalMessage`, `UpdateContractParams`, `SubmitSecurityAttestation`, `RevokeSecurityAttestation` |
 | `l1.fees.v1.Query` | `Params`, `EstimateFee`, `Accounting`, `ModuleBalances`, `NetworkLoad` |
-| plus | `l1.aetraeconomics`, `l1.validatorelection`, `l1.validatorregistry`, `l1.nominatorpool`, `l1.systemregistry`, `l1.actorregistry`, `l1.constitution`, `l1.config`, `l1.configvoting`, `l1.scheduler`, `l1.reporter`, `l1.evidence`, … (one `v1.Query`/`v1.Msg` per module under `api/l1/`) |
+| plus every other module | one `l1.<module>.v1.Query` each |
+
+**Completeness (verified via gRPC reflection on a live node): 30 Aetra
+`l1.*` services + 22 cosmos-sdk services.** Every functional module exposes a
+Query service reachable over gRPC:
+
+`l1.contracts`, `l1.fees`, `l1.feecollector`, `l1.treasury`, `l1.burn`,
+`l1.emissions`, `l1.mintauthority`, `l1.storagerent`, `l1.nativeaccount`,
+`l1.aetraeconomics`, `l1.aetrastakingpolicy`, `l1.aetravalidatorscore`,
+`l1.validatorelection`, `l1.validatorregistry`, `l1.validatorinsurance`,
+`l1.nominatorpool`, `l1.singlenominatorpool`, `l1.delegatorprotection`,
+`l1.dynamiccommission`, `l1.stakeconcentration`, `l1.reputation`,
+`l1.performance`, `l1.reporter`, `l1.evidence`, `l1.systemregistry`,
+`l1.actorregistry`, `l1.constitution`, `l1.config`, `l1.configvoting`,
+`l1.scheduler`. Plus the full cosmos-sdk set (`auth`, `authz`, `bank`,
+`staking`, `distribution`, `gov`, `mint`, `slashing`, `feegrant`, `consensus`,
+`upgrade`, `epochs`, `tx.Service`, …). Server reflection is enabled, so a
+client can discover the entire surface at runtime.
 
 Contract message type URLs (for building txs): `/l1.contracts.v1.MsgStoreCode`,
 `/l1.contracts.v1.MsgDeployContract`, `/l1.contracts.v1.MsgExecuteExternal`,
@@ -91,6 +108,15 @@ write-shaped route relays already-signed bytes.
 | --- | --- |
 | `GET /staking/{addr}` | `delegations[]` (validator, shares, balance), `unbonding[]` (balance, completion_time), `rewards[]` |
 | `GET /staking/params` | `bond_denom`, `unbonding_time`, `max_validators`, `max_entries`, `min_commission_rate` |
+
+### System entities
+
+| Route | Returns |
+| --- | --- |
+| `GET /system/addresses` | the full catalog of reserved system-entity accounts (name, module, both address forms, workchain, fund capabilities) |
+
+`GET /address/{addr}` also classifies a reserved system entity as
+`kind: "system"` and returns its metadata under a `system` object.
 
 ### `GET /address/{addr}` shape
 
@@ -177,14 +203,24 @@ reconstructable from `GET /txs/{hash}` (the explorer draws it).
 
 ## 6. Addresses
 
-Three interchangeable forms, all resolvable by `/address`, `/search`, and the
-address-parsing helpers in `app/addressing`:
+Forms are resolvable by `/address`, `/search`, and the address-parsing helpers
+in `app/addressing`. A given address exposes only the forms that apply to it:
 
 - **User-friendly** `AEJk…` — `base64.RawURLEncoding`, so it legitimately
-  contains `-` and `_`. The primary identity shown to users.
-- **Raw** `4:<64hex>` — the workchain-tagged raw form (secondary/technical).
-- **System raw** `-7:<64hex>` — only for **system entities**; not emitted for
-  ordinary wallets or contracts.
+  contains `-` and `_`. The primary identity shown to users. Always present.
+- **Native** `ae1…` — the standard bech32 form. Always present.
+- **Hex** — the address's actual bytes (20 for a native account, 32 for a
+  contract / v2 address). No zero padding. Always present.
+- **Raw** `4:<64hex>` — the workchain-4 raw form. Present **only for 32-byte
+  addresses** (contracts / v2). A native 20-byte account has no meaningful
+  `4:` form (it would only zero-pad to fill the slot), so it is omitted.
+- **System raw** `-7:<64hex>` — the system workchain. Present **only for system
+  entities** that live in it.
+
+Reserved **system entities** (module accounts) live in either workchain `4`
+(mint, burn, treasury, fee-collector, …) or workchain `-7` (Elector, Config,
+Constitution, SystemRegistry, …). The full catalog is at `GET /system/addresses`
+and in `app/addressing.AllSystemAddresses()`.
 
 ---
 
