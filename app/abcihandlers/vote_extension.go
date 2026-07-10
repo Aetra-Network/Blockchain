@@ -10,22 +10,33 @@ import (
 	sdk "github.com/cosmos/cosmos-sdk/types"
 )
 
+// VoteExtensionHandler implements a deterministic, tamper-rejecting
+// ExtendVote/VerifyVoteExtension pair (see DeterministicVoteExtensionData
+// and the allowlisted VoteExtensionKind* constants). It is deliberately NOT
+// wired into app construction: SetHandlers exists for a future release once
+// a real consumer (PrepareProposal reading ExtendedCommitInfo, or similar)
+// is designed, but no such consumer exists yet, and CometBFT independently
+// gates the whole vote-extension pipeline on a genesis
+// Abci.VoteExtensionsEnableHeight this app never sets (see
+// TestVoteExtensionsAreDisabledAtConsensusParamsLevel in app package). Do not
+// call SetHandlers from app construction without also adding that consumer
+// and re-auditing this handler for the production threat model.
 type VoteExtensionHandler struct{}
 
 type VoteExtension struct {
-	Kind	string
-	Hash	[]byte
-	Height	int64
-	Data	[]byte
+	Kind   string
+	Hash   []byte
+	Height int64
+	Data   []byte
 }
 
 const (
-	VoteExtensionKindValidatorTelemetrySummary	= "validator_telemetry_summary"
-	VoteExtensionKindOracleFutureExtension		= "oracle_future_extension"
-	VoteExtensionKindEncryptedMempoolShare		= "encrypted_mempool_share"
+	VoteExtensionKindValidatorTelemetrySummary = "validator_telemetry_summary"
+	VoteExtensionKindOracleFutureExtension     = "oracle_future_extension"
+	VoteExtensionKindEncryptedMempoolShare     = "encrypted_mempool_share"
 
-	MaxVoteExtensionBytes		= 512
-	MaxVoteExtensionDataBytes	= 128
+	MaxVoteExtensionBytes     = 512
+	MaxVoteExtensionDataBytes = 128
 )
 
 func NewVoteExtensionHandler() *VoteExtensionHandler {
@@ -40,10 +51,10 @@ func (h *VoteExtensionHandler) SetHandlers(bApp *baseapp.BaseApp) {
 func (h *VoteExtensionHandler) ExtendVote() sdk.ExtendVoteHandler {
 	return func(_ sdk.Context, req *abci.RequestExtendVote) (*abci.ResponseExtendVote, error) {
 		ve := VoteExtension{
-			Kind:	VoteExtensionKindValidatorTelemetrySummary,
-			Hash:	req.Hash,
-			Height:	req.Height,
-			Data:	DeterministicVoteExtensionData(req.Height, req.Hash),
+			Kind:   VoteExtensionKindValidatorTelemetrySummary,
+			Hash:   req.Hash,
+			Height: req.Height,
+			Data:   DeterministicVoteExtensionData(req.Height, req.Hash),
 		}
 
 		bz, err := json.Marshal(ve)

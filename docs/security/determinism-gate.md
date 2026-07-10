@@ -30,7 +30,7 @@ Outputs are written under `.work\security\determinism-gate-*`:
 
 | Finding | Severity | Consensus impact |
 | --- | --- | --- |
-| `crypto/rand` in `app/abci.go` dummy vote extension | Medium | Does not write app state or AppHash. Replace or disable before public validators. |
+| Vote extension handler (`app/abcihandlers/vote_extension.go`) | Resolved | Derives deterministic data (no `crypto/rand`); disabled end-to-end (unwired handler + genesis `Abci.VoteExtensionsEnableHeight` unset). Does not write app state or AppHash either way. |
 | `cmttime.Now()` in `cmd/l1d/cmd/testnet_genesis.go` | Low | Local genesis timestamp. One init run writes identical genesis to all local nodes. |
 | `time.Now()` and `math/rand` in `cmd/l1d/cmd/speedtest.go` | Low | CLI benchmark only; not consensus execution. |
 | `panic` in app/module wiring and export helpers | Medium | Startup/genesis/export paths only. Tx, ante, and query paths must return errors for malformed input. |
