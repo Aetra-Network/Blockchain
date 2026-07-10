@@ -644,6 +644,17 @@ Intended meaning:
 - `aet("1.5")` converts a decimal amount into the chain base unit at compile
   time.
 
+A buildMessage `amount` accepts any of three spellings, all lowering to the
+same naet coin value:
+
+```atlx
+amount: aet("0.04")   // decimal AET, folded to 40000000 naet at compile time
+amount: 6000000       // a bare integer is already in naet (the base unit)
+amount: forwardValue  // a variable / expression holding a naet value
+```
+
+`aet("…")` allows up to 9 fractional digits (1 AET = 10^9 naet).
+
 ## Random
 
 Target random surface:
