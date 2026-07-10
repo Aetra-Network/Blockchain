@@ -233,12 +233,12 @@ func (app *L1App) initKeepers(
 	app.ShardingCoordinatorKeeper = persistentKeepers.ShardingCoordinatorKeeper
 
 	nativeKeepers := keeperwiring.NewNativeKeepers(keeperwiring.NativeKeeperDeps{
-		AppCodec:	appCodec,
-		Keys:		keys,
-		AccountKeeper:	app.AccountKeeper,
-		BankKeeper:	app.BankKeeper,
-		DistrKeeper:	app.DistrKeeper,
-		GovAuthority:	govAuthority,
+		AppCodec:      appCodec,
+		Keys:          keys,
+		AccountKeeper: app.AccountKeeper,
+		BankKeeper:    app.BankKeeper,
+		DistrKeeper:   app.DistrKeeper,
+		GovAuthority:  govAuthority,
 	})
 	app.BurnKeeper = nativeKeepers.BurnKeeper
 	app.TreasuryKeeper = nativeKeepers.TreasuryKeeper
@@ -253,7 +253,10 @@ func (app *L1App) initKeepers(
 	app.DynamicCommissionKeeper = nativeKeepers.DynamicCommissionKeeper
 	app.StakeConcentrationKeeper = nativeKeepers.StakeConcentrationKeeper
 	app.FeeCollectorKeeper = nativeKeepers.FeeCollectorKeeper
-	app.FeesKeeper = nativeKeepers.FeesKeeper
+	// Feed finalized per-block metrics from the fees EndBlocker into the
+	// x/load scorer (silent no-op while x/load stays disabled); this is the
+	// live signal the zone/routing layer consumes for load distribution.
+	app.FeesKeeper = nativeKeepers.FeesKeeper.WithLoadSink(&app.LoadKeeper)
 	app.AetraStakingPolicyKeeper = nativeKeepers.AetraStakingPolicyKeeper
 	app.AetraEconomicsKeeper = nativeKeepers.AetraEconomicsKeeper
 	app.AetraValidatorScoreKeeper = nativeKeepers.AetraValidatorScoreKeeper

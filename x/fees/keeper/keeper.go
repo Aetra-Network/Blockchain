@@ -18,16 +18,19 @@ import (
 var FeeFormulaParamsKey = []byte{0x10}
 
 type Keeper struct {
-	cdc			codec.BinaryCodec
-	storeService		corestore.KVStoreService
-	accountKeeper		types.AccountKeeper
-	bankKeeper		types.BankKeeper
-	distributionKeeper	distrkeeper.Keeper
-	authority		string
+	cdc                codec.BinaryCodec
+	storeService       corestore.KVStoreService
+	accountKeeper      types.AccountKeeper
+	bankKeeper         types.BankKeeper
+	distributionKeeper distrkeeper.Keeper
+	authority          string
 	// reputationReader is optional; nil → neutral reputation for all senders.
-	reputationReader	types.ReputationReader
+	reputationReader types.ReputationReader
 	// feeCollector is the fee-collector module for distributing collected fees.
-	feeCollector	types.FeeCollectorKeeper
+	feeCollector types.FeeCollectorKeeper
+	// loadSink is optional; when set, EndBlocker feeds finalized block
+	// metrics into the x/load scorer for the zone/routing layer.
+	loadSink LoadSink
 }
 
 func NewKeeper(
@@ -39,12 +42,12 @@ func NewKeeper(
 	authority string,
 ) Keeper {
 	return Keeper{
-		cdc:			cdc,
-		storeService:		storeService,
-		accountKeeper:		accountKeeper,
-		bankKeeper:		bankKeeper,
-		distributionKeeper:	distributionKeeper,
-		authority:		authority,
+		cdc:                cdc,
+		storeService:       storeService,
+		accountKeeper:      accountKeeper,
+		bankKeeper:         bankKeeper,
+		distributionKeeper: distributionKeeper,
+		authority:          authority,
 	}
 }
 
@@ -62,7 +65,14 @@ func (k Keeper) WithFeeCollector(fc types.FeeCollectorKeeper) Keeper {
 	return k
 }
 
-func (k Keeper) Authority() string	{ return k.authority }
+// WithLoadSink returns a Keeper that feeds finalized block metrics into the
+// given sink (the x/load keeper) each EndBlock. Wired in app/keeperwiring.
+func (k Keeper) WithLoadSink(sink LoadSink) Keeper {
+	k.loadSink = sink
+	return k
+}
+
+func (k Keeper) Authority() string { return k.authority }
 
 func (k Keeper) SetParams(ctx context.Context, params types.Params) error {
 	params = types.NormalizeParams(params)
@@ -161,9 +171,9 @@ func (k Keeper) ExportGenesis(ctx context.Context) (*types.GenesisState, error) 
 		return nil, err
 	}
 	gs := &types.GenesisState{
-		Params:			params,
-		ProtocolFeeState:	state,
-		CongestionBps:		k.GetCongestionState(sdk.UnwrapSDKContext(ctx)),
+		Params:           params,
+		ProtocolFeeState: state,
+		CongestionBps:    k.GetCongestionState(sdk.UnwrapSDKContext(ctx)),
 	}
 	if err := gs.Validate(); err != nil {
 		return nil, err
@@ -264,9 +274,9 @@ func (k Keeper) GetModuleBalances(ctx context.Context) ([]types.ModuleBalance, e
 			return nil, types.ErrInvalidParams.Wrapf("module account %s is not configured", moduleName)
 		}
 		balances = append(balances, types.ModuleBalance{
-			ModuleName:	moduleName,
-			Address:	aetraaddress.FormatAccAddress(addr),
-			Balance:	k.bankKeeper.GetAllBalances(ctx, addr),
+			ModuleName: moduleName,
+			Address:    aetraaddress.FormatAccAddress(addr),
+			Balance:    k.bankKeeper.GetAllBalances(ctx, addr),
 		})
 	}
 	return balances, nil

@@ -14,17 +14,24 @@ import (
 
 var genesisKey = []byte{0x01}
 
+// MaxHistoryEntries bounds the retained per-block load results. The live
+// block feed (x/fees EndBlocker -> ApplyBlockMetrics) appends one result per
+// block; without a bound the module's single-blob state would grow without
+// limit. 256 blocks (~20-35 minutes at 5-8s) comfortably covers every
+// EMA window and query consumer.
+const MaxHistoryEntries = 256
+
 type GenesisState struct {
-	Version		uint64
-	Params		prototype.Params
-	LoadParams	loadtypes.Params
-	EMA		loadtypes.EMAState
-	History		[]loadtypes.Result
+	Version    uint64
+	Params     prototype.Params
+	LoadParams loadtypes.Params
+	EMA        loadtypes.EMAState
+	History    []loadtypes.Result
 }
 
 type Keeper struct {
-	genesis		GenesisState
-	storeService	corestore.KVStoreService
+	genesis      GenesisState
+	storeService corestore.KVStoreService
 }
 
 func NewKeeper() Keeper {
@@ -37,9 +44,9 @@ func NewPersistentKeeper(storeService corestore.KVStoreService) Keeper {
 
 func DefaultGenesis() GenesisState {
 	return GenesisState{
-		Version:	prototype.CurrentGenesisVersion,
-		Params:		prototype.DefaultParams(),
-		LoadParams:	loadtypes.DefaultParams(),
+		Version:    prototype.CurrentGenesisVersion,
+		Params:     prototype.DefaultParams(),
+		LoadParams: loadtypes.DefaultParams(),
 	}
 }
 
@@ -144,7 +151,42 @@ func (k *Keeper) ApplyMetrics(metrics loadtypes.Metrics) (loadtypes.Result, erro
 	}
 	k.genesis.EMA = result.EMA
 	k.genesis.History = append(k.genesis.History, result)
+	if len(k.genesis.History) > MaxHistoryEntries {
+		k.genesis.History = append([]loadtypes.Result(nil), k.genesis.History[len(k.genesis.History)-MaxHistoryEntries:]...)
+	}
 	return result, nil
+}
+
+// ApplyBlockMetrics is the consensus block feed: it hydrates the committed
+// state (so restarted/state-synced nodes score identically), applies the
+// block's metrics, and persists the result. When the module is disabled it
+// is a silent no-op (applied=false) so callers in mandatory block lifecycle
+// paths never fail a block on a disabled prototype module.
+func (k *Keeper) ApplyBlockMetrics(ctx context.Context, metrics loadtypes.Metrics) (loadtypes.Result, bool, error) {
+	if k.storeService != nil {
+		gs, err := k.ExportGenesisState(ctx)
+		if err != nil {
+			return loadtypes.Result{}, false, err
+		}
+		k.genesis = cloneGenesis(gs)
+	}
+	if err := k.genesis.Params.RequireEnabled(); err != nil {
+		return loadtypes.Result{}, false, nil
+	}
+	result, err := k.ApplyMetrics(metrics)
+	if err != nil {
+		return loadtypes.Result{}, false, err
+	}
+	if k.storeService != nil {
+		bz, err := json.Marshal(cloneGenesis(k.genesis))
+		if err != nil {
+			return loadtypes.Result{}, false, err
+		}
+		if err := k.storeService.OpenKVStore(ctx).Set(genesisKey, bz); err != nil {
+			return loadtypes.Result{}, false, err
+		}
+	}
+	return result, true, nil
 }
 
 func (k Keeper) History(req *prototype.PageRequest) ([]loadtypes.Result, prototype.PageResponse, error) {

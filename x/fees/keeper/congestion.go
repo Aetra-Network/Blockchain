@@ -1,10 +1,19 @@
 package keeper
 
 import (
+	"context"
+
 	sdk "github.com/cosmos/cosmos-sdk/types"
 
 	"github.com/sovereign-l1/l1/x/fees/types"
+	loadtypes "github.com/sovereign-l1/l1/x/load/types"
 )
+
+// LoadSink receives the finalized per-block load metrics. Implemented by the
+// x/load keeper; optional (nil = no feed).
+type LoadSink interface {
+	ApplyBlockMetrics(ctx context.Context, metrics loadtypes.Metrics) (loadtypes.Result, bool, error)
+}
 
 // getKVCongestionBps reads the stored block utilization bps from KV-state.
 // Uses the last finalized block's utilization (set by EndBlocker) so the value is
@@ -33,7 +42,22 @@ func (k Keeper) EndBlocker(ctx sdk.Context) error {
 		gasConsumed = ctx.BlockGasMeter().GasConsumed()
 	}
 	utilBps := types.BlockUtilizationBps(gasConsumed, 0, params.MaxBlockGas)
-	return k.SetCongestionState(ctx, utilBps)
+	if err := k.SetCongestionState(ctx, utilBps); err != nil {
+		return err
+	}
+	// Feed the same finalized, deterministic block signal into the x/load
+	// scorer (EMA + band). This is the live input the zone/routing layer
+	// consumes for load distribution once enabled; while x/load is disabled
+	// the sink is a silent no-op. Fee congestion backpressure above never
+	// depends on it.
+	if k.loadSink != nil {
+		if _, _, err := k.loadSink.ApplyBlockMetrics(ctx, loadtypes.Metrics{
+			UsedBlockGas: gasConsumed,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // SetCongestionState stores the finalized block_utilization_bps for the given height.
