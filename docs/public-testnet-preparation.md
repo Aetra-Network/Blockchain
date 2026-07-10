@@ -213,16 +213,27 @@ balancer/uptime checks. Tests: `cmd/l1d/cmd/faucet_test.go` (rate limiter,
 HTTP handler validation, rate-limit release-on-failure, all with a fake
 broadcaster — no live chain required).
 
-## Explorer And Indexer Plan
+## Explorer And Indexer
 
-Minimum public testnet explorer requirements:
+Implemented: `cmd/l1-explorer` (`l1-explorer`) is the block-explorer data
+source — a block/tx indexer over CometBFT RPC plus a live gRPC proxy for
+contract/validator/supply state, served as a read-only JSON HTTP API. Full
+endpoint reference and run instructions are in [explorer.md](explorer.md);
+run it with [scripts/validator/explorer.sh](../scripts/validator/explorer.sh).
 
-- CometBFT RPC endpoint for block, tx, validator, and status views,
-- REST or gRPC endpoint for bank, staking, fees, and historical module queries,
-- event indexing for bank sends, staking delegation, historical module events, and future wasm events,
-- indexer database credentials kept outside repo config,
-- indexer lag alert when latest indexed height falls behind node height by the launch threshold,
-- no dependency on indexer availability for validator liveness.
+Operational requirements it satisfies / an operator must still wire:
+
+- **satisfied** — CometBFT RPC block/tx/validator/status views; gRPC bank
+  (supply), staking (validators), and `x/contracts` module queries; tx
+  message/fee/event decoding including hand-rolled `x/contracts` messages;
+  per-address tx history and search;
+- **operator wiring** — run `l1-explorer` against a dedicated non-validator
+  RPC/gRPC node; alert when `/status` `indexed_height` lags `latest_height`
+  beyond the launch threshold; for a large public history, back the
+  `explorer/store.Store` interface with Postgres (credentials outside repo
+  config) instead of the default in-memory window;
+- **invariant** — the explorer is read-only and off the validator liveness
+  path: a down indexer never affects consensus.
 
 ## Minimum Hardware
 
