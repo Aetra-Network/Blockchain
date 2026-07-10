@@ -13,7 +13,7 @@
 # future govulncheck run resurfaces it (e.g. after a temporary dependency downgrade).
 GO-2023-1821 owner=security severity=high impact=dependency milestone=public-testnet-gate mitigation=track-upstream-upgrade status=triaged
 GO-2023-1881 owner=security severity=high impact=dependency milestone=public-testnet-gate mitigation=track-upstream-upgrade status=triaged
-GO-2024-2584 owner=security severity=high impact=consensus-adjacent-dependency milestone=public-testnet-gate mitigation=cosmos-sdk-slashing-evasion-no-upstream-fix-yet status=accepted
+GO-2024-2584 owner=security severity=high impact=consensus-adjacent-dependency milestone=public-testnet-gate mitigation=false-positive-fix-already-present-in-pinned-v0.54.3-stale-osv-range status=fixed
 GO-2025-3442 owner=security severity=high impact=dependency milestone=public-testnet-gate mitigation=track-upstream-upgrade status=triaged
 GO-2026-4479 owner=security severity=high impact=networking-dependency milestone=public-testnet-gate mitigation=pion-dtls-nonce-reuse-unreachable-without-optional-libp2p-webrtc-transport status=accepted
 GO-2026-4970 owner=security severity=high impact=dependency milestone=public-testnet-gate mitigation=fixed-by-go-toolchain-1.26.5 status=fixed
