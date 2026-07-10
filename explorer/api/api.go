@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -22,6 +23,7 @@ import (
 type ChainQuerier interface {
 	Contracts(ctx context.Context, limit uint32) (any, error)
 	Contract(ctx context.Context, address string) (any, error)
+	Address(ctx context.Context, address string) (any, error)
 	Validators(ctx context.Context) (any, error)
 	Supply(ctx context.Context) (any, error)
 }
@@ -51,6 +53,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/txs", s.handleTxs)
 	mux.HandleFunc("/txs/", s.handleTxByHash)
 	mux.HandleFunc("/accounts/", s.handleAccount)
+	mux.HandleFunc("/address/", s.handleAddress)
 	mux.HandleFunc("/contracts", s.handleContracts)
 	mux.HandleFunc("/contracts/", s.handleContractByAddr)
 	mux.HandleFunc("/validators", s.handleValidators)
@@ -153,6 +156,26 @@ func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, model.Paged[model.TxSummary]{Items: items, Total: total, Limit: limit, Offset: offset})
 }
 
+// handleAddress serves the unified account/contract/system view for any
+// address form (AE, raw 4:, system -7:). URL-decoded so "4:<hex>" and "-7:<hex>"
+// pass through the path segment intact.
+func (s *Server) handleAddress(w http.ResponseWriter, r *http.Request) {
+	if s.chain == nil {
+		writeErr(w, http.StatusNotImplemented, "live chain query disabled")
+		return
+	}
+	addr := strings.TrimPrefix(r.URL.Path, "/address/")
+	if decoded, err := url.PathUnescape(addr); err == nil {
+		addr = decoded
+	}
+	if strings.TrimSpace(addr) == "" {
+		writeErr(w, http.StatusBadRequest, "address required")
+		return
+	}
+	data, err := s.chain.Address(r.Context(), addr)
+	writeChain(w, data, err)
+}
+
 func (s *Server) handleContracts(w http.ResponseWriter, r *http.Request) {
 	if s.chain == nil {
 		writeErr(w, http.StatusNotImplemented, "live chain query disabled")
@@ -218,8 +241,11 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"kind": "tx", "target": "/txs/" + up})
 		return
 	}
-	if strings.HasPrefix(q, "ae1") || strings.HasPrefix(q, "AE") {
-		writeJSON(w, http.StatusOK, map[string]any{"kind": "account", "target": "/accounts/" + q + "/txs"})
+	// Any address form routes to the unified address page: AE user-friendly,
+	// raw 4:<hex>, or system -7:<hex>.
+	if strings.HasPrefix(q, "ae1") || strings.HasPrefix(q, "AE") ||
+		strings.HasPrefix(q, "4:") || strings.HasPrefix(q, "-7:") {
+		writeJSON(w, http.StatusOK, map[string]any{"kind": "account", "target": "/address/" + url.PathEscape(q)})
 		return
 	}
 	writeErr(w, http.StatusNotFound, "no match")

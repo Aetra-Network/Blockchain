@@ -21,6 +21,9 @@ func (fakeChain) Contracts(context.Context, uint32) (any, error) {
 func (fakeChain) Contract(_ context.Context, addr string) (any, error) {
 	return map[string]any{"found": true, "address": addr}, nil
 }
+func (fakeChain) Address(_ context.Context, addr string) (any, error) {
+	return map[string]any{"valid": true, "address": addr, "kind": "wallet"}, nil
+}
 func (fakeChain) Validators(context.Context) (any, error) {
 	return map[string]any{"validators": []any{}, "count": 0}, nil
 }

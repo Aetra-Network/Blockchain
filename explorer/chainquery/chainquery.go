@@ -7,17 +7,90 @@ package chainquery
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/hex"
 	"fmt"
+	"strings"
 
 	gogoproto "github.com/cosmos/gogoproto/proto"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
+	sdk "github.com/cosmos/cosmos-sdk/types"
 	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
 	stakingtypes "github.com/cosmos/cosmos-sdk/x/staking/types"
 
+	aetraaddress "github.com/sovereign-l1/l1/app/addressing"
 	contractstypes "github.com/sovereign-l1/l1/x/contracts/types"
 )
+
+// Address classifies any address form (AE user-friendly, raw 4:<hex>, or
+// system -7:<hex>) and returns its canonical representations, native balance,
+// and — when it is a deployed contract — full contract detail (status,
+// bytecode, raw data). This is the unified account/contract view the explorer
+// address page and the wallet both consume.
+func (c *Client) Address(ctx context.Context, input string) (any, error) {
+	input = strings.TrimSpace(input)
+	raw, err := aetraaddress.Parse(input)
+	if err != nil {
+		return map[string]any{"input": input, "valid": false, "error": err.Error()}, nil
+	}
+	system := aetraaddress.IsSystemRawAddress(input)
+	friendly, ferr := aetraaddress.FormatUserFriendly(raw)
+	if ferr != nil {
+		friendly = ""
+	}
+	forms := map[string]any{
+		"user_friendly": friendly,
+		"raw":           aetraaddress.Format(raw),        // 4:<hex>
+		"system_raw":    aetraaddress.FormatSystemRawAddress(raw), // -7:<hex>
+		"hex":           hex.EncodeToString(raw),
+	}
+	out := map[string]any{
+		"input":   input,
+		"valid":   true,
+		"address": friendly,
+		"forms":   forms,
+		"balance": c.balanceNaet(ctx, raw),
+	}
+
+	// Is it a deployed contract? Query by the user-friendly form.
+	contract, cerr := c.Contract(ctx, friendly)
+	if cerr == nil {
+		if m, ok := contract.(map[string]any); ok {
+			if found, _ := m["found"].(bool); found {
+				out["kind"] = "contract"
+				out["contract"] = m
+				// A contract's funds live in the contracts module, not the bank
+				// module, so surface the contract-record balance as the canonical
+				// balance for the address.
+				if bal, ok := m["balance"]; ok {
+					out["balance"] = fmt.Sprintf("%v", bal)
+				}
+				return out, nil
+			}
+			if st, _ := m["status"].(string); st != "" {
+				out["status"] = st
+			}
+		}
+	}
+	if system {
+		out["kind"] = "system"
+	} else {
+		out["kind"] = "wallet"
+	}
+	return out, nil
+}
+
+// balanceNaet returns the native (naet) balance of an address as a string.
+func (c *Client) balanceNaet(ctx context.Context, raw []byte) string {
+	req := &banktypes.QueryBalanceRequest{Address: sdk.AccAddress(raw).String(), Denom: "naet"}
+	resp := &banktypes.QueryBalanceResponse{}
+	if err := c.invoke(ctx, "/cosmos.bank.v1beta1.Query/Balance", req, resp); err != nil || resp.Balance == nil {
+		return "0"
+	}
+	return resp.Balance.Amount.String()
+}
 
 // Client is a gRPC ChainQuerier for the explorer api.ChainQuerier interface.
 type Client struct {
@@ -70,6 +143,7 @@ func (c *Client) Contract(ctx context.Context, address string) (any, error) {
 	out := contractSummary(resp.Contract)
 	out["found"] = true
 	out["status"] = resp.Status
+	out["address_raw"] = resp.Contract.AddressRaw
 	out["state_root"] = resp.Contract.StateRoot
 	out["code_hash"] = resp.Contract.CodeHash
 	out["admin"] = resp.Contract.Admin
@@ -77,7 +151,43 @@ func (c *Client) Contract(ctx context.Context, address string) (any, error) {
 	out["logical_time"] = resp.Contract.LogicalTime
 	out["created_height"] = resp.Contract.CreatedHeight
 	out["updated_height"] = resp.Contract.UpdatedHeight
+	// Raw contract storage (the encoded state snapshot) in both hex and base64,
+	// so the explorer can show the on-chain "raw data" of a contract.
+	out["data"] = rawBlob(resp.Contract.Data)
+	// Bytecode of the deployed module, fetched by code id.
+	if bc, ok := c.codeBytecode(ctx, resp.Contract.CodeID); ok {
+		out["bytecode"] = bc
+	}
 	return out, nil
+}
+
+// rawBlob renders a byte slice as the shapes an explorer wants to show: size,
+// hex, and base64. Nil/empty stays a zero-size blob rather than null so the UI
+// can render it uniformly.
+func rawBlob(b []byte) map[string]any {
+	return map[string]any{
+		"size":   len(b),
+		"hex":    hex.EncodeToString(b),
+		"base64": base64.StdEncoding.EncodeToString(b),
+	}
+}
+
+// codeBytecode fetches a code record's bytecode by id and returns it as a
+// size/hex/base64 blob plus the code hash. ok is false when the code is
+// missing or the query fails (the caller simply omits bytecode then).
+func (c *Client) codeBytecode(ctx context.Context, codeID string) (map[string]any, bool) {
+	if codeID == "" {
+		return nil, false
+	}
+	req := &contractstypes.QueryCodeRequest{CodeID: codeID}
+	resp := &contractstypes.QueryCodeResponse{}
+	if err := c.invoke(ctx, "/l1.contracts.v1.Query/Code", req, resp); err != nil || !resp.Found {
+		return nil, false
+	}
+	blob := rawBlob(resp.Code.Bytecode)
+	blob["code_hash"] = resp.Code.CodeHash
+	blob["code_id"] = resp.Code.CodeID
+	return blob, true
 }
 
 func contractSummary(ct contractstypes.Contract) map[string]any {
