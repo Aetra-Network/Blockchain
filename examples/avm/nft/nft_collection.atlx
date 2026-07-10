@@ -137,6 +137,7 @@ contract NftCollection {
 
                 const item = autoDeployItemAddress(index)
                 const seed = buildMessage({
+                    mode: SEND_BOUNCE_ON_FAIL,
                     bounce: BounceMode.Only256BitsOfBody,
                     amount: MSG_FORWARD_VALUE,
                     receiver: item,
@@ -147,7 +148,7 @@ contract NftCollection {
                     }
                 })
 
-                seed.send(SEND_BOUNCE_ON_FAIL)
+                seed.send()
                 st.save()
             }
 

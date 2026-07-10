@@ -109,7 +109,7 @@ contract DnsRecord {
                     }
                 })
 
-                released.send(SEND_DEFAULT)
+                released.send()
             }
 
             else => {

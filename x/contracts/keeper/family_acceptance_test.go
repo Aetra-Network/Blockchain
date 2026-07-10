@@ -76,6 +76,7 @@ contract %[1]s {
                 st.pending = msg.amount
 
                 const outbound = buildMessage({
+                    mode: SEND_BOUNCE_ON_FAIL,
                     bounce: BounceMode.Only256BitsOfBody,
                     amount: 0,
                     receiver: getAddress(),
@@ -84,7 +85,7 @@ contract %[1]s {
                     }
                 })
 
-                outbound.send(SEND_BOUNCE_ON_FAIL)
+                outbound.send()
                 st.save()
             }
 
@@ -200,6 +201,7 @@ contract %[1]s {
                 st.pending = msg.amount
 
                 const outbound = buildMessage({
+                    mode: SEND_BOUNCE_ON_FAIL,
                     bounce: BounceMode.Only256BitsOfBody,
                     amount: 0,
                     receiver: getAddress(),
@@ -208,7 +210,7 @@ contract %[1]s {
                     }
                 })
 
-                outbound.send(SEND_BOUNCE_ON_FAIL)
+                outbound.send()
                 st.save()
             }
 
@@ -336,6 +338,7 @@ contract %[1]s {
                 st.bestHash = hash(Chunk.fromHex("4142564d"))
 
                 const outbound = buildMessage({
+                    mode: SEND_BOUNCE_ON_FAIL,
                     bounce: BounceMode.Only256BitsOfBody,
                     amount: 0,
                     receiver: getAddress(),
@@ -344,7 +347,7 @@ contract %[1]s {
                     }
                 })
 
-                outbound.send(SEND_BOUNCE_ON_FAIL)
+                outbound.send()
                 st.save()
             }
 

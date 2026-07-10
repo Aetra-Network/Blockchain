@@ -130,6 +130,7 @@ contract DnsRegistry {
 
                 const record = autoDeployRecordAddress(msg.name)
                 const seed = buildMessage({
+                    mode: SEND_BOUNCE_ON_FAIL,
                     bounce: BounceMode.Only256BitsOfBody,
                     amount: MSG_FORWARD_VALUE,
                     receiver: record,
@@ -140,7 +141,7 @@ contract DnsRegistry {
                     }
                 })
 
-                seed.send(SEND_BOUNCE_ON_FAIL)
+                seed.send()
                 st.save()
             }
 

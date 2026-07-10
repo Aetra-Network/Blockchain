@@ -109,7 +109,7 @@ contract NftItem {
                         }
                     })
 
-                    notice.send(SEND_DEFAULT)
+                    notice.send()
                 }
             }
 
@@ -136,7 +136,7 @@ contract NftItem {
                     }
                 })
 
-                burned.send(SEND_DEFAULT)
+                burned.send()
             }
 
             else => {

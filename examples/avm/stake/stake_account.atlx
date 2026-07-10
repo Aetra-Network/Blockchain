@@ -85,6 +85,7 @@ contract StakeAccount {
                 st.save()
 
                 const debit = buildMessage({
+                    mode: SEND_BOUNCE_ON_FAIL,
                     bounce: BounceMode.Only256BitsOfBody,
                     amount: MSG_FORWARD_VALUE,
                     receiver: st.pool,
@@ -94,7 +95,7 @@ contract StakeAccount {
                     }
                 })
 
-                debit.send(SEND_BOUNCE_ON_FAIL)
+                debit.send()
             }
 
             else => {

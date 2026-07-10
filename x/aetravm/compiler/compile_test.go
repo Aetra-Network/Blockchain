@@ -1608,7 +1608,7 @@ contract EnvelopeDemo {
         amount: 1,
       },
     })
-    msg.send(SEND_DEFAULT)
+    msg.send()
   }
 
   @bounced
@@ -2777,7 +2777,7 @@ contract Source {
       stateInit: childInit,
       body: ChildBoot {},
     })
-    deploy.send(SEND_DEFAULT)
+    deploy.send()
   }
 }
 `, syntheticCodeHex, syntheticCodeBase64, syntheticCodeHex, syntheticSnapshotHex, syntheticSnapshotHex, syntheticSnapshotHex)

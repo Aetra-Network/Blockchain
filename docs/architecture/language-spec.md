@@ -186,10 +186,14 @@ Send mode builtins:
   them as magic numbers;
 - the constants are intrinsic to the language surface and MUST remain stable
   across formatting and canonicalization;
-- `msg.send(SEND_...)` is the preferred high-level surface form for outbound
-  sends, and it MUST lower through the same canonical runtime envelope as the
-  equivalent structured send statement;
-- implementations MUST reject unknown send-mode identifiers at compile time.
+- `msg.send()` is the preferred high-level surface form for outbound sends. It
+  takes no arguments: the send mode is declared exclusively in the message's
+  optional `mode:` field (`buildMessage({ ..., mode: SEND_... })`), so delivery
+  semantics have exactly one canonical home. `.send()` MUST lower through the
+  same canonical runtime envelope as the equivalent structured send statement;
+- a message without a `mode:` field is sent as `SEND_DEFAULT`;
+- implementations MUST reject `.send(...)` arguments and unknown send-mode
+  identifiers at compile time.
 
 Unknown-message policy:
 

@@ -127,6 +127,7 @@ contract TokenMaster {
 
                 const wallet = autoDeployWalletAddress(msg.owner)
                 const transfer = buildMessage({
+                    mode: SEND_BOUNCE_ON_FAIL,
                     bounce: BounceMode.Only256BitsOfBody,
                     amount: MSG_FORWARD_VALUE,
                     receiver: wallet,
@@ -137,7 +138,7 @@ contract TokenMaster {
                     }
                 })
 
-                transfer.send(SEND_BOUNCE_ON_FAIL)
+                transfer.send()
                 st.save()
             }
 
@@ -164,7 +165,7 @@ contract TokenMaster {
                         }
                     })
 
-                    reply.send(SEND_DEFAULT)
+                    reply.send()
                 }
             } 
 
@@ -199,7 +200,7 @@ contract TokenMaster {
                     }
                 })
 
-                reply.send(SEND_DEFAULT)
+                reply.send()
             }
 
             else => {

@@ -549,10 +549,15 @@ const ping = buildMessage({
 Sending:
 
 ```atlx
-ping.send(SEND_BOUNCE_ON_FAIL)
+ping.send()
 ```
 
-Recommended send mode names:
+`.send()` takes no arguments: the message built by `buildMessage` is fully
+self-describing, so delivery semantics have exactly one home — the optional
+`mode:` field of the message itself. Without `mode:` the message goes out as
+`SEND_DEFAULT`.
+
+Canonical send mode names (used in the `mode:` field):
 
 - `SEND_DEFAULT`
 - `SEND_CARRY_REMAINDER`
@@ -563,8 +568,7 @@ Recommended send mode names:
 - `SEND_BOUNCE_ON_FAIL`
 - `SEND_DESTROY_IF_EMPTY`
 
-Modes combine with `+`, and you can set the mode inside `buildMessage` via the
-`mode:` field instead of passing it to `.send(...)`:
+Modes combine with `+`:
 
 ```atlx
 const out = buildMessage({
@@ -575,11 +579,14 @@ const out = buildMessage({
     textComment: "vault closed",
     body: Payout {}
 })
-out.send(SEND_DEFAULT)
+out.send()
 ```
 
+Both `mode:` and `textComment:` are optional fields — omit them for a plain
+default-mode message with no memo.
+
 `SEND_DRAIN_BALANCE` sends the whole balance (withdraw everything); to keep a
-reserve, use the default mode with an explicit `amount`. `SEND_DESTROY_IF_EMPTY`
+reserve, omit it and use an explicit `amount`. `SEND_DESTROY_IF_EMPTY`
 retires the contract once it hits zero (status `deleted`, storage cleared). The
 compiler rejects illogical combinations: `SEND_DRAIN_BALANCE +
 SEND_CARRY_REMAINDER` (mutually exclusive) and any combination involving

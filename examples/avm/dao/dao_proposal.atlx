@@ -107,6 +107,7 @@ contract DaoProposal {
                     st.open = 0
 
                     const passed = buildMessage({
+                        mode: SEND_BOUNCE_ON_FAIL,
                         bounce: BounceMode.Only256BitsOfBody,
                         amount: MSG_FORWARD_VALUE,
                         receiver: st.dao,
@@ -117,7 +118,7 @@ contract DaoProposal {
                         }
                     })
 
-                    passed.send(SEND_BOUNCE_ON_FAIL)
+                    passed.send()
                 }
 
                 st.save()

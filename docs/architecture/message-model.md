@@ -222,7 +222,7 @@ const out = buildMessage({
     textComment: "vault closed",
     body: Payout {}
 })
-out.send(SEND_DEFAULT)
+out.send()
 ```
 
 The address then reports the `deleted` status; a fresh (never-deployed but

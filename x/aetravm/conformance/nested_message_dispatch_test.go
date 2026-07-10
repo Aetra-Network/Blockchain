@@ -94,6 +94,7 @@ contract NotifyDispatch {
             Kickoff => {
                 if (msg.isBatch) {
                     const notify = buildMessage({
+                        mode: SEND_BOUNCE_ON_FAIL,
                         bounce: BounceMode.Only256BitsOfBody,
                         amount: MSG_FORWARD_VALUE,
                         receiver: getAddress(),
@@ -102,9 +103,10 @@ contract NotifyDispatch {
                             forwardPayload: wrapMessage(BatchDeployNfts { count: msg.value }),
                         }
                     })
-                    notify.send(SEND_BOUNCE_ON_FAIL)
+                    notify.send()
                 } else {
                     const notify = buildMessage({
+                        mode: SEND_BOUNCE_ON_FAIL,
                         bounce: BounceMode.Only256BitsOfBody,
                         amount: MSG_FORWARD_VALUE,
                         receiver: getAddress(),
@@ -113,7 +115,7 @@ contract NotifyDispatch {
                             forwardPayload: wrapMessage(DeployNft { itemIndex: msg.value }),
                         }
                     })
-                    notify.send(SEND_BOUNCE_ON_FAIL)
+                    notify.send()
                 }
             }
 

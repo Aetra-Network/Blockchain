@@ -1175,7 +1175,14 @@ func (p *parser) parseStatement() (Statement, error) {
 			}
 			return Statement{Kind: StatementSet, Path: path, Value: value, Pos: pos}, nil
 		default:
-			if expr.Kind == ExprCall && len(expr.Path) >= 2 && strings.EqualFold(expr.Path[len(expr.Path)-1], "send") && len(expr.Args) == 1 {
+			if expr.Kind == ExprCall && len(expr.Path) >= 2 && strings.EqualFold(expr.Path[len(expr.Path)-1], "send") {
+				// Canonical surface: `.send()` takes no arguments. The message
+				// is fully self-describing — delivery semantics live in the
+				// buildMessage `mode:` field, so there is exactly one place to
+				// declare a send mode.
+				if len(expr.Args) != 0 {
+					return Statement{}, fmt.Errorf(".send() takes no arguments at %s: declare the send mode in buildMessage via the mode: field (e.g. mode: SEND_BOUNCE_ON_FAIL)", pos)
+				}
 				receiverPath := expr.Path[:len(expr.Path)-1]
 				var value Expr
 				if len(receiverPath) == 1 {
@@ -1183,8 +1190,7 @@ func (p *parser) parseStatement() (Statement, error) {
 				} else {
 					value = Expr{Kind: ExprPath, Path: append([]string(nil), receiverPath...), Pos: expr.Pos}
 				}
-				extra := map[string]Expr{"mode": expr.Args[0]}
-				return Statement{Kind: StatementSend, Value: value, Extra: extra, Pos: pos}, nil
+				return Statement{Kind: StatementSend, Value: value, Pos: pos}, nil
 			}
 			return Statement{Kind: StatementExpr, Value: expr, Pos: pos}, nil
 		}

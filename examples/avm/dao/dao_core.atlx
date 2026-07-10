@@ -153,6 +153,7 @@ contract DaoCore {
 
                 const proposal = autoDeployProposalAddress(id)
                 const seed = buildMessage({
+                    mode: SEND_BOUNCE_ON_FAIL,
                     bounce: BounceMode.Only256BitsOfBody,
                     amount: MSG_FORWARD_VALUE,
                     receiver: proposal,
@@ -166,7 +167,7 @@ contract DaoCore {
                     }
                 })
 
-                seed.send(SEND_BOUNCE_ON_FAIL)
+                seed.send()
                 st.save()
             }
 
@@ -185,7 +186,7 @@ contract DaoCore {
                     }
                 })
 
-                payout.send(SEND_DEFAULT)
+                payout.send()
             }
 
             SetPaused => {

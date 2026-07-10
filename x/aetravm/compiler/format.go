@@ -452,13 +452,16 @@ func formatStatement(stmt Statement, indent int) string {
 	case StatementContinue:
 		return "continue"
 	case StatementSend:
+		// Method form (`msg.send()`) has no target Args; the statement form
+		// (`send X to Y opcode = N`) carries the target and extras.
+		if len(stmt.Args) == 0 {
+			return formatExpr(stmt.Value, 0) + ".send()"
+		}
 		var b strings.Builder
 		b.WriteString("send ")
 		b.WriteString(formatExpr(stmt.Value, 0))
 		b.WriteString(" to ")
-		if len(stmt.Args) > 0 {
-			b.WriteString(formatExpr(stmt.Args[0], 0))
-		}
+		b.WriteString(formatExpr(stmt.Args[0], 0))
 		if len(stmt.Extra) > 0 {
 			keys := sortedKeys(stmt.Extra)
 			for _, key := range keys {

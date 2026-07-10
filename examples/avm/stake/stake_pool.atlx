@@ -139,6 +139,7 @@ contract StakePool {
 
                 const account = autoDeployAccountAddress(in.senderAddress)
                 const credit = buildMessage({
+                    mode: SEND_BOUNCE_ON_FAIL,
                     bounce: BounceMode.Only256BitsOfBody,
                     amount: MSG_FORWARD_VALUE,
                     receiver: account,
@@ -149,7 +150,7 @@ contract StakePool {
                     }
                 })
 
-                credit.send(SEND_BOUNCE_ON_FAIL)
+                credit.send()
                 st.save()
             }
 
@@ -173,7 +174,7 @@ contract StakePool {
                     }
                 })
 
-                payout.send(SEND_DEFAULT)
+                payout.send()
             }
 
             SetPaused => {

@@ -208,7 +208,7 @@ contract DexAmm {
                     textComment: "liquidity withdrawn",
                 })
 
-                withdrawal.send(SEND_DEFAULT)
+                withdrawal.send()
             }
 
             SwapAToB => {
@@ -237,7 +237,7 @@ contract DexAmm {
                     textComment: "swap payout",
                 })
 
-                payout.send(SEND_DEFAULT)
+                payout.send()
             }
 
             SwapBToA => {
@@ -266,7 +266,7 @@ contract DexAmm {
                     textComment: "swap payout",
                 })
 
-                payout.send(SEND_DEFAULT)
+                payout.send()
             }
 
             else => {

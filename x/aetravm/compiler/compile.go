@@ -3750,25 +3750,15 @@ func (c *Compiler) lowerStatementsToIR(stmts []Statement, params []ParamDecl, re
 			if err != nil {
 				return nil, err
 			}
-			// A `.send(mode)` argument is a compile-time constant combination
-			// of SEND_* flags (they fold to a const). Validate the combination
-			// and carry the resulting bitmask on the emit statement so it
-			// reaches the runtime envelope; a message-map `mode:` field, if
-			// present, still takes precedence at the VM.
-			var sendMode uint32
+			// The send mode is declared exclusively in buildMessage via the
+			// `mode:` field (validated there and carried in the runtime
+			// message value). `.send()` takes no arguments and the statement
+			// form accepts no `mode =` extra, so there is a single canonical
+			// place for delivery semantics.
 			if modeExpr, ok := stmt.Extra["mode"]; ok {
-				if err := validateSendModeExpr(modeExpr); err != nil {
-					return nil, err
-				}
-				flags, ok := collectSendModeFlags(modeExpr)
-				if !ok {
-					return nil, fail("E_SEND_MODE", modeExpr.Pos, "send mode must be a constant combination of SEND_* flags")
-				}
-				for _, f := range flags {
-					sendMode |= f.value
-				}
+				return nil, fail("E_SEND_MODE", modeExpr.Pos, "send statements do not accept a mode: declare it in buildMessage via the mode: field")
 			}
-			out = append(out, IRStmt{Kind: IRStmtEmitInternal, Opcode: opcode, Arg: uint64(sendMode), Expr: expr, Data: statementTraceData(stmt), Position: stmt.Pos})
+			out = append(out, IRStmt{Kind: IRStmtEmitInternal, Opcode: opcode, Expr: expr, Data: statementTraceData(stmt), Position: stmt.Pos})
 		case StatementRefund:
 			if readOnly {
 				return nil, fail("E_GETTER_REFUND", stmt.Pos, "getter cannot refund")
@@ -4158,9 +4148,11 @@ func (c *Compiler) lowerIREntry(entry IREntry) ([]avm.Instruction, error) {
 			if err := emitIRExpr(stmt.Expr, &code); err != nil {
 				return nil, err
 			}
-			// Pack the send-mode bitmask (from .send(mode)) into the high 32
-			// bits of Arg; the message opcode stays in the low 32 bits.
-			code = append(code, avm.Instruction{Op: avm.OpEmitInternal, Arg: uint64(stmt.Opcode) | (stmt.Arg << 32), Data: append([]byte(nil), stmt.Data...)})
+			// The Arg carries the opcode only. The send mode travels in the
+			// runtime message value (buildMessage `mode:` field); the VM still
+			// honours a legacy mode bitmask in the high 32 bits for artifacts
+			// compiled before mode moved into the message.
+			code = append(code, avm.Instruction{Op: avm.OpEmitInternal, Arg: uint64(stmt.Opcode), Data: append([]byte(nil), stmt.Data...)})
 		case IRStmtScheduleSelf:
 			code = append(code, avm.Instruction{Op: avm.OpScheduleSelf, Arg: stmt.Arg, Data: append([]byte(nil), stmt.Data...)})
 		case IRStmtReturn:

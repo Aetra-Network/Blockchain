@@ -66,7 +66,7 @@ contract Vault {
                     textComment: "vault closed",
                     body: Deposit {}
                 })
-                out.send(SEND_DEFAULT)
+                out.send()
             }
             else => {}
         }
@@ -220,7 +220,7 @@ contract C {
     @store func Storage.save(self) { contract.setData(self.toChunk()) }
     @internal func onInternalMessage(in: InMessage) {
         const out = buildMessage({ receiver: getAddress(), amount: 0, mode: ` + mode + `, body: M {} })
-        out.send(SEND_DEFAULT)
+        out.send()
     }
     @external func onExternalMessage(inMsg: Segment) {}
 }`
