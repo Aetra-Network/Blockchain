@@ -11,7 +11,12 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-BINARY="$REPO_ROOT/build/l1-explorer"
+# The explorer data source now lives in the ecosystem repo, next to the site it
+# serves: ecosystem/explorer/server (module github.com/aetra-network/explorer-server).
+# Build it there, then run it. Adjust ECOSYSTEM if your checkout differs.
+ECOSYSTEM="${ECOSYSTEM:-$REPO_ROOT/ecosystem}"
+BINARY="$ECOSYSTEM/explorer/server/l1-explorer"
+[[ -x "$BINARY.exe" && ! -x "$BINARY" ]] && BINARY="$BINARY.exe"
 RPC="http://127.0.0.1:26657"
 GRPC="127.0.0.1:9090"
 LISTEN="0.0.0.0:8080"
@@ -30,7 +35,7 @@ done
 
 if [[ ! -x "$BINARY" ]]; then
   echo "l1-explorer binary not found at $BINARY" >&2
-  echo "build it with: go build -o build/l1-explorer ./cmd/l1-explorer" >&2
+  echo "build it with: (cd $ECOSYSTEM/explorer/server && go build -o l1-explorer.exe .)" >&2
   exit 1
 fi
 

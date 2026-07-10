@@ -215,9 +215,11 @@ broadcaster — no live chain required).
 
 ## Explorer And Indexer
 
-Implemented: `cmd/l1-explorer` (`l1-explorer`) is the block-explorer data
-source — a block/tx indexer over CometBFT RPC plus a live gRPC proxy for
-contract/validator/supply state, served as a read-only JSON HTTP API. Full
+Implemented: `l1-explorer` is the block-explorer data source — a block/tx
+indexer over CometBFT RPC plus a live gRPC proxy for contract/validator/supply
+state, served as a read-only JSON HTTP API. It lives in the ecosystem repo next
+to the explorer site (`ecosystem/explorer/server`, module
+`github.com/aetra-network/explorer-server`), not in this chain repo. Full
 endpoint reference and run instructions are in [explorer.md](explorer.md);
 run it with [scripts/validator/explorer.sh](../scripts/validator/explorer.sh).
 
@@ -230,7 +232,7 @@ Operational requirements it satisfies / an operator must still wire:
 - **operator wiring** — run `l1-explorer` against a dedicated non-validator
   RPC/gRPC node; alert when `/status` `indexed_height` lags `latest_height`
   beyond the launch threshold; for a large public history, back the
-  `explorer/store.Store` interface with Postgres (credentials outside repo
+  `server/store.Store` interface with Postgres (credentials outside repo
   config) instead of the default in-memory window;
 - **invariant** — the explorer is read-only and off the validator liveness
   path: a down indexer never affects consensus.

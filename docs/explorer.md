@@ -15,18 +15,29 @@ enough to stand up an explorer backend.
                 +------------------+        +-------------------------+
 ```
 
+## Where it lives
+
+The explorer data source is **not part of this repo**. It lives beside the
+explorer site it serves, in the ecosystem monorepo, as its own Go module:
+`ecosystem/explorer/server` (module `github.com/aetra-network/explorer-server`).
+It depends on this chain module for the tx codec, address formatting, and
+`x/contracts` query types via a local `replace` back to the blockchain repo, so
+keep both checked out side by side. This page documents the API it serves.
+
 ## Run
 
 Point it at a node that has RPC and gRPC enabled (see
 [docs/validator-onboarding.md](validator-onboarding.md)):
 
 ```bash
-# build
+# build the node
 ./scripts/validator/build.sh            # or: go build -o build/aetrad ./cmd/l1d
-go build -o build/l1-explorer ./cmd/l1-explorer
+
+# build the explorer data source (in the ecosystem repo, next to the site)
+cd ecosystem/explorer/server && go build -o l1-explorer.exe .
 
 # run against a local node
-./build/l1-explorer \
+./l1-explorer.exe \
   -rpc  http://127.0.0.1:26657 \
   -grpc 127.0.0.1:9090 \
   -listen 0.0.0.0:8080 \
@@ -96,7 +107,7 @@ curl -s "localhost:8080/accounts/AEJk.../txs"
 
 - The in-memory store bounds retention (`-retain-blocks`). For a long-running
   public explorer, either raise the window on a well-provisioned host or
-  implement the `explorer/store.Store` interface against Postgres — `ingest`
+  implement the `server/store.Store` interface against Postgres — `ingest`
   and `api` are storage-agnostic and need no changes.
 - The indexer is a single reader; run one per explorer backend. It is safe to
   restart: it resumes from the node's earliest retained height (or
