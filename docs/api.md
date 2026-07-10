@@ -151,17 +151,28 @@ Accepts any form (AE / `4:` / `-7:` / hex), normalizes, classifies:
     "status": "active", "code_id": "…", "code_hash": "…",
     "creator": "AEJk…", "admin": "AEJk…", "storage_bytes": 1234,
     "created_height": 100, "updated_height": 200, "state_root": "…",
-    "bytecode": { "size": 1050, "hex": "…", "base64": "…", "hash": "<sha256>", "code_hash": "…", "chunks": [...] },
-    "data":     { "size": 184,  "hex": "…", "base64": "…", "hash": "<sha256>", "chunks": [ { "depth": 0, "bits": 64, "hash": "…", "refs": 1, "hex": "…" } ] }
+    "bytecode": { "size": 1050, "hex": "…", "base64": "…", "hash": "<sha256>", "code_hash": "…",
+                  "instructions": [ { "offset": 0, "op": "read_msg_body", "arg": 0, "data": "" }, ... ] },
+    "data":     { "size": 47,   "hex": "…", "base64": "…", "hash": "<sha256>",
+                  "storage": [ { "key": "counter", "type": "uint64", "value": 41 } ] }
   }
 }
 ```
 
 A native account (`kind: wallet`) has no AVM bytecode or storage snapshot —
 those exist only for deployed contracts — so `contract` is absent and
-`wallet.description` explains the entity instead. `chunks` is always attempted
-for both `bytecode` and `data` (canonical Aetralis chunk-tree packing), empty
-when the blob doesn't parse as one (e.g. linear module bytecode).
+`wallet.description` explains the entity instead.
+
+`bytecode.instructions` is the real AVM instruction stream (avm.DisassembleModule)
+— opcode mnemonic, argument and any inline data, in execution order; this is
+what the interpreter actually executes, not a generic byte grouping. `data.storage`
+is the contract's decoded state: either the {name,type,value} JSON field array
+most deployed contracts actually store on-chain (the same shape message-body
+fields use), or — for the binary AVM snapshot format — a list of
+`{key, size, hex, chunks?}` entries, where `chunks` appears only when that
+specific value is itself a serialized Aetralis chunk tree (the
+`toChunk()`/`getData()` convention). Neither field repacks unrelated bytes
+into an arbitrary chunk tree the way an earlier version of this API did.
 
 ---
 
