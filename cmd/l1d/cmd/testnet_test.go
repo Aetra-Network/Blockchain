@@ -30,8 +30,10 @@ import (
 	minttypes "github.com/cosmos/cosmos-sdk/x/mint/types"
 	stakingtypes "github.com/cosmos/cosmos-sdk/x/staking/types"
 	l1app "github.com/sovereign-l1/l1/app"
+	aetraaddress "github.com/sovereign-l1/l1/app/addressing"
 	appparams "github.com/sovereign-l1/l1/app/params"
 	feestypes "github.com/sovereign-l1/l1/x/fees/types"
+	nativeaccounttypes "github.com/sovereign-l1/l1/x/native-account/types"
 )
 
 func Test_TestnetCmd(t *testing.T) {
@@ -213,6 +215,31 @@ func assertPrototypeGenesisProfile(
 		require.True(t, createValMsg.MinSelfDelegation.IsPositive())
 		require.True(t, strings.HasPrefix(createValMsg.ValidatorAddress, l1app.ValidatorAddressPrefix), createValMsg.ValidatorAddress)
 		require.NotRegexp(t, `^[a-z]+1`, createValMsg.ValidatorAddress)
+	}
+
+	// Every bootstrap account must already be an ACTIVE x/native-account
+	// record at genesis, under its real (legacy-padded) funded address, not
+	// a domain-hashed v2 identity a self-activation tx would derive. Without
+	// this, no genesis validator could ever call an AVM entrypoint gated by
+	// ensureActiveWallet: MsgActivateAccount always derives a different,
+	// unfunded address for the same key, so self-activation would create an
+	// account nobody could afford to activate in the first place.
+	var nativeAccountGenState nativeaccounttypes.GenesisState
+	require.NoError(t, json.Unmarshal(appState[nativeaccounttypes.ModuleName], &nativeAccountGenState))
+	require.Len(t, nativeAccountGenState.Accounts, validatorCount)
+	bootstrapAddresses := make(map[string]bool, validatorCount)
+	for _, balance := range bankGenState.Balances {
+		rawAddr, err := sdk.AccAddressFromBech32(balance.Address)
+		require.NoError(t, err)
+		userAddr, err := aetraaddress.FormatUserFriendly(rawAddr)
+		require.NoError(t, err)
+		bootstrapAddresses[userAddr] = true
+	}
+	for _, account := range nativeAccountGenState.Accounts {
+		require.Equal(t, nativeaccounttypes.AccountStatusActive, account.Status)
+		require.True(t, bootstrapAddresses[account.AddressUser], "native account %s must match a funded bootstrap address", account.AddressUser)
+		require.NotEmpty(t, account.PubKeys)
+		require.Positive(t, account.CreatedHeight)
 	}
 }
 

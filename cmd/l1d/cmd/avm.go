@@ -28,6 +28,8 @@ const (
 	avmQueryService = "l1.contracts.v1.Query"
 
 	flagAVMAuthority      = "authority"
+	flagAVMCreator        = "creator"
+	flagAVMSender         = "sender"
 	flagAVMBytecodeFile   = "bytecode-file"
 	flagAVMBytecodeHex    = "bytecode-hex"
 	flagAVMCodeHash       = "code-hash"
@@ -229,7 +231,7 @@ func newAVMDeployCmd() *cobra.Command {
 			if err := validateAVMTxFees(cmd); err != nil {
 				return err
 			}
-			creator, err := requiredFlag(cmd, flags.FlagFrom, "deploy creator")
+			creator, err := avmAddressOverride(cmd, flagAVMCreator, "deploy creator")
 			if err != nil {
 				return err
 			}
@@ -310,6 +312,7 @@ func newAVMDeployCmd() *cobra.Command {
 	addAVMTxFlags(cmd)
 	addBroadcastFlag(cmd)
 	addAVMBodyFlags(cmd)
+	cmd.Flags().String(flagAVMCreator, "", "contract creator AE address; defaults to --from (only usable if --from is itself a valid AE address)")
 	cmd.Flags().String(flagAVMNamespace, "", "contract namespace")
 	cmd.Flags().String(flagAVMSalt, "", "contract salt")
 	cmd.Flags().Uint64(flagAVMInitialBalance, 0, "initial native balance in naet")
@@ -327,7 +330,7 @@ func newAVMExecuteCmd() *cobra.Command {
 			if err := validateAVMTxFees(cmd); err != nil {
 				return err
 			}
-			sender, err := requiredFlag(cmd, flags.FlagFrom, "execute sender")
+			sender, err := avmAddressOverride(cmd, flagAVMSender, "execute sender")
 			if err != nil {
 				return err
 			}
@@ -402,6 +405,7 @@ func newAVMExecuteCmd() *cobra.Command {
 	addAVMTxFlags(cmd)
 	addBroadcastFlag(cmd)
 	addAVMBodyFlags(cmd)
+	cmd.Flags().String(flagAVMSender, "", "execute sender AE address; defaults to --from (only usable if --from is itself a valid AE address)")
 	cmd.Flags().Uint64(flagAVMFunds, 0, "native funds in naet")
 	cmd.Flags().Uint64(flagAVMGasLimit, 100_000, "AVM gas limit")
 	cmd.Flags().Uint64(flagAVMHeight, 1, "execution height (with --broadcast, defaults to the chain's current height when not set explicitly)")
@@ -647,6 +651,21 @@ func avmAuthority(cmd *cobra.Command) (string, error) {
 		return authority, nil
 	}
 	return requiredFlag(cmd, flags.FlagFrom, "store code authority")
+}
+
+// avmAddressOverride resolves a message-content address for commands where
+// --from must name a keyring key (not an AE address string, which isn't
+// valid bech32 and can't be resolved back to a signing key) but the message
+// itself needs the caller's real AE address: --from's keyring account may
+// have an AE identity that differs from its key name, so callers pass it
+// explicitly via flagName instead of relying on --from's raw string value.
+func avmAddressOverride(cmd *cobra.Command, flagName, label string) (string, error) {
+	override, _ := cmd.Flags().GetString(flagName)
+	override = strings.TrimSpace(override)
+	if override != "" {
+		return override, nil
+	}
+	return requiredFlag(cmd, flags.FlagFrom, label)
 }
 
 func requiredFlag(cmd *cobra.Command, name string, label string) (string, error) {

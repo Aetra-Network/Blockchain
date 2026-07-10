@@ -21,11 +21,13 @@ import (
 	minttypes "github.com/cosmos/cosmos-sdk/x/mint/types"
 	stakingtypes "github.com/cosmos/cosmos-sdk/x/staking/types"
 	appparams "github.com/sovereign-l1/l1/app/params"
+	nativeaccounttypes "github.com/sovereign-l1/l1/x/native-account/types"
 )
 
 func initGenFiles(
 	clientCtx client.Context, mm module.BasicManager, chainID string,
 	genAccounts []authtypes.GenesisAccount, genBalances []banktypes.Balance,
+	nativeAccounts []nativeaccounttypes.Account,
 	genFiles []string, numValidators int,
 ) error {
 	appGenState := mm.DefaultGenesis(clientCtx.Codec)
@@ -61,6 +63,25 @@ func initGenFiles(
 	clientCtx.Codec.MustUnmarshalJSON(appGenState[stakingtypes.ModuleName], &stakingGenState)
 	stakingGenState.Params.MaxValidators = appparams.AetraValidatorSetGenesisMax
 	appGenState[stakingtypes.ModuleName] = clientCtx.Codec.MustMarshalJSON(&stakingGenState)
+
+	// x/native-account uses plain encoding/json for its genesis (see
+	// x/native-account/module.go mustMarshalGenesis/unmarshalGenesis), not
+	// the proto JSONCodec used above.
+	if len(nativeAccounts) > 0 {
+		var nativeAccountGenState nativeaccounttypes.GenesisState
+		if err := json.Unmarshal(appGenState[nativeaccounttypes.ModuleName], &nativeAccountGenState); err != nil {
+			return fmt.Errorf("unmarshal native account default genesis: %w", err)
+		}
+		nativeAccountGenState.Accounts = append(nativeAccountGenState.Accounts, nativeAccounts...)
+		if err := nativeAccountGenState.Validate(); err != nil {
+			return fmt.Errorf("invalid bootstrap native account genesis: %w", err)
+		}
+		nativeAccountGenStateJSON, err := json.Marshal(nativeAccountGenState)
+		if err != nil {
+			return fmt.Errorf("marshal native account genesis: %w", err)
+		}
+		appGenState[nativeaccounttypes.ModuleName] = nativeAccountGenStateJSON
+	}
 
 	appGenStateJSON, err := json.MarshalIndent(appGenState, "", "  ")
 	if err != nil {

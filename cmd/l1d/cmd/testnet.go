@@ -34,7 +34,37 @@ import (
 	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
 	"github.com/cosmos/cosmos-sdk/x/genutil"
 	stakingtypes "github.com/cosmos/cosmos-sdk/x/staking/types"
+
+	aetraaddress "github.com/sovereign-l1/l1/app/addressing"
+	nativeaccounttypes "github.com/sovereign-l1/l1/x/native-account/types"
 )
+
+// bootstrapNativeAccount builds an already-active x/native-account record
+// for a genesis bootstrap key, using the SAME legacy-padded address the
+// account already uses for its funded bank/staking identity (via
+// aetraaddress.Format/FormatUserFriendly on the raw pubkey hash) rather than
+// the domain-hashed v2 address MsgActivateAccount would derive for a brand
+// new account. See the call site in newTestnetCmd for why this matters.
+func bootstrapNativeAccount(pubKey cryptotypes.PubKey, accountNumber uint64) nativeaccounttypes.Account {
+	rawBytes := pubKey.Address()
+	addressUser, err := aetraaddress.FormatUserFriendly(rawBytes)
+	if err != nil {
+		panic(fmt.Errorf("format bootstrap native account address: %w", err))
+	}
+	addressRaw := aetraaddress.Format(rawBytes)
+	return nativeaccounttypes.Account{
+		Version:		nativeaccounttypes.CurrentAccountVersion,
+		AddressUser:		addressUser,
+		AddressRaw:		addressRaw,
+		PubKeys:		[]string{nativeaccounttypes.PublicKeyText(pubKey)},
+		AccountNumber:		accountNumber,
+		Status:			nativeaccounttypes.AccountStatusActive,
+		AuthPolicy:		nativeaccounttypes.AuthPolicy{Version: 1, Mode: nativeaccounttypes.AuthModeSingleKey},
+		CreatedHeight:		1,
+		LastActiveHeight:	1,
+		LastStorageChargeHeight: 1,
+	}
+}
 
 var (
 	flagNodeDirPrefix	= "node-dir-prefix"
@@ -323,6 +353,7 @@ func initTestnetFiles(
 		genAccounts	[]authtypes.GenesisAccount
 		genBalances	[]banktypes.Balance
 		genFiles	[]string
+		nativeAccounts	[]nativeaccounttypes.Account
 	)
 	const (
 		rpcPort			= 26657
@@ -401,6 +432,28 @@ func initTestnetFiles(
 			return err
 		}
 
+		// x/contracts and other AVM entrypoints require an active
+		// native-account record (ensureActiveWallet) for the caller. A brand
+		// new MsgActivateAccount always derives a domain-hashed v2 address
+		// from the pubkey (see native-account/types.DeriveAccountAddress),
+		// which never equals this bootstrap account's legacy-padded bech32
+		// address — so a genesis validator could never activate its OWN
+		// already-funded identity. Pre-populate genesis with an already
+		// -active native-account record under the account's real, funded
+		// address, so it can call AVM entrypoints without first sending
+		// itself a self-activation transaction under a different address.
+		keyRecord, err := kb.Key(nodeDirName)
+		if err != nil {
+			_ = os.RemoveAll(args.outputDir)
+			return err
+		}
+		nodePubKey, err := keyRecord.GetPubKey()
+		if err != nil {
+			_ = os.RemoveAll(args.outputDir)
+			return err
+		}
+		nativeAccounts = append(nativeAccounts, bootstrapNativeAccount(nodePubKey, uint64(i+1)))
+
 		info := map[string]string{"secret": secret}
 
 		cliPrint, err := json.Marshal(info)
@@ -476,7 +529,7 @@ func initTestnetFiles(
 		srvconfig.WriteConfigFile(filepath.Join(nodeDir, "config", "app.toml"), appConfig)
 	}
 
-	if err := initGenFiles(clientCtx, mm, args.chainID, genAccounts, genBalances, genFiles, args.numValidators); err != nil {
+	if err := initGenFiles(clientCtx, mm, args.chainID, genAccounts, genBalances, nativeAccounts, genFiles, args.numValidators); err != nil {
 		return err
 	}
 
