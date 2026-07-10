@@ -88,7 +88,7 @@ write-shaped route relays already-signed bytes.
 | `GET /accounts/{addr}/txs` | tx history for an address (paginated) |
 | `GET /address/{addr}` | **unified view** for any address form — see below |
 | `GET /contracts`, `GET /contracts/{addr}` | deployed AVM contracts / one contract |
-| `POST /contracts/{addr}/get` | execute a read-only **@get method by its exact name** — the name is subjective per contract, not a universal method: `{"method":"<your @get function's exact name>","args":[{"type":"number","value":"9"}]}` → success, exit code, gas used, typed result. Names bind character for character (a contract's `currentCounter` will not answer to `current_counter`); AVM v1 passes at most one argument, and it must be `number` (covers int/uint/coins/timestamp — parsed as a plain decimal integer) |
+| `POST /contracts/{addr}/get` | execute a read-only **@get method by its exact name** — the name is subjective per contract, not a universal method: `{"method":"<your @get function's exact name>","args":[{"type":"number","value":"9"}, …]}` → success, exit code, gas used, typed result. Names bind character for character (a contract's `currentCounter` will not answer to `current_counter`); a getter may declare **any number of arguments** (up to `MaxGetMethodArgs`, 16), each independently typed — `number` (the umbrella: any decimal integer, covers int/uint/coins/timestamp) or a specific AVM type (`uint8`…`uint256`, `int8`…`int256`, `bool`, `address`, `hash`, `bytes`, `string`) |
 | `GET /validators`, `GET /supply` | validator set / total supply |
 | `GET /search?q=` | resolve a height, block/tx hash, or any address form |
 | `GET /healthz` | liveness + indexed height |
