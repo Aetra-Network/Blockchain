@@ -44,7 +44,7 @@ DIRECT), with Aetra's addresses and the deterministic fee (below).
 
 | Service | Methods |
 | --- | --- |
-| `l1.contracts.v1.Query` | `Contract`, `Contracts`, `Code`, `Codes`, `ContractStorage`, `ContractReceipts`, `ContractQueue`, `ContractEvents`, `ContractStateRoot`, `SecurityAttestations`, `SecurityBadge`, `Params` |
+| `l1.contracts.v1.Query` | `Contract`, `Contracts`, **`ContractGet`**, `Code`, `Codes`, `ContractStorage`, `ContractReceipts`, `ContractQueue`, `ContractEvents`, `ContractStateRoot`, `SecurityAttestations`, `SecurityBadge`, `Params` |
 | `l1.contracts.v1.Msg` | `StoreCode`, `DeployContract`, `ExecuteExternal`, `ExecuteInternal`, `SendInternalMessage`, `UpdateContractParams`, `SubmitSecurityAttestation`, `RevokeSecurityAttestation` |
 | `l1.fees.v1.Query` | `Params`, `EstimateFee`, `Accounting`, `ModuleBalances`, `NetworkLoad` |
 | plus every other module | one `l1.<module>.v1.Query` each |
@@ -88,6 +88,7 @@ write-shaped route relays already-signed bytes.
 | `GET /accounts/{addr}/txs` | tx history for an address (paginated) |
 | `GET /address/{addr}` | **unified view** for any address form — see below |
 | `GET /contracts`, `GET /contracts/{addr}` | deployed AVM contracts / one contract |
+| `POST /contracts/{addr}/get` | execute a read-only **@get method by its exact name**: `{"method":"currentCounter","args":[{"type":"uint64","value":"9"}]}` → success, exit code, gas used, typed result. The name is the binding (`currentCounter` ≠ `current_counter`); AVM v1 passes at most one numeric argument |
 | `GET /validators`, `GET /supply` | validator set / total supply |
 | `GET /search?q=` | resolve a height, block/tx hash, or any address form |
 | `GET /healthz` | liveness + indexed height |
