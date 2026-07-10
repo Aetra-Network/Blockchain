@@ -11,6 +11,12 @@ const (
 	MaxContractPayloadBytes  = 64 * 1024
 	MaxContractQueryLimit    = 100
 
+	// MaxCommentBytes bounds the textComment memo carried on internal
+	// messages. Matches async.MaxCommentBytes (kept in sync here to avoid a
+	// contracts->async import cycle). Comment bytes are charged through the
+	// normal per-byte fee, so a longer memo simply costs more.
+	MaxCommentBytes = 512
+
 	// MaxInternalMessageQueueDepth bounds the pending internal-message queue.
 	// The queue is currently append-only (no autonomous drain), so without a
 	// ceiling contract activity grows module state without bound until block

@@ -337,6 +337,8 @@ func (k *Keeper) ExecuteInternal(msg types.MsgExecuteInternal) (types.InternalMe
 		LogicalTime:        msg.Message.LogicalTime,
 		MessageID:          msg.Message.MessageID,
 		Height:             msg.Height,
+		Mode:               msg.Message.Mode,
+		Comment:            msg.Message.Comment,
 	})
 }
 
@@ -358,6 +360,8 @@ func (k *Keeper) SendInternalMessage(msg types.MsgSendInternalMessage) (types.In
 		LogicalTime:        msg.Message.LogicalTime,
 		MessageID:          msg.Message.MessageID,
 		Height:             msg.Height,
+		Mode:               msg.Message.Mode,
+		Comment:            msg.Message.Comment,
 	})
 }
 
@@ -1597,6 +1601,8 @@ func (k *Keeper) ReceiveInternalMessage(msg types.MsgReceiveInternalMessage) (ty
 		LogicalTime:        msg.LogicalTime,
 		MessageID:          msg.MessageID,
 		Height:             msg.Height,
+		Mode:               msg.Mode,
+		Comment:            msg.Comment,
 	}
 	if lookup.LogicalTime == 0 {
 		lookup.LogicalTime = msg.Height
@@ -1862,6 +1868,19 @@ func (k *Keeper) ReceiveInternalMessage(msg types.MsgReceiveInternalMessage) (ty
 		return types.InternalMessage{}, errors.New(types.ErrExecutionFailed + ": delivered internal message missing from queue")
 	}
 	next.State.InternalMessages = remaining
+	// SEND_DESTROY_IF_EMPTY: now that the message's funds have left the source,
+	// if the source contract is empty deactivate it irreversibly — status
+	// deleted, storage and balance cleared. This is the "withdraw everything
+	// and self-destruct" idiom (typically paired with SEND_DRAIN_BALANCE).
+	if async.HasMode(record.Mode, async.SendModeDestroyIfEmpty) {
+		if sidx, ssrc, sok := findContractWithIndex(next.State.Contracts, record.SourceContractUser); sok && ssrc.Balance == 0 && ssrc.Status != types.ContractStatusDeleted {
+			ssrc.Data = nil
+			ssrc.StorageBytes = 0
+			ssrc.Status = types.ContractStatusDeleted
+			ssrc.StateRoot = types.ComputeContractStateRoot(ssrc)
+			next.State.Contracts[sidx] = ssrc
+		}
+	}
 	next.State.Receipts = append(next.State.Receipts, newContractReceipt(record.SourceContractUser, record.SourceContractUser, receiptOp, types.ExitCodeOK, record.Funds, record.GasLimit, record.LogicalTime, record.Height))
 	next = types.RefreshStateRoot(next)
 	if err := next.Validate(); err != nil {
@@ -1930,12 +1949,54 @@ func (k *Keeper) EndBlocker(ctx sdk.Context) error {
 		budget -= gasCost
 		if k.deliverQueuedInternalMessage(msg) {
 			delivered++
+			continue
+		}
+		// SEND_IGNORE_ERRORS: a message whose sender chose to ignore delivery
+		// failure is dropped from the queue on failure instead of being
+		// retried forever (the sender explicitly accepted that its delivery
+		// may silently not happen).
+		if async.HasMode(msg.Mode, async.SendModeIgnoreErrors) {
+			if k.dropQueuedInternalMessage(msg.MessageID) {
+				delivered++
+			}
 		}
 	}
 	if delivered == 0 {
 		return nil
 	}
 	return k.writeGenesis(ctx)
+}
+
+// dropQueuedInternalMessage removes a single queued message by ID without
+// delivering it (used for SEND_IGNORE_ERRORS messages whose delivery failed).
+func (k *Keeper) dropQueuedInternalMessage(messageID string) bool {
+	if messageID == "" {
+		return false
+	}
+	next := k.genesis
+	remaining := make([]types.InternalMessage, 0, len(next.State.InternalMessages))
+	dropped := false
+	for i := range next.State.InternalMessages {
+		id := next.State.InternalMessages[i].MessageID
+		if id == "" {
+			id = types.ComputeInternalMessageID(next.State.InternalMessages[i])
+		}
+		if !dropped && id == messageID {
+			dropped = true
+			continue
+		}
+		remaining = append(remaining, next.State.InternalMessages[i])
+	}
+	if !dropped {
+		return false
+	}
+	next.State.InternalMessages = remaining
+	next = types.RefreshStateRoot(next)
+	if err := next.Validate(); err != nil {
+		return false
+	}
+	k.genesis = next
+	return true
 }
 
 // deliverQueuedInternalMessage attempts one autonomous delivery of a message
@@ -1963,6 +2024,8 @@ func (k *Keeper) deliverQueuedInternalMessage(msg types.InternalMessage) (ok boo
 		LogicalTime:        msg.LogicalTime,
 		MessageID:          msg.MessageID,
 		Height:             msg.Height,
+		Mode:               msg.Mode,
+		Comment:            msg.Comment,
 	})
 	return err == nil
 }
@@ -1971,6 +2034,13 @@ func (k *Keeper) appendAVMOutgoingMessages(next *types.GenesisState, source type
 	if len(outgoing) == 0 {
 		return nil
 	}
+	// Track the source's balance across the batch so SEND_DRAIN_BALANCE sends
+	// exactly the funds still available after prior messages in the same
+	// execution, never over-allocating (which would fail value conservation
+	// at delivery). The actual source debit and SEND_DESTROY_IF_EMPTY
+	// deactivation happen at delivery (ReceiveInternalMessage), after the
+	// funds have left, so the balance/state stays consistent.
+	available := source.Balance
 	for i, envelope := range outgoing {
 		if envelope.Value.Denom != "" && envelope.Value.Denom != storageRentBaseDenom {
 			return fmt.Errorf("%s: emitted message denom must be %q", types.ErrExecutionFailed, storageRentBaseDenom)
@@ -1978,6 +2048,17 @@ func (k *Keeper) appendAVMOutgoingMessages(next *types.GenesisState, source type
 		if !envelope.Value.Amount.IsUint64() {
 			return fmt.Errorf("%s: emitted message value exceeds uint64", types.ErrExecutionFailed)
 		}
+		funds := envelope.Value.Amount.Uint64()
+		if async.HasMode(envelope.Mode, async.SendModeDrainBalance) {
+			// Send all remaining balance. The contract chose to withdraw
+			// everything; a reserve is expressed by the contract setting an
+			// explicit amount instead of draining.
+			funds = available
+		}
+		if funds > available {
+			funds = available
+		}
+		available -= funds
 		msgHeight := height
 		if envelope.DeliverAtBlock != 0 {
 			msgHeight = envelope.DeliverAtBlock
@@ -1986,10 +2067,13 @@ func (k *Keeper) appendAVMOutgoingMessages(next *types.GenesisState, source type
 		if envelope.CreatedLogicalTime != 0 {
 			msgLogicalTime = envelope.CreatedLogicalTime
 		}
+		if len(envelope.Comment) > types.MaxCommentBytes {
+			return fmt.Errorf("%s: emitted message comment exceeds %d bytes", types.ErrExecutionFailed, types.MaxCommentBytes)
+		}
 		internal := types.InternalMessage{
 			SourceContractUser: source.AddressUser,
 			DestinationAccount: aetraaddress.FormatAccAddress(envelope.Destination),
-			Funds:              envelope.Value.Amount.Uint64(),
+			Funds:              funds,
 			Opcode:             envelope.Opcode,
 			QueryID:            envelope.QueryID,
 			Body:               append([]byte(nil), envelope.Body...),
@@ -1999,6 +2083,8 @@ func (k *Keeper) appendAVMOutgoingMessages(next *types.GenesisState, source type
 			GasLimit:           envelope.GasLimit,
 			LogicalTime:        msgLogicalTime,
 			Height:             msgHeight,
+			Mode:               envelope.Mode,
+			Comment:            envelope.Comment,
 		}
 		if internal.MessageID == "" {
 			internal.MessageID = types.ComputeInternalMessageID(internal)

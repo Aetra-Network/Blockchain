@@ -611,6 +611,8 @@ func buildContractsTxFileDescriptor() []byte {
 				stringField("message_id", 12),
 				boolField("refunded", 13),
 				uint64Field("height", 14),
+				uint32Field("mode", 15),
+				stringField("comment", 16),
 			),
 			messageDescriptorFields("MsgSendInternalMessage",
 				messageField("message", 1, ".l1.contracts.v1.InternalMessage"),

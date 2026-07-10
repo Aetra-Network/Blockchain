@@ -89,9 +89,12 @@ func TestVerifierRejectsNarrowingOpcodeArguments(t *testing.T) {
 	verifier := newTestVerifier(t)
 	maxUint32PlusOne := uint64(^uint32(0)) + 1
 
-	badEmit := emitterModule()
-	badEmit.Code[0].Arg = maxUint32PlusOne
-	require.ErrorContains(t, verifier.Verify(badEmit), "emit opcode argument")
+	// The emit Arg now packs the message opcode in the low 32 bits and the
+	// send-mode bitmask in the high 32 bits, so 2^32 (opcode 0, mode
+	// SEND_FEE_FROM_BALANCE) is a legitimate emit and must verify.
+	okEmit := emitterModule()
+	okEmit.Code[0].Arg = maxUint32PlusOne
+	require.NoError(t, verifier.Verify(okEmit))
 
 	badReturn := counterModule()
 	badReturn.Code[len(badReturn.Code)-1].Arg = maxUint32PlusOne

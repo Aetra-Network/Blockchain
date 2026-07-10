@@ -813,21 +813,30 @@ func (r *Runner) Run(module Module, storage Storage, ctx RuntimeContext) (Execut
 				outgoing async.MessageEnvelope
 				err      error
 			)
+			// The emit Arg packs the message opcode in the low 32 bits and the
+			// .send(mode) send-mode bitmask in the high 32 bits.
+			emitOpcode := ins.Arg & 0xFFFFFFFF
+			stmtMode := uint32(ins.Arg >> 32)
 			if len(stack) > 0 {
 				msgValue, ok := pop(&stack)
 				if !ok {
 					return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on emit internal"))
 				}
 				if msgValue.Tag == TagMap {
-					outgoing, err = runtimeMessageEnvelopeFromValue(msgValue, ctx, ins.Arg)
+					outgoing, err = runtimeMessageEnvelopeFromValue(msgValue, ctx, emitOpcode)
 				} else {
-					outgoing, err = runtimeLegacyMessageEnvelopeFromValue(msgValue, ctx, ins.Arg, ins.Data)
+					outgoing, err = runtimeLegacyMessageEnvelopeFromValue(msgValue, ctx, emitOpcode, ins.Data)
 				}
 			} else {
-				outgoing, err = runtimeLegacyMessageEnvelopeFromValue(ValueNull(), ctx, ins.Arg, ins.Data)
+				outgoing, err = runtimeLegacyMessageEnvelopeFromValue(ValueNull(), ctx, emitOpcode, ins.Data)
 			}
 			if err != nil {
 				return rollback(async.ResultExecutionFailed, err)
+			}
+			// A message-map `mode:` field takes precedence; otherwise apply the
+			// .send(mode) bitmask.
+			if outgoing.Mode == 0 {
+				outgoing.Mode = stmtMode
 			}
 			exec.Outgoing = append(exec.Outgoing, outgoing)
 		case OpReadMsgOpcode:
@@ -2377,6 +2386,33 @@ func runtimeMessageEnvelopeFromValue(value RuntimeValue, ctx RuntimeContext, def
 			return async.MessageEnvelope{}, fmt.Errorf("AVM emit internal receiver %s does not match derived state init address %s", dest, destFromStateInit)
 		}
 	}
+	// Optional combined send-mode bitmask (SEND_* flags OR'd/added together).
+	var mode uint32
+	if modeValue, ok, err := get("mode"); err != nil {
+		return async.MessageEnvelope{}, err
+	} else if ok {
+		modeAmount, err := modeValue.AsUint64()
+		if err != nil {
+			return async.MessageEnvelope{}, err
+		}
+		if modeAmount > uint64(^uint32(0)) {
+			return async.MessageEnvelope{}, fmt.Errorf("AVM emit internal mode %d exceeds uint32", modeAmount)
+		}
+		mode = uint32(modeAmount)
+	}
+	// Optional user-facing text memo (textComment). At most one; bounded.
+	var comment string
+	if commentValue, ok, err := get("textComment"); err != nil {
+		return async.MessageEnvelope{}, err
+	} else if ok {
+		comment, err = commentValue.AsString()
+		if err != nil {
+			return async.MessageEnvelope{}, fmt.Errorf("AVM emit internal textComment must be a string: %w", err)
+		}
+		if len(comment) > async.MaxCommentBytes {
+			return async.MessageEnvelope{}, fmt.Errorf("AVM emit internal textComment exceeds %d bytes", async.MaxCommentBytes)
+		}
+	}
 	destAddr, err := addressing.ParseAccAddress(dest)
 	if err != nil {
 		return async.MessageEnvelope{}, err
@@ -2394,6 +2430,8 @@ func runtimeMessageEnvelopeFromValue(value RuntimeValue, ctx RuntimeContext, def
 		Body:        body,
 		Bounce:      bounce,
 		Bounced:     false,
+		Mode:        mode,
+		Comment:     comment,
 		GasLimit:    ctx.Message.GasLimit,
 		ForwardFee:  sdk.NewCoin(appparams.BaseDenom, async.DefaultParams().ForwardingFee),
 	}
@@ -2781,8 +2819,9 @@ func validateInstructionArg(ins Instruction) error {
 	const maxUint32 = uint64(^uint32(0))
 	switch ins.Op {
 	case OpEmitInternal:
-		if ins.Arg > maxUint32 {
-			return fmt.Errorf("AVM emit opcode argument %d exceeds uint32", ins.Arg)
+		// Low 32 bits = message opcode, high 32 bits = send-mode bitmask.
+		if ins.Arg&0xFFFFFFFF > maxUint32 {
+			return fmt.Errorf("AVM emit opcode argument %d exceeds uint32", ins.Arg&0xFFFFFFFF)
 		}
 	case OpReturn:
 		if ins.Arg > maxUint32 {

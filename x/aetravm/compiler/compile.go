@@ -2522,13 +2522,15 @@ func (c *Compiler) inferExprType(expr Expr, env map[string]TypeRef, storage *Str
 
 func validateBuildMessageFields(expr Expr) error {
 	allowed := map[string]struct{}{
-		"bounce":    {},
-		"amount":    {},
-		"receiver":  {},
-		"body":      {},
-		"opcode":    {},
-		"queryId":   {},
-		"stateInit": {},
+		"bounce":      {},
+		"amount":      {},
+		"receiver":    {},
+		"body":        {},
+		"opcode":      {},
+		"queryId":     {},
+		"stateInit":   {},
+		"mode":        {},
+		"textComment": {},
 	}
 	seen := map[string]struct{}{}
 	for _, field := range expr.Fields {
@@ -2536,6 +2538,8 @@ func validateBuildMessageFields(expr Expr) error {
 			return fail("E_BUILD_MESSAGE_FIELD", field.Pos, fmt.Sprintf("unknown buildMessage field %q", field.Name))
 		}
 		if _, ok := seen[field.Name]; ok {
+			// At most one textComment per message so an explorer has a single
+			// canonical memo to display; duplicate any field is rejected.
 			return fail("E_BUILD_MESSAGE_FIELD", field.Pos, fmt.Sprintf("duplicate buildMessage field %q", field.Name))
 		}
 		seen[field.Name] = struct{}{}
@@ -2546,7 +2550,95 @@ func validateBuildMessageFields(expr Expr) error {
 	if _, ok := seen["body"]; !ok {
 		return fail("E_BUILD_MESSAGE_FIELD", expr.Pos, "buildMessage requires body")
 	}
+	for _, field := range expr.Fields {
+		if field.Name == "mode" {
+			if err := validateSendModeExpr(field.Value); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
+}
+
+// validateSendModeExpr statically checks a buildMessage `mode:` value: it must
+// be a combination of SEND_* constants joined by `+`, each flag appearing at
+// most once, and the resulting bitmask must be a logically coherent set (e.g.
+// DRAIN_BALANCE and CARRY_REMAINDER are mutually exclusive, and ESTIMATE_ONLY
+// cannot combine with value-moving flags). This turns "illogical mode
+// addition" into a compile error rather than surprising runtime behavior.
+func validateSendModeExpr(expr Expr) error {
+	flags, ok := collectSendModeFlags(expr)
+	if !ok {
+		return fail("E_SEND_MODE", expr.Pos, "send mode must be SEND_* constants combined with +")
+	}
+	seen := map[string]struct{}{}
+	var mask uint32
+	for _, f := range flags {
+		if _, dup := seen[f.name]; dup {
+			return fail("E_SEND_MODE", expr.Pos, fmt.Sprintf("send mode %s specified more than once", f.name))
+		}
+		seen[f.name] = struct{}{}
+		mask |= f.value
+	}
+	const (
+		drain  = 128
+		carry  = 64
+		est    = 1024
+		anyVal = drain | carry
+	)
+	if mask&drain != 0 && mask&carry != 0 {
+		return fail("E_SEND_MODE", expr.Pos, "SEND_DRAIN_BALANCE and SEND_CARRY_REMAINDER are mutually exclusive")
+	}
+	if mask&est != 0 && mask&^uint32(est) != 0 {
+		return fail("E_SEND_MODE", expr.Pos, "SEND_ESTIMATE_ONLY cannot be combined with other send modes")
+	}
+	return nil
+}
+
+type sendModeFlag struct {
+	name  string
+	value uint32
+}
+
+// collectSendModeFlags flattens a `+`-chain of SEND_* identifiers (and the
+// bare SEND_DEFAULT / numeric 0) into its component flags. Returns ok=false if
+// any leaf is not a recognized send-mode constant.
+func collectSendModeFlags(expr Expr) ([]sendModeFlag, bool) {
+	switch expr.Kind {
+	case ExprBinary:
+		if expr.Op != "+" || expr.Left == nil || expr.Right == nil {
+			return nil, false
+		}
+		left, ok := collectSendModeFlags(*expr.Left)
+		if !ok {
+			return nil, false
+		}
+		right, ok := collectSendModeFlags(*expr.Right)
+		if !ok {
+			return nil, false
+		}
+		return append(left, right...), true
+	case ExprIdent, ExprPath:
+		name := expr.Text
+		if name == "" && len(expr.Path) == 1 {
+			name = expr.Path[0]
+		}
+		v, ok := builtinSendModeValue(name)
+		if !ok {
+			return nil, false
+		}
+		if v == 0 {
+			return nil, true // SEND_DEFAULT contributes no flags
+		}
+		return []sendModeFlag{{name: strings.ToUpper(strings.TrimSpace(name)), value: v}}, true
+	case ExprNumber:
+		if strings.TrimSpace(expr.Text) == "0" {
+			return nil, true
+		}
+		return nil, false
+	default:
+		return nil, false
+	}
 }
 
 func validateAddressBuilderFields(expr Expr, name string) error {
@@ -3658,7 +3750,25 @@ func (c *Compiler) lowerStatementsToIR(stmts []Statement, params []ParamDecl, re
 			if err != nil {
 				return nil, err
 			}
-			out = append(out, IRStmt{Kind: IRStmtEmitInternal, Opcode: opcode, Expr: expr, Data: statementTraceData(stmt), Position: stmt.Pos})
+			// A `.send(mode)` argument is a compile-time constant combination
+			// of SEND_* flags (they fold to a const). Validate the combination
+			// and carry the resulting bitmask on the emit statement so it
+			// reaches the runtime envelope; a message-map `mode:` field, if
+			// present, still takes precedence at the VM.
+			var sendMode uint32
+			if modeExpr, ok := stmt.Extra["mode"]; ok {
+				if err := validateSendModeExpr(modeExpr); err != nil {
+					return nil, err
+				}
+				flags, ok := collectSendModeFlags(modeExpr)
+				if !ok {
+					return nil, fail("E_SEND_MODE", modeExpr.Pos, "send mode must be a constant combination of SEND_* flags")
+				}
+				for _, f := range flags {
+					sendMode |= f.value
+				}
+			}
+			out = append(out, IRStmt{Kind: IRStmtEmitInternal, Opcode: opcode, Arg: uint64(sendMode), Expr: expr, Data: statementTraceData(stmt), Position: stmt.Pos})
 		case StatementRefund:
 			if readOnly {
 				return nil, fail("E_GETTER_REFUND", stmt.Pos, "getter cannot refund")
@@ -4048,7 +4158,9 @@ func (c *Compiler) lowerIREntry(entry IREntry) ([]avm.Instruction, error) {
 			if err := emitIRExpr(stmt.Expr, &code); err != nil {
 				return nil, err
 			}
-			code = append(code, avm.Instruction{Op: avm.OpEmitInternal, Arg: uint64(stmt.Opcode), Data: append([]byte(nil), stmt.Data...)})
+			// Pack the send-mode bitmask (from .send(mode)) into the high 32
+			// bits of Arg; the message opcode stays in the low 32 bits.
+			code = append(code, avm.Instruction{Op: avm.OpEmitInternal, Arg: uint64(stmt.Opcode) | (stmt.Arg << 32), Data: append([]byte(nil), stmt.Data...)})
 		case IRStmtScheduleSelf:
 			code = append(code, avm.Instruction{Op: avm.OpScheduleSelf, Arg: stmt.Arg, Data: append([]byte(nil), stmt.Data...)})
 		case IRStmtReturn:

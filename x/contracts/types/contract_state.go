@@ -94,6 +94,14 @@ type InternalMessage struct {
 	MessageID          string     `protobuf:"bytes,12,opt,name=message_id,json=messageId,proto3" json:"message_id,omitempty"`
 	Refunded           bool       `protobuf:"varint,13,opt,name=refunded,proto3" json:"refunded,omitempty"`
 	Height             uint64     `protobuf:"varint,14,opt,name=height,proto3" json:"height,omitempty"`
+	// Mode is the send-mode bitmask (async.SendMode* flags) that shaped this
+	// message: SEND_IGNORE_ERRORS swallows a delivery failure, and DRAIN/
+	// DESTROY were already applied at emit time (Funds reflects the drained
+	// amount). Carried into the message ID so a forged mode is rejected.
+	Mode uint32 `protobuf:"varint,15,opt,name=mode,proto3" json:"mode,omitempty"`
+	// Comment is the optional user-facing text memo (textComment). Displayed
+	// by explorers; bounded by async.MaxCommentBytes.
+	Comment string `protobuf:"bytes,16,opt,name=comment,proto3" json:"comment,omitempty"`
 }
 
 type AssetOwnershipRecord struct {
@@ -255,6 +263,8 @@ type MsgReceiveInternalMessage struct {
 	LogicalTime        uint64
 	MessageID          string
 	Height             uint64
+	Mode               uint32
+	Comment            string
 }
 
 type QueryAssetOwnerRequest struct {
@@ -540,6 +550,9 @@ func (m InternalMessage) Validate() error {
 	if len(m.Body) > MaxContractPayloadBytes {
 		return errors.New("internal message body exceeds maximum size")
 	}
+	if len(m.Comment) > MaxCommentBytes {
+		return errors.New("internal message comment exceeds maximum size")
+	}
 	if m.StateInit != nil {
 		if err := m.StateInit.Validate(DefaultParams()); err != nil {
 			return err
@@ -791,7 +804,7 @@ func ComputeInternalMessageID(msg InternalMessage) string {
 		}
 	}
 	sum := sha256Sum([]byte(fmt.Sprintf(
-		"aetra-internal-message-v2/%s/%s/%020d/%010d/%020d/%020d/%t/%020d/%020d/%s/%x",
+		"aetra-internal-message-v3/%s/%s/%020d/%010d/%020d/%020d/%t/%020d/%020d/%s/%010d/%q/%x",
 		msg.SourceContractUser,
 		msg.DestinationAccount,
 		msg.Funds,
@@ -802,6 +815,8 @@ func ComputeInternalMessageID(msg InternalMessage) string {
 		msg.Deadline,
 		msg.LogicalTime,
 		stateInitHash,
+		msg.Mode,
+		msg.Comment,
 		msg.Body,
 	)))
 	return hex.EncodeToString(sum)
