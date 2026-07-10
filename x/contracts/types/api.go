@@ -34,6 +34,26 @@ const (
 	MaxRetainedReceipts = 8192
 )
 
+// Contract execution events. Emitted into the transaction event log so
+// explorers can reconstruct the message chain of an execution: the executed
+// contract (avm_execute) plus one avm_internal_send per outgoing message the
+// contract queued during that execution — together they draw
+// caller -> contract -> {destinations}.
+const (
+	EventTypeAVMExecute      = "avm_execute"
+	EventTypeAVMInternalSend = "avm_internal_send"
+
+	AttrKeyContract    = "contract"
+	AttrKeyCaller      = "caller"
+	AttrKeyFunds       = "funds"
+	AttrKeyOpcode      = "opcode"
+	AttrKeySource      = "source"
+	AttrKeyDestination = "destination"
+	AttrKeyAmount      = "amount"
+	AttrKeyMode        = "mode"
+	AttrKeyComment     = "comment"
+)
+
 type MsgDeployContract struct {
 	Creator        string `protobuf:"bytes,1,opt,name=creator,proto3" json:"creator,omitempty"`
 	CodeID         string `protobuf:"bytes,2,opt,name=code_id,json=codeId,proto3" json:"code_id,omitempty"`

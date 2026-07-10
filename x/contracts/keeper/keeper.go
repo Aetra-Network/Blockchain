@@ -1332,7 +1332,8 @@ func (k *Keeper) executeContract(ctx context.Context, msg types.MsgExecuteContra
 	contract.StateRoot = types.ComputeContractStateRoot(contract)
 	next := k.genesis
 	next.State.Contracts[idx] = contract
-	if err := k.appendAVMOutgoingMessages(&next, contract, outgoing, msg.Height); err != nil {
+	queued, err := k.appendAVMOutgoingMessages(&next, contract, outgoing, msg.Height)
+	if err != nil {
 		return types.ExecuteContractResponse{}, err
 	}
 	next.State.Receipts = append(next.State.Receipts, newContractReceipt(contract.AddressUser, msg.Sender, "execute", types.ExitCodeOK, msg.Funds, 0, contract.LogicalTime, msg.Height))
@@ -1346,6 +1347,7 @@ func (k *Keeper) executeContract(ctx context.Context, msg types.MsgExecuteContra
 		}
 	}
 	k.genesis = next
+	emitSDKEvents(ctx, executionChainEvents(contract.AddressUser, msg.Sender, msg.Funds, msg.Opcode, queued)...)
 	return types.ExecuteContractResponse{
 		ContractAddressUser: contract.AddressUser,
 		Owner:               contract.Owner,
@@ -1358,6 +1360,50 @@ func (k *Keeper) executeContract(ctx context.Context, msg types.MsgExecuteContra
 			InternalRaw: contract.AddressRaw,
 		}},
 	}, nil
+}
+
+// executionChainEvents builds the tx-log events describing one contract
+// execution: the executed contract itself plus one avm_internal_send per
+// outgoing message it queued. Together they let an explorer draw the message
+// chain caller -> contract -> {destinations}.
+func executionChainEvents(contract, caller string, funds uint64, opcode uint32, queued []types.InternalMessage) []sdk.Event {
+	events := make([]sdk.Event, 0, len(queued)+1)
+	events = append(events, sdk.NewEvent(types.EventTypeAVMExecute,
+		sdk.NewAttribute(types.AttrKeyContract, contract),
+		sdk.NewAttribute(types.AttrKeyCaller, caller),
+		sdk.NewAttribute(types.AttrKeyFunds, strconv.FormatUint(funds, 10)),
+		sdk.NewAttribute(types.AttrKeyOpcode, fmt.Sprintf("0x%08x", opcode)),
+	))
+	for _, q := range queued {
+		attrs := []sdk.Attribute{
+			sdk.NewAttribute(types.AttrKeySource, q.SourceContractUser),
+			sdk.NewAttribute(types.AttrKeyDestination, q.DestinationAccount),
+			sdk.NewAttribute(types.AttrKeyAmount, strconv.FormatUint(q.Funds, 10)),
+			sdk.NewAttribute(types.AttrKeyOpcode, fmt.Sprintf("0x%08x", q.Opcode)),
+			sdk.NewAttribute(types.AttrKeyMode, strconv.FormatUint(uint64(q.Mode), 10)),
+		}
+		if q.Comment != "" {
+			attrs = append(attrs, sdk.NewAttribute(types.AttrKeyComment, q.Comment))
+		}
+		events = append(events, sdk.NewEvent(types.EventTypeAVMInternalSend, attrs...))
+	}
+	return events
+}
+
+// emitSDKEvents appends events to the sdk event manager when ctx carries one.
+// It is a deliberate no-op for plain contexts (unit tests, read paths): events
+// are observability, never state.
+func emitSDKEvents(ctx context.Context, events ...sdk.Event) {
+	if ctx == nil || len(events) == 0 {
+		return
+	}
+	if sdkCtx, ok := ctx.(sdk.Context); ok {
+		sdkCtx.EventManager().EmitEvents(events)
+		return
+	}
+	if sdkCtx, ok := ctx.Value(sdk.SdkContextKey).(sdk.Context); ok {
+		sdkCtx.EventManager().EmitEvents(events)
+	}
 }
 
 func (k *Keeper) ExecuteContractState(ctx context.Context, msg types.MsgExecuteContract) (types.ExecuteContractResponse, error) {
@@ -1737,7 +1783,7 @@ func (k *Keeper) ReceiveInternalMessage(msg types.MsgReceiveInternalMessage) (ty
 			}
 			destination.StorageBytes = destinationStorageBytes
 			next.State.Contracts[destinationIdx] = destination
-			if err := k.appendAVMOutgoingMessages(&next, destination, exec.Outgoing, record.Height); err != nil {
+			if _, err := k.appendAVMOutgoingMessages(&next, destination, exec.Outgoing, record.Height); err != nil {
 				return types.InternalMessage{}, err
 			}
 			receiptOp = "internal_message_executed"
@@ -1839,7 +1885,7 @@ func (k *Keeper) ReceiveInternalMessage(msg types.MsgReceiveInternalMessage) (ty
 			}
 			destination.StorageBytes = destinationStorageBytes
 			next.State.Contracts[destinationIdx] = destination
-			if err := k.appendAVMOutgoingMessages(&next, destination, exec.Outgoing, record.Height); err != nil {
+			if _, err := k.appendAVMOutgoingMessages(&next, destination, exec.Outgoing, record.Height); err != nil {
 				return types.InternalMessage{}, err
 			}
 			receiptOp = "internal_message_executed"
@@ -2031,9 +2077,12 @@ func (k *Keeper) deliverQueuedInternalMessage(msg types.InternalMessage) (ok boo
 	return err == nil
 }
 
-func (k *Keeper) appendAVMOutgoingMessages(next *types.GenesisState, source types.Contract, outgoing []async.MessageEnvelope, height uint64) error {
+// appendAVMOutgoingMessages queues the envelopes a contract emitted during an
+// execution and returns the InternalMessage records it appended, so callers
+// running inside a transaction can surface them as events.
+func (k *Keeper) appendAVMOutgoingMessages(next *types.GenesisState, source types.Contract, outgoing []async.MessageEnvelope, height uint64) ([]types.InternalMessage, error) {
 	if len(outgoing) == 0 {
-		return nil
+		return nil, nil
 	}
 	// Track the source's balance across the batch so SEND_DRAIN_BALANCE sends
 	// exactly the funds still available after prior messages in the same
@@ -2042,12 +2091,13 @@ func (k *Keeper) appendAVMOutgoingMessages(next *types.GenesisState, source type
 	// deactivation happen at delivery (ReceiveInternalMessage), after the
 	// funds have left, so the balance/state stays consistent.
 	available := source.Balance
+	appended := make([]types.InternalMessage, 0, len(outgoing))
 	for i, envelope := range outgoing {
 		if envelope.Value.Denom != "" && envelope.Value.Denom != storageRentBaseDenom {
-			return fmt.Errorf("%s: emitted message denom must be %q", types.ErrExecutionFailed, storageRentBaseDenom)
+			return nil, fmt.Errorf("%s: emitted message denom must be %q", types.ErrExecutionFailed, storageRentBaseDenom)
 		}
 		if !envelope.Value.Amount.IsUint64() {
-			return fmt.Errorf("%s: emitted message value exceeds uint64", types.ErrExecutionFailed)
+			return nil, fmt.Errorf("%s: emitted message value exceeds uint64", types.ErrExecutionFailed)
 		}
 		funds := envelope.Value.Amount.Uint64()
 		if async.HasMode(envelope.Mode, async.SendModeDrainBalance) {
@@ -2069,7 +2119,7 @@ func (k *Keeper) appendAVMOutgoingMessages(next *types.GenesisState, source type
 			msgLogicalTime = envelope.CreatedLogicalTime
 		}
 		if len(envelope.Comment) > types.MaxCommentBytes {
-			return fmt.Errorf("%s: emitted message comment exceeds %d bytes", types.ErrExecutionFailed, types.MaxCommentBytes)
+			return nil, fmt.Errorf("%s: emitted message comment exceeds %d bytes", types.ErrExecutionFailed, types.MaxCommentBytes)
 		}
 		internal := types.InternalMessage{
 			SourceContractUser: source.AddressUser,
@@ -2091,14 +2141,15 @@ func (k *Keeper) appendAVMOutgoingMessages(next *types.GenesisState, source type
 			internal.MessageID = types.ComputeInternalMessageID(internal)
 		}
 		if err := internal.Validate(); err != nil {
-			return err
+			return nil, err
 		}
 		if len(next.State.InternalMessages) >= types.MaxInternalMessageQueueDepth {
-			return fmt.Errorf("%s: internal message queue at capacity (%d)", types.ErrExecutionFailed, types.MaxInternalMessageQueueDepth)
+			return nil, fmt.Errorf("%s: internal message queue at capacity (%d)", types.ErrExecutionFailed, types.MaxInternalMessageQueueDepth)
 		}
 		next.State.InternalMessages = append(next.State.InternalMessages, internal)
+		appended = append(appended, internal)
 	}
-	return nil
+	return appended, nil
 }
 
 func newContractReceipt(contractAddress, actor, operation string, exitCode uint32, amount, gasUsed, logicalTime, height uint64) types.ContractReceipt {

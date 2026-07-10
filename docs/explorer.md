@@ -84,6 +84,13 @@ curl -s "localhost:8080/accounts/AEJk.../txs"
   rather than indexed, because they are current-state queries the node already
   serves cheaply. The client forces a gogoproto codec so the hand-rolled
   `x/contracts` query types decode correctly.
+- **Message chains** come from the `avm_execute` / `avm_internal_send` events
+  every contract execution emits into the tx log: `avm_execute` carries
+  `contract`, `caller`, `funds`, `opcode`; each `avm_internal_send` carries
+  `source`, `destination`, `amount`, `opcode`, `mode` and (when set) `comment`.
+  Matching `avm_internal_send.source` to the executed `contract` reconstructs
+  the chain `caller -> contract -> {destinations}` — this is what the
+  explorer's transaction-flow diagram draws.
 
 ## Scaling notes
 

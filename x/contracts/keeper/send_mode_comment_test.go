@@ -160,7 +160,11 @@ func TestSendDrainBalanceDestroyAndComment(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// External Withdraw: the vault drains + self-destructs.
+	// External Withdraw: the vault drains + self-destructs. Route the
+	// execution through an sdk.Context with a live EventManager so the
+	// message-chain events land where a real tx would put them.
+	em := sdk.NewEventManager()
+	k.runtimeCtx = sdk.NewContext(nil, cmtproto.Header{Height: 12}, false, log.NewNopLogger()).WithEventManager(em)
 	withdrawBody, err := vaultRes.MessageBodies["Withdraw"].Encode(map[string]any{})
 	require.NoError(t, err)
 	_, err = k.ExecuteExternal(types.MsgExecuteExternal{
@@ -169,6 +173,29 @@ func TestSendDrainBalanceDestroyAndComment(t *testing.T) {
 		GasLimit: k.Params().MaxGasPerExecution, Height: 12,
 	})
 	require.NoError(t, err)
+
+	// The tx event log describes the chain: caller -> vault -> sink.
+	var execEvents, sendEvents []map[string]string
+	for _, ev := range em.Events() {
+		attrs := map[string]string{}
+		for _, a := range ev.Attributes {
+			attrs[a.Key] = a.Value
+		}
+		switch ev.Type {
+		case types.EventTypeAVMExecute:
+			execEvents = append(execEvents, attrs)
+		case types.EventTypeAVMInternalSend:
+			sendEvents = append(sendEvents, attrs)
+		}
+	}
+	require.Len(t, execEvents, 1, "one avm_execute event per execution")
+	require.Equal(t, vault.ContractAddressUser, execEvents[0][types.AttrKeyContract])
+	require.Equal(t, owner, execEvents[0][types.AttrKeyCaller])
+	require.Len(t, sendEvents, 1, "one avm_internal_send per queued message")
+	require.Equal(t, vault.ContractAddressUser, sendEvents[0][types.AttrKeySource])
+	require.Equal(t, sink.ContractAddressUser, sendEvents[0][types.AttrKeyDestination])
+	require.Equal(t, "vault closed", sendEvents[0][types.AttrKeyComment])
+	require.Equal(t, "160", sendEvents[0][types.AttrKeyMode])
 
 	// The vault queued a drain message carrying the full balance + comment.
 	queue := k.ExportGenesis().State.InternalMessages
