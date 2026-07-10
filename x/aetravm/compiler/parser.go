@@ -186,44 +186,29 @@ func (p *parser) parseAnnotationList() ([]Annotation, error) {
 		}
 		ann := Annotation{Name: "@" + name, Pos: pos}
 		if p.cur.kind == tokenLParen {
+			// Only @message carries an argument (its uint32 opcode). Every
+			// other annotation is bare: parameters belong to the function
+			// signature — a bare @external above
+			// func onExternalMessage(inMsg: Segment), never an annotation
+			// argument list.
+			if ann.Name != "@message" {
+				return nil, fmt.Errorf("annotation %s takes no arguments at %s: declare parameters in the function signature instead", ann.Name, pos)
+			}
 			if err := p.read(); err != nil {
 				return nil, err
 			}
-			if p.cur.kind == tokenNumber {
-				opPos := p.cur.pos
-				value, err := p.expectNumberUint64()
-				if err != nil {
-					return nil, err
-				}
-				if value > math.MaxUint32 {
-					return nil, fmt.Errorf("annotation opcode %d exceeds uint32 range at %s", value, opPos)
-				}
-				v := uint32(value)
-				ann.Value = &v
-				if err := p.expect(tokenRParen); err != nil {
-					return nil, err
-				}
-			} else {
-				depth := 1
-				for depth > 0 {
-					if p.cur.kind == tokenEOF {
-						return nil, fmt.Errorf("unterminated annotation argument list at %s", pos)
-					}
-					if p.cur.kind == tokenLParen {
-						depth++
-					} else if p.cur.kind == tokenRParen {
-						depth--
-					}
-					if depth == 0 {
-						break
-					}
-					if err := p.read(); err != nil {
-						return nil, err
-					}
-				}
-				if err := p.expect(tokenRParen); err != nil {
-					return nil, err
-				}
+			opPos := p.cur.pos
+			value, err := p.expectNumberUint64()
+			if err != nil {
+				return nil, fmt.Errorf("@message requires a numeric opcode argument at %s: %w", opPos, err)
+			}
+			if value > math.MaxUint32 {
+				return nil, fmt.Errorf("annotation opcode %d exceeds uint32 range at %s", value, opPos)
+			}
+			v := uint32(value)
+			ann.Value = &v
+			if err := p.expect(tokenRParen); err != nil {
+				return nil, err
 			}
 		}
 		switch ann.Name {

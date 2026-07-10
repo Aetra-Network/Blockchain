@@ -375,6 +375,96 @@ func TestAVMCLIEncodeMessageCanonicalizesJSON(t *testing.T) {
 	require.Equal(t, uint64(77), decoded.QueryID)
 }
 
+// TestAVMCLIEncodeMessageABIEncodesFromSource is the regression guard for the
+// CLI wire-format gap: hand-written JSON bytes are not the ATLX body format,
+// so executing an external entrypoint with them aborts in the AVM
+// (exit 65535). With --source/--message/--fields the CLI compiles the
+// contract and uses its own canonical body codec, byte-identical to what the
+// keeper-side family tests feed ExecuteContract, and reports the compiled
+// opcode.
+func TestAVMCLIEncodeMessageABIEncodesFromSource(t *testing.T) {
+	const src = `
+@storage
+struct Storage {
+    value: uint64
+}
+
+@message(0x1001)
+struct Touch {
+    nonce: uint32
+}
+
+type InternalMsg = Touch
+type ExternalMsg = Touch
+
+contract Counter {
+    storage: Storage
+    incomingMessages: InternalMsg
+    incomingExternal: ExternalMsg
+
+    @store
+    func Storage.load() {
+        return Storage.fromChunk(contract.getData())
+    }
+
+    @store
+    func Storage.save(self) {
+        contract.setData(self.toChunk())
+    }
+
+    @internal
+    func onInternalMessage(in: InMessage) {
+        var st = lazy Storage.load()
+        st.value += 1
+        st.save()
+    }
+
+    @external
+    func onExternalMessage(inMsg: Segment) {
+        var st = lazy Storage.load()
+        st.value += 1
+        st.save()
+    }
+}
+`
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "counter.atlx")
+	require.NoError(t, os.WriteFile(sourcePath, []byte(src), 0o600))
+
+	out, err := executeAVMCommand(NewAVMDebugCmd(), "encode-message",
+		"--source", sourcePath, "--message", "Touch", "--fields", `{"nonce":1}`)
+	require.NoError(t, err, out)
+
+	var decoded struct {
+		BodyBase64 string `json:"body_base64"`
+		Opcode     uint32 `json:"opcode"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &decoded), out)
+	require.Equal(t, uint32(0x1001), decoded.Opcode)
+
+	cliBody, err := base64.StdEncoding.DecodeString(decoded.BodyBase64)
+	require.NoError(t, err)
+
+	c, err := compiler.New(compiler.DefaultOptions())
+	require.NoError(t, err)
+	compiled, err := c.Compile([]byte(src))
+	require.NoError(t, err)
+	wantBody, err := compiled.MessageBodies["Touch"].Encode(map[string]any{"nonce": uint32(1)})
+	require.NoError(t, err)
+	require.Equal(t, wantBody, cliBody)
+
+	// Unknown message names fail with the declared list, not a silent
+	// wrong-bytes body.
+	_, err = executeAVMCommand(NewAVMDebugCmd(), "encode-message",
+		"--source", sourcePath, "--message", "Nope")
+	require.ErrorContains(t, err, "not declared")
+
+	// Mixing raw-body flags with ABI flags is rejected.
+	_, err = executeAVMCommand(NewAVMDebugCmd(), "encode-message",
+		"--source", sourcePath, "--message", "Touch", "--body-json", `{}`)
+	require.ErrorContains(t, err, "not both")
+}
+
 type cobraCommandShim struct {
 	cmd interface {
 		Find([]string) (*cobra.Command, []string, error)

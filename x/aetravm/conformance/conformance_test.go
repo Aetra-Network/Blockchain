@@ -154,7 +154,7 @@ contract Treasury {
     contract.setData(self.toChunk())
   }
 
-  @external(inMsg: Segment)
+  @external
   func onExternalMessage(inMsg: Segment) {
     const msg = lazy TreasuryExternalMsg.fromSegment(inMsg)
 
@@ -675,7 +675,7 @@ contract Counter {
     contract.setData(self.toChunk())
   }
 
-  @external(inMsg: Segment)
+  @external
   func onExternalMessage(inMsg: Segment) {
     const msg = lazy CounterExternalMsg.fromSegment(inMsg)
 
@@ -736,7 +736,7 @@ contract Counter {
   func onBouncedMessage(in: InMessageBounced) {
   }
 
-  @external(inMsg: Segment)
+  @external
   func onExternalMessage(inMsg: Segment) {
     const msg = lazy CounterExternalMsg.fromSegment(inMsg)
 
@@ -797,7 +797,7 @@ contract Counter {
     contract.setData(self.toChunk())
   }
 
-  @external(inMsg: Segment)
+  @external
   func onExternalMessage(inMsg: Segment) {
     const msg = lazy CounterExternalMsg.fromSegment(inMsg)
 
@@ -858,7 +858,7 @@ contract Counter {
     contract.setData(self.toChunk())
   }
 
-  @external(inMsg: Segment)
+  @external
   func onExternalMessage(inMsg: Segment) {
     const msg = lazy CounterExternalMsg.fromSegment(inMsg)
 

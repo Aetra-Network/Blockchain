@@ -47,7 +47,7 @@ contract Counter {
     contract.setData(self.toChunk())
   }
 
-  @external(inMsg: Segment)
+  @external
   func onExternalMessage(inMsg: Segment) {
     const msg = lazy CounterExternalMsg.fromSegment(inMsg)
 
@@ -105,7 +105,7 @@ contract Token {
     contract.setData(self.toChunk())
   }
 
-  @external(inMsg: Segment)
+  @external
   func onExternalMessage(inMsg: Segment) {
     const msg = lazy TokenExternalMsg.fromSegment(inMsg)
 
@@ -164,7 +164,7 @@ contract NFT {
     contract.setData(self.toChunk())
   }
 
-  @external(inMsg: Segment)
+  @external
   func onExternalMessage(inMsg: Segment) {
     const msg = lazy NFTExternalMsg.fromSegment(inMsg)
 
@@ -224,7 +224,7 @@ contract Dex {
     contract.setData(self.toChunk())
   }
 
-  @external(inMsg: Segment)
+  @external
   func onExternalMessage(inMsg: Segment) {
     const msg = lazy DexExternalMsg.fromSegment(inMsg)
 
@@ -407,7 +407,7 @@ contract ExternalGate {
     contract.setData(self.toChunk())
   }
 
-  @external(inMsg: Segment)
+  @external
   func onExternalMessage(inMsg: Segment) {
     const msg = lazy GateExternalMsg.fromSegment(inMsg)
 
@@ -467,7 +467,7 @@ contract MapDemo {
     contract.setData(self.toChunk())
   }
 
-  @external(inMsg: Segment)
+  @external
   func onExternalMessage(inMsg: Segment) {
     const msg = lazy MapExternalMsg.fromSegment(inMsg)
 

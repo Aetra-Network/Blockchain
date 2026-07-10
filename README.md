@@ -24,15 +24,15 @@ Network.
 |----------|-------|
 | Native asset | **AET** (1 AET = 10⁹ naet) |
 | Consensus | CometBFT proof of stake |
-| Chain IDs | Mainnet `1` · Testnet `2` (dev networks use `aetra-local-1`) |
-| Average transfer fee | ~0.5 AET (~$0.005), dynamic and governance-adjustable |
+| Chain IDs | Mainnet `18` · Testnet `19` (dev networks use `aetra-local-1`) |
+| Average transfer fee | ~0.5 AET, dynamic and governance-adjustable |
 | Smart contracts | AVM (deterministic virtual machine) + Aetralis language (`.atlx`) |
 | Staking | Pool-based — users deposit into pools, never pick validators directly |
 | Addresses | User `AE...` · Raw `4:...` · Protocol `-7:...` |
 
 ## Fees
 
-A normal transfer averages **0.5 AET (~$0.005)**. The fee is computed
+A normal transfer averages **0.5 AET**. The fee is computed
 deterministically from a flat anchor plus per-gas, per-size, and per-message
 components. On top of that average, separate additive parts apply where
 relevant: a storage fee for transactions that grow chain state, a bounded

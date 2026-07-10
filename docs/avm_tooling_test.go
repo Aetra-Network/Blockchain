@@ -21,7 +21,7 @@ func TestAVMToolingDocsStaySynchronizedWithImplementation(t *testing.T) {
 		"@message(0x",
 		"type InternalMsg =",
 		"union matching MUST be exhaustive",
-		"MUST reject those legacy declaration forms as parse errors",
+		"is a parse error",
 		"stable contract language track",
 		"grammar and ABI rules",
 		"Symbol Resolution",

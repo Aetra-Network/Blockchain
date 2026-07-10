@@ -65,8 +65,8 @@ Verify that the commit matches the published testnet release commit.
 Public Aetra networks use plain numeric chain IDs:
 
 ```text
-Mainnet: CHAIN_ID = "1"
-Testnet: CHAIN_ID = "2"
+Mainnet: CHAIN_ID = "18"
+Testnet: CHAIN_ID = "19"
 ```
 
 Development networks keep the dash-separated form (e.g. `aetra-local-1`).

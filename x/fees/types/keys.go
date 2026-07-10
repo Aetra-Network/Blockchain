@@ -27,7 +27,7 @@ const (
 	PrototypeMinGasPriceV1	= "0" + BondDenom
 
 	// TargetTransferFeeNaet is the governance anchor for a normal transfer fee (Requirement 1.2).
-	// 500_000_000 naet == 0.5 AET (~$0.005 at the reference peg). Storage rent,
+	// 500_000_000 naet == 0.5 AET. Storage rent,
 	// reputation adjustments, and congestion surcharges are separate additive
 	// components on top of this average, never folded into it.
 	TargetTransferFeeNaet	= int64(500_000_000)

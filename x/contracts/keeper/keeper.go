@@ -3,7 +3,10 @@ package keeper
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +22,7 @@ import (
 	coretypes "github.com/sovereign-l1/l1/x/aetracore/types"
 	"github.com/sovereign-l1/l1/x/aetravm/async"
 	"github.com/sovereign-l1/l1/x/aetravm/avm"
+	"github.com/sovereign-l1/l1/x/aetravm/chunk"
 	"github.com/sovereign-l1/l1/x/contracts/types"
 )
 
@@ -604,17 +608,38 @@ func (k *Keeper) instantiateContract(ctx context.Context, msg types.MsgInstantia
 	if err := types.ValidateUserFacingAEAddress("contract creator", msg.Creator); err != nil {
 		return types.InstantiateContractResponse{}, err
 	}
-	if err := k.ensureActiveWallet(ctx, msg.Creator, "contract instantiate"); err != nil {
-		return types.InstantiateContractResponse{}, err
+	// Contract-initiated instantiation — the authenticated internal-message
+	// auto-deploy path, where Creator is itself an on-chain contract — is
+	// exempt from the native-wallet activation gate and the code-ownership
+	// rule. A contract address can never be an activated native wallet, and
+	// the StateInit address derivation already binds the exact code hash the
+	// child must run, so ownership adds nothing. The only flow that reaches
+	// here with a contract creator is pending-queue delivery, whose source
+	// is authenticated by content hash (SEC-HIGH #5); external tx paths
+	// always carry a human creator and keep both checks.
+	_, _, creatorIsContract := findContractWithIndex(k.genesis.State.Contracts, msg.Creator)
+	if !creatorIsContract {
+		if err := k.ensureActiveWallet(ctx, msg.Creator, "contract instantiate"); err != nil {
+			return types.InstantiateContractResponse{}, err
+		}
 	}
 	if msg.Height == 0 {
 		return types.InstantiateContractResponse{}, errors.New("contract instantiate height must be positive")
 	}
 	code, found := findCode(k.genesis.State.Codes, msg.CodeID)
+	if !found && creatorIsContract {
+		// The AVM's autoDeployAddress/counterfactualAddress builtins identify
+		// code by the plain module hash sha256(bytecode) (see avm.go
+		// runtimeStateInitFromValue), while stored code records are keyed by
+		// the domain-separated canonical hash. Both are content addresses of
+		// the same bytes, so resolving the module hash against stored
+		// bytecode is exact, deterministic, and unforgeable.
+		code, found = findCodeByModuleHash(k.genesis.State.Codes, msg.CodeID)
+	}
 	if !found {
 		return types.InstantiateContractResponse{}, errors.New(types.ErrContractNotFound + ": contract code not found")
 	}
-	if code.Owner != msg.Creator {
+	if !creatorIsContract && code.Owner != msg.Creator {
 		return types.InstantiateContractResponse{}, errors.New(types.ErrUnauthorized + ": contract instantiate requires code owner")
 	}
 	stateInit, data, funds, err := k.stateInitForInstantiate(msg, code)
@@ -654,9 +679,12 @@ func (k *Keeper) instantiateContract(ctx context.Context, msg types.MsgInstantia
 		schemaVersion = 1
 	}
 	contract := types.Contract{
-		AddressUser:             user,
-		AddressRaw:              raw,
-		CodeID:                  msg.CodeID,
+		AddressUser: user,
+		AddressRaw:  raw,
+		// The resolved record's canonical ID, not msg.CodeID: contract-built
+		// auto-deploys reference code by plain module hash, which is not a
+		// stored code key.
+		CodeID:                  code.CodeID,
 		CodeHash:                code.CodeHash,
 		StateInitHash:           stateInitHash,
 		StateInit:               stateInit,
@@ -912,19 +940,33 @@ func (k Keeper) stateInitForInstantiate(msg types.MsgInstantiateContract, code t
 	if stateInit.CodeID != msg.CodeID {
 		return types.StateInit{}, nil, 0, errors.New("state init code id must match instantiate code id")
 	}
-	if stateInit.CodeHash != code.CodeHash {
+	// Contract-built StateInits (AVM autoDeployAddress/counterfactualAddress)
+	// identify code by the plain module hash sha256(bytecode); tx-built ones
+	// use the stored record's domain-separated canonical hash. Both are
+	// content addresses of the same bytecode, so either binds the child to
+	// exactly one module.
+	if stateInit.CodeHash != code.CodeHash && !codeHashMatchesModule(stateInit.CodeHash, code.Bytecode) {
 		return types.StateInit{}, nil, 0, errors.New("state init code hash must match stored code")
 	}
 	if len(msg.InitMsg) != 0 && !bytes.Equal(msg.InitMsg, stateInit.InitData) {
 		return types.StateInit{}, nil, 0, errors.New("state init data must match instantiate init message")
 	}
-	if msg.Funds != 0 && msg.Funds != stateInit.InitialBalanceNAET {
+	// A StateInit with a pinned non-zero balance must agree with the
+	// instantiate funds. A zero StateInit balance (the AVM never pins one
+	// for message-value-funded auto-deploys) means the attached message
+	// value funds the child instead — the caller debits the source by the
+	// same amount, so value is conserved either way.
+	if msg.Funds != 0 && stateInit.InitialBalanceNAET != 0 && msg.Funds != stateInit.InitialBalanceNAET {
 		return types.StateInit{}, nil, 0, errors.New("state init initial balance must match instantiate funds")
 	}
 	if msg.Salt != "" && msg.Salt != stateInit.Salt && !bytes.Equal([]byte(msg.Salt), stateInit.SaltBytesForAddress()) {
 		return types.StateInit{}, nil, 0, errors.New("state init salt must match instantiate salt")
 	}
-	return stateInit, append([]byte(nil), stateInit.InitData...), stateInit.InitialBalanceNAET, nil
+	effectiveFunds := stateInit.InitialBalanceNAET
+	if effectiveFunds == 0 {
+		effectiveFunds = msg.Funds
+	}
+	return stateInit, append([]byte(nil), stateInit.InitData...), effectiveFunds, nil
 }
 
 func findCodeRecord(codes []types.CodeRecord, codeID string) (types.CodeRecord, bool) {
@@ -1023,6 +1065,43 @@ func encodeJSONStorageValue(typeName string, raw json.RawMessage) ([]byte, error
 			return nil, err
 		}
 		encoded, err := avm.CanonicalEncode(avm.ValueString(text))
+		if err != nil {
+			return nil, err
+		}
+		return encoded, nil
+	case "code", "chunk":
+		// The storage codec renders chunk-typed fields as the canonical
+		// snapshot map {hex, base64, hash, chunks}. Rebuild the real runtime
+		// chunk value from the payload bytes: without this, the raw JSON map
+		// leaks into runtime storage and every code-identity derivation the
+		// contract performs (autoDeployAddress, counterfactualAddress)
+		// hashes JSON text instead of the module bytes.
+		var snapshot struct {
+			Hex    string `json:"hex"`
+			Base64 string `json:"base64"`
+		}
+		if err := json.Unmarshal(raw, &snapshot); err != nil {
+			return nil, fmt.Errorf("decode %s storage value: %w", kind, err)
+		}
+		var data []byte
+		var err error
+		switch {
+		case strings.TrimSpace(snapshot.Hex) != "":
+			data, err = hex.DecodeString(strings.TrimSpace(snapshot.Hex))
+		case strings.TrimSpace(snapshot.Base64) != "":
+			data, err = base64.StdEncoding.DecodeString(strings.TrimSpace(snapshot.Base64))
+		}
+		if err != nil {
+			return nil, fmt.Errorf("decode %s storage payload: %w", kind, err)
+		}
+		if len(data) == 0 {
+			return nil, nil
+		}
+		root, err := avm.ToChunkPayload(data, chunk.TypeNormal)
+		if err != nil {
+			return nil, err
+		}
+		encoded, err := avm.CanonicalEncode(avm.ValueChunkRef(root))
 		if err != nil {
 			return nil, err
 		}
@@ -2206,6 +2285,29 @@ func findCode(codes []types.CodeRecord, codeID string) (types.CodeRecord, bool) 
 		}
 	}
 	return types.CodeRecord{}, false
+}
+
+// findCodeByModuleHash resolves a stored code record by the plain module
+// hash hex(sha256(bytecode)) — the code identity the AVM runtime embeds in
+// contract-built StateInits.
+func findCodeByModuleHash(codes []types.CodeRecord, moduleHashHex string) (types.CodeRecord, bool) {
+	for _, code := range codes {
+		if codeHashMatchesModule(moduleHashHex, code.Bytecode) {
+			return code, true
+		}
+	}
+	return types.CodeRecord{}, false
+}
+
+// codeHashMatchesModule reports whether hashHex is the plain module hash
+// hex(sha256(bytecode)) of the given bytecode.
+func codeHashMatchesModule(hashHex string, bytecode []byte) bool {
+	want := strings.ToLower(strings.TrimSpace(hashHex))
+	if want == "" || len(bytecode) == 0 {
+		return false
+	}
+	sum := sha256.Sum256(bytecode)
+	return hex.EncodeToString(sum[:]) == want
 }
 
 func findContract(contracts []types.Contract, address string) (types.Contract, bool) {

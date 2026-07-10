@@ -10,6 +10,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
+	"strconv"
 	"strings"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
@@ -20,6 +22,7 @@ import (
 
 	appparams "github.com/sovereign-l1/l1/app/params"
 	"github.com/sovereign-l1/l1/x/aetravm/async"
+	"github.com/sovereign-l1/l1/x/aetravm/compiler"
 	contractstypes "github.com/sovereign-l1/l1/x/contracts/types"
 )
 
@@ -37,6 +40,9 @@ const (
 	flagAVMBodyJSON       = "body-json"
 	flagAVMBodyFile       = "body-file"
 	flagAVMBodyHex        = "body-hex"
+	flagAVMSource         = "source"
+	flagAVMMessage        = "message"
+	flagAVMFields         = "fields"
 	flagAVMInitialBalance = "initial-balance"
 	flagAVMAdmin          = "admin"
 	flagAVMHeight         = "height"
@@ -505,11 +511,17 @@ func newAVMEncodeMessageCmd() *cobra.Command {
 		Short: "Encode an AVM message body from JSON",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			body, err := readBodyBytes(cmd)
+			body, abiOpcode, abiOpcodeKnown, err := resolveAVMBody(cmd)
 			if err != nil {
 				return err
 			}
 			opcode, _ := cmd.Flags().GetUint32(flagAVMOpcode)
+			if abiOpcodeKnown {
+				if cmd.Flags().Changed(flagAVMOpcode) && opcode != abiOpcode {
+					return fmt.Errorf("--opcode %d conflicts with the compiled opcode %d for this message", opcode, abiOpcode)
+				}
+				opcode = abiOpcode
+			}
 			queryID, _ := cmd.Flags().GetUint64(flagAVMQueryID)
 			sum := sha256.Sum256(body)
 			return writeCommandJSON(cmd, map[string]any{
@@ -570,9 +582,12 @@ func addAVMTxFlags(cmd *cobra.Command) {
 }
 
 func addAVMBodyFlags(cmd *cobra.Command) {
-	cmd.Flags().String(flagAVMBodyJSON, "", "JSON message body")
-	cmd.Flags().String(flagAVMBodyFile, "", "file containing JSON message body")
-	cmd.Flags().String(flagAVMBodyHex, "", "hex-encoded message body")
+	cmd.Flags().String(flagAVMBodyJSON, "", "JSON message body (raw bytes; NOT the ATLX wire format)")
+	cmd.Flags().String(flagAVMBodyFile, "", "file containing JSON message body (raw bytes)")
+	cmd.Flags().String(flagAVMBodyHex, "", "hex-encoded message body (raw bytes)")
+	cmd.Flags().String(flagAVMSource, "", "contract .atlx source file; with --message, ABI-encodes the body with the contract's canonical codec")
+	cmd.Flags().String(flagAVMMessage, "", "@message struct name to encode (requires --source)")
+	cmd.Flags().String(flagAVMFields, "", "JSON object of message field values for --message (default {})")
 }
 
 // avmBroadcastHeight resolves the height an AVM tx message should carry: the
@@ -678,27 +693,135 @@ func requiredFlag(cmd *cobra.Command, name string, label string) (string, error)
 }
 
 func readBodyBytes(cmd *cobra.Command) ([]byte, error) {
+	body, _, _, err := resolveAVMBody(cmd)
+	return body, err
+}
+
+// resolveAVMBody resolves the message body from the CLI flags. Two mutually
+// exclusive paths exist:
+//
+//   - raw bytes via --body-json/--body-file/--body-hex (the operator already
+//     has wire bytes);
+//   - ABI encoding via --source + --message [+ --fields]: the contract's
+//     .atlx source is compiled and the named @message struct's canonical
+//     body codec encodes the JSON field map. This is the only way to produce
+//     a body the deployed module can actually decode — hand-written JSON
+//     bytes are NOT the ATLX wire format and abort execution.
+//
+// When the ABI path is used, the message's opcode from the compiled selector
+// registry is returned as well (opcodeKnown=true) so callers can surface it.
+func resolveAVMBody(cmd *cobra.Command) (body []byte, opcode uint32, opcodeKnown bool, err error) {
 	bodyJSON, _ := cmd.Flags().GetString(flagAVMBodyJSON)
 	bodyFile, _ := cmd.Flags().GetString(flagAVMBodyFile)
 	bodyHex, _ := cmd.Flags().GetString(flagAVMBodyHex)
-	set := countSet(bodyJSON, bodyFile, bodyHex)
-	if set == 0 {
-		return nil, nil
+	sourceFile, _ := cmd.Flags().GetString(flagAVMSource)
+	messageName, _ := cmd.Flags().GetString(flagAVMMessage)
+	fieldsJSON, _ := cmd.Flags().GetString(flagAVMFields)
+
+	abiSet := strings.TrimSpace(sourceFile) != "" || strings.TrimSpace(messageName) != ""
+	rawSet := countSet(bodyJSON, bodyFile, bodyHex)
+
+	if abiSet && rawSet > 0 {
+		return nil, 0, false, errors.New("set either raw body flags (body-json/body-file/body-hex) or ABI flags (source/message/fields), not both")
 	}
-	if set > 1 {
-		return nil, errors.New("set only one of body-json, body-file, or body-hex")
+	if abiSet {
+		if strings.TrimSpace(sourceFile) == "" || strings.TrimSpace(messageName) == "" {
+			return nil, 0, false, errors.New("ABI encoding requires both --source and --message")
+		}
+		body, opcode, err = encodeAVMMessageBody(strings.TrimSpace(sourceFile), strings.TrimSpace(messageName), fieldsJSON)
+		if err != nil {
+			return nil, 0, false, err
+		}
+		return body, opcode, true, nil
+	}
+	if rawSet == 0 {
+		return nil, 0, false, nil
+	}
+	if rawSet > 1 {
+		return nil, 0, false, errors.New("set only one of body-json, body-file, or body-hex")
 	}
 	if strings.TrimSpace(bodyHex) != "" {
-		return hex.DecodeString(strings.TrimSpace(bodyHex))
+		body, err = hex.DecodeString(strings.TrimSpace(bodyHex))
+		return body, 0, false, err
 	}
 	if strings.TrimSpace(bodyFile) != "" {
 		bz, err := os.ReadFile(strings.TrimSpace(bodyFile))
 		if err != nil {
-			return nil, err
+			return nil, 0, false, err
 		}
-		return canonicalJSONBytes(bz)
+		body, err = canonicalJSONBytes(bz)
+		return body, 0, false, err
 	}
-	return canonicalJSONBytes([]byte(bodyJSON))
+	body, err = canonicalJSONBytes([]byte(bodyJSON))
+	return body, 0, false, err
+}
+
+// encodeAVMMessageBody compiles the contract source and encodes the named
+// @message struct's fields with the contract's own canonical body codec.
+func encodeAVMMessageBody(sourceFile, messageName, fieldsJSON string) ([]byte, uint32, error) {
+	src, err := os.ReadFile(sourceFile)
+	if err != nil {
+		return nil, 0, fmt.Errorf("read contract source: %w", err)
+	}
+	c, err := compiler.New(compiler.DefaultOptions())
+	if err != nil {
+		return nil, 0, err
+	}
+	compiled, err := c.Compile(src)
+	if err != nil {
+		return nil, 0, fmt.Errorf("compile %s: %w", sourceFile, err)
+	}
+	codec, ok := compiled.MessageBodies[messageName]
+	if !ok {
+		known := make([]string, 0, len(compiled.MessageBodies))
+		for name := range compiled.MessageBodies {
+			known = append(known, name)
+		}
+		sort.Strings(known)
+		return nil, 0, fmt.Errorf("message %q is not declared in %s (declared: %s)", messageName, sourceFile, strings.Join(known, ", "))
+	}
+	fields := map[string]any{}
+	if strings.TrimSpace(fieldsJSON) != "" {
+		decoder := json.NewDecoder(strings.NewReader(fieldsJSON))
+		decoder.UseNumber()
+		if err := decoder.Decode(&fields); err != nil {
+			return nil, 0, fmt.Errorf("parse --fields JSON: %w", err)
+		}
+	}
+	body, err := codec.Encode(normalizeJSONNumbers(fields).(map[string]any))
+	if err != nil {
+		return nil, 0, fmt.Errorf("encode %s body: %w", messageName, err)
+	}
+	return body, compiled.MessageBodyOpcodes[messageName], nil
+}
+
+// normalizeJSONNumbers converts json.Number values (from UseNumber decoding,
+// which preserves full uint64 precision) into native Go integers the message
+// codec's reflection path understands. Values outside int64/uint64 range stay
+// as decimal strings for the codec's big-integer handling.
+func normalizeJSONNumbers(value any) any {
+	switch v := value.(type) {
+	case json.Number:
+		if u, err := strconv.ParseUint(v.String(), 10, 64); err == nil {
+			return u
+		}
+		if i, err := strconv.ParseInt(v.String(), 10, 64); err == nil {
+			return i
+		}
+		return v.String()
+	case map[string]any:
+		for key, item := range v {
+			v[key] = normalizeJSONNumbers(item)
+		}
+		return v
+	case []any:
+		for i, item := range v {
+			v[i] = normalizeJSONNumbers(item)
+		}
+		return v
+	default:
+		return value
+	}
 }
 
 func readOptionalBytes(cmd *cobra.Command, fileFlag string, hexFlag string) ([]byte, error) {

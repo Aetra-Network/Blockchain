@@ -17,8 +17,7 @@ and the declaration annotations are normative here. Messages are declared as
 `@message(opcode)` structs grouped into closed unions; handlers and getters
 are declared only through annotated functions (`@internal func
 onInternalMessage(...)`, `@external func onExternalMessage(...)`, `@bounced
-func onBouncedMessage(...)`, `@get func name(): T`). There are no `message`,
-`getter`, `event`, or `wallet action` declaration keywords. The language is
+func onBouncedMessage(...)`, `@get func name(): T`). The language is
 deterministic, strongly typed, and closed under canonical compilation.
 Anything not defined here is not part of the language. The runnable contracts
 under `examples/avm/` are the reference for this surface.
@@ -73,8 +72,8 @@ contract_meta_decl  := "author" ":" string_literal
                      | "salt" string_literal
                      | "initial_balance" integer_literal
 
-annotation          := "@internal" [ param_list ]
-                     | "@external" [ param_list ]
+annotation          := "@internal"
+                     | "@external"
                      | "@bounced"
                      | "@get"
                      | "@pure"
@@ -97,9 +96,10 @@ reserved names bound to their annotations: `@internal` requires
 `onBouncedMessage(in: InMessageBounced)`; each may be declared at most once
 per contract and the reserved names may not be used anywhere else.
 
-There is no `message`, `getter`, `event`, `wallet action`, `selector`,
-`deploy`, `let`, `val`, or `mut` form anywhere in the grammar. The compiler
-MUST reject those legacy declaration forms as parse errors.
+Only the declaration forms in the grammar above exist. Anything outside it —
+including legacy declaration styles from other languages — is a parse error.
+Annotations never carry argument lists except `@message(opcode)`; handler
+parameters are declared in the function signature.
 
 Canonicalization rules:
 
@@ -573,8 +573,7 @@ ABI decode. The compiler uses it to build opcode-to-struct decode tables and
 to keep raw segment parsing out of the canonical path. Message schemas are
 grouped into closed unions (`type InternalMsg = A | B | C`) that the contract
 binds through `incomingMessages:` and `incomingExternal:`; the annotated
-handler functions are the callable entrypoints. There is no standalone
-`message` declaration form.
+handler functions are the callable entrypoints.
 
 Message kinds:
 
@@ -636,7 +635,7 @@ kinds is a different ABI item.
 
 A getter is a contract function annotated `@get` with an explicit return
 type: `@get func name(): T`. It declares a read-only entrypoint; its selector
-is derived from the canonical name. There is no `getter` declaration keyword.
+is derived from the canonical name.
 
 Normative rules:
 

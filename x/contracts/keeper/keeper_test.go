@@ -726,7 +726,7 @@ contract Counter {
         st.save()
     }
 
-    @external(inMsg: Segment)
+    @external
     func onExternalMessage(inMsg: Segment) {
         var st = lazy Storage.load()
         st.count += 1
@@ -850,7 +850,7 @@ contract Counter {
         st.save()
     }
 
-    @external(inMsg: Segment)
+    @external
     func onExternalMessage(inMsg: Segment) {
         var st = lazy Storage.load()
         st.count += 1
@@ -1317,12 +1317,6 @@ func TestTokenWalletStateInitAutoDeployAndDeterministicAddress(t *testing.T) {
 	holder1Storage, err := avm.DecodeSnapshot(holder1Query.Contract.Data)
 	require.NoError(t, err)
 	require.Equal(t, uint64(100), avm.DecodeU64(holder1Storage["balance"]))
-	status[holder1Address] = accountStatusActive
-	_, err = k.StoreCode(types.MsgStoreCode{
-		Authority: holder1Address,
-		Bytecode:  walletResult.ModuleBytes,
-	})
-	require.NoError(t, err)
 
 	holder2InitData, err := walletResult.StorageCodec.Encode(map[string]any{
 		"master":     masterCreated.ContractAddressUser,
@@ -1487,12 +1481,6 @@ func TestTokenWalletMintTransferBurnLifecycleWithQueuedMessages(t *testing.T) {
 	holder1Storage, err := avm.DecodeSnapshot(holder1Query.Contract.Data)
 	require.NoError(t, err)
 	require.Equal(t, uint64(100), avm.DecodeU64(holder1Storage["balance"]))
-	status[holder1Address] = accountStatusActive
-	_, err = k.StoreCode(types.MsgStoreCode{
-		Authority: holder1Address,
-		Bytecode:  walletResult.ModuleBytes,
-	})
-	require.NoError(t, err)
 
 	transferBody, err := walletResult.MessageBodies["WalletInternalTransfer"].Encode(map[string]any{
 		"from":       holder1Address,

@@ -74,7 +74,7 @@ Allowed struct annotations:
 Allowed function annotations:
 
 - `@internal`
-- `@external(...)`
+- `@external`
 - `@bounced`
 - `@get`
 - `@pure`
@@ -111,7 +111,7 @@ func onBouncedMessage(in: InMessageBounced) {
 External handler:
 
 ```atlx
-@external(inMsg: Segment)
+@external
 func onExternalMessage(inMsg: Segment) {
     // ...
 }
@@ -476,7 +476,7 @@ func onBouncedMessage(in: InMessageBounced) {
 Canonical structure:
 
 ```atlx
-@external(inMsg: Segment)
+@external
 func onExternalMessage(inMsg: Segment) {
     const msg = lazy ExternalMsg.fromSegment(inMsg)
 

@@ -14,19 +14,15 @@ Design rules:
 - only the canonical language surface is highlighted. Words that are not part
   of the language get no special treatment.
 
-## Not part of the language
+## Scope
 
-These words MUST NOT appear in any keyword list, grammar, or completion set.
-The only top-level unit form is `import`; handlers are declared only through
-annotations (`@internal func onInternalMessage(...)`, `@external func
-onExternalMessage(...)`, `@bounced func onBouncedMessage(...)`):
-
-- `package`
-- `migrate`
-- `selector`
-- `message external` / `message internal` / `message bounced` declaration forms
-- `let`, `val`, `mut` (the compiler rejects them; only `const` and `var` exist)
-- `slice`, `cell`, `isSlice`, `isSliceSignatureValid`, `Ref<T>`
+Keyword lists, grammar, and completion sets contain ONLY the forms documented
+below and in [language-spec.md](language-spec.md). Local bindings are `const`
+and `var`; handlers are declared only through annotations (`@internal func
+onInternalMessage(...)`, `@external func onExternalMessage(...)`, `@bounced
+func onBouncedMessage(...)`); the only top-level unit form is `import`.
+Anything outside the documented grammar is a parse error — do not add
+speculative keywords to tooling.
 
 ## Token Groups And Colors
 
@@ -34,9 +30,7 @@ onExternalMessage(...)`, `@bounced func onBouncedMessage(...)`):
 
 `import` `contract` `struct` `enum` `type` `func`
 
-`getter`, `event`, `wallet`, `action` are NOT keywords — they are plain
-identifiers (e.g. `const wallet = ...`). Getters are declared with
-`@get func name(): T`, not with a `getter` keyword.
+Getters are declared with `@get func name(): T`.
 
 ### Annotations — `#E5B567`, bold italic
 

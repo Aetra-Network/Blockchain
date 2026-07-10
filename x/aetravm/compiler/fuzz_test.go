@@ -40,7 +40,7 @@ contract Counter {
   storage: CounterState
   incomingExternal: ExternalMsg
 
-  @external(inMsg: Segment)
+  @external
   func onExternalMessage(inMsg: Segment) {
     const msg = ExternalMsg.fromSegment(inMsg)
     match (msg) {

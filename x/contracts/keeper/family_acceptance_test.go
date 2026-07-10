@@ -115,7 +115,7 @@ contract %[1]s {
         }
     }
 
-    @external(inMsg: Segment)
+    @external
     func onExternalMessage(inMsg: Segment) {
         const msg = lazy Touch.fromSegment(inMsg)
         var st = lazy %[1]sStorage.load()
@@ -239,7 +239,7 @@ contract %[1]s {
         }
     }
 
-    @external(inMsg: Segment)
+    @external
     func onExternalMessage(inMsg: Segment) {
         const msg = lazy Touch.fromSegment(inMsg)
         var st = lazy %[1]sStorage.load()
@@ -375,7 +375,7 @@ contract %[1]s {
         }
     }
 
-    @external(inMsg: Segment)
+    @external
     func onExternalMessage(inMsg: Segment) {
         const msg = lazy Touch.fromSegment(inMsg)
         var st = lazy %[1]sStorage.load()

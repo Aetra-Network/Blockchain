@@ -199,7 +199,7 @@ contract Demo {
   storage: DemoState
   incomingExternal: ExternalMsg
 
-  @external(inMsg: Segment)
+  @external
   func onExternalMessage(inMsg: Segment) {
     const msg = lazy ExternalMsg.fromSegment(inMsg)
     const st = lazy DemoState.fromChunk(contract.getData())
@@ -433,6 +433,32 @@ trait Demo {}
 }
 `,
 			want: "only one annotation is allowed per declaration",
+		},
+		{
+			name: "external annotation with argument list",
+			src: `
+@external(inMsg: Segment)
+func onExternalMessage(inMsg: Segment) {
+}
+`,
+			want: "annotation @external takes no arguments",
+		},
+		{
+			name: "internal annotation with argument list",
+			src: `
+@internal(in: InMessage)
+func onInternalMessage(in: InMessage) {
+}
+`,
+			want: "annotation @internal takes no arguments",
+		},
+		{
+			name: "message annotation without numeric opcode",
+			src: `
+@message(Ping)
+struct Ping {}
+`,
+			want: "@message requires a numeric opcode argument",
 		},
 		{
 			name: "forbidden local keyword let",
@@ -816,7 +842,7 @@ type ExternalMsg = Ping
 contract Demo {
   incomingExternal: ExternalMsg
 
-  @external(inMsg: Segment)
+  @external
   func onExternalMessage(inMsg: Segment) {
   }
 

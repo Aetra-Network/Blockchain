@@ -69,7 +69,7 @@ contract Counter {
     }
   }
 
-  @external(inMsg: Segment)
+  @external
   func onExternalMessage(inMsg: Segment) {
     const msg = ExternalMsg.fromSegment(inMsg)
     match (msg) {
@@ -166,7 +166,7 @@ contract Counter {
   namespace "counter"
   chain "avm-local"
 
-  @external(inMsg: Segment)
+  @external
   func onExternalMessage(inMsg: Segment) {
     const msg = ExternalMsg.fromSegment(inMsg)
     match (msg) {
@@ -1457,7 +1457,7 @@ contract Counter {
   storage: CounterState
   incomingExternal: CounterState
 
-  @external(inMsg: Segment)
+  @external
   func onExternalMessage(inMsg: Segment) {
     send 0 to "AEreceiver" opcode = 77;
   }
@@ -1543,7 +1543,7 @@ contract EnvelopeDemo {
     st.save()
   }
 
-  @external(inMsg: Segment)
+  @external
   func onExternalMessage(inMsg: Segment) {
     const msg = buildMessage({
       bounce: false,
@@ -1678,7 +1678,7 @@ contract Demo {
   storage: DemoState
   incomingExternal: DemoState
 
-  @external(inMsg: Segment)
+  @external
   func onExternalMessage(inMsg: Segment) {
     var x = 6
     var y = 3
@@ -1746,7 +1746,7 @@ contract Demo {
   storage: DemoState
   incomingExternal: DemoState
 
-  @external(inMsg: Segment)
+  @external
   func onExternalMessage(inMsg: Segment) {
     var st = lazy DemoState.load()
     while st.count <= 2 {
@@ -1813,7 +1813,7 @@ contract Demo {
   storage: DemoState
   incomingExternal: DemoState
 
-  @external(inMsg: Segment)
+  @external
   func onExternalMessage(inMsg: Segment) {
     var m = Map.empty()
     m = m.set(getAddress(), getAddress())
@@ -1884,7 +1884,7 @@ contract Demo {
   storage: DemoState
   incomingExternal: DemoState
 
-  @external(inMsg: Segment)
+  @external
   func onExternalMessage(inMsg: Segment) {
     var i = 0
     var total = 0
@@ -2186,7 +2186,7 @@ contract SnapshotDemo {
   storage: SnapState
   incomingExternal: ExternalMsg
 
-  @external(inMsg: Segment)
+  @external
   func onExternalMessage(inMsg: Segment) {
     const msg = lazy ExternalMsg.fromSegment(inMsg)
     var st = lazy SnapState.load()
@@ -2296,7 +2296,7 @@ contract WalletDemo {
   storage: WalletState
   incomingExternal: ExternalMsg
 
-  @external(inMsg: Segment)
+  @external
   func onExternalMessage(inMsg: Segment) {
     const msg = lazy ExternalMsg.fromSegment(inMsg)
     var st = lazy WalletState.load()
@@ -2354,7 +2354,7 @@ contract Demo {
   storage: DemoState
   incomingExternal: DemoState
 
-  @external(inMsg: Segment)
+  @external
   func onExternalMessage(inMsg: Segment) {
     break
   }
@@ -2968,7 +2968,7 @@ contract ContextDemo {
     st.save()
   }
 
-  @external(inMsg: Segment)
+  @external
   func onExternalMessage(inMsg: Segment) {
     const msg = lazy AuthRequest.fromSegment(inMsg)
     var st = lazy ContextState.load()

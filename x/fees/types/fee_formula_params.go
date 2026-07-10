@@ -21,7 +21,7 @@ import (
 //	  - bounded_reputation_discount_naet
 type FeeFormulaParams struct {
 	// TargetTransferFeeNaet is the anchor fee for a normal transfer (Requirement 1.2).
-	// Default: 500_000_000 naet == 0.5 AET (~$0.005 at the reference peg).
+	// Default: 500_000_000 naet == 0.5 AET.
 	TargetTransferFeeNaet	string	`json:"target_transfer_fee_naet"`
 
 	// BaseFeePerGasNaet is the cost per gas unit in naet.

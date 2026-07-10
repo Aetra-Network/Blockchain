@@ -191,7 +191,7 @@ contract Counter {
         }
     }
 
-    @external(inMsg: Segment)
+    @external
     func onExternalMessage(inMsg: Segment) {
         const msg = lazy ExternalMsg.fromSegment(inMsg)
 
