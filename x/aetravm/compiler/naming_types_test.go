@@ -192,3 +192,106 @@ contract Tiny {
 	_, err = res.MessageBodies["Tight"].Encode(map[string]any{"small": uint64(256)})
 	require.Error(t, err)
 }
+
+func TestCanonicalWideIntegerTypesCompile(t *testing.T) {
+	src := `
+@storage
+struct WideNumbers {
+    u128: uint128 = 0
+    u256: uint256 = 0
+    i128: int128 = 0
+    i256: int256 = 0
+}
+
+@message(0x1401)
+struct Touch {}
+
+type WideMsg = Touch
+
+contract WideBox {
+    storage: WideNumbers
+    incomingMessages: WideMsg
+
+    @store
+    func WideNumbers.load() {
+        return WideNumbers.fromChunk(contract.getData())
+    }
+
+    @store
+    func WideNumbers.save(self) {
+        contract.setData(self.toChunk())
+    }
+
+    @internal
+    func onInternalMessage(in: InMessage) {
+        const msg = lazy WideMsg.fromSegment(in.body)
+
+        match (msg) {
+            Touch => {}
+            else => {
+                assert (in.body.isEmpty()) throw 0xFFFF
+            }
+        }
+    }
+}
+`
+	c, err := New(Options{})
+	require.NoError(t, err)
+	_, err = c.Compile([]byte(src))
+	require.NoError(t, err)
+}
+
+func TestBareIntegerTypesCompileAsUint256AndInt256(t *testing.T) {
+	src := `
+@storage
+struct BareNumbers {
+    amount: uint = 0
+    delta: int = 0
+}
+
+@message(0x1501)
+struct Touch {}
+
+type BareMsg = Touch
+
+contract BareBox {
+    storage: BareNumbers
+    incomingMessages: BareMsg
+
+    @store
+    func BareNumbers.load() {
+        return BareNumbers.fromChunk(contract.getData())
+    }
+
+    @store
+    func BareNumbers.save(self) {
+        contract.setData(self.toChunk())
+    }
+
+    @internal
+    func onInternalMessage(in: InMessage) {
+        const msg = lazy BareMsg.fromSegment(in.body)
+
+        match (msg) {
+            Touch => {}
+            else => {
+                assert (in.body.isEmpty()) throw 0xFFFF
+            }
+        }
+    }
+
+    @get
+    func totals(): uint {
+        const st = lazy BareNumbers.load()
+        return st.amount
+    }
+}
+`
+	c, err := New(Options{})
+	require.NoError(t, err)
+	res, err := c.Compile([]byte(src))
+	require.NoError(t, err)
+	require.Equal(t, "uint256", res.Source.Structs[0].Fields[0].Type.String())
+	require.Equal(t, "int256", res.Source.Structs[0].Fields[1].Type.String())
+	require.Contains(t, FormatSource(res.Source), "func totals() -> uint256")
+}

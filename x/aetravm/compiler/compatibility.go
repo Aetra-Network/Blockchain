@@ -22,6 +22,17 @@ var legacyTypeAliases = map[string]legacyTypeAlias{
 	},
 }
 
+func canonicalBareIntegerTypeName(name string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "uint":
+		return "uint256", true
+	case "int":
+		return "int256", true
+	default:
+		return "", false
+	}
+}
+
 func (c *Compiler) collectCompatibilityDiagnostics(sources []NamedSource, _ *SourceFile) ([]Diagnostic, error) {
 	var diags []Diagnostic
 	for _, src := range sources {
@@ -126,6 +137,25 @@ func normalizeSourceFile(file *SourceFile, mode SurfaceCompatibilityMode) ([]Dia
 	for _, contract := range file.Contracts {
 		if contract == nil {
 			continue
+		}
+		for _, fn := range contract.Functions {
+			if fn == nil {
+				continue
+			}
+			for i, param := range fn.Params {
+				normalized, paramDiags, err := normalizeTypeRef(param.Type, mode)
+				if err != nil {
+					return nil, err
+				}
+				diags = append(diags, paramDiags...)
+				fn.Params[i].Type = normalized
+			}
+			normalized, retDiags, err := normalizeTypeRef(fn.ReturnType, mode)
+			if err != nil {
+				return nil, err
+			}
+			diags = append(diags, retDiags...)
+			fn.ReturnType = normalized
 		}
 		for _, msg := range contract.Messages {
 			if msg == nil {
@@ -254,6 +284,9 @@ func normalizeExpr(expr Expr, mode SurfaceCompatibilityMode) (Expr, []Diagnostic
 func normalizeTypeRef(typ TypeRef, mode SurfaceCompatibilityMode) (TypeRef, []Diagnostic, error) {
 	var diags []Diagnostic
 	normalized := typ
+	if canonical, ok := canonicalBareIntegerTypeName(normalized.Name); ok {
+		normalized.Name = canonical
+	}
 	if alias, ok := legacyTypeAliases[strings.ToLower(strings.TrimSpace(typ.Name))]; ok {
 		diag := Diagnostic{
 			Severity: SeverityWarning,

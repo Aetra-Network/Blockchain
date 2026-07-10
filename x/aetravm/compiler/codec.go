@@ -155,11 +155,18 @@ func defaultValueForField(field CodecField) (any, error) {
 	return zeroValueForType(field.Type), nil
 }
 
+func canonicalCodecTypeName(name string) string {
+	if canonical, ok := canonicalBareIntegerTypeName(name); ok {
+		return canonical
+	}
+	return strings.ToLower(strings.TrimSpace(name))
+}
+
 func zeroValueForType(typ TypeRef) any {
 	if typ.Optional {
 		return nil
 	}
-	switch strings.ToLower(typ.Name) {
+	switch canonicalCodecTypeName(typ.Name) {
 	case "bool":
 		return false
 	case "u2", "u4", "u8", "u16", "u32", "u64", "u128", "u256", "uint2", "uint4", "uint8", "uint16", "uint32", "uint64", "uint128", "uint256", "i2", "i4", "i8", "i16", "i32", "i64", "i128", "i256", "int2", "int4", "int8", "int16", "int32", "int64", "int128", "int256", "coins", "timestamp":
@@ -354,7 +361,7 @@ func canonicalCodecValue(typ TypeRef, value reflect.Value) (any, error) {
 		}
 		value = value.Elem()
 	}
-	switch strings.ToLower(typ.Name) {
+	switch canonicalCodecTypeName(typ.Name) {
 	case "bool":
 		return value.Bool(), nil
 	case "u2", "u4", "u8", "u16", "u32", "u64", "u128", "u256", "uint2", "uint4", "uint8", "uint16", "uint32", "uint64", "uint128", "uint256", "i2", "i4", "i8", "i16", "i32", "i64", "i128", "i256", "int2", "int4", "int8", "int16", "int32", "int64", "int128", "int256", "coins", "timestamp":
@@ -402,7 +409,7 @@ func canonicalCodecValue(typ TypeRef, value reflect.Value) (any, error) {
 // types (widths up to 64 bits). 128/256-bit and coins values are unbounded
 // here and validated by their own big-integer paths.
 func integerTypeRange(name string) (minVal int64, maxVal uint64, signed bool, bounded bool) {
-	switch strings.ToLower(name) {
+	switch canonicalCodecTypeName(name) {
 	case "u2", "uint2":
 		return 0, 3, false, true
 	case "u4", "uint4":
@@ -458,30 +465,31 @@ func checkIntegerRange(typName string, signedValue int64, unsignedValue uint64, 
 }
 
 func canonicalIntegerCodecValue(typ TypeRef, value reflect.Value) (any, error) {
-	signed := strings.HasPrefix(strings.ToLower(typ.Name), "i") || strings.HasPrefix(strings.ToLower(typ.Name), "int")
+	typName := canonicalCodecTypeName(typ.Name)
+	signed := strings.HasPrefix(typName, "i") || strings.HasPrefix(typName, "int")
 	switch value.Kind() {
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		if signed {
-			if err := checkIntegerRange(typ.Name, value.Int(), 0, true); err != nil {
+			if err := checkIntegerRange(typName, value.Int(), 0, true); err != nil {
 				return nil, err
 			}
 			return value.Int(), nil
 		}
 		if value.Int() < 0 {
-			return nil, fmt.Errorf("negative value for unsigned type %q", typ.Name)
+			return nil, fmt.Errorf("negative value for unsigned type %q", typName)
 		}
-		if err := checkIntegerRange(typ.Name, 0, uint64(value.Int()), false); err != nil {
+		if err := checkIntegerRange(typName, 0, uint64(value.Int()), false); err != nil {
 			return nil, err
 		}
 		return uint64(value.Int()), nil
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
 		if signed {
-			if err := checkIntegerRange(typ.Name, int64(value.Uint()), 0, true); err != nil {
+			if err := checkIntegerRange(typName, int64(value.Uint()), 0, true); err != nil {
 				return nil, err
 			}
 			return int64(value.Uint()), nil
 		}
-		if err := checkIntegerRange(typ.Name, 0, value.Uint(), false); err != nil {
+		if err := checkIntegerRange(typName, 0, value.Uint(), false); err != nil {
 			return nil, err
 		}
 		return value.Uint(), nil

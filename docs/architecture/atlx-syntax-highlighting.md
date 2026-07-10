@@ -78,7 +78,7 @@ Builtin calls: `buildMessage` `counterfactualAddress` `autoDeployAddress`
 ### Scalar types — `#61AFEF`
 
 `bool` `coins` `address` `bytes` `string` `timestamp` `hash` `hash32`
-`u8`–`u256`, `i8`–`i256`, `uint8`–`uint256`, `int8`–`int256`
+bare `uint` / `int`, plus `uint2`–`uint256`, `int2`–`int256`
 (capitalized spec aliases `Coins` `Address` `Timestamp` `Hash` `Bytes` included)
 
 ### Container and builtin object types — `#4FC1FF`

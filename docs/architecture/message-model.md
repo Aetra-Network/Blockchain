@@ -308,7 +308,7 @@ bounced reply:
 getter call:
   selector = get_balance
   input = account address
-  output = u64 balance
+  output = uint64 balance
   side effects = none
 ```
 

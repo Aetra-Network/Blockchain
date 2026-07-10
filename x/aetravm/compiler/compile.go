@@ -1220,7 +1220,7 @@ func (c *Compiler) validateType(typ TypeRef, structs map[string]*StructDecl, enu
 	if typ.Name == "" {
 		return fail("E_TYPE", typ.Pos, "empty type")
 	}
-	switch strings.ToLower(typ.Name) {
+	switch canonicalCodecTypeName(typ.Name) {
 	case "bool", "u2", "u4", "u8", "u16", "u32", "u64", "u128", "u256", "i2", "i4", "i8", "i16", "i32", "i64", "i128", "i256", "uint2", "uint4", "uint8", "uint16", "uint32", "uint64", "uint128", "uint256", "int2", "int4", "int8", "int16", "int32", "int64", "int128", "int256", "bytes", "string", "hash32", "address", "coins", "timestamp", "messageenvelope", "inmessage", "inmessagebounced", "contractcontext":
 	default:
 		if desc, ok := standards.DefaultRegistry().Find(typ.Name); ok {
@@ -1378,7 +1378,7 @@ func (c *Compiler) inferBuiltinMethodCallType(expr Expr, env map[string]TypeRef,
 			return TypeRef{}, false, nil
 		}
 		if receiverKnown {
-			return TypeRef{Name: "u64"}, true, nil
+			return TypeRef{Name: "uint64"}, true, nil
 		}
 	case "get":
 		if len(expr.Args) != 1 {
@@ -1515,7 +1515,7 @@ func (c *Compiler) inferBuiltinMethodCallType(expr Expr, env map[string]TypeRef,
 			if receiverKnown {
 				return receiverType, true, nil
 			}
-			return TypeRef{Name: "u64"}, true, nil
+			return TypeRef{Name: "uint64"}, true, nil
 		}
 	case "isempty":
 		if _, ok := validateArity(0); ok {
@@ -1758,7 +1758,7 @@ func (c *Compiler) validateStatement(stmt Statement, env map[string]TypeRef, mut
 		bodyMutables := cloneBoolEnv(mutables)
 		bodyConsts := cloneConstEnv(consts)
 		bodyScope := map[string]struct{}{stmt.Index: struct{}{}}
-		bodyEnv[stmt.Index] = TypeRef{Name: "u64"}
+		bodyEnv[stmt.Index] = TypeRef{Name: "uint64"}
 		bodyMutables[stmt.Index] = false
 		for _, inner := range stmt.Then {
 			if err := c.validateStatement(inner, bodyEnv, bodyMutables, bodyScope, bodyConsts, storage, structs, enums, types, ret, functions, inPure, loopDepth+1); err != nil {
@@ -2214,7 +2214,7 @@ func (c *Compiler) initialScope(params []ParamDecl, hasStorage bool) map[string]
 func (c *Compiler) inferExprType(expr Expr, env map[string]TypeRef, storage *StructDecl, structs map[string]*StructDecl, enums map[string]*EnumDecl, types map[string]*TypeDecl, functions map[string]*FunctionDecl, consts map[string]constValue, inPure bool) (TypeRef, error) {
 	switch expr.Kind {
 	case ExprNumber:
-		return TypeRef{Name: "u64"}, nil
+		return TypeRef{Name: "uint64"}, nil
 	case ExprString:
 		return TypeRef{Name: "string"}, nil
 	case ExprBytes:
@@ -2235,10 +2235,10 @@ func (c *Compiler) inferExprType(expr Expr, env map[string]TypeRef, storage *Str
 			}
 		}
 		if _, ok := builtinSendModeValue(expr.Text); ok {
-			return TypeRef{Name: "u32"}, nil
+			return TypeRef{Name: "uint32"}, nil
 		}
 		if strings.HasPrefix(strings.ToUpper(expr.Text), "ERR_") {
-			return TypeRef{Name: "u64"}, nil
+			return TypeRef{Name: "uint64"}, nil
 		}
 		if fn, ok := functions[expr.Text]; ok && fn != nil {
 			return fn.ReturnType, nil
@@ -2372,15 +2372,15 @@ func (c *Compiler) inferExprType(expr Expr, env map[string]TypeRef, storage *Str
 			}
 			return TypeRef{Name: "bool"}, nil
 		case "len":
-			return TypeRef{Name: "u64"}, nil
+			return TypeRef{Name: "uint64"}, nil
 		case "aet":
 			return TypeRef{Name: "Coins"}, nil
 		case "now":
-			return TypeRef{Name: "i64"}, nil
+			return TypeRef{Name: "int64"}, nil
 		case "logicaltime", "currentblocklogicaltime":
-			return TypeRef{Name: "u64"}, nil
+			return TypeRef{Name: "uint64"}, nil
 		case "random":
-			return TypeRef{Name: "u256"}, nil
+			return TypeRef{Name: "uint256"}, nil
 		case "ok":
 			if len(expr.Args) != 1 {
 				return TypeRef{}, fail("E_CALL_ARITY", expr.Pos, "ok() requires one argument")
@@ -2398,7 +2398,7 @@ func (c *Compiler) inferExprType(expr Expr, env map[string]TypeRef, storage *Str
 			if err != nil {
 				return TypeRef{}, err
 			}
-			return TypeRef{Name: "Result", Args: []TypeRef{{Name: "u64"}, argType}}, nil
+			return TypeRef{Name: "Result", Args: []TypeRef{{Name: "uint64"}, argType}}, nil
 		default:
 			if fn, ok := functions[expr.Text]; ok {
 				if inPure && !fn.Pure {
@@ -2457,7 +2457,7 @@ func (c *Compiler) inferExprType(expr Expr, env map[string]TypeRef, storage *Str
 		}
 	case ExprCompare:
 		if expr.Op == "<=>" {
-			return TypeRef{Name: "i64"}, nil
+			return TypeRef{Name: "int64"}, nil
 		}
 		return TypeRef{Name: "bool"}, nil
 	case ExprLogic:
@@ -2755,11 +2755,11 @@ func builtinContextFieldType(typ TypeRef, field string) (TypeRef, bool) {
 		case "valueCoins":
 			return TypeRef{Name: "coins"}, true
 		case "opcode":
-			return TypeRef{Name: "u32"}, true
+			return TypeRef{Name: "uint32"}, true
 		case "queryId":
-			return TypeRef{Name: "u64"}, true
+			return TypeRef{Name: "uint64"}, true
 		case "logicalTime":
-			return TypeRef{Name: "u64"}, true
+			return TypeRef{Name: "uint64"}, true
 		case "attachedValue":
 			return TypeRef{Name: "coins"}, true
 		case "originalForwardFee":
@@ -2896,8 +2896,8 @@ func compatibleTypesResolved(a, b TypeRef, types map[string]*TypeDecl) bool {
 }
 
 func isNumericType(t TypeRef) bool {
-	switch strings.ToLower(t.Name) {
-	case "u2", "u4", "u8", "u16", "u32", "u64", "uint2", "uint4", "uint8", "uint16", "uint32", "uint64", "uint128", "uint256", "i2", "i4", "i8", "i16", "i32", "i64", "int2", "int4", "int8", "int16", "int32", "int64", "int128", "int256", "coins":
+	switch canonicalCodecTypeName(t.Name) {
+	case "u2", "u4", "u8", "u16", "u32", "u64", "uint", "uint2", "uint4", "uint8", "uint16", "uint32", "uint64", "uint128", "uint256", "int", "i2", "i4", "i8", "i16", "i32", "i64", "int2", "int4", "int8", "int16", "int32", "int64", "int128", "int256", "coins":
 		return true
 	default:
 		return false
@@ -3770,7 +3770,7 @@ func (c *Compiler) lowerStatementsToIR(stmts []Statement, params []ParamDecl, re
 			}
 			delay, ok := constU64(stmt.Value)
 			if !ok || delay == 0 {
-				return nil, fail("E_LOWER_SELF", stmt.Pos, "self delay must be a positive u64 constant")
+				return nil, fail("E_LOWER_SELF", stmt.Pos, "self delay must be a positive uint64 constant")
 			}
 			out = append(out, IRStmt{Kind: IRStmtScheduleSelf, Arg: delay, Data: statementTraceData(stmt), Position: stmt.Pos})
 		case StatementReturn:
@@ -4042,10 +4042,10 @@ func (c *Compiler) lowerStatementsToIR(stmts []Statement, params []ParamDecl, re
 				return nil, fail("E_LOWER_FOR", stmt.Pos, fmt.Sprintf("duplicate binding %q in the same scope", stmt.Index))
 			}
 			bodyEnv := cloneLoweringEnv(env)
-			bodyBinding := localBinding{Slot: bodyEnv.nextLocalSlot, Type: TypeRef{Name: "u64"}, Mutable: false}
+			bodyBinding := localBinding{Slot: bodyEnv.nextLocalSlot, Type: TypeRef{Name: "uint64"}, Mutable: false}
 			bodyEnv.nextLocalSlot++
 			bodyEnv.locals[stmt.Index] = bodyBinding
-			bodyEnv.types[stmt.Index] = TypeRef{Name: "u64"}
+			bodyEnv.types[stmt.Index] = TypeRef{Name: "uint64"}
 			bodyScope := map[string]struct{}{stmt.Index: struct{}{}}
 			checkLabel := c.nextLabel("for_check")
 			continueLabel := c.nextLabel("for_continue")
@@ -4325,7 +4325,7 @@ func isStorageLoadBinding(expr Expr) bool {
 }
 
 func isFieldLikeType(name string) bool {
-	switch strings.ToLower(strings.TrimSpace(name)) {
+	switch canonicalCodecTypeName(name) {
 	case "", "bool", "u2", "u4", "u8", "u16", "u32", "u64", "u128", "u256", "uint2", "uint4", "uint8", "uint16", "uint32", "uint64", "uint128", "uint256", "i2", "i4", "i8", "i16", "i32", "i64", "i128", "i256", "int2", "int4", "int8", "int16", "int32", "int64", "int128", "int256", "bytes", "string", "hash32", "address", "coins", "timestamp", "chunk", "code", "null", "map", "dict", "list", "option", "result":
 		return false
 	default:
@@ -4375,7 +4375,7 @@ func constValueType(v constValue) TypeRef {
 		}
 		return TypeRef{Name: "enum"}
 	default:
-		return TypeRef{Name: "u64"}
+		return TypeRef{Name: "uint64"}
 	}
 }
 
@@ -4384,7 +4384,7 @@ func lowerExprToIR(expr Expr, env loweringEnv, functions map[string]*FunctionDec
 	case ExprNumber:
 		v, ok := constU64(expr)
 		if !ok {
-			return nil, fail("E_LOWER_EXPR", expr.Pos, "invalid u64 literal")
+			return nil, fail("E_LOWER_EXPR", expr.Pos, "invalid uint64 literal")
 		}
 		return &IRExpr{Kind: IRExprConstU64, Value: v, Pos: expr.Pos}, nil
 	case ExprString:
@@ -4450,7 +4450,7 @@ func lowerExprToIR(expr Expr, env loweringEnv, functions map[string]*FunctionDec
 			if idx == 0 {
 				return &IRExpr{Kind: IRExprMsgQueryID, Pos: expr.Pos}, nil
 			}
-			return nil, fail("E_LOWER_PARAM", expr.Pos, fmt.Sprintf("parameter %q cannot be decoded by AVM v1; only the first u64 parameter is mapped to query_id", expr.Text))
+			return nil, fail("E_LOWER_PARAM", expr.Pos, fmt.Sprintf("parameter %q cannot be decoded by AVM v1; only the first uint64 parameter is mapped to query_id", expr.Text))
 		}
 		return nil, fail("E_LOWER_IDENT", expr.Pos, fmt.Sprintf("identifier %q is not lowerable", expr.Text))
 	case ExprPath:
@@ -6215,7 +6215,7 @@ func staticOpcode(stmt Statement) (uint32, error) {
 		if expr, ok := stmt.Extra["opcode"]; ok {
 			v, ok := constU64(expr)
 			if !ok || v > uint64(^uint32(0)) {
-				return 0, fail("E_LOWER_OPCODE", expr.Pos, "send opcode must be a u32 constant")
+				return 0, fail("E_LOWER_OPCODE", expr.Pos, "send opcode must be a uint32 constant")
 			}
 			return uint32(v), nil
 		}

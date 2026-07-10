@@ -1310,7 +1310,7 @@ func bumpOne(x: uint64) -> uint64 {
 }
 `), 0o644))
 
-require.NoError(t, os.WriteFile(messagesPath, []byte(`
+	require.NoError(t, os.WriteFile(messagesPath, []byte(`
 package app.counter
 import "constants.atlx"
 import "helpers.atlx"
@@ -1629,7 +1629,7 @@ contract EnvelopeDemo {
 	internalSender := sdk.AccAddress(bytes.Repeat([]byte{0x41}, 20))
 	internalState := avm.Storage{}
 	internalExec, err := runner.Run(res.Module, internalState, avm.RuntimeContext{
-		Entry:          avm.EntryReceiveInternal,
+		Entry:           avm.EntryReceiveInternal,
 		ContractAddress: sdk.AccAddress(bytes.Repeat([]byte{0x55}, 20)),
 		Message: async.MessageEnvelope{
 			Source:      internalSender,
@@ -1641,9 +1641,9 @@ contract EnvelopeDemo {
 			GasLimit:    100_000,
 			ForwardFee:  sdk.NewCoin("naet", sdkmath.ZeroInt()),
 		},
-		LogicalTime:     777,
-		AttachedValue:   sdkmath.NewInt(3456),
-		GasLimit:        100_000,
+		LogicalTime:   777,
+		AttachedValue: sdkmath.NewInt(3456),
+		GasLimit:      100_000,
 	})
 	require.NoError(t, err)
 	require.Equal(t, uint32(async.ResultOK), internalExec.ResultCode)
@@ -1659,9 +1659,9 @@ contract EnvelopeDemo {
 	require.NotEqual(t, make([]byte, len(internalExec.State["bodyHash"])), internalExec.State["bodyHash"])
 
 	externalExec, err := runner.Run(res.Module, avm.Storage{}, avm.RuntimeContext{
-		Entry:    avm.EntryReceiveExternal,
-		Message:  async.MessageEnvelope{Opcode: 11, QueryID: 1, GasLimit: 100_000},
-		GasLimit: 100_000,
+		Entry:           avm.EntryReceiveExternal,
+		Message:         async.MessageEnvelope{Opcode: 11, QueryID: 1, GasLimit: 100_000},
+		GasLimit:        100_000,
 		ContractAddress: sdk.AccAddress(bytes.Repeat([]byte{0x55}, 20)),
 	})
 	require.NoError(t, err)
@@ -1670,6 +1670,58 @@ contract EnvelopeDemo {
 	require.Equal(t, uint32(77), externalExec.Outgoing[0].Opcode)
 	require.Equal(t, uint64(123), externalExec.Outgoing[0].QueryID)
 	require.False(t, externalExec.Outgoing[0].Bounce)
+}
+
+func TestMethodSendRejectsArguments(t *testing.T) {
+	src := `
+@storage
+struct Storage {}
+
+@message(0x7201)
+struct Ping {
+  amount: uint64
+}
+
+type InternalMsg = Ping
+type ExternalMsg = Ping
+
+contract EnvelopeDemo {
+  storage: Storage
+  incomingMessages: InternalMsg
+  incomingExternal: ExternalMsg
+
+  @store
+  func Storage.load() {
+    return Storage.fromChunk(contract.getData())
+  }
+
+  @store
+  func Storage.save(self) {
+    contract.setData(self.toChunk())
+  }
+
+  @internal
+  func onInternalMessage(in: InMessage) {
+  }
+
+  @external
+  func onExternalMessage(inMsg: Segment) {
+    const out = buildMessage({
+      receiver: getAddress(),
+      amount: 0,
+      body: Ping {
+        amount: 1,
+      },
+    })
+    out.send(SEND_BOUNCE_ON_FAIL)
+  }
+}
+`
+	c, err := New(DefaultOptions())
+	require.NoError(t, err)
+	_, err = c.Compile([]byte(src))
+	require.Error(t, err)
+	require.ErrorContains(t, err, ".send() takes no arguments")
 }
 
 func mustCanonicalEncode(t *testing.T, value avm.RuntimeValue) []byte {
@@ -3066,17 +3118,17 @@ contract ContextDemo {
 	contractAddr := sdk.AccAddress(bytes.Repeat([]byte{0x62}, 20))
 	ownerAddr := sdk.AccAddress(bytes.Repeat([]byte{0x63}, 20))
 	initialState := avm.Storage{
-		"owner":               encode(avm.ValueAddress(addressing.FormatAccAddress(ownerAddr))),
-		"publicKey":           encode(avm.ValueBytes([]byte(publicKey))),
-		"nonce":               encode(avm.ValueUint32(0)),
-		"lastSender":          encode(avm.ValueAddress("")),
-		"lastValue":           encode(avm.ValueCoins(big.NewInt(0))),
-		"lastBodyHash":        encode(avm.ValueHash([32]byte{})),
-		"lastNow":             encode(avm.ValueInt64(0)),
-		"lastLogicalTime":     encode(avm.ValueUint64(0)),
+		"owner":                encode(avm.ValueAddress(addressing.FormatAccAddress(ownerAddr))),
+		"publicKey":            encode(avm.ValueBytes([]byte(publicKey))),
+		"nonce":                encode(avm.ValueUint32(0)),
+		"lastSender":           encode(avm.ValueAddress("")),
+		"lastValue":            encode(avm.ValueCoins(big.NewInt(0))),
+		"lastBodyHash":         encode(avm.ValueHash([32]byte{})),
+		"lastNow":              encode(avm.ValueInt64(0)),
+		"lastLogicalTime":      encode(avm.ValueUint64(0)),
 		"lastBlockLogicalTime": encode(avm.ValueUint64(0)),
-		"lastOriginalBalance": encode(avm.ValueCoins(big.NewInt(0))),
-		"lastAttachedValue":   encode(avm.ValueCoins(big.NewInt(0))),
+		"lastOriginalBalance":  encode(avm.ValueCoins(big.NewInt(0))),
+		"lastAttachedValue":    encode(avm.ValueCoins(big.NewInt(0))),
 	}
 
 	externalBodyCodec, ok := res.MessageBodies["AuthRequest"]

@@ -181,7 +181,7 @@ Send mode builtins:
 - `SEND_DEFAULT`, `SEND_CARRY_REMAINDER`, `SEND_DRAIN_BALANCE`,
   `SEND_ESTIMATE_ONLY`, `SEND_FEE_FROM_BALANCE`, `SEND_IGNORE_ERRORS`,
   `SEND_BOUNCE_ON_FAIL`, and `SEND_DESTROY_IF_EMPTY` are canonical typed
-  `u32` surface constants;
+  `uint32` surface constants;
 - the compiler MUST lower them to runtime send-mode flags rather than treating
   them as magic numbers;
 - the constants are intrinsic to the language surface and MUST remain stable
@@ -770,9 +770,15 @@ meaning:
 
 - `bool`: deterministic boolean value encoded as a single byte `0x00` or
   `0x01`.
-- `u8`, `u16`, `u32`, `u64`: fixed-width unsigned integers encoded in
-  big-endian byte order.
-- `i64`: fixed-width signed integer encoded as two's-complement big-endian.
+- `uint2`, `uint4`, `uint8`, `uint16`, `uint32`, `uint64`, `uint128`,
+  `uint256`: fixed-width unsigned integers encoded in big-endian byte order.
+- `int2`, `int4`, `int8`, `int16`, `int32`, `int64`, `int128`, `int256`:
+  fixed-width signed integers encoded as two's-complement big-endian.
+- Bare `uint` and `int` are aliases of `uint256` and `int256`
+  respectively, so the default width is explicit and canonical.
+- Legacy short aliases such as `u*` / `i*` may be accepted for compatibility
+  where a compatibility profile allows them, but the canonical public surface
+  uses the long-form `uint*` / `int*` names.
 - `bytes`: variable-length byte sequence.
 - `string`: UTF-8 text encoded deterministically.
 - `hash32`: 32-byte commitment value.

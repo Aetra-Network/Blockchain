@@ -133,7 +133,7 @@ Rules:
 ```text
 @storage struct CounterState {
   owner: Address
-  count: u64
+  count: uint64
   notes: list<bytes>
   cache: lazy bytes
 }
