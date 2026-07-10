@@ -74,6 +74,26 @@ All responses are JSON. Lists take `?limit=` (max 200) and `?offset=`.
 | `GET /search?q=` | resolves a height, block/tx hash, or address to its canonical route |
 | `GET /healthz` | liveness + indexed height |
 
+### Transaction gateway (wallet surface)
+
+The same binary is the non-custodial transaction gateway: it never sees a
+private key — the only write-shaped route relays **already-signed** bytes.
+
+| Route | Returns |
+| --- | --- |
+| `GET /accounts/{addr}` | signing material: `account_number`, `sequence`, `exists` |
+| `GET /address/{addr}` | unified view for AE / `4:` / `-7:` forms: representations, balance, kind, contract bytecode + raw data |
+| `GET /fees/estimate?gas=N` | deterministic fee quote (`required_fee` = the ante-handler minimum, base/max, congestion) |
+| `POST /tx/simulate` `{"tx_bytes":"<b64>"}` | dry-run gas usage |
+| `POST /tx/broadcast` `{"tx_bytes":"<b64>"}` | relays a signed tx; returns `hash`, CheckTx `code`, `accepted` |
+
+Wallet flow: `GET /accounts/{addr}` → `GET /fees/estimate` → sign client-side
+→ `POST /tx/simulate` (optional) → `POST /tx/broadcast` → `GET /txs/{hash}`.
+Backend developers can use the node gRPC (`:9090`) directly instead — every
+module including the hand-rolled `x/contracts` is served there, plus
+`cosmos.tx.v1beta1.Service` (Simulate / BroadcastTx / GetTx); the gateway is
+the browser/JSON face of that surface.
+
 ### Example
 
 ```bash
