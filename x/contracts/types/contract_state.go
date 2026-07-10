@@ -17,6 +17,15 @@ const (
 	ContractStatusArchived      = "archived"
 	ContractStatusDeleted       = "deleted"
 
+	// ContractStatusUninit and ContractStatusNonExistent are query-only
+	// statuses: they never appear on a stored Contract, only on a
+	// QueryContractResponse for an address that has no live contract.
+	// Uninit means the address is derivable/known from a StateInit but no
+	// code has been deployed to it yet (TON-style uninitialised account);
+	// NonExistent means nothing is known about the address at all.
+	ContractStatusUninit      = "uninit"
+	ContractStatusNonExistent = "nonexistent"
+
 	NativeStakingCapability = "native_staking_injection"
 
 	ErrUnauthorized    = "contracts_unauthorized"

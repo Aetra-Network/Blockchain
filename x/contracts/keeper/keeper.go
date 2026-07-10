@@ -442,14 +442,15 @@ func (k Keeper) Contract(req types.QueryContractRequest) (types.QueryContractRes
 		if user != req.ContractAddress {
 			return types.QueryContractResponse{}, errors.New(types.ErrContractNotFound + ": state init address does not match query address")
 		}
-		return types.QueryContractResponse{ContractAddress: req.ContractAddress, StateRoot: k.genesis.StateRoot, Found: false, Virtual: true}, nil
+		return types.QueryContractResponse{ContractAddress: req.ContractAddress, StateRoot: k.genesis.StateRoot, Found: false, Virtual: true, Status: types.ContractStatusUninit}, nil
 	}
 	if found {
 		if err := types.EnsureContractLifecycleAction(contract, types.ContractLifecycleActionQuery); err != nil {
 			return types.QueryContractResponse{}, err
 		}
+		return types.QueryContractResponse{ContractAddress: req.ContractAddress, StateRoot: k.genesis.StateRoot, Found: true, Contract: contract, Status: contract.Status}, nil
 	}
-	return types.QueryContractResponse{ContractAddress: req.ContractAddress, StateRoot: k.genesis.StateRoot, Found: found, Contract: contract}, nil
+	return types.QueryContractResponse{ContractAddress: req.ContractAddress, StateRoot: k.genesis.StateRoot, Found: false, Status: types.ContractStatusNonExistent}, nil
 }
 
 func (k Keeper) Contracts(req types.QueryContractsRequest) ([]types.Contract, error) {

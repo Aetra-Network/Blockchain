@@ -805,6 +805,7 @@ func buildContractsQueryFileDescriptor() []byte {
 				boolField("found", 3),
 				boolField("virtual", 4),
 				messageField("contract", 5, ".l1.contracts.v1.Contract"),
+				stringField("status", 6),
 			),
 			messageDescriptorFields("Contract",
 				stringField("address_user", 1),

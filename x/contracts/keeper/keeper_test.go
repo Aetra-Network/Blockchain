@@ -88,6 +88,7 @@ func TestContractsKeeperTypedErrorsAndMsgQuerySurface(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, query.Found)
 	require.Equal(t, contractAddress, query.ContractAddress)
+	require.Equal(t, types.ContractStatusNonExistent, query.Status, "an address with no live contract must report the nonexistent status")
 
 	_, err = keeper.Contract(types.QueryContractRequest{})
 	require.ErrorContains(t, err, types.ErrContractNotFound)

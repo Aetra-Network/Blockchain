@@ -65,10 +65,11 @@ func (c *Client) Contract(ctx context.Context, address string) (any, error) {
 		return nil, fmt.Errorf("query contract: %w", err)
 	}
 	if !resp.Found {
-		return map[string]any{"found": false, "address": address}, nil
+		return map[string]any{"found": false, "address": address, "status": resp.Status, "virtual": resp.Virtual}, nil
 	}
 	out := contractSummary(resp.Contract)
 	out["found"] = true
+	out["status"] = resp.Status
 	out["state_root"] = resp.Contract.StateRoot
 	out["code_hash"] = resp.Contract.CodeHash
 	out["admin"] = resp.Contract.Admin

@@ -191,6 +191,7 @@ func TestSendDrainBalanceDestroyAndComment(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, vaultQ.Found)
 	require.Equal(t, types.ContractStatusDeleted, vaultQ.Contract.Status)
+	require.Equal(t, types.ContractStatusDeleted, vaultQ.Status, "top-level query status must mirror the live contract status")
 	require.Equal(t, uint64(0), vaultQ.Contract.Balance)
 	require.Empty(t, vaultQ.Contract.Data)
 

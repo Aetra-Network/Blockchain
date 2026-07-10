@@ -85,6 +85,13 @@ type QueryContractResponse struct {
 	Found           bool     `protobuf:"varint,3,opt,name=found,proto3" json:"found,omitempty"`
 	Virtual         bool     `protobuf:"varint,4,opt,name=virtual,proto3" json:"virtual,omitempty"`
 	Contract        Contract `protobuf:"bytes,5,opt,name=contract,proto3" json:"contract"`
+	// Status is the canonical lifecycle status of the queried address,
+	// defined for every address: for a live contract it mirrors
+	// Contract.Status (active/frozen/frozen_limited/archived/deleted); for a
+	// derivable-but-undeployed address it is "uninit"; otherwise
+	// "nonexistent". Explorers and wallets can render it without inspecting
+	// Found/Virtual.
+	Status string `protobuf:"bytes,6,opt,name=status,proto3" json:"status,omitempty"`
 }
 
 type MsgServer interface {
