@@ -40,6 +40,17 @@ affordable on the consumer hardware profile above at 5-8s blocks.
 
 ## Build
 
+Linux (production validators):
+
+```bash
+git clone https://github.com/Aetra-Network/Blockchain.git
+cd Blockchain
+./scripts/validator/build.sh
+build/aetrad version --long --output json
+```
+
+Windows (local tooling/dev only):
+
 ```powershell
 git clone https://github.com/Aetra-Network/Blockchain.git
 cd Blockchain
@@ -63,6 +74,20 @@ The chain ID must match the published genesis exactly. Do not invent a
 custom chain ID for public join.
 
 ## Initialize Node
+
+Linux, using `scripts/validator/init.sh` (also handles genesis install/validation
+and peer configuration in one step; see `-g`/`-p`/`-s`):
+
+```bash
+./scripts/validator/init.sh -m <moniker> -c <testnet-chain-id> \
+  -g <published-genesis-url> -p <persistent-peers> -s <seeds>
+```
+
+To (re)join an already-initialized home with a new genesis/peer set without
+touching keys, use `scripts/validator/join.sh` instead (same `-g`/`-p`/`-s`
+flags, operating on an existing `--home`).
+
+Windows (local tooling/dev only):
 
 ```powershell
 $CHAIN_ID = "<testnet-chain-id>"
@@ -133,20 +158,32 @@ Store mnemonic backup offline. Never commit mnemonics, keyrings, `priv_validator
 
 The network launch profile must provide state sync support, snapshots, pruning profiles, and an archive node profile.
 
-Start from genesis:
+Linux, foreground or background with `scripts/validator/start.sh` (for a
+production systemd-managed node, use the unit in `scripts/validator/aetrad.service`
+instead -- see [docs/VALIDATOR.md](VALIDATOR.md#systemd-unit)):
 
-```powershell
-build\aetrad.exe start --home $HOME
+```bash
+./scripts/validator/start.sh                      # foreground, from genesis or state sync
+./scripts/validator/start.sh --daemon             # background: PID + log in the node home
 ```
 
-Or use state sync from the published trust height/hash and RPC server list:
+For state sync, edit `config/config.toml` first (`enable=true`, `rpc_servers`,
+`trust_height`, `trust_hash`, `trust_period` from the launch announcement),
+then start as above.
+
+Windows (local tooling/dev only):
 
 ```powershell
-# Edit $HOME\config\config.toml with enable=true, rpc_servers, trust_height, trust_hash, trust_period.
 build\aetrad.exe start --home $HOME
 ```
 
 Check sync status:
+
+```bash
+./scripts/validator/health.sh
+```
+
+or directly:
 
 ```powershell
 build\aetrad.exe status --node tcp://127.0.0.1:26657 --output json
@@ -251,7 +288,12 @@ Monitor:
 - peer count,
 - RPC/indexer lag if serving public endpoints.
 
-Before restart, stop cleanly and preserve `$HOME\data`, `$HOME\config\priv_validator_key.json`, `$HOME\config\priv_validator_state.json`, and `$HOME\config\node_key.json`. Restart safety is mandatory: losing or rolling back validator state can create double-sign risk.
+Before restart, stop cleanly (Linux: `./scripts/validator/stop.sh`, which sends
+SIGTERM and waits before falling back to SIGKILL; systemd: `systemctl stop
+aetrad`) and preserve `$HOME\data`, `$HOME\config\priv_validator_key.json`,
+`$HOME\config\priv_validator_state.json`, and `$HOME\config\node_key.json`.
+Restart safety is mandatory: losing or rolling back validator state can
+create double-sign risk.
 
 State management readiness requires export/import reliability and deterministic app hash across restarts. Before public launch, the release process must export genesis, import it into a fresh home, restart the node, and verify deterministic app hash behavior for the same state.
 
@@ -279,6 +321,11 @@ Operators must confirm:
 - snapshot or state-sync restore instructions are published;
 - export/import and invariant CI gates passed for the release artifact;
 - planned upgrade height, handler name, rollback policy, and communication channel are documented before any coordinated upgrade.
+
+For a Cosmovisor-managed Linux node, `scripts/validator/cosmovisor-upgrade.sh`
+stages the new binary into the correct upgrade slot without touching the
+running binary (see [docs/VALIDATOR.md](VALIDATOR.md#upgrade) and
+[docs/COSMOVISOR.md](COSMOVISOR.md)).
 
 ## Sentry Architecture
 

@@ -1,0 +1,5 @@
+# Shell scripts must always check out with LF line endings, even on a
+# Windows client with core.autocrlf=true (the default dev machine for this
+# repo) -- a CRLF shebang line breaks execution on Linux validator hosts,
+# which is what scripts/validator/*.sh targets.
+*.sh text eol=lf

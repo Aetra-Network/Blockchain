@@ -1,0 +1,53 @@
+# systemd unit template for an Aetra validator running under Cosmovisor.
+# See docs/COSMOVISOR.md and docs/VALIDATOR.md.
+#
+# Install:
+#   sudo cp scripts/validator/aetrad.service /etc/systemd/system/aetrad.service
+#   sudo useradd --system --home-dir /home/aetrad --shell /usr/sbin/nologin aetrad   # if not already present
+#   # edit User/Group and the DAEMON_HOME path below for this host
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now aetrad
+#
+# Manage:
+#   sudo systemctl status aetrad
+#   sudo systemctl stop aetrad
+#   sudo journalctl -u aetrad -f
+#
+# This runs Cosmovisor, not aetrad directly, so scheduled upgrades staged
+# with scripts/validator/cosmovisor-upgrade.sh switch binaries automatically.
+# Cosmovisor itself must be installed and on PATH for the aetrad user (see
+# docs/COSMOVISOR.md Install section).
+
+[Unit]
+Description=Aetra validator node (via Cosmovisor)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=aetrad
+Group=aetrad
+
+Environment=DAEMON_HOME=/home/aetrad/.aetra
+Environment=DAEMON_NAME=aetrad
+Environment=DAEMON_ALLOW_DOWNLOAD_BINARIES=false
+Environment=DAEMON_RESTART_AFTER_UPGRADE=true
+Environment=UNSAFE_SKIP_BACKUP=false
+
+# systemd does not expand Environment= values inside ExecStart, so the home
+# path below must be kept in sync with DAEMON_HOME above if it changes.
+ExecStart=/usr/local/bin/cosmovisor run start --home /home/aetrad/.aetra
+
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65535
+
+# Hardening. Relax ProtectHome/ReadWritePaths if DAEMON_HOME lives outside
+# /home, and adjust ReadWritePaths to match wherever DAEMON_HOME actually is.
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/home/aetrad/.aetra
+
+[Install]
+WantedBy=multi-user.target

@@ -29,6 +29,47 @@ previous phase: genesis 100-128 (genesis `max_validators` = 128), growth
 Linux is the preferred production environment. Windows is supported for local
 tooling, build verification, and rehearsal scripts.
 
+## Linux Quick Start
+
+Production validators run Linux. `scripts/validator/*.sh` covers the
+essential lifecycle so operators are not translating the PowerShell examples
+below by hand. Each script is self-contained bash (`set -euo pipefail`) and
+accepts `--home`/`-H` to target a non-default node home.
+
+```bash
+git clone https://github.com/Aetra-Network/Blockchain.git
+cd Blockchain
+./scripts/validator/build.sh                                   # build\aetrad -> build/aetrad
+./scripts/validator/init.sh -m <moniker> -c <chain-id>          # aetrad init
+./scripts/validator/join.sh -H "$HOME/.aetra" \
+  -g <genesis-url> -p <persistent-peers> -s <seeds>             # install + validate genesis, set peers
+./scripts/validator/start.sh --daemon --metrics                 # background start, PID + log file
+./scripts/validator/health.sh -m 0.0.0.0:27780                  # sync status, peer count, metrics check
+./scripts/validator/stop.sh                                     # graceful stop
+```
+
+`init.sh` also accepts `-g`/`-p`/`-s` directly for a one-shot init-and-join.
+`start.sh` without `--daemon` runs in the foreground instead. For a
+systemd-managed node (recommended for production), see
+[Systemd Unit](#systemd-unit) below instead of `start.sh`/`stop.sh`.
+
+Each script's `-h`-equivalent is its own top-of-file usage comment; run any of
+them with no required arguments to see the error message listing the flags.
+
+## Systemd Unit
+
+`scripts/validator/aetrad.service` is an installable systemd unit template
+that runs the node under Cosmovisor (see [Upgrade](#upgrade) and
+[docs/COSMOVISOR.md](COSMOVISOR.md)):
+
+```bash
+sudo cp scripts/validator/aetrad.service /etc/systemd/system/aetrad.service
+# edit User/Group and the DAEMON_HOME / ExecStart path for this host
+sudo systemctl daemon-reload
+sudo systemctl enable --now aetrad
+sudo journalctl -u aetrad -f
+```
+
 ## Build Or Download Binary
 
 Build from source or use the signed release artifact published for the target
@@ -186,6 +227,18 @@ Upgrade handler names must match the announced plan name. Use
 [docs/COSMOVISOR.md](COSMOVISOR.md) for Cosmovisor-managed nodes and
 [docs/upgrade-playbook.md](upgrade-playbook.md) for rehearsal flow and
 post-upgrade validation.
+
+For a Cosmovisor-managed Linux node, stage the new binary with:
+
+```bash
+./scripts/validator/build.sh -o ./build/aetrad-<upgrade-name>
+./scripts/validator/cosmovisor-upgrade.sh -H "$HOME/.aetra" \
+  -n <upgrade-name> -b ./build/aetrad-<upgrade-name>
+```
+
+This only stages the binary into the Cosmovisor upgrade slot; it never
+touches the currently-running binary, and refuses to overwrite an
+already-staged upgrade slot.
 
 ## Incident Response
 
