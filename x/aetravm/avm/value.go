@@ -770,6 +770,17 @@ func CanonicalEncode(v RuntimeValue) ([]byte, error) {
 
 // CanonicalDecode decodes a RuntimeValue from deterministic bytes.
 func CanonicalDecode(data []byte) (RuntimeValue, int, error) {
+	return canonicalDecodeAt(data, 0)
+}
+
+// canonicalDecodeAt is CanonicalDecode's recursion-depth-tracking
+// implementation. depth is incremented on every tuple/map element so a
+// crafted, deeply nested value is rejected once it exceeds
+// MaxCanonicalDecodeDepth instead of exhausting the Go call stack.
+func canonicalDecodeAt(data []byte, depth int) (RuntimeValue, int, error) {
+	if depth > MaxCanonicalDecodeDepth {
+		return RuntimeValue{}, 0, fmt.Errorf("AVM: canonical decode nesting depth exceeds limit %d", MaxCanonicalDecodeDepth)
+	}
 	if len(data) < 1 {
 		return RuntimeValue{}, 0, fmt.Errorf("AVM: empty data for canonical decode")
 	}
@@ -900,7 +911,7 @@ func CanonicalDecode(data []byte) (RuntimeValue, int, error) {
 		}
 		elements := make([]RuntimeValue, count)
 		for i := uint32(0); i < count; i++ {
-			elem, consumed, err := CanonicalDecode(data[offset:])
+			elem, consumed, err := canonicalDecodeAt(data[offset:], depth+1)
 			if err != nil {
 				return RuntimeValue{}, 0, fmt.Errorf("AVM: tuple element %d: %w", i, err)
 			}
@@ -934,7 +945,7 @@ func CanonicalDecode(data []byte) (RuntimeValue, int, error) {
 			if uint32(len(data)-offset) < keyLen {
 				return RuntimeValue{}, 0, fmt.Errorf("AVM: truncated map key")
 			}
-			keyValue, keyConsumed, err := CanonicalDecode(data[offset : offset+int(keyLen)])
+			keyValue, keyConsumed, err := canonicalDecodeAt(data[offset:offset+int(keyLen)], depth+1)
 			if err != nil {
 				return RuntimeValue{}, 0, fmt.Errorf("AVM: map key %d: %w", i, err)
 			}
@@ -950,7 +961,7 @@ func CanonicalDecode(data []byte) (RuntimeValue, int, error) {
 			if uint32(len(data)-offset) < valueLen {
 				return RuntimeValue{}, 0, fmt.Errorf("AVM: truncated map value")
 			}
-			valueValue, valueConsumed, err := CanonicalDecode(data[offset : offset+int(valueLen)])
+			valueValue, valueConsumed, err := canonicalDecodeAt(data[offset:offset+int(valueLen)], depth+1)
 			if err != nil {
 				return RuntimeValue{}, 0, fmt.Errorf("AVM: map value %d: %w", i, err)
 			}
@@ -1181,6 +1192,16 @@ const (
 	// of a Chunk/Code value, sized generously above the compiler's default
 	// 64 KiB code limit to cover recursive tree header overhead.
 	MaxChunkTreeBytes uint32 = 128 * 1024
+	// MaxCanonicalDecodeDepth bounds the recursive nesting of tuple/map values
+	// CanonicalDecode will descend into. Breadth and byte-length limits alone
+	// do not stop a compact, deeply nested value (each level costs only a
+	// handful of bytes) from driving unbounded recursion — every level adds a
+	// Go stack frame plus recursive-call CPU, so a value can exhaust stack or
+	// CPU well before it would ever hit MaxTupleElements or MaxBytesLength.
+	// Aligned with chunk.MaxChunkTreeDepth, the analogous bound for chunk
+	// trees. Reject over-depth values before recursing further, at the cheap
+	// end of the cost curve.
+	MaxCanonicalDecodeDepth = 256
 )
 
 // MaxEncodedSize returns the maximum encoded size for a value tag.

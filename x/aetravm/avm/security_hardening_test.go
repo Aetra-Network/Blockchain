@@ -49,6 +49,59 @@ func TestDecodeSnapshotRejectsValueLengthBomb(t *testing.T) {
 	require.Error(t, err)
 }
 
+// nestedTupleOfOne builds `depth` levels of single-element tuples wrapping a
+// null, e.g. depth=2 -> Tuple[Tuple[Null]]. Each level costs only 5 bytes
+// (tag + 4-byte count=1), so a deep value stays compact — the shape the
+// resource-exhaustion finding (CWE-674/CWE-400) describes: bounded breadth
+// and byte-length checks do not stop a compact value from recursing deep.
+func nestedTupleOfOne(depth int) []byte {
+	encoded := []byte{byte(TagNull)}
+	for i := 0; i < depth; i++ {
+		level := []byte{byte(TagTuple), 0x00, 0x00, 0x00, 0x01}
+		encoded = append(level, encoded...)
+	}
+	return encoded
+}
+
+// TestCanonicalDecodeBoundsRecursionDepth is the regression guard for the
+// unbounded-recursion resource-exhaustion finding: MaxTupleElements and
+// MaxBytesLength bound BREADTH and byte length, but nothing bounded how
+// deeply CanonicalDecode would recurse through nested tuple/map values before
+// this fix, so a compact (few-hundred-byte) crafted value could drive
+// hundreds of thousands of stack frames. A within-limit nesting still decodes
+// correctly; an over-limit nesting is rejected with a depth error, not a
+// stack overflow.
+func TestCanonicalDecodeBoundsRecursionDepth(t *testing.T) {
+	t.Run("within limit decodes", func(t *testing.T) {
+		encoded := nestedTupleOfOne(10)
+		value, consumed, err := CanonicalDecode(encoded)
+		require.NoError(t, err)
+		require.Equal(t, len(encoded), consumed)
+		require.Equal(t, TagTuple, value.Tag)
+	})
+
+	t.Run("over limit is rejected, not stack-exhausting", func(t *testing.T) {
+		encoded := nestedTupleOfOne(MaxCanonicalDecodeDepth + 64)
+		_, _, err := CanonicalDecode(encoded)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "nesting depth")
+	})
+
+	t.Run("map values are depth-bounded too", func(t *testing.T) {
+		// A map with one entry whose VALUE is an over-limit nested tuple chain.
+		valueBytes := nestedTupleOfOne(MaxCanonicalDecodeDepth + 64)
+		entry := append([]byte{byte(TagUint8), 0x00}, valueBytes...) // key: TagUint8=0
+		bomb := []byte{byte(TagMap), 0x00, 0x00, 0x00, 0x01} // count = 1
+		bomb = append(bomb, 0x00, 0x00, 0x00, 0x02)          // keyLen = 2
+		bomb = append(bomb, entry[:2]...)                    // the 2-byte key
+		bomb = append(bomb, encodeLengthPrefix(uint32(len(valueBytes)))...)
+		bomb = append(bomb, valueBytes...)
+		_, _, err := CanonicalDecode(bomb)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "nesting depth")
+	})
+}
+
 // TestArithmeticOverflowFailsClosed ensures wide-integer arithmetic that would
 // grow the value beyond its type width returns an error instead of letting the
 // big.Int magnitude grow unbounded (the memory-exhaustion vector).
