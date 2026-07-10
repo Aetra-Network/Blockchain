@@ -3526,3 +3526,65 @@ func (r testResolver) ResolveImport(imp ImportDecl) (ResolvedDependency, *Source
 	dep := dependencyFromParts(imp.Path, imp.Version, imp.Alias, sum, sum)
 	return dep, parsed, nil
 }
+
+// TestCompileDexAmmExample locks in the canonical constant-product AMM DEX
+// example (examples/avm/dex/dex_amm.atlx). It proves the ATLX surface can
+// express a full DEX protocol on top of an on-chain dictionary: the contract
+// keeps LP balances in a Map<address, uint64> and exercises the whole map
+// surface (get/set/has/delete/keys/entries), swaps with the constant-product
+// fee formula, add/remove liquidity that mints and burns LP balances in the
+// dictionary, and outgoing payouts built with buildMessage's mode: and
+// textComment: fields. Modeled on the "token wallet and master example"
+// subtest above: it reads the real .atlx file and asserts the compiler emits
+// byte-identical output across repeated runs (i.e. it compiles stably).
+func TestCompileDexAmmExample(t *testing.T) {
+	root := filepath.Join("..", "..", "..", "examples", "avm", "dex")
+	dexData, err := os.ReadFile(filepath.Join(root, "dex_amm.atlx"))
+	if err != nil {
+		t.Fatalf("read dex_amm.atlx: %v", err)
+	}
+
+	sources := []NamedSource{{Name: "dex_amm.atlx", Data: dexData}}
+	opts := DefaultOptions()
+
+	const iterations = 100
+	var firstModuleBytes []byte
+	var firstModuleHash, firstManifestHash, firstStateInitHash, firstLockHash, firstRegistryHash [32]byte
+	for i := 0; i < iterations; i++ {
+		c, err := New(opts)
+		if err != nil {
+			t.Fatalf("dex_amm: new compiler on iteration %d: %v", i, err)
+		}
+		res, err := c.CompileFiles(append([]NamedSource(nil), sources...))
+		if err != nil {
+			t.Fatalf("dex_amm: compile on iteration %d: %v", i, err)
+		}
+		if i == 0 {
+			firstModuleBytes = res.ModuleBytes
+			firstModuleHash = res.ModuleHash
+			firstManifestHash = res.ManifestHash
+			firstStateInitHash = res.StateInitHash
+			firstLockHash = res.DependencyLock.LockHash
+			firstRegistryHash = res.SelectorRegistry.RegistryHash
+			continue
+		}
+		if !bytes.Equal(res.ModuleBytes, firstModuleBytes) {
+			t.Fatalf("dex_amm: module bytes differ on iteration %d (nondeterministic codegen)", i)
+		}
+		if res.ModuleHash != firstModuleHash {
+			t.Fatalf("dex_amm: module hash differs on iteration %d", i)
+		}
+		if res.ManifestHash != firstManifestHash {
+			t.Fatalf("dex_amm: manifest hash differs on iteration %d", i)
+		}
+		if res.StateInitHash != firstStateInitHash {
+			t.Fatalf("dex_amm: state init hash differs on iteration %d", i)
+		}
+		if res.DependencyLock.LockHash != firstLockHash {
+			t.Fatalf("dex_amm: dependency lock hash differs on iteration %d", i)
+		}
+		if res.SelectorRegistry.RegistryHash != firstRegistryHash {
+			t.Fatalf("dex_amm: selector registry hash differs on iteration %d", i)
+		}
+	}
+}

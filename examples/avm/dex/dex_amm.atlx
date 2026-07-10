@@ -1,0 +1,339 @@
+// Constant-product (x*y=k) AMM DEX example for ATLX / AVM.
+//
+// Model:
+// - A single DexAmm contract holds a two-token pool (tokenA / tokenB) and the
+//   book of liquidity-provider (LP) balances.
+// - The LP book is a real on-chain dictionary: Map<address, uint64>. Provider
+//   balances are minted on addLiquidity and burned on removeLiquidity, and the
+//   contract exercises the full map surface — get / set / has / delete / keys /
+//   entries — plus len() on the returned lists.
+// - Swaps use the classic constant-product formula with a 0.3% fee:
+//       amountInWithFee = amountIn * 997 / 1000
+//       amountOut       = reserveOut * amountInWithFee
+//                         / (reserveIn + amountInWithFee)
+//   The invariant reserveIn * reserveOut only grows (fee accrues to LPs).
+// - Token amounts are modeled as uint64 quantities carried in message bodies,
+//   the same way the token/stake examples model balances; a swap or a
+//   withdrawal pays the trader/provider back with an outgoing internal message
+//   built via buildMessage({...}), demonstrating the mode: and textComment:
+//   envelope fields (mode: SEND_FEE_FROM_BALANCE, textComment: "swap payout").
+//
+// This example proves the ATLX surface can express a full DEX protocol using
+// dictionaries; it is application-level only and never touches PoS/consensus.
+
+const ERR_NOT_OWNER = 1001
+const ERR_BAD_MSG = 0xFFFF
+const ERR_BAD_AMOUNT = 1005
+const ERR_NO_LIQUIDITY = 1040
+const ERR_INSUFFICIENT_LP = 1041
+const ERR_SLIPPAGE = 1042
+const ERR_ZERO_MINT = 1043
+
+// 0.3% swap fee: the pool keeps 99.7% of the input as effective trade size.
+const FEE_NUM = 997
+const FEE_DEN = 1000
+
+// Upper bound when scanning the LP dictionary in read-only getters. Bounds the
+// keys()/entries() materialization so a getter cannot be made unbounded.
+const MAX_LP_SCAN = 255
+
+// Every outbound internal message must fund the destination's gas/storage rent;
+// a message with amount: 0 could not cover the receiver's rent. Expressed via
+// aet(), never a bare integer literal.
+const MSG_FORWARD_VALUE = aet("0.0001")
+
+@storage
+struct DexStorage {
+    owner: address
+    tokenA: address
+    tokenB: address
+    reserveA: uint64
+    reserveB: uint64
+    totalLpSupply: uint64
+    lpBalances: Map<address, uint64>
+}
+
+@message(0x7101)
+struct AddLiquidity {
+    amountA: uint64
+    amountB: uint64
+}
+
+@message(0x7102)
+struct RemoveLiquidity {
+    lpAmount: uint64
+}
+
+@message(0x7103)
+struct SwapAToB {
+    amountIn: uint64
+    minOut: uint64
+}
+
+@message(0x7104)
+struct SwapBToA {
+    amountIn: uint64
+    minOut: uint64
+}
+
+// Outgoing: swap output paid back to the trader.
+@message(0x7105)
+struct SwapPayout {
+    token: address
+    to: address
+    amount: uint64
+}
+
+// Outgoing: both token legs returned to a liquidity provider on burn.
+@message(0x7106)
+struct LiquidityWithdrawn {
+    to: address
+    amountA: uint64
+    amountB: uint64
+}
+
+type DexInternalMsg = AddLiquidity | RemoveLiquidity | SwapAToB | SwapBToA
+
+contract DexAmm {
+    author: "Aetralis example"
+    description: "Constant-product AMM DEX with an LP dictionary"
+    version: "0.01.0"
+
+    storage: DexStorage
+    incomingMessages: DexInternalMsg
+
+    @store
+    func DexStorage.load() {
+        return DexStorage.fromChunk(contract.getData())
+    }
+
+    @store
+    func DexStorage.save(self) {
+        contract.setData(self.toChunk())
+    }
+
+    // Constant-product output for a swap of `amountIn` into a pool with the
+    // given reserves, after applying the 0.3% fee.
+    // Constant-product output for `amountIn` into a pool with the given
+    // reserves, after the 0.3% fee. Written as one expression (the fee is
+    // folded into the numerator/denominator, deferring the single division)
+    // because inlinable helpers may only be a single return:
+    //     out = amountIn*997*reserveOut / (reserveIn*1000 + amountIn*997)
+    @pure
+    func quoteOut(amountIn: uint64, reserveIn: uint64, reserveOut: uint64): uint64 {
+        return amountIn * FEE_NUM * reserveOut / (reserveIn * FEE_DEN + amountIn * FEE_NUM)
+    }
+
+    @internal
+    func onInternalMessage(in: InMessage) {
+        const msg = lazy DexInternalMsg.fromSegment(in.body)
+
+        match (msg) {
+            AddLiquidity => {
+                var st = lazy DexStorage.load()
+                assert (msg.amountA > 0 && msg.amountB > 0) throw ERR_BAD_AMOUNT
+
+                const provider = in.senderAddress
+
+                // Read the provider's current LP balance from the dictionary.
+                const existing = st.lpBalances.get(provider)
+                const current = (existing == null) ? 0 : existing!
+
+                // First provision seeds the pool; later provisions mint LP
+                // proportional to the smaller of the two contributed legs so a
+                // lopsided deposit cannot dilute existing providers. The
+                // totalLpSupply == 0 guard also avoids dividing by an empty
+                // reserve on the very first deposit.
+                const lpFromA = (st.totalLpSupply == 0)
+                    ? msg.amountA
+                    : msg.amountA * st.totalLpSupply / st.reserveA
+                const lpFromB = (st.totalLpSupply == 0)
+                    ? msg.amountB
+                    : msg.amountB * st.totalLpSupply / st.reserveB
+                const minted = (lpFromA < lpFromB) ? lpFromA : lpFromB
+                assert (minted > 0) throw ERR_ZERO_MINT
+
+                st.reserveA += msg.amountA
+                st.reserveB += msg.amountB
+                st.totalLpSupply += minted
+
+                // Mint into the LP dictionary.
+                st.lpBalances = st.lpBalances.set(provider, current + minted)
+                st.save()
+            }
+
+            RemoveLiquidity => {
+                var st = lazy DexStorage.load()
+                assert (msg.lpAmount > 0) throw ERR_BAD_AMOUNT
+                assert (st.totalLpSupply > 0) throw ERR_NO_LIQUIDITY
+
+                const provider = in.senderAddress
+
+                // Membership test via has(), then read the balance via get().
+                assert (st.lpBalances.has(provider)) throw ERR_INSUFFICIENT_LP
+                const existing = st.lpBalances.get(provider)
+                assert (existing != null) throw ERR_INSUFFICIENT_LP
+
+                const current = existing!
+                assert (current >= msg.lpAmount) throw ERR_INSUFFICIENT_LP
+
+                // Pro-rata share of both reserves for the burned LP.
+                const outA = msg.lpAmount * st.reserveA / st.totalLpSupply
+                const outB = msg.lpAmount * st.reserveB / st.totalLpSupply
+
+                st.reserveA -= outA
+                st.reserveB -= outB
+                st.totalLpSupply -= msg.lpAmount
+
+                // Burn from the dictionary: drop the key entirely when the
+                // position goes to zero, otherwise write back the remainder.
+                const remaining = current - msg.lpAmount
+                if (remaining == 0) {
+                    st.lpBalances = st.lpBalances.delete(provider)
+                } else {
+                    st.lpBalances = st.lpBalances.set(provider, remaining)
+                }
+                st.save()
+
+                const withdrawal = buildMessage({
+                    bounce: BounceMode.NoBounce,
+                    amount: MSG_FORWARD_VALUE,
+                    receiver: provider,
+                    body: LiquidityWithdrawn {
+                        to: provider,
+                        amountA: outA,
+                        amountB: outB,
+                    },
+                    mode: SEND_FEE_FROM_BALANCE,
+                    textComment: "liquidity withdrawn",
+                })
+
+                withdrawal.send(SEND_DEFAULT)
+            }
+
+            SwapAToB => {
+                var st = lazy DexStorage.load()
+                assert (msg.amountIn > 0) throw ERR_BAD_AMOUNT
+                assert (st.reserveA > 0 && st.reserveB > 0) throw ERR_NO_LIQUIDITY
+
+                const out = quoteOut(msg.amountIn, st.reserveA, st.reserveB)
+                assert (out > 0 && out < st.reserveB) throw ERR_BAD_AMOUNT
+                assert (out >= msg.minOut) throw ERR_SLIPPAGE
+
+                st.reserveA += msg.amountIn
+                st.reserveB -= out
+                st.save()
+
+                const payout = buildMessage({
+                    bounce: BounceMode.NoBounce,
+                    amount: MSG_FORWARD_VALUE,
+                    receiver: in.senderAddress,
+                    body: SwapPayout {
+                        token: st.tokenB,
+                        to: in.senderAddress,
+                        amount: out,
+                    },
+                    mode: SEND_FEE_FROM_BALANCE,
+                    textComment: "swap payout",
+                })
+
+                payout.send(SEND_DEFAULT)
+            }
+
+            SwapBToA => {
+                var st = lazy DexStorage.load()
+                assert (msg.amountIn > 0) throw ERR_BAD_AMOUNT
+                assert (st.reserveA > 0 && st.reserveB > 0) throw ERR_NO_LIQUIDITY
+
+                const out = quoteOut(msg.amountIn, st.reserveB, st.reserveA)
+                assert (out > 0 && out < st.reserveA) throw ERR_BAD_AMOUNT
+                assert (out >= msg.minOut) throw ERR_SLIPPAGE
+
+                st.reserveB += msg.amountIn
+                st.reserveA -= out
+                st.save()
+
+                const payout = buildMessage({
+                    bounce: BounceMode.NoBounce,
+                    amount: MSG_FORWARD_VALUE,
+                    receiver: in.senderAddress,
+                    body: SwapPayout {
+                        token: st.tokenA,
+                        to: in.senderAddress,
+                        amount: out,
+                    },
+                    mode: SEND_FEE_FROM_BALANCE,
+                    textComment: "swap payout",
+                })
+
+                payout.send(SEND_DEFAULT)
+            }
+
+            else => {
+                assert (in.body.isEmpty()) throw ERR_BAD_MSG
+            }
+        }
+    }
+
+    @bounced
+    func onBouncedMessage(in: InMessageBounced) {
+        // Swap/withdrawal payouts are sent NoBounce, so there is nothing to
+        // reconcile on a bounce for this pool.
+    }
+
+    @get
+    func reserveA(): uint64 {
+        const st = lazy DexStorage.load()
+        return st.reserveA
+    }
+
+    @get
+    func reserveB(): uint64 {
+        const st = lazy DexStorage.load()
+        return st.reserveB
+    }
+
+    @get
+    func totalLpSupply(): uint64 {
+        const st = lazy DexStorage.load()
+        return st.totalLpSupply
+    }
+
+    // Dictionary read: an LP's balance, defaulting to 0 for a non-member.
+    @get
+    func lpBalanceOf(provider: address): uint64 {
+        const st = lazy DexStorage.load()
+        const found = st.lpBalances.get(provider)
+        return (found == null) ? 0 : found!
+    }
+
+    // Dictionary membership test via has().
+    @get
+    func isProvider(provider: address): uint64 {
+        const st = lazy DexStorage.load()
+        return st.lpBalances.has(provider) ? 1 : 0
+    }
+
+    // Dictionary cardinality via keys().
+    @get
+    func providerCount(): uint64 {
+        const st = lazy DexStorage.load()
+        const keys = st.lpBalances.keys(MAX_LP_SCAN)
+        return keys.len()
+    }
+
+    // Dictionary cardinality via entries() (must agree with providerCount()).
+    @get
+    func entryCount(): uint64 {
+        const st = lazy DexStorage.load()
+        const entries = st.lpBalances.entries(MAX_LP_SCAN)
+        return entries.len()
+    }
+
+    // Read-only quote helper for off-chain UIs.
+    @get
+    func quoteAToB(amountIn: uint64): uint64 {
+        const st = lazy DexStorage.load()
+        return quoteOut(amountIn, st.reserveA, st.reserveB)
+    }
+}
