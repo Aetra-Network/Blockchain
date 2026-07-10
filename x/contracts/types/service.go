@@ -680,6 +680,7 @@ func buildContractsTxFileDescriptor() []byte {
 				uint64Field("max_init_data_bytes", 7),
 				uint64Field("max_state_init_salt_bytes", 8),
 				uint32Field("max_state_init_dependencies", 9),
+				uint64Field("max_internal_message_gas_per_block", 10),
 			),
 			messageDescriptorFields("SecurityGraphEdge",
 				stringField("from", 1),

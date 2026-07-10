@@ -1,6 +1,7 @@
 package contracts
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 
@@ -21,15 +22,16 @@ import (
 )
 
 const (
-	ModuleName		= types.ModuleName
-	ConsensusVersion	= prototype.NextMigrationVersion
+	ModuleName       = types.ModuleName
+	ConsensusVersion = prototype.NextMigrationVersion
 )
 
 var (
-	_	module.AppModuleBasic	= AppModule{}
-	_	module.HasGenesis	= AppModule{}
-	_	module.HasServices	= AppModule{}
-	_	appmodule.AppModule	= AppModule{}
+	_ module.AppModuleBasic   = AppModule{}
+	_ module.HasGenesis       = AppModule{}
+	_ module.HasServices      = AppModule{}
+	_ appmodule.AppModule     = AppModule{}
+	_ appmodule.HasEndBlocker = AppModule{}
 )
 
 type AppModule struct {
@@ -40,9 +42,9 @@ func NewAppModule(k *keeper.Keeper) AppModule {
 	return AppModule{keeper: k}
 }
 
-func (AppModule) IsOnePerModuleType()	{}
-func (AppModule) IsAppModule()		{}
-func (AppModule) Name() string		{ return ModuleName }
+func (AppModule) IsOnePerModuleType() {}
+func (AppModule) IsAppModule()        {}
+func (AppModule) Name() string        { return ModuleName }
 func (AppModule) RegisterLegacyAminoCodec(cdc *codec.LegacyAmino) {
 	types.RegisterLegacyAminoCodec(cdc)
 }
@@ -93,9 +95,13 @@ func (am AppModule) ExportGenesis(ctx sdk.Context, _ codec.JSONCodec) json.RawMe
 	return mustMarshalGenesis(types.ModuleName, gs)
 }
 
-func (AppModule) ConsensusVersion() uint64	{ return ConsensusVersion }
-func (AppModule) GetTxCmd() *cobra.Command	{ return nil }
-func (AppModule) GetQueryCmd() *cobra.Command	{ return nil }
+func (AppModule) ConsensusVersion() uint64    { return ConsensusVersion }
+func (AppModule) GetTxCmd() *cobra.Command    { return nil }
+func (AppModule) GetQueryCmd() *cobra.Command { return nil }
+
+func (am AppModule) EndBlock(ctx context.Context) error {
+	return am.keeper.EndBlocker(sdk.UnwrapSDKContext(ctx))
+}
 
 func mustMarshalGenesis(moduleName string, value any) json.RawMessage {
 	bz, err := json.Marshal(value)

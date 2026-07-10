@@ -56,7 +56,6 @@ var prototypeModules = []string{
 	schedulertypes.ModuleName,
 	avmschedulertypes.ModuleName,
 	actorregistrytypes.ModuleName,
-	contractstypes.ModuleName,
 	storagerenttypes.ModuleName,
 	identityroottypes.ModuleName,
 	bridgehubtypes.ModuleName,
@@ -79,6 +78,13 @@ var systemModules = []string{
 	aetravalidatorscoretypes.ModuleName,
 	configtypes.ModuleName,
 	nativeaccounttypes.ModuleName,
+	// x/contracts graduated out of prototypeModules: unlike the still-dormant
+	// prototype set (see docs/security/phase9-aether-core-wiring-gate.md), it
+	// has live Msg/Query services and, as of the EndBlock internal-message
+	// drain, an audited (if default-off) EndBlocker. Genesis still ships with
+	// Params.MaxInternalMessageGasPerBlock = 0, so autonomous delivery stays
+	// inert until governance explicitly raises the budget.
+	contractstypes.ModuleName,
 }
 
 func RoutingExecution() RoutingExecutionPoint {
@@ -102,7 +108,6 @@ func PrototypeStoreKeys() []string {
 		schedulertypes.StoreKey,
 		avmschedulertypes.StoreKey,
 		actorregistrytypes.StoreKey,
-		contractstypes.StoreKey,
 		storagerenttypes.StoreKey,
 		identityroottypes.StoreKey,
 		bridgehubtypes.StoreKey,
@@ -131,5 +136,6 @@ func SystemStoreKeys() []string {
 		aetravalidatorscoretypes.StoreKey,
 		configtypes.StoreKey,
 		nativeaccounttypes.StoreKey,
+		contractstypes.StoreKey,
 	}
 }

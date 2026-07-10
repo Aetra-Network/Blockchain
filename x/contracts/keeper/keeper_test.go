@@ -11,6 +11,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"cosmossdk.io/log/v2"
+	cmtproto "github.com/cometbft/cometbft/proto/tendermint/types"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 
 	"github.com/sovereign-l1/l1/app/addressing"
@@ -804,6 +806,115 @@ contract Counter {
 	require.Len(t, queue, 0)
 }
 
+// TestEndBlockerAutonomouslyDeliversQueuedInternalMessage is the regression
+// guard for task #37: a message queued by a contract's execution now delivers
+// on its own via the EndBlock drain, without a separate signed
+// MsgReceiveInternalMessage transaction. It also proves the per-block gas
+// budget is respected: a budget smaller than the message's gas cost leaves it
+// queued for a later block instead of delivering (or erroring) immediately.
+func TestEndBlockerAutonomouslyDeliversQueuedInternalMessage(t *testing.T) {
+	wallet := aeAddress("11")
+	k := NewKeeperWithAccountStatus(testAccountStatus{wallet: accountStatusActive})
+
+	const src = `
+@storage
+struct Storage {
+    count: uint64
+}
+
+@message(0x1001)
+struct Ping {}
+
+type InternalMsg = Ping
+type ExternalMsg = Ping
+
+contract Counter {
+    storage: Storage
+    incomingMessages: InternalMsg
+    incomingExternal: ExternalMsg
+
+    @store
+    func Storage.load() {
+        return Storage.fromChunk(contract.getData())
+    }
+
+    @store
+    func Storage.save(self) {
+        contract.setData(self.toChunk())
+    }
+
+    @internal
+    func onInternalMessage(in: InMessage) {
+        var st = lazy Storage.load()
+        st.count += 1
+        st.save()
+    }
+
+    @external(inMsg: Segment)
+    func onExternalMessage(inMsg: Segment) {
+        var st = lazy Storage.load()
+        st.count += 1
+        st.save()
+    }
+}
+`
+	c, err := compiler.New(compiler.DefaultOptions())
+	require.NoError(t, err)
+	compiled, err := c.Compile([]byte(src))
+	require.NoError(t, err)
+	initData, err := compiled.StorageCodec.Encode(map[string]any{"count": uint64(0)})
+	require.NoError(t, err)
+
+	stored, err := k.StoreCode(types.MsgStoreCode{Authority: wallet, Bytecode: compiled.ModuleBytes})
+	require.NoError(t, err)
+	deployed, err := k.InstantiateContract(types.MsgInstantiateContract{
+		Creator: wallet,
+		CodeID:  stored.CodeID,
+		InitMsg: initData,
+		Funds:   10_000,
+		Admin:   wallet,
+		Salt:    "endblock-drain",
+		Height:  10,
+	})
+	require.NoError(t, err)
+
+	queued := enqueueInternalForTest(t, &k, types.InternalMessage{
+		SourceContractUser: deployed.ContractAddressUser,
+		DestinationAccount: deployed.ContractAddressUser,
+		Funds:              0,
+		Opcode:             0x1001,
+		QueryID:            1,
+		Body:               []byte{},
+		GasLimit:           100_000,
+		LogicalTime:        1,
+		Height:             11,
+	})
+
+	ctx := sdk.NewContext(nil, cmtproto.Header{Height: 12}, false, log.NewNopLogger())
+
+	// A budget smaller than the queued message's gas cost must not deliver it
+	// (and must not error the block).
+	gs := k.ExportGenesis()
+	gs.Params.MaxInternalMessageGasPerBlock = 1
+	require.NoError(t, k.InitGenesis(gs))
+	require.NoError(t, k.EndBlocker(ctx))
+	require.Len(t, k.ExportGenesis().State.InternalMessages, 1)
+
+	// Raising the budget to cover the message's gas cost lets EndBlocker
+	// deliver it autonomously.
+	gs = k.ExportGenesis()
+	gs.Params.MaxInternalMessageGasPerBlock = queued.GasLimit
+	require.NoError(t, k.InitGenesis(gs))
+	require.NoError(t, k.EndBlocker(ctx))
+	require.Empty(t, k.ExportGenesis().State.InternalMessages)
+
+	delivered, err := k.Contract(types.QueryContractRequest{ContractAddress: deployed.ContractAddressUser})
+	require.NoError(t, err)
+	storageDelivered, err := avm.DecodeSnapshot(delivered.Contract.Data)
+	require.NoError(t, err)
+	require.Equal(t, uint64(1), avm.DecodeU64(storageDelivered["count"]))
+}
+
 func TestSecurityAttestationSubmitRevokeAndQuerySurface(t *testing.T) {
 	k := NewKeeper()
 	contract := aeAddress("55")
@@ -1121,8 +1232,6 @@ func TestTokenWalletStateInitAutoDeployAndDeterministicAddress(t *testing.T) {
 	status := testAccountStatus{deployer: accountStatusActive}
 	k := NewKeeperWithAccountStatus(status)
 
-
-
 	c, err := compiler.New(compiler.DefaultOptions())
 	require.NoError(t, err)
 	walletResult, err := c.CompileFile("../../../examples/avm/token/token_wallet.atlx")
@@ -1270,8 +1379,6 @@ func TestTokenWalletMintTransferBurnLifecycleWithQueuedMessages(t *testing.T) {
 	burnAck := aeAddress("44")
 	status := testAccountStatus{deployer: accountStatusActive}
 	k := NewKeeperWithAccountStatus(status)
-
-
 
 	c, err := compiler.New(compiler.DefaultOptions())
 	require.NoError(t, err)

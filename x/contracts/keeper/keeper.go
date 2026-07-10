@@ -1129,16 +1129,16 @@ func (k Keeper) buildAVMContext(entry avm.Entrypoint, contract types.Contract, s
 		Entry:           entry,
 		ContractAddress: contractAddress,
 		Message: async.MessageEnvelope{
-			Source:      sourceAddress,
-			Destination: contractAddress,
-			Opcode:      opcode,
-			QueryID:     queryID,
-			Body:        append([]byte(nil), payload...),
-			Bounce:      true,
-			Bounced:     bounced,
-			GasLimit:    gasLimit,
-			Value:       sdk.NewCoin(storageRentBaseDenom, sdkmath.NewIntFromUint64(funds)),
-			ForwardFee:  sdk.NewCoin(storageRentBaseDenom, sdkmath.ZeroInt()),
+			Source:             sourceAddress,
+			Destination:        contractAddress,
+			Opcode:             opcode,
+			QueryID:            queryID,
+			Body:               append([]byte(nil), payload...),
+			Bounce:             true,
+			Bounced:            bounced,
+			GasLimit:           gasLimit,
+			Value:              sdk.NewCoin(storageRentBaseDenom, sdkmath.NewIntFromUint64(funds)),
+			ForwardFee:         sdk.NewCoin(storageRentBaseDenom, sdkmath.ZeroInt()),
 			CreatedLogicalTime: logicalTime,
 		},
 		BlockHeight:             height,
@@ -1794,6 +1794,97 @@ func (k *Keeper) ReceiveInternalMessage(msg types.MsgReceiveInternalMessage) (ty
 	}
 	k.genesis = next
 	return record, nil
+}
+
+// EndBlocker autonomously drains the pending internal-message queue up to
+// Params.MaxInternalMessageGasPerBlock AVM gas per block, so a contract's
+// outgoing message (queued by appendAVMOutgoingMessages) is delivered without
+// a separate signed MsgReceiveInternalMessage transaction. Zero budget (the
+// default in DefaultParams, so genesis behavior is unchanged until governance
+// explicitly raises it) disables autonomous delivery entirely, preserving
+// tx-only-delivery behavior.
+// Delivery reuses ReceiveInternalMessage verbatim: the same content-hash
+// match that authenticates a manually-submitted delivery also authenticates
+// this one, since the record being delivered IS the queued record. A message
+// that fails to deliver (e.g. destination has a storage-rent debt) is left
+// queued and retried on a later block; it is never dropped or double-charged,
+// since ReceiveInternalMessage only mutates k.genesis on its success path.
+//
+// The budget check runs on the in-memory k.genesis.Params BEFORE
+// loadForBlock, so a disabled drain (the default) never touches the store
+// and never overwrites k.genesis with the persisted snapshot. That reload
+// would otherwise clobber any change a caller applied directly to the
+// in-memory keeper without going through the persist-on-write msg-server
+// wrapper (writeGenesis) -- exactly what every EndBlock invocation used to
+// never do before this hook existed. The narrow cost is that a governance
+// param update raising the budget from a genesis restored from disk (not
+// yet reflected in a freshly-constructed keeper's in-memory default) only
+// takes effect once some other tx first refreshes k.genesis; that is a
+// one-tx delay, not a correctness or consensus-safety gap.
+func (k *Keeper) EndBlocker(ctx sdk.Context) error {
+	if k.genesis.Params.MaxInternalMessageGasPerBlock == 0 {
+		return nil
+	}
+	if err := k.loadForBlock(ctx); err != nil {
+		return err
+	}
+	budget := k.genesis.Params.MaxInternalMessageGasPerBlock
+	if budget == 0 || len(k.genesis.State.InternalMessages) == 0 {
+		return nil
+	}
+	maxGas := k.genesis.Params.MaxGasPerExecution
+	// Snapshot the queue up front: ReceiveInternalMessage dequeues by
+	// mutating k.genesis.State.InternalMessages, so iterating the live slice
+	// while it shrinks would skip or repeat entries. Attempts stay in the
+	// queue's FIFO order.
+	queued := append([]types.InternalMessage(nil), k.genesis.State.InternalMessages...)
+	delivered := 0
+	for _, msg := range queued {
+		gasCost := msg.GasLimit
+		if gasCost == 0 || gasCost > maxGas {
+			gasCost = maxGas
+		}
+		if gasCost > budget {
+			break
+		}
+		budget -= gasCost
+		if k.deliverQueuedInternalMessage(msg) {
+			delivered++
+		}
+	}
+	if delivered == 0 {
+		return nil
+	}
+	return k.writeGenesis(ctx)
+}
+
+// deliverQueuedInternalMessage attempts one autonomous delivery of a message
+// already sitting in the pending queue, recovering from any panic during AVM
+// execution so a bug in one contract cannot halt block production for the
+// whole chain. It reports whether delivery succeeded; on failure the message
+// stays queued for a later block attempt.
+func (k *Keeper) deliverQueuedInternalMessage(msg types.InternalMessage) (ok bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			ok = false
+		}
+	}()
+	_, err := k.ReceiveInternalMessage(types.MsgReceiveInternalMessage{
+		SourceContractUser: msg.SourceContractUser,
+		DestinationAccount: msg.DestinationAccount,
+		Funds:              msg.Funds,
+		Opcode:             msg.Opcode,
+		QueryID:            msg.QueryID,
+		Body:               append([]byte(nil), msg.Body...),
+		StateInit:          msg.StateInit,
+		Bounce:             msg.Bounce,
+		Deadline:           msg.Deadline,
+		GasLimit:           msg.GasLimit,
+		LogicalTime:        msg.LogicalTime,
+		MessageID:          msg.MessageID,
+		Height:             msg.Height,
+	})
+	return err == nil
 }
 
 func (k *Keeper) appendAVMOutgoingMessages(next *types.GenesisState, source types.Contract, outgoing []async.MessageEnvelope, height uint64) error {

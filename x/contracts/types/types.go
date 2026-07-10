@@ -45,6 +45,12 @@ type Params struct {
 	MaxInitDataBytes         uint64 `protobuf:"varint,7,opt,name=max_init_data_bytes,json=maxInitDataBytes,proto3" json:"max_init_data_bytes,omitempty"`
 	MaxStateInitSaltBytes    uint64 `protobuf:"varint,8,opt,name=max_state_init_salt_bytes,json=maxStateInitSaltBytes,proto3" json:"max_state_init_salt_bytes,omitempty"`
 	MaxStateInitDependencies uint32 `protobuf:"varint,9,opt,name=max_state_init_dependencies,json=maxStateInitDependencies,proto3" json:"max_state_init_dependencies,omitempty"`
+	// MaxInternalMessageGasPerBlock bounds the AVM gas the EndBlock drain may
+	// spend autonomously delivering queued internal messages in a single
+	// block. Zero disables autonomous delivery (messages then only deliver via
+	// an explicit MsgReceiveInternalMessage tx), which keeps genesis fixtures
+	// built before this field existed behaving exactly as before.
+	MaxInternalMessageGasPerBlock uint64 `protobuf:"varint,10,opt,name=max_internal_message_gas_per_block,json=maxInternalMessageGasPerBlock,proto3" json:"max_internal_message_gas_per_block,omitempty"`
 }
 
 type GenesisState struct {
@@ -123,6 +129,10 @@ func DefaultParams() Params {
 		MaxInitDataBytes:         MaxContractPayloadBytes,
 		MaxStateInitSaltBytes:    MaxContractSaltBytes,
 		MaxStateInitDependencies: MaxContractDependencies,
+		// Off by default: autonomous delivery is a new capability and must not
+		// change behavior for any genesis built before it existed. Governance
+		// raises this explicitly via MsgUpdateContractParams to turn it on.
+		MaxInternalMessageGasPerBlock: 0,
 	}
 }
 
