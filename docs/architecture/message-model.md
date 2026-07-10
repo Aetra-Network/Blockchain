@@ -154,7 +154,29 @@ Rules:
 - the lowered result MUST be ABI-stable and identical to the canonical runtime
   envelope representation.
 
-Send mode semantics:
+The full set of accepted builder fields is: `bounce`, `amount`, `receiver`,
+`body`, `opcode`, `queryId`, `stateInit`, `mode`, and `textComment`. Any other
+key is a compile error.
+
+### Text comment (memo)
+
+`textComment` attaches a free-form UTF-8 memo to a message — the analogue of a
+bank-transfer memo, for both simple value transfers and rich typed-body
+messages.
+
+- it is an ordinary string: any characters are allowed;
+- **at most one `textComment` per message** — a message carries a single
+  canonical memo so wallets and explorers have exactly one string to display;
+- it is bounded to `MaxCommentBytes` (512 bytes). A longer comment is rejected;
+- it is charged through the normal per-byte message fee: a larger comment costs
+  more. It is otherwise inert — the runtime never interprets it;
+- the comment is bound into the internal-message id alongside the other
+  envelope fields, so a relayer cannot alter or forge the memo in flight.
+
+Regular native value transfers carry their memo through the standard
+transaction memo field, which the explorer surfaces the same way.
+
+### Send mode semantics
 
 - `SEND_DEFAULT`, `SEND_CARRY_REMAINDER`, `SEND_DRAIN_BALANCE`,
   `SEND_ESTIMATE_ONLY`, `SEND_FEE_FROM_BALANCE`, `SEND_IGNORE_ERRORS`,
@@ -164,6 +186,49 @@ Send mode semantics:
 - the compiler MUST translate the selected mode into the runtime send flags
   before ABI hashing and execution;
 - message sends without an explicit mode default to `SEND_DEFAULT`.
+
+Modes combine additively — `mode: SEND_DRAIN_BALANCE + SEND_DESTROY_IF_EMPTY`
+is a single bitmask the compiler folds at build time. The combination must be
+logically valid; the compiler rejects illogical ones:
+
+- `SEND_DRAIN_BALANCE` and `SEND_CARRY_REMAINDER` are **mutually exclusive**
+  (both decide the outgoing value — you cannot ask for both);
+- `SEND_ESTIMATE_ONLY` **cannot be combined** with any other flag (it is a
+  dry-run that must not actually send);
+- a flag may not be repeated.
+
+Effect of the balance-affecting modes:
+
+- `SEND_DRAIN_BALANCE` — send the source contract's **entire** remaining
+  balance (its `amount` is ignored; the runtime tracks a running balance so a
+  batch of drains never over-allocates). This is the withdraw-everything
+  primitive; to keep a reserve, send an explicit `amount` with the default mode
+  instead.
+- `SEND_DESTROY_IF_EMPTY` — after the send debit, if the source balance reached
+  zero, the source contract is **deactivated irreversibly**: status becomes
+  `deleted`, storage is cleared, and it holds no balance.
+- `SEND_IGNORE_ERRORS` — if delivery of this message fails, drop it instead of
+  retrying it every block.
+
+**Withdraw-all-and-self-destruct idiom.** Combine the two to empty a contract
+to a payout address and retire it in one message:
+
+```atlx
+const out = buildMessage({
+    bounce: false,
+    amount: 0,
+    receiver: st.beneficiary,
+    mode: SEND_DRAIN_BALANCE + SEND_DESTROY_IF_EMPTY,
+    textComment: "vault closed",
+    body: Payout {}
+})
+out.send(SEND_DEFAULT)
+```
+
+The address then reports the `deleted` status; a fresh (never-deployed but
+derivable) address reports `uninit`, and an unknown address reports
+`nonexistent`, so a contract's lifecycle is observable end to end as
+`uninit -> active -> frozen -> archived -> deleted` (plus `nonexistent`).
 
 ## 3. Bounce Semantics
 

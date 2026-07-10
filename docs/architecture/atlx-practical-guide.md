@@ -563,6 +563,32 @@ Recommended send mode names:
 - `SEND_BOUNCE_ON_FAIL`
 - `SEND_DESTROY_IF_EMPTY`
 
+Modes combine with `+`, and you can set the mode inside `buildMessage` via the
+`mode:` field instead of passing it to `.send(...)`:
+
+```atlx
+const out = buildMessage({
+    bounce: false,
+    amount: 0,
+    receiver: st.beneficiary,
+    mode: SEND_DRAIN_BALANCE + SEND_DESTROY_IF_EMPTY,
+    textComment: "vault closed",
+    body: Payout {}
+})
+out.send(SEND_DEFAULT)
+```
+
+`SEND_DRAIN_BALANCE` sends the whole balance (withdraw everything); to keep a
+reserve, use the default mode with an explicit `amount`. `SEND_DESTROY_IF_EMPTY`
+retires the contract once it hits zero (status `deleted`, storage cleared). The
+compiler rejects illogical combinations: `SEND_DRAIN_BALANCE +
+SEND_CARRY_REMAINDER` (mutually exclusive) and any combination involving
+`SEND_ESTIMATE_ONLY` (must be sent alone).
+
+`textComment` is the message memo: one free-form string per message (any
+characters, up to 512 bytes, priced per byte). See `message-model.md` for the
+full semantics and the withdraw-all-and-self-destruct idiom.
+
 ## Runtime Builtins
 
 Common runtime helpers used in this source style:
