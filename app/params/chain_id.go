@@ -11,27 +11,29 @@ const (
 
 	// Canonical numeric chain IDs. Public Aetra networks use a plain small
 	// number as the chain-id (like EVM network IDs): mainnet is "18" and the
-	// public testnet is "19". Development networks keep the legacy
+	// public testnet is "-19" (negative marks a test network, so it can never
+	// be confused with a mainnet id). Development networks keep the legacy
 	// dash-separated "aetra-..." naming (e.g. aetra-local-1) so local tooling
 	// safety checks that look for "local" keep working.
 	MainnetChainID = "18"
-	TestnetChainID = "19"
+	TestnetChainID = "-19"
 
 	// chainIDMaxNumericLength bounds canonical numeric IDs to small numbers.
 	chainIDMaxNumericLength = 6
 )
 
 // IsNumericChainID reports whether chainID is a canonical numeric network ID:
-// a small positive integer with no leading zeros (e.g. "1", "2", "42").
+// a small integer with no leading zeros (e.g. "1", "18", "42"), optionally
+// negative ("-19") — negative ids mark test networks.
 func IsNumericChainID(chainID string) bool {
-	chainID = strings.TrimSpace(chainID)
-	if len(chainID) == 0 || len(chainID) > chainIDMaxNumericLength {
+	digits := strings.TrimPrefix(strings.TrimSpace(chainID), "-")
+	if len(digits) == 0 || len(digits) > chainIDMaxNumericLength {
 		return false
 	}
-	if chainID[0] == '0' {
+	if digits[0] == '0' {
 		return false
 	}
-	for _, ch := range chainID {
+	for _, ch := range digits {
 		if ch < '0' || ch > '9' {
 			return false
 		}
@@ -40,9 +42,9 @@ func IsNumericChainID(chainID string) bool {
 }
 
 // ValidateAetraChainID enforces the chain-id naming policy. Public networks
-// use canonical numeric IDs (mainnet "18", testnet "19"); development networks
-// use lower-case ASCII tokens with dash-separated segments starting with
-// "aetra-" (e.g. aetra-local-1, aetra-preflight-1).
+// use canonical numeric IDs (mainnet "18", testnet "-19"); development
+// networks use lower-case ASCII tokens with dash-separated segments starting
+// with "aetra-" (e.g. aetra-local-1, aetra-preflight-1).
 func ValidateAetraChainID(chainID string) error {
 	chainID = strings.TrimSpace(chainID)
 	if chainID == "" {
@@ -58,7 +60,7 @@ func ValidateAetraChainID(chainID string) error {
 		return errors.New("chain-id may contain only lower-case letters, digits, and dashes")
 	}
 	if !strings.HasPrefix(chainID, "aetra-") {
-		return errors.New("chain-id must be a small number (mainnet 18, testnet 19) or start with aetra- for dev networks")
+		return errors.New("chain-id must be a small number (mainnet 18, testnet -19) or start with aetra- for dev networks")
 	}
 	if strings.Contains(chainID, "--") || strings.HasSuffix(chainID, "-") {
 		return errors.New("chain-id must use non-empty dash-separated segments")
@@ -73,7 +75,7 @@ func ValidateAetraChainID(chainID string) error {
 }
 
 // ValidateAetraTestnetChainID accepts chain IDs for non-mainnet networks: the
-// canonical numeric testnet ID ("19") or a dev network ID containing
+// canonical numeric testnet ID ("-19") or a dev network ID containing
 // -testnet-, -local-, or -preflight-. The mainnet ID ("18") is rejected so
 // test tooling can never accidentally target mainnet.
 func ValidateAetraTestnetChainID(chainID string) error {

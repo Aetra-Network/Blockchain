@@ -66,7 +66,7 @@ Public Aetra networks use plain numeric chain IDs:
 
 ```text
 Mainnet: CHAIN_ID = "18"
-Testnet: CHAIN_ID = "19"
+Testnet: CHAIN_ID = "-19"
 ```
 
 Development networks keep the dash-separated form (e.g. `aetra-local-1`).

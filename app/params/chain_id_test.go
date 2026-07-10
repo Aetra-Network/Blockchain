@@ -49,3 +49,23 @@ func TestValidateAetraChainIDRejectsMalformedIDs(t *testing.T) {
 func TestValidateAetraTestnetChainIDRejectsMainnetID(t *testing.T) {
 	require.ErrorContains(t, ValidateAetraTestnetChainID("aetra-mainnet-1"), "testnet chain-id")
 }
+
+// TestCanonicalNumericChainIDs pins the public network ids: mainnet is "18",
+// the public testnet is "-19" (negative marks a test network). The old
+// positive "19" is no longer the canonical testnet id.
+func TestCanonicalNumericChainIDs(t *testing.T) {
+	require.Equal(t, "18", MainnetChainID)
+	require.Equal(t, "-19", TestnetChainID)
+
+	require.True(t, IsNumericChainID("18"))
+	require.True(t, IsNumericChainID("-19"))
+	require.False(t, IsNumericChainID("-"))
+	require.False(t, IsNumericChainID("-019"))
+
+	require.NoError(t, ValidateAetraChainID("18"))
+	require.NoError(t, ValidateAetraChainID("-19"))
+
+	require.NoError(t, ValidateAetraTestnetChainID("-19"))
+	require.ErrorContains(t, ValidateAetraTestnetChainID("18"), "must not target the mainnet")
+	require.ErrorContains(t, ValidateAetraTestnetChainID("19"), "must be -19")
+}
