@@ -6124,7 +6124,12 @@ func substituteExprForInline(expr Expr, subst map[string]Expr) (Expr, error) {
 		}
 		out.Fields = fields
 		return out, nil
-	case ExprBinary, ExprUnary, ExprTernary:
+	case ExprBinary, ExprUnary, ExprTernary, ExprCompare, ExprLogic:
+		// Compare (<, >, ==, ...) and logic (&&, ||) nodes carry their operands
+		// in Left/Right exactly like binary nodes, so a parameter used inside a
+		// comparison in an inlinable helper (e.g. min(a, b) or a bounds check)
+		// must be substituted too — otherwise it lowers to an unbound
+		// identifier.
 		if expr.Left != nil {
 			sub, err := substituteExprForInline(*expr.Left, subst)
 			if err != nil {

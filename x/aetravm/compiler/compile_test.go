@@ -980,6 +980,59 @@ contract Demo {
 	require.Len(t, res.Manifest.GetMethods, 1)
 }
 
+// TestCompileInlinesHelperWithComparisonAndLogic guards inlining of helper
+// functions that use their parameters inside comparison (<, >, ==) and logic
+// (&&, ||) expressions — the min/clamp/bounds-check helpers every framework or
+// DEX author writes. Before the inliner substituted into compare/logic nodes,
+// such a parameter lowered to an unbound identifier and the call failed.
+func TestCompileInlinesHelperWithComparisonAndLogic(t *testing.T) {
+	src := `
+@pure func pickMin(a: u64, b: u64) -> u64 {
+  return a < b ? a : b
+}
+
+@pure func inRange(x: u64, lo: u64, hi: u64) -> bool {
+  return x >= lo && x <= hi
+}
+
+struct DemoState {
+  count: u64 = 0
+}
+
+contract Demo {
+  storage: DemoState
+  incomingMessages: DemoState
+
+  @internal
+  func onInternalMessage(in: InMessage) {
+    set state.count = pickMin(0, 7)
+  }
+
+  @bounced
+  func onBouncedMessage(in: InMessageBounced) {
+  }
+
+  @get
+  func clamped(): u64 {
+    const st = DemoState.load()
+    return pickMin(st.count, 100)
+  }
+
+  @get
+  func bounded(): bool {
+    const st = DemoState.load()
+    return inRange(st.count, 1, 50)
+  }
+}
+`
+	c, err := New(DefaultOptions())
+	require.NoError(t, err)
+	res, err := c.Compile([]byte(src))
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	require.Len(t, res.Manifest.GetMethods, 2)
+}
+
 func TestCompileCapturesAnnotatedStorageAndMessageSchemas(t *testing.T) {
 	src := `
 @storage struct DemoState {
