@@ -4463,10 +4463,15 @@ func lowerExprToIR(expr Expr, env loweringEnv, functions map[string]*FunctionDec
 					return &IRExpr{Kind: IRExprMsgBody, Pos: expr.Pos}, nil
 				}
 			}
-			if idx == 0 {
-				return &IRExpr{Kind: IRExprMsgQueryID, Pos: expr.Pos}, nil
-			}
-			return nil, fail("E_LOWER_PARAM", expr.Pos, fmt.Sprintf("parameter %q cannot be decoded by AVM v1; only the first uint64 parameter is mapped to query_id", expr.Text))
+			// Every other (scalar) parameter is read from the message body as
+			// a named field, using the synthetic positional name "arg0",
+			// "arg1", … — the same {name,type,value} field-array format
+			// already used for message-body field reads generally (see
+			// runtimeMessageFieldValue). This lets a getter or entrypoint
+			// accept any number of typed arguments, in any position, each
+			// decoded with its own declared type — not just a single value
+			// forced through the message's numeric query_id.
+			return &IRExpr{Kind: IRExprMsgField, Text: fmt.Sprintf("arg%d", idx), Pos: expr.Pos}, nil
 		}
 		return nil, fail("E_LOWER_IDENT", expr.Pos, fmt.Sprintf("identifier %q is not lowerable", expr.Text))
 	case ExprPath:

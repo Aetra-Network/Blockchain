@@ -57,12 +57,14 @@ func (k Keeper) ContractGet(req types.QueryContractGetRequest) (types.QueryContr
 	method := strings.TrimSpace(req.Method)
 	selector := avm.GetterNameSelector(method)
 
-	var queryID uint64
-	if len(req.Args) == 1 {
-		queryID, err = req.Args[0].AsUint64()
-		if err != nil {
-			return types.QueryContractGetResponse{}, err
-		}
+	// Arguments travel in the message body as the same {name,type,value}
+	// field-array format used for message-body fields generally, with
+	// positional names "arg0", "arg1", … matching the compiler's
+	// getter-parameter binding (IRExprMsgField) — so a getter can accept any
+	// number of typed arguments, not just one squeezed into query_id.
+	body, err := req.EncodeMessageBody()
+	if err != nil {
+		return types.QueryContractGetResponse{}, err
 	}
 
 	gas := req.GasLimit
@@ -82,7 +84,7 @@ func (k Keeper) ContractGet(req types.QueryContractGetRequest) (types.QueryContr
 		GasLimit: gas,
 		Message: async.MessageEnvelope{
 			Opcode:   selector,
-			QueryID:  queryID,
+			Body:     body,
 			GasLimit: gas,
 		},
 	})

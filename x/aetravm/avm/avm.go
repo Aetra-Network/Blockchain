@@ -1729,31 +1729,42 @@ func runtimeValueFromJSONField(typ string, raw json.RawMessage) (RuntimeValue, e
 			return RuntimeValue{}, decodeErr(err)
 		}
 		return ValueBool(b), nil
-	case "u2", "u4", "u8", "u16", "u32", "u64", "timestamp":
-		var v uint64
-		if err := json.Unmarshal(raw, &v); err != nil {
+	case "timestamp":
+		v, err := parseJSONBigInt(raw)
+		if err != nil {
 			return RuntimeValue{}, decodeErr(err)
 		}
-		if maxV, ok := map[string]uint64{"u2": 3, "u4": 15, "u8": 255, "u16": 65535, "u32": 4294967295}[kind]; ok && v > maxV {
-			return RuntimeValue{}, decodeErr(fmt.Errorf("value %d out of range for %s", v, kind))
-		}
-		return ValueUint64(v), nil
-	case "i2", "i4", "i64":
-		var v int64
-		if err := json.Unmarshal(raw, &v); err != nil {
-			return RuntimeValue{}, decodeErr(err)
-		}
-		switch kind {
-		case "i2":
-			if v < -2 || v > 1 {
-				return RuntimeValue{}, decodeErr(fmt.Errorf("value %d out of range for i2", v))
+		return ValueUint64(v.Uint64()), nil
+	default:
+		// Integer types: both the canonical long form the compiler actually
+		// emits (uint64, int256, …) and the short form (u64, i256, …), for
+		// every width the language surface declares (2/4/8/16/32/64/128/256).
+		// JSON numbers lose precision above 2^53, so the value may also
+		// arrive as a decimal string — parseJSONBigInt accepts both.
+		if tag, bits, signed, ok := integerKindTag(kind); ok {
+			v, err := parseJSONBigInt(raw)
+			if err != nil {
+				return RuntimeValue{}, decodeErr(err)
 			}
-		case "i4":
-			if v < -8 || v > 7 {
-				return RuntimeValue{}, decodeErr(fmt.Errorf("value %d out of range for i4", v))
+			if !signed && v.Sign() < 0 {
+				return RuntimeValue{}, decodeErr(fmt.Errorf("negative value %s for unsigned type %s", v, kind))
 			}
+			if bits > 0 && bits < 256 {
+				limit := new(big.Int).Lsh(big.NewInt(1), uint(bits))
+				if signed {
+					half := new(big.Int).Rsh(limit, 1)
+					negHalf := new(big.Int).Neg(half)
+					if v.Cmp(negHalf) < 0 || v.Cmp(half) >= 0 {
+						return RuntimeValue{}, decodeErr(fmt.Errorf("value %s out of range for %s", v, kind))
+					}
+				} else if v.Cmp(limit) >= 0 {
+					return RuntimeValue{}, decodeErr(fmt.Errorf("value %s out of range for %s", v, kind))
+				}
+			}
+			return RuntimeValue{Tag: tag, intVal: v}, nil
 		}
-		return ValueInt64(v), nil
+	}
+	switch kind {
 	case "coins":
 		var s string
 		if err := json.Unmarshal(raw, &s); err == nil {
@@ -1809,6 +1820,88 @@ func runtimeValueFromJSONField(typ string, raw json.RawMessage) (RuntimeValue, e
 		}
 		return ValueBytes(append([]byte(nil), raw...)), nil
 	}
+}
+
+// integerKindKey pairs an integer bit width with signedness for the lookup
+// table below.
+type integerKindKey struct {
+	bits   int
+	signed bool
+}
+
+// integerKindTags maps every integer type spelling the language surface uses
+// — both the canonical long form (uint64, int256, …) and the short form
+// (u64, i256, …) — to its runtime tag, bit width, and signedness. Built once
+// from the canonical (bits, signed) -> tag table so the two can never drift.
+var integerKindTags = buildIntegerKindTags()
+
+func buildIntegerKindTags() map[string]struct {
+	tag    ValueTag
+	bits   int
+	signed bool
+} {
+	byWidth := map[integerKindKey]ValueTag{
+		{2, false}: TagUint8, {4, false}: TagUint8, // sub-byte widths still occupy a Uint8 slot; range-checked separately
+		{8, false}: TagUint8, {16, false}: TagUint16, {32, false}: TagUint32,
+		{64, false}: TagUint64, {128, false}: TagUint128, {256, false}: TagUint256,
+		{2, true}: TagInt8, {4, true}: TagInt8,
+		{8, true}: TagInt8, {16, true}: TagInt16, {32, true}: TagInt32,
+		{64, true}: TagInt64, {128, true}: TagInt128, {256, true}: TagInt256,
+	}
+	out := map[string]struct {
+		tag    ValueTag
+		bits   int
+		signed bool
+	}{}
+	for _, bits := range []int{2, 4, 8, 16, 32, 64, 128, 256} {
+		for _, signed := range []bool{false, true} {
+			prefix := "u"
+			longPrefix := "uint"
+			if signed {
+				prefix = "i"
+				longPrefix = "int"
+			}
+			entry := struct {
+				tag    ValueTag
+				bits   int
+				signed bool
+			}{tag: byWidth[integerKindKey{bits, signed}], bits: bits, signed: signed}
+			out[fmt.Sprintf("%s%d", prefix, bits)] = entry
+			out[fmt.Sprintf("%s%d", longPrefix, bits)] = entry
+		}
+	}
+	return out
+}
+
+// integerKindTag resolves a type-name string (any spelling in
+// integerKindTags) to its runtime tag, bit width, and signedness.
+func integerKindTag(kind string) (tag ValueTag, bits int, signed bool, ok bool) {
+	entry, found := integerKindTags[kind]
+	if !found {
+		return 0, 0, false, false
+	}
+	return entry.tag, entry.bits, entry.signed, true
+}
+
+// parseJSONBigInt decodes a JSON number or a JSON string of decimal digits
+// into a big.Int. JSON numbers lose precision above 2^53, so wide integer
+// types (u128/u256/i128/i256) are expected to travel as decimal strings —
+// both spellings are accepted here.
+func parseJSONBigInt(raw json.RawMessage) (*big.Int, error) {
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		v, ok := new(big.Int).SetString(strings.TrimSpace(s), 10)
+		if !ok {
+			return nil, fmt.Errorf("invalid decimal integer %q", s)
+		}
+		return v, nil
+	}
+	text := strings.TrimSpace(string(raw))
+	v, ok := new(big.Int).SetString(text, 10)
+	if !ok {
+		return nil, fmt.Errorf("invalid integer %q", text)
+	}
+	return v, nil
 }
 
 func runtimeParseJSONNumericValue(raw json.RawMessage) (uint64, bool) {

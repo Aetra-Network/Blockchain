@@ -8,9 +8,10 @@ import (
 	"github.com/sovereign-l1/l1/x/contracts/types"
 )
 
-// counterGetSource is a minimal contract with two getters: a no-arg
-// currentCounter and a one-arg plusCounter(by) that demonstrates the AVM v1
-// argument convention (first numeric argument rides the query envelope).
+// counterGetSource is a minimal contract with getters exercising the full
+// argument story: a no-arg currentCounter, a one-arg plusCounter(by), and a
+// multi-arg, multi-typed clamp(lo, hi, useHi) proving a getter is no longer
+// limited to a single numeric argument.
 const counterGetSource = `
 @storage
 struct Storage {
@@ -60,6 +61,15 @@ contract CounterBox {
         const st = lazy Storage.load()
         return st.counter + by
     }
+
+    @get
+    func clamp(lo: uint64, hi: uint64, useHi: bool): uint64 {
+        const st = lazy Storage.load()
+        if (useHi) {
+            return hi
+        }
+        return (st.counter < lo) ? lo : st.counter
+    }
 }
 `
 
@@ -95,7 +105,7 @@ func TestContractGetByExactName(t *testing.T) {
 	require.Equal(t, "41", got.Result)
 	require.NotZero(t, got.GasUsed)
 
-	// One numeric argument rides the query envelope.
+	// One argument, explicit type.
 	plus, err := k.ContractGet(types.QueryContractGetRequest{
 		ContractAddress: created.ContractAddressUser,
 		Method:          "plusCounter",
@@ -104,6 +114,44 @@ func TestContractGetByExactName(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, plus.Success, "one-arg getter must dispatch: %s", plus.Error)
 	require.Equal(t, "50", plus.Result)
+
+	// Same call using the "number" umbrella type (no width to pick).
+	plusNumber, err := k.ContractGet(types.QueryContractGetRequest{
+		ContractAddress: created.ContractAddressUser,
+		Method:          "plusCounter",
+		Args:            []types.GetMethodArg{{Type: "number", Value: "9"}},
+	})
+	require.NoError(t, err)
+	require.True(t, plusNumber.Success, "number-typed arg must dispatch: %s", plusNumber.Error)
+	require.Equal(t, "50", plusNumber.Result)
+
+	// Three arguments, three different types: the previous one-argument
+	// ceiling was a compiler limitation, not a real AVM constraint.
+	clampLo, err := k.ContractGet(types.QueryContractGetRequest{
+		ContractAddress: created.ContractAddressUser,
+		Method:          "clamp",
+		Args: []types.GetMethodArg{
+			{Type: "uint64", Value: "1000"},
+			{Type: "uint64", Value: "9999"},
+			{Type: "bool", Value: "false"},
+		},
+	})
+	require.NoError(t, err)
+	require.True(t, clampLo.Success, "3-arg getter must dispatch: %s", clampLo.Error)
+	require.Equal(t, "1000", clampLo.Result, "counter(41) < lo(1000), so lo wins")
+
+	clampHi, err := k.ContractGet(types.QueryContractGetRequest{
+		ContractAddress: created.ContractAddressUser,
+		Method:          "clamp",
+		Args: []types.GetMethodArg{
+			{Type: "uint64", Value: "1000"},
+			{Type: "uint64", Value: "9999"},
+			{Type: "bool", Value: "true"},
+		},
+	})
+	require.NoError(t, err)
+	require.True(t, clampHi.Success)
+	require.Equal(t, "9999", clampHi.Result, "useHi=true picks hi regardless of lo/counter")
 
 	// A different spelling is a different method: snake_case fails closed.
 	wrong, err := k.ContractGet(types.QueryContractGetRequest{
@@ -121,14 +169,15 @@ func TestContractGetByExactName(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, missing.Success)
 
-	// More than one argument is rejected up front.
+	// An unreasonable number of arguments is still rejected up front.
+	tooMany := make([]types.GetMethodArg, types.MaxGetMethodArgs+1)
+	for i := range tooMany {
+		tooMany[i] = types.GetMethodArg{Type: "uint64", Value: "1"}
+	}
 	_, err = k.ContractGet(types.QueryContractGetRequest{
 		ContractAddress: created.ContractAddressUser,
 		Method:          "plusCounter",
-		Args: []types.GetMethodArg{
-			{Type: "uint64", Value: "1"},
-			{Type: "uint64", Value: "2"},
-		},
+		Args:            tooMany,
 	})
-	require.ErrorContains(t, err, "at most one argument")
+	require.ErrorContains(t, err, "exceeds limit")
 }
