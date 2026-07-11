@@ -18,6 +18,7 @@ import (
 	"github.com/cosmos/cosmos-sdk/x/tx/signing"
 
 	aetraaddress "github.com/sovereign-l1/l1/app/addressing"
+	"github.com/sovereign-l1/l1/app/keeperconfig"
 )
 
 // NewL1App returns a reference to an initialized L1App.
@@ -33,11 +34,29 @@ func NewL1App(
 		SigningOptions: signing.Options{
 			AddressCodec:		aetraaddress.Codec{},
 			ValidatorAddressCodec:	aetraaddress.Codec{},
+			CustomGetSigners:	keeperconfig.CustomGetSigners(),
 		},
 	})
 	appCodec := codec.NewProtoCodec(interfaceRegistry)
 	legacyAmino := codec.NewLegacyAmino()
-	txConfig := authtx.NewTxConfig(appCodec, authtx.DefaultSignModes)
+	// NewTxConfigWithOptions, not the bare NewTxConfig(codec, signModes): the
+	// 2-arg form builds its OWN independent signing.Context from scratch
+	// (x/auth/tx/config.go's NewDefaultSigningOptions) rather than reusing
+	// interfaceRegistry's SigningContext above -- so the CustomGetSigners set
+	// on interfaceRegistry, a few lines up, would otherwise be silently
+	// ignored by exactly the TxConfig baseapp uses below to decode every live
+	// transaction (SetTxDecoder/SetTxEncoder, right after this).
+	txConfig, err := authtx.NewTxConfigWithOptions(appCodec, authtx.ConfigOptions{
+		EnabledSignModes: authtx.DefaultSignModes,
+		SigningOptions: &signing.Options{
+			AddressCodec:		aetraaddress.Codec{},
+			ValidatorAddressCodec:	aetraaddress.Codec{},
+			CustomGetSigners:	keeperconfig.CustomGetSigners(),
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
 
 	if err := interfaceRegistry.SigningContext().Validate(); err != nil {
 		panic(err)

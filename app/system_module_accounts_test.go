@@ -1,9 +1,11 @@
 package app
 
 import (
+	"bytes"
 	"testing"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
+	authtypes "github.com/cosmos/cosmos-sdk/x/auth/types"
 	bankkeeper "github.com/cosmos/cosmos-sdk/x/bank/keeper"
 	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
 	"github.com/stretchr/testify/require"
@@ -113,4 +115,64 @@ func TestReservedSystemBankSendPolicy(t *testing.T) {
 
 	require.True(t, app.BankKeeper.BlockedAddr(mintAddr))
 	require.False(t, app.BankKeeper.BlockedAddr(burnAddr))
+}
+
+// TestReservedSystemModuleAccountsBackedByLiveModuleAccounts verifies — against a
+// booted app, not the catalog comparing fields to itself — that every reserved
+// system entity claiming a module account is genuinely backed by a live
+// cosmos-sdk module account. This is the non-circular counterpart to
+// TestReservedSystemModuleAccountAddressesMatchConstants (which only re-parses
+// catalog.Raw and compares it to catalog.Raw). It is the invariant that actually
+// catches a regression in the module-account wiring: a fund-relevant entity whose
+// backing module account disappears, loses a permission, drifts to a different
+// address, or stops being bank-blocked.
+//
+// It also locks in the chain's deliberate two-layer address model: the reserved
+// catalog ("vanity") address is a distinct, bank-reserved public identifier, while
+// funds are custodied by a separate cosmos module account whose address the account
+// keeper derives with authtypes.NewModuleAddress. The two must never silently
+// collapse into one address (they cannot by construction — a hand-picked vanity
+// pattern vs. a hash — and this test guards that they never do).
+func TestReservedSystemModuleAccountsBackedByLiveModuleAccounts(t *testing.T) {
+	app := Setup(t, false)
+	ctx := app.NewContext(false)
+
+	for _, account := range ReservedSystemModuleAccounts() {
+		// 1. A live, deterministic module-account address exists for the claimed module.
+		realAddr := app.AccountKeeper.GetModuleAddress(account.ModuleAccountName)
+		require.NotNil(t, realAddr, account.Name)
+
+		// 2. The stored account is a real module account with the declared name + permissions,
+		//    stored exactly at that deterministic address.
+		macc := app.AccountKeeper.GetModuleAccount(ctx, account.ModuleAccountName)
+		require.NotNil(t, macc, account.Name)
+		require.Equal(t, account.ModuleAccountName, macc.GetName(), account.Name)
+		require.ElementsMatch(t, account.Permissions, macc.GetPermissions(), account.Name)
+		require.Equal(t, realAddr.Bytes(), macc.GetAddress().Bytes(), account.Name)
+
+		// 3. The reserved catalog (vanity) address is a DISTINCT reserved identifier from
+		//    the cosmos module account that custodies funds (two-layer model).
+		vanityBz, err := aetraaddress.Parse(account.Raw)
+		require.NoError(t, err, account.Name)
+		require.False(t, bytes.Equal(vanityBz, realAddr.Bytes()),
+			"%s: reserved catalog address must stay distinct from its cosmos module account", account.Name)
+
+		// 4. The reserved catalog address is bank-blocked for user receives iff the entity
+		//    is not allowed to receive user funds.
+		require.Equal(t, !account.CanReceiveUserFunds,
+			app.BankKeeper.BlockedAddr(sdk.AccAddress(vanityBz)), account.Name)
+	}
+
+	// The economically load-bearing permissions must be present on the live accounts.
+	mint, found := ReservedSystemModuleAccountByName("AETMint")
+	require.True(t, found)
+	require.Contains(t, app.AccountKeeper.GetModuleAccount(ctx, mint.ModuleAccountName).GetPermissions(), authtypes.Minter)
+
+	burn, found := ReservedSystemModuleAccountByName("AETBurn")
+	require.True(t, found)
+	require.Contains(t, app.AccountKeeper.GetModuleAccount(ctx, burn.ModuleAccountName).GetPermissions(), authtypes.Burner)
+
+	feeCollector, found := ReservedSystemModuleAccountByName("AETFeeCollector")
+	require.True(t, found)
+	require.Contains(t, app.AccountKeeper.GetModuleAccount(ctx, feeCollector.ModuleAccountName).GetPermissions(), authtypes.Burner)
 }
