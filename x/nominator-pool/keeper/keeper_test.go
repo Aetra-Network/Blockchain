@@ -1,7 +1,9 @@
 package keeper
 
 import (
+	"encoding/hex"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -992,11 +994,19 @@ func deposit(t *testing.T, k *Keeper, poolID string, delegator string, amount ui
 }
 
 func rawPoolAddress(hexByte string) string {
-	return "4:000000000000000000000000" + fmt.Sprintf("%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s", hexByte, hexByte, hexByte, hexByte, hexByte, hexByte, hexByte, hexByte, hexByte, hexByte, hexByte, hexByte, hexByte, hexByte, hexByte, hexByte, hexByte, hexByte, hexByte, hexByte)
+	bz, err := hex.DecodeString(strings.Repeat(hexByte, 20))
+	if err != nil {
+		panic(err)
+	}
+	return addressing.Format(bz)
 }
 
 func rawPoolAddressFromInt(value int) string {
-	return fmt.Sprintf("4:%064x", value)
+	bz, err := hex.DecodeString(fmt.Sprintf("%064x", value))
+	if err != nil {
+		panic(err)
+	}
+	return addressing.Format(bz)
 }
 
 func proofUserAddress(hexByte string) string {

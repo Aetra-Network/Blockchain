@@ -103,8 +103,8 @@ func ValidateAddressPairConsistency(pair addressing.AddressPair) error {
 	if !strings.HasPrefix(pair.User, addressing.UserFriendlyPrefix) {
 		return fmt.Errorf("user-facing address must start with %s", addressing.UserFriendlyPrefix)
 	}
-	if !strings.HasPrefix(pair.Raw, addressing.RawPrefix) {
-		return fmt.Errorf("raw internal address must start with %s", addressing.RawPrefix)
+	if !strings.HasPrefix(pair.Raw, addressing.Bech32HRP+"1") {
+		return fmt.Errorf("raw internal address must start with %s1", addressing.Bech32HRP)
 	}
 	userBytes, err := addressing.Parse(pair.User)
 	if err != nil {

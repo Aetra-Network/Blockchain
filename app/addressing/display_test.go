@@ -19,7 +19,7 @@ func TestInspectAddressWarnsForNewRecipientAndShowsChecksum(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Equal(t, recipient, display.UserFriendly)
-	require.Regexp(t, `^4:[0-9a-f]{64}$`, display.Raw)
+	require.Regexp(t, `^ae1[0-9a-z]+$`, display.Raw)
 	require.Equal(t, addressing.ShortenAddress(recipient), display.Short)
 	require.True(t, strings.HasPrefix(display.ChainBoundChecksum, "aetra-local-1:"))
 	require.False(t, display.Known)

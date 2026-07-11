@@ -115,7 +115,7 @@ func TestFeatureDisabledMainnetProfileHasNoActiveProductionShardingBehavior(t *t
 
 	_, err := app.LoadKeeper.ApplyMetrics(loadtypes.Metrics{CanonicalMempoolSize: 1})
 	require.ErrorContains(t, err, "disabled")
-	err = app.RoutingKeeper.SetRoutingTable("4:0000000000000000000000000000000000000000000000000000000000000001", 1, []routingkeeper.ShardConfig{{ZoneID: routingtypes.ZoneFinancial, ActiveShards: 1}})
+	err = app.RoutingKeeper.SetRoutingTable("ae1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqp8e93gq", 1, []routingkeeper.ShardConfig{{ZoneID: routingtypes.ZoneFinancial, ActiveShards: 1}})
 	require.ErrorContains(t, err, "disabled")
 	err = app.ZonesKeeper.RegisterZone(zonestypes.Zone{})
 	require.ErrorContains(t, err, "disabled")
@@ -128,7 +128,7 @@ func TestFeatureDisabledMainnetProfileHasNoActiveProductionShardingBehavior(t *t
 	err = app.AetraCoreKeeper.RegisterZoneDescriptor(aetracoretypes.ZoneDescriptor{})
 	require.ErrorContains(t, err, "disabled")
 	err = app.SchedulerKeeper.RegisterScheduledJob(schedulertypes.MsgRegisterScheduledJob{
-		Authority:	"4:0000000000000000000000000000000000000000000000000000000000000001",
+		Authority:	"ae1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqp8e93gq",
 		Job: schedulertypes.ScheduledJob{
 			ID:			"disabled",
 			OwnerModule:		"aetracore",

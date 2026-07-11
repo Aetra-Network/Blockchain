@@ -1,6 +1,7 @@
 package types
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"testing"
 
@@ -206,7 +207,11 @@ func validStateValidator(t *testing.T, hexByte string) Validator {
 }
 
 func rawAddress(hexByte string) string {
-	return "4:000000000000000000000000" + stringsRepeat(hexByte, 20)
+	bz, err := hex.DecodeString(stringsRepeat(hexByte, 20))
+	if err != nil {
+		panic(err)
+	}
+	return addressing.Format(bz)
 }
 
 func aeAddressFromRaw(t *testing.T, raw string) string {

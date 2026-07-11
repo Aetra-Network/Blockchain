@@ -68,7 +68,7 @@ func TestReservedSystemAddressesParseAndMatch(t *testing.T) {
 func TestReservedSystemAddressVanitySuffixes(t *testing.T) {
 	require.Equal(t, 4, addressing.ReservedUserWorkchain)
 	require.Equal(t, -7, addressing.ReservedSystemWorkchain)
-	require.True(t, addressing.IsSystemRawAddress(addressing.SystemAddressAETElectorRaw))
+	require.True(t, strings.HasPrefix(addressing.SystemAddressAETElectorRaw, "ae1"))
 
 	elector, found := addressing.SystemAddressByName(addressing.SystemAddressAETElectorName)
 	require.True(t, found)

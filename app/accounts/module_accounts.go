@@ -223,12 +223,12 @@ func ValidateReservedSystemModuleAccountWiring(blocked map[string]bool) error {
 	}
 	if mint, found := ReservedSystemModuleAccountByName("AETMint"); !found ||
 		mint.ModuleAccountName != mintauthoritytypes.DefaultMintAuthorityModuleAccount ||
-		mint.Raw != "4:030c30c30c30c30c30c30c30c30c30c30c30c30c30c30c30c30c30c30c308353" {
+		mint.Raw != "ae1qvxrpscvxrpscvxrpscvxrpscvxrpscvxrpscvxrpscvxrpssdfsd52leu" {
 		return fmt.Errorf("mint authority address must be AETMint")
 	}
 	if burn, found := ReservedSystemModuleAccountByName("AETBurn"); !found ||
 		burn.ModuleAccountName != burntypes.ModuleName ||
-		burn.Raw != "4:004104104104104104104104104104104104104104104104104104104105444d" {
+		burn.Raw != "ae1qpqsgyzpqsgyzpqsgyzpqsgyzpqsgyzpqsgyzpqsgyzpqsg9g3xsnus8fg" {
 		return fmt.Errorf("burn sink address must be AETBurn")
 	}
 	return nil

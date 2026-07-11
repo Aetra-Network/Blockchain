@@ -32,9 +32,18 @@ func TestReservedSystemRegistryGenesisRejectsMissingAETMint(t *testing.T) {
 func TestReservedSystemRegistryGenesisRejectsWrongAETElectorRaw(t *testing.T) {
 	params := DefaultParams()
 	state := DefaultState().Normalize(params)
+	mint, found := addressing.SystemAddressByName("AETMint")
+	require.True(t, found)
 	for i := range state.Entities {
 		if state.Entities[i].Name == "AETElector" {
-			state.Entities[i].RawAddress = "4:01041041041041041041041041041041041041041041041041041042c4093391"
+			// Must be a raw address that is valid bech32 but genuinely NOT
+			// AETElector's own -- any other reserved system entity's raw
+			// address satisfies that and stays stable regardless of address
+			// format (unlike a hand-picked literal, which a future format
+			// migration could accidentally re-canonicalize into matching the
+			// real value, as happened when this literal was auto-converted
+			// from the legacy 4:<hex> form and silently became correct).
+			state.Entities[i].RawAddress = mint.Raw
 			break
 		}
 	}
@@ -50,7 +59,7 @@ func TestReservedSystemRegistryGenesisRejectsDuplicateRaw(t *testing.T) {
 	state.Entities = append(state.Entities, SystemEntity{
 		Name:			"AETDuplicate",
 		ModuleName:		"duplicate-system-address",
-		ModuleAccountAddress:	"4:0000000000000000000000001111111111111111111111111111111111111111",
+		ModuleAccountAddress:	"ae1zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3g3xeqq",
 		RawAddress:		mint.Raw,
 		AuthorityAddress:	params.Authority,
 		Status:			StatusActive,

@@ -159,7 +159,7 @@ func TestReputationExportImportPreservesSnapshots(t *testing.T) {
 func TestReputationSecurityAuthorizationAndTamperRejection(t *testing.T) {
 	state := newTestReputationState(t)
 	_, err := ApplyReputationPenalty(state, MsgApplyReputationPenalty{
-		Authority:	"4:0000000000000000000000000000000000000000000000000000000000000002",
+		Authority:	"ae1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqzf2s8xl",
 		SubjectType:	SubjectValidator,
 		Subject:	addr(1),
 		Component:	ComponentMissedBlock,

@@ -303,7 +303,7 @@ func TestStakingEventsRejectSecretsAndMisplacedValidator(t *testing.T) {
 
 	_, err = NewStakingEvent(StakingEvent{
 		Type:		EventPoolRewardsClaimed,
-		Actor:		"4:1111111111111111111111111111111111111111111111111111111111111111",
+		Actor:		"ae1zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs4ezt5k",
 		PoolContract:	pool,
 		Amount:		10,
 		Height:		1,

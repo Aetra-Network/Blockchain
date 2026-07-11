@@ -24,7 +24,7 @@ func TestGenesisRejectsMalformedAndNondeterministicState(t *testing.T) {
 	require.ErrorContains(t, keeper.InitGenesis(bad), "unsupported")
 
 	bad = DefaultGenesis()
-	bad.Params.Authority = "4:0000000000000000000000000000000000000000000000000000000000000000"
+	bad.Params.Authority = "ae1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq603y4j"
 	require.ErrorContains(t, keeper.InitGenesis(bad), "zero address")
 
 	bad = DefaultGenesis()
@@ -55,7 +55,7 @@ func TestGenesisRejectsMalformedAndNondeterministicState(t *testing.T) {
 func TestUpsertRequiresAuthorityAndRejectsUnsafeFields(t *testing.T) {
 	keeper := NewKeeper()
 
-	_, err := keeper.UpsertEntry("4:0000000000000000000000000000000000000000000000000000000000000002", "runtime/max_validators", "100", 1)
+	_, err := keeper.UpsertEntry("ae1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqzf2s8xl", "runtime/max_validators", "100", 1)
 	require.ErrorContains(t, err, "governance authority")
 
 	_, err = keeper.UpsertEntry(prototype.DefaultAuthority, " runtime/max_validators", "100", 1)
@@ -156,7 +156,7 @@ func TestPersistentRuntimeMutationSurvivesRestartAndImport(t *testing.T) {
 func TestConfigChangeLifecycleRequiresAuthority(t *testing.T) {
 	keeper := NewKeeper()
 	_, err := keeper.SubmitConfigChange(types.MsgSubmitConfigChange{
-		Authority:	"4:0000000000000000000000000000000000000000000000000000000000000002",
+		Authority:	"ae1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqzf2s8xl",
 		Change:		change("change-1", "runtime/max_validators", "100"),
 	}, 1)
 	require.ErrorContains(t, err, "governance authority")

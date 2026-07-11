@@ -689,8 +689,8 @@ func ValidateUserFacingAEAddress(field, text string) error {
 
 func ValidateRawAddress(field, text string) error {
 	text = strings.TrimSpace(text)
-	if !strings.HasPrefix(text, addressing.RawPrefix) {
-		return fmt.Errorf("%s must use 4: raw address format", field)
+	if !strings.HasPrefix(text, addressing.Bech32HRP+"1") {
+		return fmt.Errorf("%s must use ae1 raw address format", field)
 	}
 	if _, err := addressing.Parse(text); err != nil {
 		return fmt.Errorf("invalid %s: %w", field, err)

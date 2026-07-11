@@ -2,27 +2,29 @@ package addressing
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"errors"
 	"fmt"
-	"crypto/sha256"
-	"regexp"
 	"strings"
 
 	coreaddress "cosmossdk.io/core/address"
 	sdk "github.com/cosmos/cosmos-sdk/types"
+	"github.com/cosmos/cosmos-sdk/types/bech32"
 )
 
 const (
-	RawPrefix		= "4:"
-	SystemRawPrefix		= "-7:"
-	RawAddressLength	= 66
-	SystemRawAddressLength	= 67
-	UserFriendlyLength	= 46
+	// Bech32HRP is the human-readable prefix of the raw address form (ae1…). The
+	// raw address form on this chain IS standard bech32 over the canonical bytes
+	// (20 for a plain account, 32 for a native-account v2 identity) — the legacy
+	// "4:<hex>" and "-7:<hex>" prefixed-hex forms are no longer produced or
+	// parsed.
+	Bech32HRP = "ae"
+
+	UserFriendlyLength		= 46
 	UserFriendlyLegacyLength	= 48
-	UserFriendlyPrefix	= "AE"
-	ZeroRawAddress		= "4:0000000000000000000000000000000000000000000000000000000000000000"
+	UserFriendlyPrefix		= "AE"
+	// ZeroUserFriendly is the AE user-facing form of the all-zero address.
 	ZeroUserFriendly	= "AEAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 	rawPayloadLength	= 32
 	shortAddressLength	= 20
@@ -35,8 +37,9 @@ const (
 var (
 	userFriendlyLegacyMagic	= [3]byte{0x00, 0x40, 0x00}
 	userFriendlyCanonicalMagic	= [3]byte{0x00, 0x42, 0x64}
-	rawAddressRe		= regexp.MustCompile(`^4:[0-9a-f]{64}$`)
-	systemRawAddressRe	= regexp.MustCompile(`^-7:[0-9a-f]{64}$`)
+
+	// ZeroRawAddress is the bech32 (ae1…) raw form of the all-zero address.
+	ZeroRawAddress = mustFormatRaw(make([]byte, shortAddressLength))
 )
 
 type Codec struct{}
@@ -54,36 +57,44 @@ func (Codec) StringToBytes(text string) ([]byte, error) {
 	return Parse(text)
 }
 
+// Format renders the raw address form: standard bech32 (ae1…) over the canonical
+// address bytes. A 20-byte account and a 32-byte v2 identity each encode at their
+// natural width; a legacy zero-padded 32-byte input collapses to its 20
+// significant bytes first, so Format is stable regardless of which width a caller
+// happens to hold.
 func Format(bz []byte) string {
-	raw, err := ToRawPayload(bz)
+	return mustFormatRaw(bz)
+}
+
+func mustFormatRaw(bz []byte) string {
+	text, err := formatRaw(bz)
 	if err != nil {
 		panic(err)
 	}
-	return RawPrefix + hex.EncodeToString(raw)
+	return text
 }
 
-func IsSystemRawAddress(text string) bool {
-	return systemRawAddressRe.MatchString(strings.TrimSpace(text))
-}
-
-func ParseSystemRawAddress(text string) ([]byte, error) {
-	text = strings.TrimSpace(text)
-	if !systemRawAddressRe.MatchString(text) {
-		return nil, fmt.Errorf("invalid system raw address format: expected -7:<64 lowercase hex>")
+func formatRaw(bz []byte) (string, error) {
+	canonical, err := canonicalBytes(bz)
+	if err != nil {
+		return "", err
 	}
-	raw, err := hex.DecodeString(text[len(SystemRawPrefix):])
+	return bech32.ConvertAndEncode(Bech32HRP, canonical)
+}
+
+// canonicalBytes normalizes any accepted address byte width (20, 32, or a
+// zero-padded 32) to the canonical form: 20 bytes for a plain account, 32 for a
+// v2 identity.
+func canonicalBytes(bz []byte) ([]byte, error) {
+	raw, err := ToRawPayload(bz)
 	if err != nil {
 		return nil, err
 	}
-	return FromRawPayload(raw), nil
-}
-
-func FormatSystemRawAddress(raw []byte) string {
-	payload, err := ToRawPayload(raw)
-	if err != nil {
-		panic(err)
+	canonical := FromRawPayload(raw)
+	if canonical == nil {
+		return nil, fmt.Errorf("unsupported address byte length %d", len(bz))
 	}
-	return SystemRawPrefix + hex.EncodeToString(payload)
+	return canonical, nil
 }
 
 func FormatAccAddress(addr sdk.AccAddress) string {
@@ -124,17 +135,8 @@ func FormatUserFriendly(bz []byte) (string, error) {
 		return ZeroUserFriendly, nil
 	}
 	canonical := FromRawPayload(raw)
-	if len(canonical) == shortAddressLength {
-		sum := sha256.Sum256(canonical)
-		payload := make([]byte, 0, 4+userFriendlyChecksumLength+shortAddressLength)
-		payload = append(payload, userFriendlyCanonicalMagic[:]...)
-		payload = append(payload, userFriendlyCanonicalVersion)
-		payload = append(payload, sum[:userFriendlyChecksumLength]...)
-		payload = append(payload, canonical...)
-		return base64.RawURLEncoding.EncodeToString(payload), nil
-	}
 	sum := sha256.Sum256(canonical)
-	payload := make([]byte, 0, 4+userFriendlyChecksumLength+rawPayloadLength)
+	payload := make([]byte, 0, 4+userFriendlyChecksumLength+len(canonical))
 	payload = append(payload, userFriendlyCanonicalMagic[:]...)
 	payload = append(payload, userFriendlyCanonicalVersion)
 	payload = append(payload, sum[:userFriendlyChecksumLength]...)
@@ -158,87 +160,69 @@ func ParseAccAddress(text string) (sdk.AccAddress, error) {
 	return sdk.AccAddress(bz), nil
 }
 
+// Parse accepts the two supported address forms — the AE… user-friendly form and
+// the ae1… bech32 raw form — and returns the canonical address bytes. The legacy
+// "4:<hex>" / "-7:<hex>" prefixed-hex forms are rejected.
 func Parse(text string) ([]byte, error) {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return nil, errors.New("empty address string is not allowed")
 	}
-	if rawAddressRe.MatchString(text) {
-		raw, err := hex.DecodeString(text[len(RawPrefix):])
-		if err != nil {
-			return nil, err
-		}
-		return FromRawPayload(raw), nil
-	}
-	if systemRawAddressRe.MatchString(text) {
-		return ParseSystemRawAddress(text)
-	}
 	if strings.HasPrefix(text, UserFriendlyPrefix) {
 		for _, address := range reservedSystemAddresses {
 			if address.UserFriendly == text {
-				if systemRawAddressRe.MatchString(address.Raw) {
-					return ParseSystemRawAddress(address.Raw)
-				}
-				raw, err := hex.DecodeString(address.Raw[len(RawPrefix):])
-				if err != nil {
-					return nil, err
-				}
-				return FromRawPayload(raw), nil
+				return Parse(address.Raw)
 			}
 		}
+		return parseUserFriendly(text)
 	}
-	if strings.HasPrefix(text, UserFriendlyPrefix) {
-		payload, err := base64.RawURLEncoding.DecodeString(text)
-		if err != nil {
-			return nil, err
+	// Decode the ae1… bech32 raw form directly against the canonical HRP so
+	// parsing never depends on the SDK's global bech32 config being initialized
+	// (account, validator, and consensus prefixes are all Bech32HRP on this
+	// chain, so one decode covers every role).
+	if hrp, bz, err := bech32.DecodeAndConvert(text); err == nil && hrp == Bech32HRP {
+		if verifyErr := sdk.VerifyAddressFormat(bz); verifyErr != nil {
+			return nil, verifyErr
 		}
-		switch len(payload) {
-		case 34:
-			if !hasUserFriendlyHeader(payload, userFriendlyCanonicalVersion) {
-				return nil, fmt.Errorf("invalid AE userfriendly address header")
-			}
-			checksum := sha256.Sum256(payload[14:])
-			if !bytes.Equal(payload[4:14], checksum[:userFriendlyChecksumLength]) {
-				return nil, fmt.Errorf("invalid AE userfriendly address checksum")
-			}
-			out := make([]byte, shortAddressLength)
-			copy(out, payload[14:])
-			return out, nil
-		case 36:
-			if !hasLegacyOrCanonicalUserFriendlyHeader(payload) {
-				return nil, fmt.Errorf("invalid AE userfriendly address header")
-			}
-			return FromRawPayload(payload[4:]), nil
-		case 46:
-			if !hasUserFriendlyHeader(payload, userFriendlyCanonicalVersion) {
-				return nil, fmt.Errorf("invalid AE userfriendly address header")
-			}
-			checksum := sha256.Sum256(payload[14:])
-			if !bytes.Equal(payload[4:14], checksum[:userFriendlyChecksumLength]) {
-				return nil, fmt.Errorf("invalid AE userfriendly address checksum")
-			}
-			return FromRawPayload(payload[14:]), nil
-		default:
-			return nil, fmt.Errorf("invalid AE userfriendly address length")
-		}
+		return bz, nil
 	}
-	for _, prefix := range []string{
-		sdk.GetConfig().GetBech32AccountAddrPrefix(),
-		sdk.GetConfig().GetBech32ValidatorAddrPrefix(),
-		sdk.GetConfig().GetBech32ConsensusAddrPrefix(),
-	} {
-		if prefix == "" {
-			continue
-		}
-		bz, err := sdk.GetFromBech32(text, prefix)
-		if err == nil {
-			if verifyErr := sdk.VerifyAddressFormat(bz); verifyErr != nil {
-				return nil, verifyErr
-			}
-			return bz, nil
-		}
+	return nil, fmt.Errorf("invalid address format: expected an AE… user-friendly or ae1… bech32 address")
+}
+
+func parseUserFriendly(text string) ([]byte, error) {
+	payload, err := base64.RawURLEncoding.DecodeString(text)
+	if err != nil {
+		return nil, err
 	}
-	return nil, fmt.Errorf("invalid address format: expected 4:<64 lowercase hex>, -7:<64 lowercase hex>, or AE userfriendly address")
+	switch len(payload) {
+	case 34:
+		if !hasUserFriendlyHeader(payload, userFriendlyCanonicalVersion) {
+			return nil, fmt.Errorf("invalid AE userfriendly address header")
+		}
+		checksum := sha256.Sum256(payload[14:])
+		if !bytes.Equal(payload[4:14], checksum[:userFriendlyChecksumLength]) {
+			return nil, fmt.Errorf("invalid AE userfriendly address checksum")
+		}
+		out := make([]byte, shortAddressLength)
+		copy(out, payload[14:])
+		return out, nil
+	case 36:
+		if !hasLegacyOrCanonicalUserFriendlyHeader(payload) {
+			return nil, fmt.Errorf("invalid AE userfriendly address header")
+		}
+		return FromRawPayload(payload[4:]), nil
+	case 46:
+		if !hasUserFriendlyHeader(payload, userFriendlyCanonicalVersion) {
+			return nil, fmt.Errorf("invalid AE userfriendly address header")
+		}
+		checksum := sha256.Sum256(payload[14:])
+		if !bytes.Equal(payload[4:14], checksum[:userFriendlyChecksumLength]) {
+			return nil, fmt.Errorf("invalid AE userfriendly address checksum")
+		}
+		return FromRawPayload(payload[14:]), nil
+	default:
+		return nil, fmt.Errorf("invalid AE userfriendly address length")
+	}
 }
 
 func hasUserFriendlyHeader(payload []byte, version byte) bool {

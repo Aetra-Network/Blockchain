@@ -361,8 +361,8 @@ func validateAddressPair(field string, pair AddressPair) error {
 	if formattedUser != pair.User {
 		return fmt.Errorf("AVM message ABI %s user address is not canonical", field)
 	}
-	if !strings.HasPrefix(pair.Raw, addressing.RawPrefix) {
-		return fmt.Errorf("AVM message ABI %s raw address must use 4: format", field)
+	if !strings.HasPrefix(pair.Raw, addressing.Bech32HRP+"1") {
+		return fmt.Errorf("AVM message ABI %s raw address must use ae1 format", field)
 	}
 	rawBytes, err := addressing.Parse(pair.Raw)
 	if err != nil {

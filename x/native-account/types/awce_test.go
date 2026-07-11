@@ -150,7 +150,7 @@ func TestAccountExportDoesNotIncludeTokenOrNFTLedgers(t *testing.T) {
 	a := Account{
 		Version:	CurrentAccountVersion,
 		AddressUser:	"AEAAAQAAAAAAAAAAAAAAAEUbdGZPtxfNGqVYNkCDBOHufbxq",
-		AddressRaw:	"4:000000000000000000000000451b74664fb717cd1aa55836408304e1ee7dbc6a",
+		AddressRaw:	"ae1g5dhgej0kutu6x49tqmypqcyu8h8m0r2fwk2gq",
 		Status:		AccountStatusActive,
 		CreatedHeight:	100,
 		AuthPolicy:	DefaultAuthPolicy(),
@@ -179,7 +179,7 @@ func TestAccountHasNoBalanceFields(t *testing.T) {
 	a := Account{
 		Version:	CurrentAccountVersion,
 		AddressUser:	"AEAAAQAAAAAAAAAAAAAAAEUbdGZPtxfNGqVYNkCDBOHufbxq",
-		AddressRaw:	"4:000000000000000000000000451b74664fb717cd1aa55836408304e1ee7dbc6a",
+		AddressRaw:	"ae1g5dhgej0kutu6x49tqmypqcyu8h8m0r2fwk2gq",
 		Status:		AccountStatusActive,
 		CreatedHeight:	100,
 	}
@@ -349,7 +349,7 @@ func TestFrozenAccountRejectsAllButRecoveryTopUpDebtUnfreeze(t *testing.T) {
 	account := Account{
 		Version:	CurrentAccountVersion,
 		AddressUser:	"AEAAAQAAAAAAAAAAAAAAAEUbdGZPtxfNGqVYNkCDBOHufbxq",
-		AddressRaw:	"4:000000000000000000000000451b74664fb717cd1aa55836408304e1ee7dbc6a",
+		AddressRaw:	"ae1g5dhgej0kutu6x49tqmypqcyu8h8m0r2fwk2gq",
 		Status:		AccountStatusFrozen,
 		CreatedHeight:	100,
 	}
@@ -439,7 +439,7 @@ func TestNoPrivateKeyInAccount(t *testing.T) {
 	account := Account{
 		Version:	CurrentAccountVersion,
 		AddressUser:	"AEAAAQAAAAAAAAAAAAAAAEUbdGZPtxfNGqVYNkCDBOHufbxq",
-		AddressRaw:	"4:000000000000000000000000451b74664fb717cd1aa55836408304e1ee7dbc6a",
+		AddressRaw:	"ae1g5dhgej0kutu6x49tqmypqcyu8h8m0r2fwk2gq",
 		Status:		AccountStatusActive,
 		CreatedHeight:	100,
 	}
@@ -464,7 +464,7 @@ func TestStorageRentDebt(t *testing.T) {
 }
 
 func TestStorageRentZeroDebtInactive(t *testing.T) {
-	debt := NewStorageRentDebt("4:000000000000000000000000451b74664fb717cd1aa55836408304e1ee7dbc6a")
+	debt := NewStorageRentDebt("ae1g5dhgej0kutu6x49tqmypqcyu8h8m0r2fwk2gq")
 	if debt.IsActiveDebt() {
 		t.Error("zero debt should not be active")
 	}
@@ -477,7 +477,7 @@ func TestActivationCreatesAccount(t *testing.T) {
 	account := Account{
 		Version:	CurrentAccountVersion,
 		AddressUser:	"AEAAAQAAAAAAAAAAAAAAAEUbdGZPtxfNGqVYNkCDBOHufbxq",
-		AddressRaw:	"4:000000000000000000000000451b74664fb717cd1aa55836408304e1ee7dbc6a",
+		AddressRaw:	"ae1g5dhgej0kutu6x49tqmypqcyu8h8m0r2fwk2gq",
 		Status:		AccountStatusInactive,
 		CreatedHeight:	0,
 	}
@@ -534,7 +534,7 @@ func TestValidateActivation(t *testing.T) {
 
 func TestAEToFourRoundTrip(t *testing.T) {
 	user := "AEAAAQAAAAAAAAAAAAAAAEUbdGZPtxfNGqVYNkCDBOHufbxq"
-	raw := "4:000000000000000000000000451b74664fb717cd1aa55836408304e1ee7dbc6a"
+	raw := "ae1g5dhgej0kutu6x49tqmypqcyu8h8m0r2fwk2gq"
 	pair := addressing.AddressPair{Role: addressing.AddressRoleAccount, User: user, Raw: raw}
 	if err := ValidateAddressPairConsistency(pair); err != nil {
 		t.Fatalf("address pair should be consistent: %v", err)
@@ -542,7 +542,7 @@ func TestAEToFourRoundTrip(t *testing.T) {
 }
 
 func TestFourToAERoundTrip(t *testing.T) {
-	raw := "4:000000000000000000000000451b74664fb717cd1aa55836408304e1ee7dbc6a"
+	raw := "ae1g5dhgej0kutu6x49tqmypqcyu8h8m0r2fwk2gq"
 	user := "AEAAAQAAAAAAAAAAAAAAAEUbdGZPtxfNGqVYNkCDBOHufbxq"
 	pair := addressing.AddressPair{Role: addressing.AddressRoleAccount, User: user, Raw: raw}
 	if err := ValidateAddressPairConsistency(pair); err != nil {
@@ -585,7 +585,7 @@ func TestActiveAccountCanDeployContract(t *testing.T) {
 	account := Account{
 		Version:	CurrentAccountVersion,
 		AddressUser:	"AEAAAQAAAAAAAAAAAAAAAEUbdGZPtxfNGqVYNkCDBOHufbxq",
-		AddressRaw:	"4:000000000000000000000000451b74664fb717cd1aa55836408304e1ee7dbc6a",
+		AddressRaw:	"ae1g5dhgej0kutu6x49tqmypqcyu8h8m0r2fwk2gq",
 		Status:		AccountStatusActive,
 		CreatedHeight:	100,
 		Sequence:	0,
@@ -617,7 +617,7 @@ func TestInactiveAccountCannotExecuteNonActivationMessage(t *testing.T) {
 	account := Account{
 		Version:	CurrentAccountVersion,
 		AddressUser:	"AEAAAQAAAAAAAAAAAAAAAEUbdGZPtxfNGqVYNkCDBOHufbxq",
-		AddressRaw:	"4:000000000000000000000000451b74664fb717cd1aa55836408304e1ee7dbc6a",
+		AddressRaw:	"ae1g5dhgej0kutu6x49tqmypqcyu8h8m0r2fwk2gq",
 		Status:		AccountStatusInactive,
 		CreatedHeight:	0,
 		Sequence:	0,
@@ -640,7 +640,7 @@ func TestInactiveAccountCannotExecuteNonActivationMessage(t *testing.T) {
 
 func TestExternalInternalReceiptIdentifiesAEAndFourAddresses(t *testing.T) {
 	userAddr := "AEAAAQAAAAAAAAAAAAAAAEUbdGZPtxfNGqVYNkCDBOHufbxq"
-	rawAddr := "4:000000000000000000000000451b74664fb717cd1aa55836408304e1ee7dbc6a"
+	rawAddr := "ae1g5dhgej0kutu6x49tqmypqcyu8h8m0r2fwk2gq"
 	pair := addressing.AddressPair{Role: addressing.AddressRoleAccount, User: userAddr, Raw: rawAddr}
 	if err := ValidateAddressPairConsistency(pair); err != nil {
 		t.Fatalf("address pair must be consistent: %v", err)
@@ -648,8 +648,8 @@ func TestExternalInternalReceiptIdentifiesAEAndFourAddresses(t *testing.T) {
 	if !strings.HasPrefix(userAddr, "AE") {
 		t.Error("external facing address must start with AE")
 	}
-	if !strings.HasPrefix(rawAddr, "4:") {
-		t.Error("internal raw address must start with 4:")
+	if !strings.HasPrefix(rawAddr, "ae1") {
+		t.Error("internal raw address must start with ae1")
 	}
 	if err := ValidateUserFacingAEAddress("receipt", userAddr); err != nil {
 		t.Errorf("external receipt should carry valid AE address: %v", err)
@@ -670,7 +670,7 @@ func TestInternalMessageCannotBypassAccountAuth(t *testing.T) {
 	account := Account{
 		Version:	CurrentAccountVersion,
 		AddressUser:	"AEAAAQAAAAAAAAAAAAAAAEUbdGZPtxfNGqVYNkCDBOHufbxq",
-		AddressRaw:	"4:000000000000000000000000451b74664fb717cd1aa55836408304e1ee7dbc6a",
+		AddressRaw:	"ae1g5dhgej0kutu6x49tqmypqcyu8h8m0r2fwk2gq",
 		Status:		AccountStatusActive,
 		CreatedHeight:	100,
 	}
@@ -733,7 +733,7 @@ func TestActiveAccountMetadataAccruesRent(t *testing.T) {
 }
 
 func TestContractCodeDataAccruesRent(t *testing.T) {
-	debt := NewStorageRentDebt("4:000000000000000000000000451b74664fb717cd1aa55836408304e1ee7dbc6a")
+	debt := NewStorageRentDebt("ae1g5dhgej0kutu6x49tqmypqcyu8h8m0r2fwk2gq")
 	debt.CurrentDebt = 500
 	debt.AccumulatedRent = 500
 	if !debt.IsActiveDebt() {
@@ -748,7 +748,7 @@ func TestFrozenWalletStateBalancePreserved(t *testing.T) {
 	account := Account{
 		Version:		CurrentAccountVersion,
 		AddressUser:		"AEAAAQAAAAAAAAAAAAAAAEUbdGZPtxfNGqVYNkCDBOHufbxq",
-		AddressRaw:		"4:000000000000000000000000451b74664fb717cd1aa55836408304e1ee7dbc6a",
+		AddressRaw:		"ae1g5dhgej0kutu6x49tqmypqcyu8h8m0r2fwk2gq",
 		Status:			AccountStatusFrozen,
 		CreatedHeight:		100,
 		StorageRentDebt:	200,
@@ -788,7 +788,7 @@ func TestTopUpPayDebtUnfreezeRestoresActive(t *testing.T) {
 	account := Account{
 		Version:		CurrentAccountVersion,
 		AddressUser:		"AEAAAQAAAAAAAAAAAAAAAEUbdGZPtxfNGqVYNkCDBOHufbxq",
-		AddressRaw:		"4:000000000000000000000000451b74664fb717cd1aa55836408304e1ee7dbc6a",
+		AddressRaw:		"ae1g5dhgej0kutu6x49tqmypqcyu8h8m0r2fwk2gq",
 		Status:			AccountStatusFrozen,
 		CreatedHeight:		100,
 		StorageRentDebt:	200,
@@ -854,7 +854,7 @@ func TestTokenNFTQueryReadsContractRegistryNotAccountState(t *testing.T) {
 	a := Account{
 		Version:	CurrentAccountVersion,
 		AddressUser:	"AEAAAQAAAAAAAAAAAAAAAEUbdGZPtxfNGqVYNkCDBOHufbxq",
-		AddressRaw:	"4:000000000000000000000000451b74664fb717cd1aa55836408304e1ee7dbc6a",
+		AddressRaw:	"ae1g5dhgej0kutu6x49tqmypqcyu8h8m0r2fwk2gq",
 		Status:		AccountStatusActive,
 		CreatedHeight:	100,
 		AuthPolicy:	DefaultAuthPolicy(),
@@ -884,7 +884,7 @@ func TestPoolDepositUpdatesPoolShareReputationOnly(t *testing.T) {
 	account := Account{
 		Version:	CurrentAccountVersion,
 		AddressUser:	"AEAAAQAAAAAAAAAAAAAAAEUbdGZPtxfNGqVYNkCDBOHufbxq",
-		AddressRaw:	"4:000000000000000000000000451b74664fb717cd1aa55836408304e1ee7dbc6a",
+		AddressRaw:	"ae1g5dhgej0kutu6x49tqmypqcyu8h8m0r2fwk2gq",
 		Status:		AccountStatusActive,
 		CreatedHeight:	100,
 		AuthPolicy:	DefaultAuthPolicy(),
@@ -902,7 +902,7 @@ func TestDirectValidatorDelegationRejected(t *testing.T) {
 	account := Account{
 		Version:	CurrentAccountVersion,
 		AddressUser:	"AEAAAQAAAAAAAAAAAAAAAEUbdGZPtxfNGqVYNkCDBOHufbxq",
-		AddressRaw:	"4:000000000000000000000000451b74664fb717cd1aa55836408304e1ee7dbc6a",
+		AddressRaw:	"ae1g5dhgej0kutu6x49tqmypqcyu8h8m0r2fwk2gq",
 		Status:		AccountStatusActive,
 		CreatedHeight:	100,
 		AuthPolicy:	DefaultAuthPolicy(),
@@ -920,7 +920,7 @@ func TestPoolClaimUpdatesUnifiedIdentityReputation(t *testing.T) {
 	account := Account{
 		Version:	CurrentAccountVersion,
 		AddressUser:	"AEAAAQAAAAAAAAAAAAAAAEUbdGZPtxfNGqVYNkCDBOHufbxq",
-		AddressRaw:	"4:000000000000000000000000451b74664fb717cd1aa55836408304e1ee7dbc6a",
+		AddressRaw:	"ae1g5dhgej0kutu6x49tqmypqcyu8h8m0r2fwk2gq",
 		Status:		AccountStatusActive,
 		CreatedHeight:	100,
 		AuthPolicy:	DefaultAuthPolicy(),
@@ -938,7 +938,7 @@ func TestLowReputationAccountCanDeployContracts(t *testing.T) {
 	account := Account{
 		Version:	CurrentAccountVersion,
 		AddressUser:	"AEAAAQAAAAAAAAAAAAAAAEUbdGZPtxfNGqVYNkCDBOHufbxq",
-		AddressRaw:	"4:000000000000000000000000451b74664fb717cd1aa55836408304e1ee7dbc6a",
+		AddressRaw:	"ae1g5dhgej0kutu6x49tqmypqcyu8h8m0r2fwk2gq",
 		Status:		AccountStatusActive,
 		CreatedHeight:	100,
 		AuthPolicy: AuthPolicy{
@@ -970,7 +970,7 @@ func TestContractExecutionEmitsBehaviorSignalsNoReputationState(t *testing.T) {
 	account := Account{
 		Version:	CurrentAccountVersion,
 		AddressUser:	"AEAAAQAAAAAAAAAAAAAAAEUbdGZPtxfNGqVYNkCDBOHufbxq",
-		AddressRaw:	"4:000000000000000000000000451b74664fb717cd1aa55836408304e1ee7dbc6a",
+		AddressRaw:	"ae1g5dhgej0kutu6x49tqmypqcyu8h8m0r2fwk2gq",
 		Status:		AccountStatusActive,
 		CreatedHeight:	100,
 		AuthPolicy:	DefaultAuthPolicy(),
@@ -987,7 +987,7 @@ func TestReputationExportImportPreservesScoreConfidenceDecayStakeTime(t *testing
 	account := Account{
 		Version:	CurrentAccountVersion,
 		AddressUser:	"AEAAAQAAAAAAAAAAAAAAAEUbdGZPtxfNGqVYNkCDBOHufbxq",
-		AddressRaw:	"4:000000000000000000000000451b74664fb717cd1aa55836408304e1ee7dbc6a",
+		AddressRaw:	"ae1g5dhgej0kutu6x49tqmypqcyu8h8m0r2fwk2gq",
 		Status:		AccountStatusActive,
 		CreatedHeight:	100,
 		AuthPolicy:	DefaultAuthPolicy(),
@@ -1019,7 +1019,7 @@ func TestDomainSupportOnWalletAndContracts(t *testing.T) {
 	account := Account{
 		Version:	CurrentAccountVersion,
 		AddressUser:	"AEAAAQAAAAAAAAAAAAAAAEUbdGZPtxfNGqVYNkCDBOHufbxq",
-		AddressRaw:	"4:000000000000000000000000451b74664fb717cd1aa55836408304e1ee7dbc6a",
+		AddressRaw:	"ae1g5dhgej0kutu6x49tqmypqcyu8h8m0r2fwk2gq",
 		Status:		AccountStatusActive,
 		CreatedHeight:	100,
 		Metadata:	m,

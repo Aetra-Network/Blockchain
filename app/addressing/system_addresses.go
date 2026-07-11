@@ -20,10 +20,10 @@ const (
 	SystemAddressAETConfigUserFriendly	= "AEAAAQCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCONFIG"
 	SystemAddressAETMintUserFriendly	= "AEAAAQMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMINT"
 	SystemAddressAETBurnUserFriendly	= "AEAAAQBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBURN"
-	SystemAddressAETElectorRaw		= "-7:01041041041041041041041041041041041041041041041041041042c4093391"
-	SystemAddressAETConfigRaw		= "-7:008208208208208208208208208208208208208208208208208208208e345206"
-	SystemAddressAETMintRaw			= "4:030c30c30c30c30c30c30c30c30c30c30c30c30c30c30c30c30c30c30c308353"
-	SystemAddressAETBurnRaw			= "4:004104104104104104104104104104104104104104104104104104104105444d"
+	SystemAddressAETElectorRaw		= "ae1qyzpqsgyzpqsgyzpqsgyzpqsgyzpqsgyzpqsgyzpqsgy93qfxwgsytz7gk"
+	SystemAddressAETConfigRaw		= "ae1qzpqsgyzpqsgyzpqsgyzpqsgyzpqsgyzpqsgyzpqsgyzpr352grqdcrmfc"
+	SystemAddressAETMintRaw			= "ae1qvxrpscvxrpscvxrpscvxrpscvxrpscvxrpscvxrpscvxrpssdfsd52leu"
+	SystemAddressAETBurnRaw			= "ae1qpqsgyzpqsgyzpqsgyzpqsgyzpqsgyzpqsgyzpqsgyzpqsg9g3xsnus8fg"
 )
 
 type SystemAddress struct {
@@ -85,34 +85,34 @@ var systemAddressDescriptions = map[string]string{
 var reservedSystemAddresses = []SystemAddress{
 	systemAddress(SystemAddressAETElectorName, "validator-election", SystemAddressAETElectorRaw, SystemAddressAETElectorUserFriendly, true, false, false, false),
 	systemAddress(SystemAddressAETConfigName, "config", SystemAddressAETConfigRaw, SystemAddressAETConfigUserFriendly, true, false, false, false),
-	systemAddress("AETConstitution", "constitution", "-7:034d34d34d34d34d34d34d34d34d34d34d34d34d34d34d34d34d34d34d34d34d", "AEAAAQNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN", true, false, false, false),
-	systemAddress("AETSystemRegistry", "system-registry", "-7:0451451451451451451451451451451451451451451451451451451451451451", "AEAAAQRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR", true, false, false, false),
-	systemAddress("AETValidatorRegistry", "validator-registry", "-7:0555555555555555555555555555555555555555555555555555555555555555", "AEAAAQVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV", true, false, false, false),
-	systemAddress("AETConfigVoting", "config-voting", "-7:0186186186186186186186186186186186186186186186186186186186186186", "AEAAAQGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG", true, false, false, false),
+	systemAddress("AETConstitution", "constitution", "ae1qdxnf56dxnf56dxnf56dxnf56dxnf56dxnf56dxnf56dxnf56dxsd58wh5", "AEAAAQNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN", true, false, false, false),
+	systemAddress("AETSystemRegistry", "system-registry", "ae1q3g529z3g529z3g529z3g529z3g529z3g529z3g529z3g529z3gs92n6gy", "AEAAAQRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR", true, false, false, false),
+	systemAddress("AETValidatorRegistry", "validator-registry", "ae1q42424242424242424242424242424242424242424242424242sr903zu", "AEAAAQVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV", true, false, false, false),
+	systemAddress("AETConfigVoting", "config-voting", "ae1qxrpscvxrpscvxrpscvxrpscvxrpscvxrpscvxrpscvxrpscvxrqwjq8cx", "AEAAAQGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG", true, false, false, false),
 
 	systemAddress(SystemAddressAETMintName, "mint-authority", SystemAddressAETMintRaw, SystemAddressAETMintUserFriendly, false, false, false, false),
 	systemAddress(SystemAddressAETBurnName, "burn", SystemAddressAETBurnRaw, SystemAddressAETBurnUserFriendly, false, false, true, false),
-	systemAddress("AETEvidence", "evidence", "4:00c30c30c30c30c30c30c30c30c30c30c30c30c30c30c30c30c30c30c30c30c3", "AEAAAQDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD", false, false, false, false),
-	systemAddress("AETReporterRewards", "reporter", "4:03cf3cf3cf3cf3cf3cf3cf3cf3cf3cf3cf3cf3cf3cf3cf3cf3cf3cf3cf3cf3cf", "AEAAAQPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP", false, true, false, false),
-	systemAddress("AETNominatorPool", "nominator-pool", "4:038e38e38e38e38e38e38e38e38e38e38e38e38e38e38e38e38e38e38e38e38e", "AEAAAQOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO", false, false, false, false),
-	systemAddress("AETSingleNominatorPool", "single-nominator-pool", "4:0492492492492492492492492492492492492492492492492492492492492492", "AEAAAQSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS", false, false, false, false),
-	systemAddress("AETValidatorInsurance", "validator-insurance", "4:0208208208208208208208208208208208208208208208208208208208208208", "AEAAAQIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII", false, true, false, false),
-	systemAddress("AETDelegatorProtection", "delegator-protection", "4:02cb2cb2cb2cb2cb2cb2cb2cb2cb2cb2cb2cb2cb2cb2cb2cb2cb2cb2cb2cb2cb", "AEAAAQLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL", false, true, false, false),
-	systemAddress("AETReputation", "reputation", "4:0514514514514514514514514514514514514514514514514514514514514514", "AEAAAQUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUU", false, false, false, false),
-	systemAddress("AETPerformanceOracle", "performance-oracle", "4:0145145145145145145145145145145145145145145145145145145145145145", "AEAAAQFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", false, false, false, false),
-	systemAddress("AETStakeConcentration", "stake-concentration", "4:028a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a", "AEAAAQKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK", false, false, false, false),
-	systemAddress("AETDynamicCommission", "dynamic-commission", "4:0249249249249249249249249249249249249249249249249249249249249249", "AEAAAQJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJ", false, false, false, false),
-	systemAddress("AETEmissions", "emissions", "4:0618618618618618618618618618618618618618618618618618618618618618", "AEAAAQYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY", false, false, false, false),
-	systemAddress("AETFeeCollector", "fee-collector", "4:0410410410410410410410410410410410410410410410410410410410410410", "AEAAAQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ", false, true, false, false),
-	systemAddress("AETTreasury", "treasury", "4:04d34d34d34d34d34d34d34d34d34d34d34d34d34d34d34d34d34d34d34d34d3", "AEAAAQTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT", false, true, false, false),
-	systemAddress("AETScheduler", "scheduler", "4:01c71c71c71c71c71c71c71c71c71c71c71c71c71c71c71c71c71c71c71c71c7", "AEAAAQHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH", false, false, false, false),
-	systemAddress("AETAVMScheduler", "avm-scheduler", "4:0596596596596596596596596596596596596596596596596596596596596596", "AEAAAQWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW", false, false, false, false),
-	systemAddress("AETActorRegistry", "actor-registry", "4:05d75d75d75d75d75d75d75d75d75d75d75d75d75d75d75d75d75d75d75d75d7", "AEAAAQXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX", false, false, false, false),
-	systemAddress("AETStorageRent", "storage-rent", "4:0659659659659659659659659659659659659659659659659659659659659659", "AEAAAQZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ", false, true, false, false),
-	systemAddress("AETIdentityRoot", "identity-root", "4:0211211211211211211211211211211211211211211211211211211211211211", "AEAAAQIRIRIRIRIRIRIRIRIRIRIRIRIRIRIRIRIRIRIRIRIR", false, false, false, false),
-	systemAddress("AETBridgeHub", "bridge-hub", "4:0047047047047047047047047047047047047047047047047047047047047047", "AEAAAQBHBHBHBHBHBHBHBHBHBHBHBHBHBHBHBHBHBHBHBHBH", false, false, false, false),
-	systemAddress("AETCrossChainRegistry", "cross-chain-registry", "4:0082082082082082082082082082082082082082082082082082082082082082", "AEAAAQCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC", false, false, false, false),
-	systemAddress("AETShardingCoordinator", "sharding-coordinator", "4:0487487487487487487487487487487487487487487487487487487487487487", "AEAAAQSHSHSHSHSHSHSHSHSHSHSHSHSHSHSHSHSHSHSHSHSH", false, false, false, false),
+	systemAddress("AETEvidence", "evidence", "ae1qrpscvxrpscvxrpscvxrpscvxrpscvxrpscvxrpscvxrpscvxrpsa6rxg9", "AEAAAQDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD", false, false, false, false),
+	systemAddress("AETReporterRewards", "reporter", "ae1q08neu708neu708neu708neu708neu708neu708neu708neu708st94ymj", "AEAAAQPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP", false, true, false, false),
+	systemAddress("AETNominatorPool", "nominator-pool", "ae1qw8r3cuw8r3cuw8r3cuw8r3cuw8r3cuw8r3cuw8r3cuw8r3cuw8q7z2wpf", "AEAAAQOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO", false, false, false, false),
+	systemAddress("AETSingleNominatorPool", "single-nominator-pool", "ae1qjfyjfyjfyjfyjfyjfyjfyjfyjfyjfyjfyjfyjfyjfyjfyjfyjfqku767e", "AEAAAQSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS", false, false, false, false),
+	systemAddress("AETValidatorInsurance", "validator-insurance", "ae1qgyzpqsgyzpqsgyzpqsgyzpqsgyzpqsgyzpqsgyzpqsgyzpqsgyq7uy08h", "AEAAAQIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII", false, true, false, false),
+	systemAddress("AETDelegatorProtection", "delegator-protection", "ae1qt9jevkt9jevkt9jevkt9jevkt9jevkt9jevkt9jevkt9jevkt9sd2f032", "AEAAAQLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL", false, true, false, false),
+	systemAddress("AETReputation", "reputation", "ae1q529z3g529z3g529z3g529z3g529z3g529z3g529z3g529z3g52qkzsmc8", "AEAAAQUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUU", false, false, false, false),
+	systemAddress("AETPerformanceOracle", "performance-oracle", "ae1q9z3g529z3g529z3g529z3g529z3g529z3g529z3g529z3g529zsayd8wm", "AEAAAQFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", false, false, false, false),
+	systemAddress("AETStakeConcentration", "stake-concentration", "ae1q29z3g529z3g529z3g529z3g529z3g529z3g529z3g529z3g529qcdk9t3", "AEAAAQKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK", false, false, false, false),
+	systemAddress("AETDynamicCommission", "dynamic-commission", "ae1qfyjfyjfyjfyjfyjfyjfyjfyjfyjfyjfyjfyjfyjfyjfyjfyjfystmm9av", "AEAAAQJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJ", false, false, false, false),
+	systemAddress("AETEmissions", "emissions", "ae1qcvxrpscvxrpscvxrpscvxrpscvxrpscvxrpscvxrpscvxrpscvqqaxets", "AEAAAQYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY", false, false, false, false),
+	systemAddress("AETFeeCollector", "fee-collector", "ae1qsgyzpqsgyzpqsgyzpqsgyzpqsgyzpqsgyzpqsgyzpqsgyzpqsgqsdvsjl", "AEAAAQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ", false, true, false, false),
+	systemAddress("AETTreasury", "treasury", "ae1qnf56dxnf56dxnf56dxnf56dxnf56dxnf56dxnf56dxnf56dxnfsrmpsyz", "AEAAAQTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT", false, true, false, false),
+	systemAddress("AETScheduler", "scheduler", "ae1q8r3cuw8r3cuw8r3cuw8r3cuw8r3cuw8r3cuw8r3cuw8r3cuw8rsm4ldza", "AEAAAQHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH", false, false, false, false),
+	systemAddress("AETAVMScheduler", "avm-scheduler", "ae1qkt9jevkt9jevkt9jevkt9jevkt9jevkt9jevkt9jevkt9jevktqsnz35p", "AEAAAQWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW", false, false, false, false),
+	systemAddress("AETActorRegistry", "actor-registry", "ae1qht46awht46awht46awht46awht46awht46awht46awht46awhts95amw6", "AEAAAQXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX", false, false, false, false),
+	systemAddress("AETStorageRent", "storage-rent", "ae1qevkt9jevkt9jevkt9jevkt9jevkt9jevkt9jevkt9jevkt9jevs46en3t", "AEAAAQZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ", false, true, false, false),
+	systemAddress("AETIdentityRoot", "identity-root", "ae1qggjzys3yyfpzggjzys3yyfpzggjzys3yyfpzggjzys3yyfpzggsc5rpwe", "AEAAAQIRIRIRIRIRIRIRIRIRIRIRIRIRIRIRIRIRIRIRIRIR", false, false, false, false),
+	systemAddress("AETBridgeHub", "bridge-hub", "ae1qprsguz8q3cywprsguz8q3cywprsguz8q3cywprsguz8q3cywprsmj8vve", "AEAAAQBHBHBHBHBHBHBHBHBHBHBHBHBHBHBHBHBHBHBHBHBH", false, false, false, false),
+	systemAddress("AETCrossChainRegistry", "cross-chain-registry", "ae1qzpqsgyzpqsgyzpqsgyzpqsgyzpqsgyzpqsgyzpqsgyzpqsgyzpqgauvj7", "AEAAAQCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC", false, false, false, false),
+	systemAddress("AETShardingCoordinator", "sharding-coordinator", "ae1qjr5say8fp6gwjr5say8fp6gwjr5say8fp6gwjr5say8fp6gwjrsxas8ts", "AEAAAQSHSHSHSHSHSHSHSHSHSHSHSHSHSHSHSHSHSHSHSHSH", false, false, false, false),
 }
 
 func systemAddress(name, moduleName, raw, userFriendly string, core, canHoldFunds, canReceiveUserFunds, canSendFunds bool) SystemAddress {

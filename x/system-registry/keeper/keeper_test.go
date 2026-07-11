@@ -243,7 +243,7 @@ func TestPersistentRuntimeMutationSurvivesRestartAndImport(t *testing.T) {
 func TestMaliciousAuthorityCannotUpdateRegistry(t *testing.T) {
 	k := NewKeeper()
 	_, _, err := k.RegisterSystemEntity(types.MsgRegisterSystemEntity{
-		Authority:	"4:0000000000000000000000000000000000000000000000000000000000000002",
+		Authority:	"ae1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqzf2s8xl",
 		Entity: types.SystemEntity{
 			ModuleName:		"malicious",
 			ModuleAccountAddress:	testAddress(0x70),

@@ -59,25 +59,25 @@ func TestExecutionOSDiagnosticsCommandReadsGenesis(t *testing.T) {
   "app_state": {
     "load": {
       "Version": 1,
-      "Params": {"Enabled": true, "TestnetProfile": true, "ProductionVersionGate": "", "Authority": "4:0000000000000000000000000000000000000000000000000000000000000001", "DefaultQueryLimit": 50, "MaxQueryLimit": 200},
+      "Params": {"Enabled": true, "TestnetProfile": true, "ProductionVersionGate": "", "Authority": "ae1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqp8e93gq", "DefaultQueryLimit": 50, "MaxQueryLimit": 200},
       "LoadParams": {"WindowBlocks":60,"AlphaNumerator":2,"AlphaDenominator":61,"MaxDeltaBps":500,"TargetMempoolSize":10000,"TargetBlockGas":20000000,"TargetLatencyBlocks":5,"TargetExecutionSteps":20000000,"MempoolSizeWeightBps":2000,"BlockUtilizationWeightBps":3000,"TxLatencyWeightBps":2000,"FailureRateWeightBps":1000,"ExecutionTimeWeightBps":2000},
       "EMA": {"LoadScoreBps": 500, "WindowHeight": 1},
       "History": []
     },
     "routing": {
       "Version": 1,
-      "Params": {"Enabled": true, "TestnetProfile": true, "ProductionVersionGate": "", "Authority": "4:0000000000000000000000000000000000000000000000000000000000000001", "DefaultQueryLimit": 50, "MaxQueryLimit": 200},
+      "Params": {"Enabled": true, "TestnetProfile": true, "ProductionVersionGate": "", "Authority": "ae1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqp8e93gq", "DefaultQueryLimit": 50, "MaxQueryLimit": 200},
       "RoutingEpoch": 1,
       "Shards": [{"ZoneID": "FINANCIAL_ZONE", "ActiveShards": 2}]
     },
     "zones": {
       "Version": 1,
-      "Params": {"Enabled": false, "TestnetProfile": false, "ProductionVersionGate": "", "Authority": "4:0000000000000000000000000000000000000000000000000000000000000001", "DefaultQueryLimit": 50, "MaxQueryLimit": 200},
+      "Params": {"Enabled": false, "TestnetProfile": false, "ProductionVersionGate": "", "Authority": "ae1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqp8e93gq", "DefaultQueryLimit": 50, "MaxQueryLimit": 200},
       "State": {"Zones": [], "ActiveZones": [], "Commitments": []}
     },
     "mesh": {
       "Version": 1,
-      "Params": {"Enabled": false, "TestnetProfile": false, "ProductionVersionGate": "", "Authority": "4:0000000000000000000000000000000000000000000000000000000000000001", "DefaultQueryLimit": 50, "MaxQueryLimit": 200},
+      "Params": {"Enabled": false, "TestnetProfile": false, "ProductionVersionGate": "", "Authority": "ae1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqp8e93gq", "DefaultQueryLimit": 50, "MaxQueryLimit": 200},
       "State": {"CurrentHeight":0,"Params":{"MaxFinalityAge":256},"Destinations":[],"FinalizedCommitments":[],"ReplayMarkers":[],"Receipts":[],"BounceReceipts":[],"RefundReceipts":[]}
     }
   }

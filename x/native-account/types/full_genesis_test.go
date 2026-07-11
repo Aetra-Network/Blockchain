@@ -254,7 +254,7 @@ func reputationState(t *testing.T) reputationtypes.ConsolidatedReputationState {
 	t.Helper()
 	params := reputationtypes.DefaultReputationParams()
 	state := reputationtypes.NewConsolidatedReputationState(params)
-	vs := reputationtypes.NewValidatorScore("4:0000000000000000000000007171717171717171717171717171717171717171")
+	vs := reputationtypes.NewValidatorScore("ae1w9chzut3w9chzut3w9chzut3w9chzut3yqll7p")
 	vs.UptimeScore = 500
 	vs.TotalScore = reputationtypes.ComputeValidatorTotalScore(vs)
 	state.ValidatorScores = []reputationtypes.ValidatorScore{*vs}

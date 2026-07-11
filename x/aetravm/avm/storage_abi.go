@@ -503,8 +503,8 @@ func validateRawContractAddress(contract string) error {
 	if trimmed != contract {
 		return errors.New("AVM storage contract raw address must not contain surrounding whitespace")
 	}
-	if !strings.HasPrefix(contract, "4:") {
-		return errors.New("AVM storage contract namespace must be raw 4: address")
+	if !strings.HasPrefix(contract, "ae1") {
+		return errors.New("AVM storage contract namespace must be a raw ae1 address")
 	}
 	return nil
 }

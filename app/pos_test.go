@@ -121,7 +121,11 @@ func TestPoSOfficialPoolDepositPathWorksWhileDirectDelegationDisabled(t *testing
 		Height:			1,
 	})
 	require.NoError(t, err)
+	// The deposit is routed through the msg server with the caller's PLAIN
+	// address; share ownership is recorded under the account's normalized v2
+	// identity, so the share is queried by that identity's raw form.
 	user := aeFromRawForPoSTest(t, posRawAddress("22"))
+	_, identityRaw := normalizeToV2AccountIdentity(t, user)
 
 	msg := &nominatorpooltypes.MsgDepositToStakingPool{
 		PoolID:		pool.PoolID,
@@ -136,7 +140,7 @@ func TestPoSOfficialPoolDepositPathWorksWhileDirectDelegationDisabled(t *testing
 
 	query, found := app.NominatorPoolKeeper.PoolShare(nominatorpooltypes.QueryPoolShareRequest{
 		PoolID:		pool.PoolID,
-		Delegator:	posRawAddress("22"),
+		Delegator:	identityRaw,
 	})
 	require.True(t, found)
 	require.Equal(t, nominatorpooltypes.DefaultMinPoolDeposit, query.Share.Shares)
@@ -405,7 +409,7 @@ func directUserDelegationGovernanceValue(t *testing.T) string {
 }
 
 func posRawAddress(hexByte string) string {
-	return "4:000000000000000000000000" + strings.Repeat(hexByte, 20)
+	return legacyByteRawAddress(hexByte)
 }
 
 func aeFromRawForPoSTest(t *testing.T, raw string) string {

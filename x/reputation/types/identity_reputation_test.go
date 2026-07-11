@@ -80,7 +80,7 @@ func TestIdentityReputationExportImportAndSingleQuery(t *testing.T) {
 func TestIdentityReputationRejectsNonIdentityContractSubjects(t *testing.T) {
 	require.ErrorContains(t, ValidateNoContractReputation("AEcontract123"), "do not have persistent reputation")
 	require.NoError(t, ValidateReputationAccountAddress("AEAAAQAAA"))
-	require.NoError(t, ValidateReputationAccountAddress("4:0000000000000000000000000000000000000000000000000000000000000001"))
+	require.NoError(t, ValidateReputationAccountAddress("ae1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqp8e93gq"))
 	require.Error(t, ValidateReputationAccountAddress("cosmos1bad"))
 }
 

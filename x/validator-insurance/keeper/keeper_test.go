@@ -2,12 +2,14 @@ package keeper
 
 import (
 	"context"
-	"fmt"
+	"encoding/hex"
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/sovereign-l1/l1/app/addressing"
 	"github.com/sovereign-l1/l1/x/internal/kvtest"
 	"github.com/sovereign-l1/l1/x/internal/prototype"
 	"github.com/sovereign-l1/l1/x/validator-insurance/types"
@@ -250,5 +252,9 @@ func fundInsurance(t *testing.T, k *Keeper, validator string, amount uint64) typ
 }
 
 func rawInsuranceAddress(hexByte string) string {
-	return "4:000000000000000000000000" + fmt.Sprintf("%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s", hexByte, hexByte, hexByte, hexByte, hexByte, hexByte, hexByte, hexByte, hexByte, hexByte, hexByte, hexByte, hexByte, hexByte, hexByte, hexByte, hexByte, hexByte, hexByte, hexByte)
+	bz, err := hex.DecodeString(strings.Repeat(hexByte, 20))
+	if err != nil {
+		panic(err)
+	}
+	return addressing.Format(bz)
 }

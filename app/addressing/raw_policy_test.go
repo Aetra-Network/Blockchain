@@ -158,7 +158,7 @@ func TestLegacyPaddedRoundTripConsistency(t *testing.T) {
 	require.True(t, addressing.IsLegacyPaddedRawAddress(legacyBytes))
 
 	raw4 := addressing.Format(legacyBytes)
-	require.True(t, strings.HasPrefix(raw4, "4:"))
+	require.True(t, strings.HasPrefix(raw4, "ae1"))
 
 	parsed, err := addressing.Parse(raw4)
 	require.NoError(t, err)

@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const testContractRaw = "4:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+const testContractRaw = "ae1qy352euf40x77qfrg4ncn27dauqjx3t83x4ummcpydzk0zdtehhs84m4qt"
 
 func TestStorageABIWriteReadDelete(t *testing.T) {
 	abi := newTestStorageABI(t, DefaultStorageABIParams())
@@ -163,7 +163,7 @@ func TestStorageABIRawContractNamespaceRequired(t *testing.T) {
 	abi := newTestStorageABI(t, DefaultStorageABIParams())
 
 	err := abi.SetStorage("AE123", []byte("key"), []byte("value"))
-	require.ErrorContains(t, err, "raw 4: address")
+	require.ErrorContains(t, err, "raw ae1 address")
 }
 
 func TestStorageABIStateRootDeterministicForEntryOrder(t *testing.T) {

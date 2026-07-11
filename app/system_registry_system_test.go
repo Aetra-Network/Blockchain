@@ -41,7 +41,7 @@ func TestSystemRegistrySystemStateSurvivesFinalizeBlockRestart(t *testing.T) {
 	registryGenesis := systemregistrykeeper.DefaultGenesis()
 	registryGenesis.State.Entities = append(registryGenesis.State.Entities, systemregistrytypes.SystemEntity{
 		ModuleName:		"state-metering",
-		ModuleAccountAddress:	"4:0000000000000000000000005555555555555555555555555555555555555555",
+		ModuleAccountAddress:	"ae124242424242424242424242424242424crtqwe",
 		AuthorityAddress:	registryGenesis.Params.Authority,
 		Status:			systemregistrytypes.StatusActive,
 		Version:		1,

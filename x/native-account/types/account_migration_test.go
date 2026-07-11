@@ -59,7 +59,7 @@ func TestMigrateAccountV1ToV2DeterministicGolden(t *testing.T) {
 	bz, err := json.Marshal(first)
 	require.NoError(t, err)
 	hash := sha256.Sum256(bz)
-	require.Equal(t, "8c4e9af59a5b08615be533856dbcee9bc1cc92fdfcb5fc4052f9f9b9c317ced0", hex.EncodeToString(hash[:]))
+	require.Equal(t, "f61ee3be1467cdaa4779d2b9b9fcfe4aea45e0494e015fa0469be5047b9b3ad5", hex.EncodeToString(hash[:]))
 }
 
 func TestAddressAndSequenceSemanticsUnchangedAcrossMigration(t *testing.T) {
@@ -175,7 +175,7 @@ func TestAccountInvariantRejectsAddressAndSecretSecurityCases(t *testing.T) {
 
 	account = v1Account(t, 0x42, 301, 7)
 	account.AddressRaw = "4:abcdef"
-	require.ErrorContains(t, ValidateAccountInvariant(account), "invalid native account raw address")
+	require.ErrorContains(t, ValidateAccountInvariant(account), "must use ae1 raw address format")
 
 	account = v1Account(t, 0x43, 302, 8)
 	account.PubKeys = []string{"private_key:do-not-store"}

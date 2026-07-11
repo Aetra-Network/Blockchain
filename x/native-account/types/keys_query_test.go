@@ -10,7 +10,7 @@ import (
 
 const (
 	goldenUserAddress	= "AEJkAv_e2IQJ2T7CogF1HnboGZGW1FSUHEXRs6Mj8UM71g"
-	goldenRawAddress	= "4:000000000000000000000000751e76e8199196d454941c45d1b3a323f1433bd6"
+	goldenRawAddress	= "ae1w508d6qejxtdg4y5r3zarvary0c5xw7kn3xpah"
 )
 
 func TestAccountStoreKeysAreDeterministicGoldenValues(t *testing.T) {
@@ -20,7 +20,7 @@ func TestAccountStoreKeysAreDeterministicGoldenValues(t *testing.T) {
 
 	byRaw, err := AccountByRawKey(goldenRawAddress)
 	require.NoError(t, err)
-	require.Equal(t, "account/by_raw/4:000000000000000000000000751e76e8199196d454941c45d1b3a323f1433bd6", byRaw)
+	require.Equal(t, "account/by_raw/ae1w508d6qejxtdg4y5r3zarvary0c5xw7kn3xpah", byRaw)
 
 	require.Equal(t, "account/number/00000000000000000042", AccountByNumberKey(42))
 

@@ -83,7 +83,7 @@ func TestAccountValidationRejectsMalformedState(t *testing.T) {
 			mutate: func(account *Account) {
 				account.AddressRaw = "4:abcdef"
 			},
-			wantErr:	"invalid native account raw address",
+			wantErr:	"must use ae1 raw address format",
 		},
 		{
 			name:	"mismatched address pair",

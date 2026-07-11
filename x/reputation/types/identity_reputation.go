@@ -684,10 +684,8 @@ func ValidateReputationAccountAddress(account string) error {
 	if account == "" {
 		return fmt.Errorf("identity reputation: account address must not be empty")
 	}
-	if !addressing.IsSystemRawAddress(account) {
-		if !strings.HasPrefix(account, addressing.UserFriendlyPrefix) && !strings.HasPrefix(account, addressing.RawPrefix) {
-			return fmt.Errorf("identity reputation: account address must be AE or 4: format")
-		}
+	if !strings.HasPrefix(account, addressing.UserFriendlyPrefix) && !strings.HasPrefix(account, addressing.Bech32HRP+"1") {
+		return fmt.Errorf("identity reputation: account address must be AE or ae1 format")
 	}
 	return nil
 }

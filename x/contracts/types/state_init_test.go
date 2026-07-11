@@ -48,7 +48,7 @@ func TestStateInitHashAndAddressAreDeterministic(t *testing.T) {
 	require.Equal(t, leftUser, rightUser)
 	require.Equal(t, leftRaw, rightRaw)
 	require.True(t, strings.HasPrefix(leftUser, "AE"))
-	require.True(t, strings.HasPrefix(leftRaw, "4:"))
+	require.True(t, strings.HasPrefix(leftRaw, "ae1"))
 	require.NoError(t, ValidateAddressPair("derived contract", leftUser, leftRaw))
 }
 

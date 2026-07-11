@@ -97,5 +97,5 @@ func nativeEvidenceProofHash(value string) string {
 }
 
 func nativeEvidenceRawAddress(hexByte string) string {
-	return "4:000000000000000000000000" + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte
+	return legacyByteRawAddress(hexByte)
 }

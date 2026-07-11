@@ -17,7 +17,7 @@ const (
 	ModuleName = "mint-authority"
 	StoreKey   = "xmintauthority"
 
-	DefaultMintAuthorityParamsAuthority = "4:0000000000000000000000000000000000000000000000000000000000000001"
+	DefaultMintAuthorityParamsAuthority = "ae1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqp8e93gq"
 	DefaultMintAuthorityModuleAccount   = "mint-authority"
 	DefaultMintAuthorityAlias           = "AETMint"
 	DefaultMintAuthorityPurpose         = "base-denom emission only"

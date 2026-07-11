@@ -26,7 +26,7 @@ const (
 	MaxDomainScore		= uint16(10)
 	MaxContractScore	= uint16(15)
 
-	DefaultReputationAuthority	= "4:0000000000000000000000000000000000000000000000000000000000000001"
+	DefaultReputationAuthority	= "ae1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqp8e93gq"
 
 	SubjectValidator	= "validator"
 	SubjectReporter		= "reporter"

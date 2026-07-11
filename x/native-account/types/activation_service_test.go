@@ -77,7 +77,7 @@ func TestActivateAccountRejectsMalformedAEAndRawAddress(t *testing.T) {
 	require.NoError(t, err)
 	badRaw.AddressRaw = "4:abcdef"
 	_, err = service.ActivateAccount(badRaw, 10)
-	require.ErrorContains(t, err, "invalid activation raw address")
+	require.ErrorContains(t, err, "must use ae1 raw address format")
 
 	mismatchedRaw, err := NewMsgActivateAccountFromPubKey(pubKey, 1)
 	require.NoError(t, err)
@@ -130,7 +130,7 @@ func TestAccountActivatedEventGolden(t *testing.T) {
 	bz, err := json.Marshal(result.Event)
 	require.NoError(t, err)
 
-	require.Equal(t, `{"type":"AccountActivated","address_user":"AEJkAmWJMy8C610WXuOHXy8gau5U1YrjvPUXF70Dm-xQ4Pt8t-Y4NkVtpC-wIA","address_raw":"4:875f2f206aee54d58ae3bcf51717bd039bec50e0fb7cb7e63836456da42fb020","account_number":1,"sequence":0,"pubkey_hash":"0f715baf5d4c2ed329785cef29e562f73488c8a2bb9dbc5700b361d54b9b0554","height":55,"fee_paid":123}`, string(bz))
+	require.Equal(t, `{"type":"AccountActivated","address_user":"AEJkAmWJMy8C610WXuOHXy8gau5U1YrjvPUXF70Dm-xQ4Pt8t-Y4NkVtpC-wIA","address_raw":"ae1sa0j7gr2ae2dtzhrhn63w9aaqwd7c58qld7t0e3cxezkmfp0kqsqqavnc6","account_number":1,"sequence":0,"pubkey_hash":"0f715baf5d4c2ed329785cef29e562f73488c8a2bb9dbc5700b361d54b9b0554","height":55,"fee_paid":123}`, string(bz))
 }
 
 func TestActivatedAccountExportImportPreservesState(t *testing.T) {

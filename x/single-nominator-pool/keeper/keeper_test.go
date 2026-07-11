@@ -1,12 +1,14 @@
 package keeper
 
 import (
-	"fmt"
+	"encoding/hex"
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/sovereign-l1/l1/app/addressing"
 	appparams "github.com/sovereign-l1/l1/app/params"
 	"github.com/sovereign-l1/l1/x/internal/prototype"
 	"github.com/sovereign-l1/l1/x/single-nominator-pool/types"
@@ -257,5 +259,9 @@ func depositSingle(t *testing.T, k *Keeper, pool types.SingleNominatorPool, amou
 }
 
 func rawSingleAddress(hexByte string) string {
-	return "4:000000000000000000000000" + fmt.Sprintf("%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s", hexByte, hexByte, hexByte, hexByte, hexByte, hexByte, hexByte, hexByte, hexByte, hexByte, hexByte, hexByte, hexByte, hexByte, hexByte, hexByte, hexByte, hexByte, hexByte, hexByte)
+	bz, err := hex.DecodeString(strings.Repeat(hexByte, 20))
+	if err != nil {
+		panic(err)
+	}
+	return addressing.Format(bz)
 }

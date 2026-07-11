@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	DefaultPerformanceOracleAuthority	= "4:0000000000000000000000000000000000000000000000000000000000000001"
+	DefaultPerformanceOracleAuthority	= "ae1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqp8e93gq"
 
 	ReportSourceValidator	= "validator"
 	ReportSourceObserver	= "observer"

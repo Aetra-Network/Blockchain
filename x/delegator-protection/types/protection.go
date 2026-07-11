@@ -15,7 +15,7 @@ const (
 	ModuleName	= "delegator-protection"
 	StoreKey	= ModuleName
 
-	DefaultProtectionAuthority	= "4:0000000000000000000000000000000000000000000000000000000000000001"
+	DefaultProtectionAuthority	= "ae1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqp8e93gq"
 	DefaultBondDenom		= "naet"
 	BasisPoints			= uint32(10_000)
 

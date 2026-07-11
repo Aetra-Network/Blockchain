@@ -312,7 +312,7 @@ func TestValidatorAllocationEngineQueryIsDeterministic(t *testing.T) {
 func TestMaliciousAuthorityCannotRegisterValidator(t *testing.T) {
 	k := NewKeeper()
 	_, err := k.RegisterValidator(types.MsgRegisterValidator{
-		Authority: "4:0000000000000000000000000000000000000000000000000000000000000002",
+		Authority: "ae1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqzf2s8xl",
 		Validator: testValidator(0x11, "ed25519:bad-authority"),
 		Height:    1,
 	})

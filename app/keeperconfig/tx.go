@@ -12,6 +12,7 @@ import (
 
 	aetraaddress "github.com/sovereign-l1/l1/app/addressing"
 	nativeaccounttypes "github.com/sovereign-l1/l1/x/native-account/types"
+	nominatorpooltypes "github.com/sovereign-l1/l1/x/nominator-pool/types"
 )
 
 // CustomGetSigners holds signer-resolution overrides for hand-rolled message
@@ -24,6 +25,16 @@ import (
 func CustomGetSigners() map[protoreflect.FullName]signing.GetSignersFunc {
 	return map[protoreflect.FullName]signing.GetSignersFunc{
 		"l1.nativeaccount.v1.MsgActivateAccount": nativeaccounttypes.MsgActivateAccountSigners,
+		// x/nominator-pool's hand-rolled tx types carried no signer option and no
+		// fields, so the signing context could not resolve a signer for any of
+		// them ("no cosmos.msg.v1.signer option found") -- see
+		// nominator-pool/types/signing.go. The three user-facing messages resolve
+		// to the caller's plain wallet address; the official-pool creation
+		// resolves to the governance authority address.
+		"l1.nominatorpool.v1.MsgDepositToStakingPool":         nominatorpooltypes.MsgDepositToStakingPoolSigners,
+		"l1.nominatorpool.v1.MsgRequestPoolUnbond":            nominatorpooltypes.MsgRequestPoolUnbondSigners,
+		"l1.nominatorpool.v1.MsgClaimPoolRewards":             nominatorpooltypes.MsgClaimPoolRewardsSigners,
+		"l1.nominatorpool.v1.MsgCreateOfficialLiquidStakingPool": nominatorpooltypes.MsgCreateOfficialLiquidStakingPoolSigners,
 	}
 }
 

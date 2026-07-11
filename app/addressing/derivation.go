@@ -36,6 +36,21 @@ func DeriveConsensusAddress(pubKey cryptotypes.PubKey) (AddressPair, error) {
 	return deriveAddressPair(AddressRoleConsensus, pubKey)
 }
 
+// NormalizeToAccountIdentity maps a plain account-address seed to the bytes of
+// that account's canonical "v2 identity" — the identity DeriveAccountAddress
+// derives from a pubkey (it runs the same NormalizeV2RawAddress domain), and the
+// one native-account records activation under. Server-side code that only holds
+// the plain address string, not the pubkey, uses this to reach the exact identity
+// the account was activated under.
+//
+// It is idempotent for an address that is already a v2 (or reserved-system)
+// identity: NormalizeV2RawAddress returns those classes unchanged. So callers may
+// pass either the plain address or the already-derived identity and get the
+// identity back either way.
+func NormalizeToAccountIdentity(seed []byte) ([]byte, error) {
+	return NormalizeV2RawAddress(pubKeyAddressV2Domain, seed)
+}
+
 func PairFromUserAddress(role AddressRole, userAddress string) (AddressPair, error) {
 	userAddress = strings.TrimSpace(userAddress)
 	if !strings.HasPrefix(userAddress, UserFriendlyPrefix) {
@@ -50,8 +65,8 @@ func PairFromUserAddress(role AddressRole, userAddress string) (AddressPair, err
 
 func PairFromRawAddress(role AddressRole, rawAddress string) (AddressPair, error) {
 	rawAddress = strings.TrimSpace(rawAddress)
-	if !strings.HasPrefix(rawAddress, RawPrefix) {
-		return AddressPair{}, fmt.Errorf("%s raw address must use 4: internal address format", role)
+	if !strings.HasPrefix(rawAddress, Bech32HRP+"1") {
+		return AddressPair{}, fmt.Errorf("%s raw address must use ae1 bech32 address format", role)
 	}
 	bz, err := Parse(rawAddress)
 	if err != nil {

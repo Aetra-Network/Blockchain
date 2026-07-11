@@ -321,7 +321,16 @@ func (k *Keeper) UpdateValidator(msg types.MsgUpdateValidator) (types.ValidatorR
 	}, nil
 }
 
+// rebuildIndexes indexes k.genesis.State by pool ID and delegator address. It
+// normalizes state first so the index positions it records always match the
+// order cloneGenesis/saveGenesis produce -- callers that build indexes off
+// not-yet-normalized state would otherwise compute delegatorIdx values that
+// point at the wrong entry once a later cloneGenesis call re-sorts
+// DelegatorShares (SortDelegators orders by the address STRING, which for
+// bech32 raw addresses does not track insertion/numeric order the way the
+// legacy zero-padded-hex format coincidentally did).
 func (k *Keeper) rebuildIndexes() {
+	k.genesis.State = k.genesis.State.Normalize(k.genesis.Params)
 	k.indexes = make(map[string]poolIndexEntry, len(k.genesis.State.Pools))
 	for poolIdx, pool := range k.genesis.State.Pools {
 		entry := poolIndexEntry{
@@ -1721,6 +1730,31 @@ func (k *Keeper) savePoolOnly(idx int, pool types.NominatorPool) (types.Nominato
 		return types.NominatorPool{}, err
 	}
 	return pool, nil
+}
+
+// normalizeAccountIdentity maps a caller's PLAIN wallet address — the "AE..."
+// address a bank send / signature verifies against, and what wallets now put in
+// staking message address fields so standard signer resolution can verify the tx
+// (see types/signing.go) — to the account's canonical v2 identity: the "AE..."
+// form of addressing.DeriveAccountAddress's output, which is the identity
+// native-account records activation under. The msg server resolves the incoming
+// plain address to this identity before the activation check and every
+// share-ownership write, so staking state lives under the account's real on-chain
+// identity while signing stays standard and the v2 derivation stays server-side.
+//
+// It is idempotent: an address that is already a v2 identity is returned
+// unchanged (NormalizeV2RawAddress passes v2/system-class addresses through), so
+// callers and tests that already pass the v2 identity keep working untouched.
+func normalizeAccountIdentity(userAddress string) (string, error) {
+	seed, err := addressing.Parse(userAddress)
+	if err != nil {
+		return "", err
+	}
+	identity, err := addressing.NormalizeToAccountIdentity(seed)
+	if err != nil {
+		return "", err
+	}
+	return addressing.FormatUserFriendly(identity)
 }
 
 func (k *Keeper) ensureActiveWallet(address string, action string) error {

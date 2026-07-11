@@ -118,7 +118,7 @@ func TestMaliciousAuthorityCannotBypassProtectedModuleList(t *testing.T) {
 	require.ErrorContains(t, err, "protected modules")
 
 	_, err = k.ProposeConstitutionAmendment(types.MsgProposeConstitutionAmendment{
-		Authority:	"4:0000000000000000000000000000000000000000000000000000000000000002",
+		Authority:	"ae1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqzf2s8xl",
 		Amendment: types.Amendment{
 			ID:		"malicious",
 			Proposed:	types.DefaultConstitution().Normalize(),

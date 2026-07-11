@@ -85,5 +85,5 @@ func TestValidatorInsurancePendingClaimSurvivesFinalizeBlockRestart(t *testing.T
 }
 
 func validatorInsuranceRawAddress(hexByte string) string {
-	return "4:000000000000000000000000" + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte
+	return legacyByteRawAddress(hexByte)
 }

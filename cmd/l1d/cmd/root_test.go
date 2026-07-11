@@ -155,7 +155,7 @@ func TestAddressConvertCommandOutputsRawAndUserFriendly(t *testing.T) {
 	rootCmd.SetOut(&out)
 	rootCmd.SetErr(&out)
 	homeDir := t.TempDir()
-	rootCmd.SetArgs([]string{"address", "convert", "4:00000000000000000000000020dbf996b75fdc4e208146e0ca920168148149ca", fmt.Sprintf("--%s=%s", flags.FlagHome, homeDir)})
+	rootCmd.SetArgs([]string{"address", "convert", "ae1yrdln94htlwyugypgmsv4yspdq2gzjw23xax4q", fmt.Sprintf("--%s=%s", flags.FlagHome, homeDir)})
 
 	require.NoError(t, svrcmd.Execute(rootCmd, "", homeDir))
 
@@ -164,7 +164,7 @@ func TestAddressConvertCommandOutputsRawAndUserFriendly(t *testing.T) {
 		UserFriendly string `json:"user_friendly"`
 	}
 	require.NoError(t, json.Unmarshal(out.Bytes(), &res), out.String())
-	require.Regexp(t, `^4:[0-9a-f]{64}$`, res.Raw)
+	require.Regexp(t, `^ae1[0-9a-z]+$`, res.Raw)
 	require.Regexp(t, `^AE[A-Za-z0-9_-]{44}$`, res.UserFriendly)
 	require.Len(t, res.UserFriendly, 46)
 }

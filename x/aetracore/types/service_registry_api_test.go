@@ -11,7 +11,7 @@ func TestServiceRegistryMessagesValidateAllRegistryOperations(t *testing.T) {
 	provider := testFogProvider("provider.compute.low", "3", 80)
 	receipt := testRegistryAPIReceipt(t, service)
 	authHash := ComputeServiceOwnerAuthorizationHash(service.ServiceID, service.Owner, 10)
-	newOwner := "4:0000000000000000000000000000000000000000000000000000000000000002"
+	newOwner := "ae1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqzf2s8xl"
 
 	messages := []ServiceRegistryMessage{}
 	register, err := NewMsgRegisterService(service.Owner, service, authHash)
@@ -78,7 +78,7 @@ func TestServiceRegistryMessagesRejectInvalidAuthorityVersionCollateralAndDisput
 	authHash := ComputeServiceOwnerAuthorizationHash(service.ServiceID, service.Owner, 10)
 
 	mismatched := testOffChainService("indexer-feed", ZoneIDApplication)
-	mismatched.Owner = "4:0000000000000000000000000000000000000000000000000000000000000002"
+	mismatched.Owner = "ae1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqzf2s8xl"
 	_, err := NewMsgRegisterService(DefaultAuthority, mismatched, authHash)
 	require.ErrorContains(t, err, "authority must match descriptor owner")
 

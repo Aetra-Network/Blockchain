@@ -392,9 +392,13 @@ var txMessageNames = []string{
 var fileDescriptorNominatorPoolTx = buildNominatorPoolTxFileDescriptor()
 
 func buildNominatorPoolTxFileDescriptor() []byte {
+	fieldsByMessage := nominatorPoolMessageFields()
 	messages := make([]*descriptorpb.DescriptorProto, 0, len(txMessageNames))
 	for _, name := range txMessageNames {
-		messages = append(messages, &descriptorpb.DescriptorProto{Name: descriptorString(name)})
+		messages = append(messages, &descriptorpb.DescriptorProto{
+			Name:	descriptorString(name),
+			Field:	fieldsByMessage[name],
+		})
 	}
 	methods := []*descriptorpb.MethodDescriptorProto{
 		txMethod("CreateNominatorPool", "MsgCreateNominatorPool", "MsgCreateNominatorPoolResponse"),
@@ -461,6 +465,66 @@ func txMethod(name, input, output string) *descriptorpb.MethodDescriptorProto {
 
 func descriptorString(value string) *string	{ return &value }
 func descriptorBool(value bool) *bool		{ return &value }
+
+// nominatorPoolMessageFields declares the wire fields for the messages whose
+// signer the x/tx signing context must resolve (deposit / unbond / claim, plus
+// the authority-gated official-pool creation). Field NUMBERS MUST match
+// x/nominator-pool/types/state.go's Go struct tags -- and the wallet's
+// hand-encoders in ecosystem/wallet/src/lib/proto/nominatorPool.ts -- because the
+// signing context decodes the signer address field straight off the wire using
+// these numbers (see signing.go). The remaining messages stay field-less: they
+// are contract/governance-internal and are not broadcast as standalone signed
+// txs today, so they need no on-wire descriptor for signer resolution.
+func nominatorPoolMessageFields() map[string][]*descriptorpb.FieldDescriptorProto {
+	str := descriptorpb.FieldDescriptorProto_TYPE_STRING
+	u64 := descriptorpb.FieldDescriptorProto_TYPE_UINT64
+	u32 := descriptorpb.FieldDescriptorProto_TYPE_UINT32
+	return map[string][]*descriptorpb.FieldDescriptorProto{
+		"MsgDepositToStakingPool": {
+			txDescriptorField("pool_id", 1, str),
+			txDescriptorField("wallet_address", 2, str),
+			txDescriptorField("amount", 3, u64),
+			txDescriptorField("height", 4, u64),
+			txDescriptorField("reserved_routing", 5, str),
+			txDescriptorField("official_contract", 6, str),
+		},
+		"MsgRequestPoolUnbond": {
+			txDescriptorField("pool_id", 1, str),
+			txDescriptorField("owner_address", 2, str),
+			txDescriptorField("request_id", 3, str),
+			txDescriptorField("shares", 4, u64),
+			txDescriptorField("height", 5, u64),
+		},
+		"MsgClaimPoolRewards": {
+			txDescriptorField("authority", 1, str),
+			txDescriptorField("pool_id", 2, str),
+			txDescriptorField("delegator", 3, str),
+			txDescriptorField("owner_address", 4, str),
+			txDescriptorField("height", 5, u64),
+		},
+		"MsgCreateOfficialLiquidStakingPool": {
+			txDescriptorField("authority", 1, str),
+			txDescriptorField("pool_id", 2, str),
+			txDescriptorField("contract_address_user", 3, str),
+			txDescriptorField("contract_address_raw", 4, str),
+			txDescriptorField("pool_operator", 5, str),
+			txDescriptorField("pool_commission_bps", 6, u32),
+			txDescriptorField("height", 7, u64),
+		},
+	}
+}
+
+func txDescriptorField(name string, number int32, typ descriptorpb.FieldDescriptorProto_Type) *descriptorpb.FieldDescriptorProto {
+	label := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL
+	num := number
+	fieldType := typ
+	return &descriptorpb.FieldDescriptorProto{
+		Name:	descriptorString(name),
+		Number:	&num,
+		Label:	&label,
+		Type:	&fieldType,
+	}
+}
 
 func registerMsgTypes() {
 	gogoproto.RegisterType((*MsgCreateNominatorPool)(nil), "l1.nominatorpool.v1.MsgCreateNominatorPool")

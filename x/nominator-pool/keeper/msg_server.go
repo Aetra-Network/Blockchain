@@ -67,6 +67,14 @@ func (m msgServer) DepositToStakingPool(ctx context.Context, msg *types.MsgDepos
 	if msg == nil {
 		return nil, errors.New("empty nominator pool deposit request")
 	}
+	// The wallet signs with (and carries in wallet_address) its PLAIN address;
+	// resolve it to the account's v2 identity before the keeper's activation
+	// check and share bookkeeping. See keeper.normalizeAccountIdentity.
+	identity, err := normalizeAccountIdentity(msg.WalletAddress)
+	if err != nil {
+		return nil, err
+	}
+	msg.WalletAddress = identity
 	m.bindRuntimeContext(ctx)
 	msg.Height = defaultHeight(ctx, msg.Height)
 	receipt, err := m.keeper.DepositToStakingPool(*msg)
@@ -87,6 +95,13 @@ func (m msgServer) RequestPoolUnbond(ctx context.Context, msg *types.MsgRequestP
 	if msg == nil {
 		return nil, errors.New("empty nominator pool unbond request")
 	}
+	// See DepositToStakingPool: owner_address arrives as the signer's PLAIN
+	// address; resolve it to the account's v2 identity before keeper bookkeeping.
+	identity, err := normalizeAccountIdentity(msg.OwnerAddress)
+	if err != nil {
+		return nil, err
+	}
+	msg.OwnerAddress = identity
 	msg.Height = defaultHeight(ctx, msg.Height)
 	receipt, err := m.keeper.RequestPoolUnbond(*msg)
 	if err != nil {
@@ -140,6 +155,21 @@ func (m msgServer) TopUpPoolReserve(ctx context.Context, msg *types.MsgTopUpPool
 func (m msgServer) ClaimPoolRewards(ctx context.Context, msg *types.MsgClaimPoolRewards) (*types.MsgClaimPoolRewardsResponse, error) {
 	if msg == nil {
 		return nil, errors.New("empty nominator pool reward claim request")
+	}
+	// A user claim carries the signer's PLAIN owner_address; resolve it to the
+	// v2 identity. The keeper requires a user claim's authority to equal its
+	// owner, so keep them in lock-step (an empty authority is left for the keeper
+	// to default to the owner). A governance claim (empty owner_address) is left
+	// untouched.
+	if msg.OwnerAddress != "" {
+		identity, err := normalizeAccountIdentity(msg.OwnerAddress)
+		if err != nil {
+			return nil, err
+		}
+		if msg.Authority == msg.OwnerAddress {
+			msg.Authority = identity
+		}
+		msg.OwnerAddress = identity
 	}
 	msg.Height = defaultHeight(ctx, msg.Height)
 	receipt, err := m.keeper.ClaimPoolRewardsWithReceipt(*msg)

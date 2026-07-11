@@ -35,7 +35,7 @@ func TestFeatureDisabledRejectsLoadMutation(t *testing.T) {
 
 func TestUpdateParamsAuthorityAndApplyMetrics(t *testing.T) {
 	keeper := NewKeeper()
-	require.ErrorContains(t, keeper.UpdateParams("4:0000000000000000000000000000000000000000000000000000000000000002", prototype.TestnetParams()), "authority")
+	require.ErrorContains(t, keeper.UpdateParams("ae1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqzf2s8xl", prototype.TestnetParams()), "authority")
 	require.NoError(t, keeper.UpdateParams(prototype.DefaultAuthority, prototype.TestnetParams()))
 
 	result, err := keeper.ApplyMetrics(loadtypes.Metrics{

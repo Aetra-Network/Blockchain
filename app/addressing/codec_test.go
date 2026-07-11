@@ -17,10 +17,9 @@ func TestRawAddressFormat(t *testing.T) {
 
 	text := addressing.Format(addr)
 
-	require.Len(t, text, addressing.RawAddressLength)
-	require.True(t, strings.HasPrefix(text, "4:"))
+	// The raw address form is standard bech32 (ae1…) over the canonical bytes.
+	require.True(t, strings.HasPrefix(text, "ae1"))
 	require.Equal(t, strings.ToLower(text), text)
-	require.Regexp(t, `^4:[0-9a-f]{64}$`, text)
 
 	parsed, err := addressing.ParseAccAddress(text)
 	require.NoError(t, err)
@@ -65,28 +64,26 @@ func TestRawLongAddressRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 
 	text := addressing.Format(raw)
-	require.Equal(t, "4:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", text)
+	require.Equal(t, "ae1qy352euf40x77qfrg4ncn27dauqjx3t83x4ummcpydzk0zdtehhs84m4qt", text)
 
 	parsed, err := addressing.Parse(text)
 	require.NoError(t, err)
 	require.Equal(t, raw, parsed)
 }
 
+// TestSystemRawAddressRoundTrip: reserved system addresses no longer use a
+// distinct "-7:" raw form — they render as ordinary bech32 (ae1…) 32-byte raw
+// addresses like any other, and still round-trip through Format/Parse.
 func TestSystemRawAddressRoundTrip(t *testing.T) {
 	raw, err := hex.DecodeString("01041041041041041041041041041041041041041041041041041042c4093391")
 	require.NoError(t, err)
 
-	text := addressing.FormatSystemRawAddress(raw)
-	require.Equal(t, "-7:01041041041041041041041041041041041041041041041041041042c4093391", text)
-	require.True(t, addressing.IsSystemRawAddress(text))
+	text := addressing.Format(raw)
+	require.True(t, strings.HasPrefix(text, "ae1"))
 
-	parsed, err := addressing.ParseSystemRawAddress(text)
+	parsed, err := addressing.Parse(text)
 	require.NoError(t, err)
 	require.Equal(t, raw, parsed)
-
-	parsedGeneric, err := addressing.Parse(text)
-	require.NoError(t, err)
-	require.Equal(t, raw, parsedGeneric)
 }
 
 func TestZeroAddressFormats(t *testing.T) {
@@ -198,7 +195,7 @@ func TestDerivePubKeyAddressGoldenVectors(t *testing.T) {
 
 	require.Equal(t, addressing.AddressRoleAccount, account.Role)
 	require.Equal(t, "AEJkAmWJMy8C610WXuOHXy8gau5U1YrjvPUXF70Dm-xQ4Pt8t-Y4NkVtpC-wIA", account.User)
-	require.Equal(t, "4:875f2f206aee54d58ae3bcf51717bd039bec50e0fb7cb7e63836456da42fb020", account.Raw)
+	require.Equal(t, "ae1sa0j7gr2ae2dtzhrhn63w9aaqwd7c58qld7t0e3cxezkmfp0kqsqqavnc6", account.Raw)
 	require.False(t, addressing.IsLegacyPaddedRawAddress(mustParseRaw(t, account.Raw)), "derived raw address must not use legacy zero-padding")
 	require.Equal(t, account.User, validator.User)
 	require.Equal(t, account.Raw, validator.Raw)

@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	DefaultAuthority		= "4:0000000000000000000000000000000000000000000000000000000000000001"
+	DefaultAuthority		= "ae1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqp8e93gq"
 	DefaultQueryLimit		= uint64(50)
 	MaxQueryLimit			= uint64(200)
 	DefaultRootHistory		= uint64(4096)

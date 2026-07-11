@@ -43,7 +43,7 @@ func TestFeatureDisabledRejectsMutatingMessages(t *testing.T) {
 func TestUnauthorizedAuthorityRejected(t *testing.T) {
 	keeper := NewKeeper()
 
-	err := keeper.UpdateParams("4:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", prototype.TestnetParams())
+	err := keeper.UpdateParams("ae1lllllllllllllllllllllllllllllllllllllllllllllllllllsvjdhh0", prototype.TestnetParams())
 	require.ErrorContains(t, err, "authority")
 }
 

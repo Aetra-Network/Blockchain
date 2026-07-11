@@ -70,7 +70,7 @@ func TestAVMRuntimeAppLevelDeployExecuteQueueStorageReceiptsAndExportImport(t *t
 		ContractAddressRaw:  contracts[0].AddressRaw,
 	}
 	require.True(t, bytes.HasPrefix([]byte(deployed.ContractAddressUser), []byte("AE")))
-	require.True(t, bytes.HasPrefix([]byte(deployed.ContractAddressRaw), []byte("4:")))
+	require.True(t, bytes.HasPrefix([]byte(deployed.ContractAddressRaw), []byte("ae1")))
 
 	executeRoute := app.MsgServiceRouter().Handler(&contractstypes.MsgExecuteExternal{})
 	_, err = executeRoute(ctx.WithBlockHeight(102), &contractstypes.MsgExecuteExternal{

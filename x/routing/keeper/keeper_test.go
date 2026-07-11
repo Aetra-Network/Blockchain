@@ -40,7 +40,7 @@ func TestFeatureDisabledRejectsRoutingTableMutation(t *testing.T) {
 
 func TestUpdateParamsAuthoritySetRouteAndPagination(t *testing.T) {
 	keeper := NewKeeper()
-	require.ErrorContains(t, keeper.UpdateParams("4:0000000000000000000000000000000000000000000000000000000000000002", prototype.TestnetParams()), "authority")
+	require.ErrorContains(t, keeper.UpdateParams("ae1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqzf2s8xl", prototype.TestnetParams()), "authority")
 	require.NoError(t, keeper.UpdateParams(prototype.DefaultAuthority, prototype.TestnetParams()))
 	require.NoError(t, keeper.SetRoutingTable(prototype.DefaultAuthority, 9, []ShardConfig{
 		{ZoneID: routingtypes.ZoneApplication, ActiveShards: 4},

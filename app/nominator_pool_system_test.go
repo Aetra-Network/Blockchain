@@ -104,7 +104,10 @@ func TestNominatorPoolRuntimeMutationPersistsToKVStore(t *testing.T) {
 	initial, err := source.NominatorPoolKeeper.ExportGenesisState(sourceCtx)
 	require.NoError(t, err)
 	contractUser, contractRaw := nominatorPoolAddressPair(t, "77")
+	// The wallet deposits with its PLAIN address; the keeper normalizes it to the
+	// account's v2 identity, which is what share ownership is recorded under.
 	userAddress, _ := nominatorPoolAddressPair(t, "44")
+	identityUser, _ := normalizeToV2AccountIdentity(t, userAddress)
 
 	poolID := "runtime-kv-official-pool"
 	nominatorPoolMsg(t, source, sourceCtx, &nominatorpooltypes.MsgCreateOfficialLiquidStakingPool{
@@ -134,7 +137,7 @@ func TestNominatorPoolRuntimeMutationPersistsToKVStore(t *testing.T) {
 	require.Len(t, exported.State.Pools, 1)
 	require.Equal(t, poolID, exported.State.Pools[0].PoolID)
 	require.Len(t, exported.State.PoolShares, 1)
-	require.Equal(t, userAddress, exported.State.PoolShares[0].Owner)
+	require.Equal(t, identityUser, exported.State.PoolShares[0].Owner)
 	require.Equal(t, nominatorpooltypes.DefaultMinPoolDeposit, exported.State.PoolShares[0].Shares)
 }
 
@@ -146,7 +149,10 @@ func TestFinalAppWiringOfficialStakingPoolFlowExportImportRestart(t *testing.T) 
 	initial, err := source.NominatorPoolKeeper.ExportGenesisState(sourceCtx)
 	require.NoError(t, err)
 	contractUser, contractRaw := nominatorPoolAddressPair(t, "66")
-	userAddress, userRaw := nominatorPoolAddressPair(t, "33")
+	// The deposit is signed/carried with the caller's PLAIN address; the keeper
+	// records share ownership under the account's normalized v2 identity.
+	userAddress, _ := nominatorPoolAddressPair(t, "33")
+	identityUser, identityRaw := normalizeToV2AccountIdentity(t, userAddress)
 
 	poolID := "final-app-official-pool"
 	nominatorPoolMsg(t, source, sourceCtx, &nominatorpooltypes.MsgCreateOfficialLiquidStakingPool{
@@ -170,7 +176,7 @@ func TestFinalAppWiringOfficialStakingPoolFlowExportImportRestart(t *testing.T) 
 	require.True(t, pool.OfficialLiquidStaking)
 	require.Equal(t, contractUser, pool.ContractAddressUser)
 	require.Equal(t, contractRaw, pool.ContractAddressRaw)
-	share, found := source.NominatorPoolKeeper.PoolShare(nominatorpooltypes.QueryPoolShareRequest{PoolID: poolID, Delegator: userRaw})
+	share, found := source.NominatorPoolKeeper.PoolShare(nominatorpooltypes.QueryPoolShareRequest{PoolID: poolID, Delegator: identityRaw})
 	require.True(t, found)
 	require.Equal(t, nominatorpooltypes.DefaultMinPoolDeposit, share.Share.Shares)
 
@@ -178,7 +184,7 @@ func TestFinalAppWiringOfficialStakingPoolFlowExportImportRestart(t *testing.T) 
 	require.NoError(t, err)
 	require.Len(t, exported.State.LiquidStakingPools, 1)
 	require.Len(t, exported.State.PoolShares, 1)
-	require.Equal(t, userAddress, exported.State.PoolShares[0].Owner)
+	require.Equal(t, identityUser, exported.State.PoolShares[0].Owner)
 	require.Equal(t, nominatorpooltypes.DefaultMinPoolDeposit, exported.State.PoolShares[0].Shares)
 
 	restarted := NewL1App(log.NewNopLogger(), dbm.NewMemDB(), true, appOptions)
@@ -190,7 +196,7 @@ func TestFinalAppWiringOfficialStakingPoolFlowExportImportRestart(t *testing.T) 
 }
 
 func nominatorPoolRawAddress(hexByte string) string {
-	return "4:000000000000000000000000" + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte
+	return legacyByteRawAddress(hexByte)
 }
 
 func nominatorPoolAddressPair(t *testing.T, hexByte string) (string, string) {
@@ -200,6 +206,22 @@ func nominatorPoolAddressPair(t *testing.T, hexByte string) (string, string) {
 	require.NoError(t, err)
 	user := addressing.FormatAccAddress(sdk.AccAddress(bz))
 	return user, raw
+}
+
+// normalizeToV2AccountIdentity mirrors the keeper's server-side plain->v2
+// address normalization (keeper.normalizeAccountIdentity): given a caller's
+// plain "AE..." address it returns the account's canonical v2 identity as an
+// (AE user, 4: raw) pair. Staking share ownership is recorded under this
+// identity, so tests that deposit with a plain address assert against it.
+func normalizeToV2AccountIdentity(t *testing.T, userAddress string) (string, string) {
+	t.Helper()
+	seed, err := addressing.Parse(userAddress)
+	require.NoError(t, err)
+	identity, err := addressing.NormalizeToAccountIdentity(seed)
+	require.NoError(t, err)
+	user, err := addressing.FormatUserFriendly(identity)
+	require.NoError(t, err)
+	return user, addressing.Format(identity)
 }
 
 func nominatorPoolMsg(t *testing.T, app *L1App, ctx sdk.Context, msg sdk.Msg) interface{} {

@@ -2,6 +2,8 @@ package nominatorpool
 
 import (
 	"context"
+	"encoding/hex"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -110,7 +112,11 @@ func TestMsgServiceDepositAndQuerySurface(t *testing.T) {
 	k := keeper.NewKeeper()
 	msgRouter, _ := registerModuleServices(t, &k)
 	pool := createServiceOfficialPool(t, &k)
+	// The msg server records share ownership under the account's normalized v2
+	// identity, so the deposit is made with the caller's PLAIN address and the
+	// share is queried back by that identity's raw form.
 	user := aeFromRawForServiceTest(t, serviceRawAddress("22"))
+	identityRaw := serviceIdentityRaw(t, user)
 
 	handler := msgRouter.Handler(&types.MsgDepositToStakingPool{})
 	require.NotNil(t, handler)
@@ -123,7 +129,7 @@ func TestMsgServiceDepositAndQuerySurface(t *testing.T) {
 	require.NoError(t, err)
 
 	query := keeper.NewQueryServerImpl(&k)
-	share, err := query.PoolShare(context.Background(), &types.QueryPoolShareRequest{PoolID: pool.PoolID, Delegator: serviceRawAddress("22")})
+	share, err := query.PoolShare(context.Background(), &types.QueryPoolShareRequest{PoolID: pool.PoolID, Delegator: identityRaw})
 	require.NoError(t, err)
 	require.Equal(t, types.DefaultMinPoolDeposit, share.Share.Shares)
 
@@ -135,7 +141,7 @@ func TestMsgServiceDepositAndQuerySurface(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, poolsRes.Pools, 1)
 
-	delegatorRes, err := query.PoolDelegator(context.Background(), &types.QueryPoolDelegatorRequest{PoolID: pool.PoolID, Delegator: serviceRawAddress("22")})
+	delegatorRes, err := query.PoolDelegator(context.Background(), &types.QueryPoolDelegatorRequest{PoolID: pool.PoolID, Delegator: identityRaw})
 	require.NoError(t, err)
 	require.Equal(t, types.DefaultMinPoolDeposit, delegatorRes.Delegator.Shares)
 
@@ -251,7 +257,11 @@ func commandNames(commands []*cobra.Command) []string {
 }
 
 func serviceRawAddress(hexByte string) string {
-	return "4:000000000000000000000000" + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte + hexByte
+	bz, err := hex.DecodeString(strings.Repeat(hexByte, 20))
+	if err != nil {
+		panic(err)
+	}
+	return addressing.Format(bz)
 }
 
 func aeFromRawForServiceTest(t *testing.T, raw string) string {
@@ -261,4 +271,17 @@ func aeFromRawForServiceTest(t *testing.T, raw string) string {
 	user, err := addressing.FormatUserFriendly(bz)
 	require.NoError(t, err)
 	return user
+}
+
+// serviceIdentityRaw mirrors the msg server's plain->v2 address normalization
+// (keeper.normalizeAccountIdentity): it returns the raw (ae1…) form of the v2
+// identity a plain user address is recorded under, so queries can find the
+// share written by a msg-server-routed deposit.
+func serviceIdentityRaw(t *testing.T, userAddress string) string {
+	t.Helper()
+	seed, err := addressing.Parse(userAddress)
+	require.NoError(t, err)
+	identity, err := addressing.NormalizeToAccountIdentity(seed)
+	require.NoError(t, err)
+	return addressing.Format(identity)
 }

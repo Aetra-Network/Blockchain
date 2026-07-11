@@ -1,6 +1,7 @@
 package types
 
 import (
+	"encoding/hex"
 	"strings"
 	"testing"
 
@@ -73,7 +74,7 @@ func TestDomainRentDeltaIsDeterministic(t *testing.T) {
 }
 
 func mustAEAddress(hexByte string) string {
-	bz, err := addressing.Parse("4:000000000000000000000000" + strings.Repeat(hexByte, 20))
+	bz, err := hex.DecodeString(strings.Repeat(hexByte, 20))
 	if err != nil {
 		panic(err)
 	}

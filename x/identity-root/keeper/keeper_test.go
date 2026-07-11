@@ -1,6 +1,7 @@
 package keeper
 
 import (
+	"encoding/hex"
 	"strings"
 	"testing"
 
@@ -34,7 +35,7 @@ func resolverRoot(seed string) string {
 }
 
 func mustAE(hexByte string) string {
-	bz, err := addressing.Parse("4:000000000000000000000000" + strings.Repeat(hexByte, 20))
+	bz, err := hex.DecodeString(strings.Repeat(hexByte, 20))
 	if err != nil {
 		panic(err)
 	}
