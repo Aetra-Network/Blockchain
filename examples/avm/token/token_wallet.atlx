@@ -1,0 +1,208 @@
+// Token wallet example for ATLX / AVM.
+//
+// Model:
+// - one wallet contract per token holder;
+// - balance is stored inside the wallet contract itself;
+// - wallet address is deterministic from { master, owner } init data;
+// - the master does not store a holder dictionary and derives wallet addresses
+//   counterfactually when minting or verifying burn notifications.
+
+import "token_shared.atlx"
+
+const ERR_INSUFFICIENT_BALANCE = 1008
+
+@message(0x5201)
+struct WalletTransfer {
+    to: address
+    amount: uint64
+    responseTo: address?
+}
+
+@message(0x5202)
+struct WalletBurn {
+    amount: uint64
+    responseTo: address?
+}
+
+@message(0x5203)
+struct WalletTransferNotification {
+    from: address
+    amount: uint64
+}
+
+type TokenWalletInternalMsg = WalletTransfer | WalletInternalTransfer | WalletBurn
+type TokenWalletBouncedMsg = WalletInternalTransfer | WalletBurnNotification
+
+contract TokenWallet {
+    author: "Aetralis example"
+    description: "Jetton-style holder wallet contract"
+    version: "0.01.0"
+
+    storage: TokenWalletStorage
+    incomingMessages: TokenWalletInternalMsg
+
+    @store
+    func TokenWalletStorage.load() {
+        return TokenWalletStorage.fromChunk(contract.getData())
+    }
+
+    @store
+    func TokenWalletStorage.save(self) {
+        contract.setData(self.toChunk())
+    }
+
+    @pure
+    func TokenWallet.addressFor(master: address, owner: address, walletCode: Code): address {
+        return counterfactualAddress({
+            code: walletCode,
+            data: TokenWalletStorage {
+                master: master,
+                owner: owner,
+                walletCode: walletCode,
+                balance: 0,
+            }
+        })
+    }
+
+    @internal
+    func onInternalMessage(in: InMessage) {
+        const msg = lazy TokenWalletInternalMsg.fromSegment(in.body)
+
+        match (msg) {
+            WalletTransfer => {
+                var st = lazy TokenWalletStorage.load()
+
+                assert (in.senderAddress == st.owner) throw ERR_NOT_OWNER
+                assert (msg.amount > 0) throw ERR_BAD_AMOUNT
+                assert (st.balance >= msg.amount) throw ERR_INSUFFICIENT_BALANCE
+
+                st.balance -= msg.amount
+
+                const recipientWallet = autoDeployAddress({
+                    code: st.walletCode,
+                    data: TokenWalletStorage {
+                        master: st.master,
+                        owner: msg.to,
+                        walletCode: st.walletCode,
+                        balance: 0,
+                    }
+                })
+
+                const transfer = buildMessage({
+                    mode: SEND_BOUNCE_ON_FAIL,
+                    bounce: BounceMode.Only256BitsOfBody,
+                    amount: MSG_FORWARD_VALUE,
+                    receiver: recipientWallet,
+                    body: WalletInternalTransfer {
+                        from: getAddress(),
+                        amount: msg.amount,
+                        responseTo: msg.responseTo,
+                    }
+                })
+
+                transfer.send()
+                st.save()
+            }
+
+            WalletInternalTransfer => {
+                var st = lazy TokenWalletStorage.load()
+
+                assert (
+                    st.balance == 0
+                    || 
+                    in.senderAddress == st.master
+                    || in.senderAddress == msg.from
+                ) throw ERR_BAD_SENDER
+                assert (msg.amount > 0) throw ERR_BAD_AMOUNT
+
+                st.balance += msg.amount
+                st.save()
+
+                if (msg.responseTo != null) {
+                    const notify = buildMessage({
+                        bounce: BounceMode.NoBounce,
+                        amount: MSG_FORWARD_VALUE,
+                        receiver: msg.responseTo!,
+                        body: WalletTransferNotification {
+                            from: msg.from,
+                            amount: msg.amount,
+                        }
+                    })
+
+                    notify.send()
+                }
+            }
+
+            WalletBurn => {
+                var st = lazy TokenWalletStorage.load()
+
+                assert (in.senderAddress == st.owner) throw ERR_NOT_OWNER
+                assert (msg.amount > 0) throw ERR_BAD_AMOUNT
+                assert (st.balance >= msg.amount) throw ERR_INSUFFICIENT_BALANCE
+
+                st.balance -= msg.amount
+
+                const burn = buildMessage({
+                    mode: SEND_BOUNCE_ON_FAIL,
+                    bounce: BounceMode.Only256BitsOfBody,
+                    amount: MSG_FORWARD_VALUE,
+                    receiver: st.master,
+                    body: WalletBurnNotification {
+                        owner: st.owner,
+                        amount: msg.amount,
+                        responseTo: msg.responseTo,
+                    }
+                })
+
+                burn.send()
+                st.save()
+            }
+
+            else => {
+                assert (in.body.isEmpty()) throw ERR_BAD_MSG
+            }
+        }
+    }
+
+    @bounced
+    func onBouncedMessage(in: InMessageBounced) {
+        in.bouncedBody.skipBouncedPrefix()
+
+        const bounced = lazy TokenWalletBouncedMsg.fromSegment(in.bouncedBody)
+        var st = lazy TokenWalletStorage.load()
+
+        match (bounced) {
+            WalletInternalTransfer => {
+                st.balance += bounced.amount
+                st.save()
+            }
+
+            WalletBurnNotification => {
+                st.balance += bounced.amount
+                st.save()
+            }
+
+            else => {
+                assert (in.bouncedBody.isEmpty()) throw ERR_BAD_MSG
+            }
+        }
+    }
+
+    @get
+    func owner(): address {
+        const st = lazy TokenWalletStorage.load()
+        return st.owner
+    }
+
+    @get
+    func master(): address {
+        const st = lazy TokenWalletStorage.load()
+        return st.master
+    }
+
+    @get
+    func balance(): uint64 {
+        const st = lazy TokenWalletStorage.load()
+        return st.balance
+    }
+}

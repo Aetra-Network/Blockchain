@@ -32,6 +32,14 @@ staticcheck.out
 *secret*
 *seed*
 *wallet*
+# *wallet* above is meant for local key/keyring material, not source files
+# that merely have "wallet" in their name -- carve those back out explicitly
+# (each was verified to contain real tracked-worthy content, not secrets).
+!examples/avm/token/token_wallet.atlx
+!x/contracts/keeper/stake_wallet_e2e_test.go
+!docs/wallet-compatibility.md
+!docs/wallet_compatibility_test.go
+!scripts/demo/wallet.ps1
 keyring/
 keys/
 secrets/

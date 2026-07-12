@@ -137,7 +137,7 @@ func TestTestnetInitRejectsMalformedChainIDBeforeGenesisWrite(t *testing.T) {
 		fmt.Sprintf("--%s=0%s", server.FlagMinGasPrices, appparams.BaseDenom),
 	})
 
-	require.ErrorContains(t, cmd.ExecuteContext(ctx), "chain-id must be a small number (mainnet 18, testnet 19) or start with aetra-")
+	require.ErrorContains(t, cmd.ExecuteContext(ctx), "chain-id must be a small number (mainnet 18, testnet -19) or start with aetra-")
 	_, statErr := os.Stat(outputDir)
 	require.True(t, os.IsNotExist(statErr), "malformed chain-id must fail before writing localnet files")
 }
