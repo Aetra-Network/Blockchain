@@ -216,7 +216,7 @@ func validatePoolAddress(value string, maxBytes uint32) error {
 	if value == "" {
 		return errors.New("single nominator pool address is required")
 	}
-	if strings.HasPrefix(value, "4:") {
+	if strings.HasPrefix(value, "ae1") {
 		return addressing.ValidateAuthorityAddress("single nominator pool address", value)
 	}
 	if uint32(len(value)) > maxBytes || strings.ContainsAny(value, " \t\r\n") {

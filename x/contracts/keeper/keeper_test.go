@@ -167,7 +167,7 @@ func TestWalletInstantiatesExecutesAndPassesFunds(t *testing.T) {
 	require.Equal(t, wallet, created.Admin)
 	require.Equal(t, initialFunds, created.Balance)
 	require.True(t, stringsHasPrefix(created.ContractAddressUser, "AE"))
-	require.True(t, stringsHasPrefix(created.ContractAddressRaw, "4:"))
+	require.True(t, stringsHasPrefix(created.ContractAddressRaw, "ae1"))
 	require.Equal(t, types.EventTypeContractInstantiated, created.Events[0].Type)
 	require.Equal(t, created.ContractAddressUser, created.Events[0].Contract)
 	require.Equal(t, created.ContractAddressRaw, created.Events[0].InternalRaw)
