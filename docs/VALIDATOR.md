@@ -182,12 +182,31 @@ Monitor at least:
 - RPC, REST, and gRPC health;
 - missed blocks and any jail/slash warnings.
 
+Several of the signals above (validator voting power, peer count, RPC/REST/gRPC
+health, missed blocks, jail status) are read from CometBFT's own metrics and
+`aetrad query staking validators` / `aetrad status` — monitor them from those
+sources today.
+
 Prometheus metrics (enable with `--observability-metrics true --observability-metrics-addr 0.0.0.0:27780`):
 
 ```powershell
 # Check metrics endpoint
 curl http://localhost:27780/metrics
 ```
+
+The Aetra process endpoint currently populates block-liveness and
+fee/economic-controller series (block height/time, block-processing and tx
+latency, module errors, fees accepted/rejected, inflation/burn/validator-fee
+controller output). The validator-health series (`aetra_validator_missed_blocks_total`,
+`aetra_validator_uptime_bps`, `aetra_validator_concentration_bps`,
+`aetra_validator_top_n_power_bps`, `aetra_slashing_events_total`,
+`aetra_validator_jail_events_total`) and several economic gauges
+(`aetra_economy_bonded_ratio_bps`, `aetra_economy_estimated_apr_bps`,
+`aetra_economy_burned_fees_naet`, `aetra_economy_treasury_balance_naet`) are
+declared and scrapeable but **not yet emitted by this endpoint** — do not build
+alerts on them until they are wired (see `observability.DefaultPublicMetricSpecs`
+`Emitted` flags for the live status). Use the CometBFT/CLI sources above for
+validator health in the meantime.
 
 gRPC queries (any module, port 9090):
 

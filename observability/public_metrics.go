@@ -46,6 +46,12 @@ type PublicMetricSpec struct {
 	BoundedLabels		bool
 	ExplorerCompatible	bool
 	TestnetDashboardReady	bool
+	// Emitted reports whether the metric is actually recorded by production
+	// code at runtime (not merely declared across surfaces). A metric whose
+	// definition and surfaces exist but which nothing populates is NOT ready:
+	// operators must not build alerts on a permanently-empty series. This flag
+	// is flipped true as each emitter is wired in.
+	Emitted			bool
 }
 
 type PublicSurfaceSpec struct {
@@ -62,28 +68,37 @@ type PublicMetricsReadinessReport struct {
 	SurfaceCount	int
 	SurfacesReady	int
 	PrometheusOnly	[]string
+	// NotEmitted lists required metrics that are declared across every surface
+	// but which production code does not yet populate at runtime. They are not
+	// counted as ready; wiring their emitter moves them out of this list.
+	NotEmitted	[]string
 	Failed		[]string
 	Ready		bool
 }
 
 func DefaultPublicMetricSpecs() []PublicMetricSpec {
+	// The final `emitted` argument records whether production code actually
+	// populates the metric today. It is the living checklist for the
+	// observability wiring effort: flip an entry to true in the same change
+	// that wires its emitter. Everything currently false is declared across
+	// all surfaces but not yet recorded at runtime.
 	return []PublicMetricSpec{
-		publicMetric(RequiredMetricBlockTime, MetricBlockTimeSeconds, true, true, true, true, true, true),
-		publicMetric(RequiredMetricFinalityLatency, MetricFinalityLatencySeconds, true, true, true, true, true, true),
-		publicMetric(RequiredMetricMissedBlocks, MetricValidatorMissedBlocks, true, true, true, true, true, true),
-		publicMetric(RequiredMetricValidatorUptime, MetricValidatorUptimeBps, true, true, true, true, true, true),
-		publicMetric(RequiredMetricValidatorConcentration, MetricValidatorConcentrationBps, true, true, true, true, true, true),
-		publicMetric(RequiredMetricTopNVotingPower, MetricValidatorTopNPowerBps, true, true, true, true, true, true),
-		publicMetric(RequiredMetricInflation, MetricEconomyInflationBps, true, true, true, true, true, true),
-		publicMetric(RequiredMetricBondedRatio, MetricEconomyBondedRatioBps, true, true, true, true, true, true),
-		publicMetric(RequiredMetricEstimatedAPR, MetricEconomyEstimatedAPRBps, true, true, true, true, true, true),
-		publicMetric(RequiredMetricBurnedFees, MetricEconomyBurnedFeesNaet, true, true, true, true, true, true),
-		publicMetric(RequiredMetricTreasuryBalance, MetricEconomyTreasuryBalanceNaet, true, true, true, true, true, true),
-		publicMetric(RequiredMetricSlashingEvents, MetricSlashingEventsTotal, true, true, true, true, true, true),
-		publicMetric(RequiredMetricJailUnjailEvents, MetricValidatorJailEventsTotal, true, true, true, true, true, true),
-		publicMetric(RequiredMetricContractExecutionGas, MetricContractExecutionGas, true, true, true, true, true, true),
-		publicMetric(RequiredMetricFailedTxReasons, MetricFailedTxReasons, true, true, true, true, true, true),
-		publicMetric(RequiredMetricNodeSyncStatus, MetricNodeSyncStatus, true, true, true, true, true, true),
+		publicMetric(RequiredMetricBlockTime, MetricBlockTimeSeconds, true, true, true, true, true, true, true),
+		publicMetric(RequiredMetricFinalityLatency, MetricFinalityLatencySeconds, true, true, true, true, true, true, false),
+		publicMetric(RequiredMetricMissedBlocks, MetricValidatorMissedBlocks, true, true, true, true, true, true, false),
+		publicMetric(RequiredMetricValidatorUptime, MetricValidatorUptimeBps, true, true, true, true, true, true, false),
+		publicMetric(RequiredMetricValidatorConcentration, MetricValidatorConcentrationBps, true, true, true, true, true, true, false),
+		publicMetric(RequiredMetricTopNVotingPower, MetricValidatorTopNPowerBps, true, true, true, true, true, true, false),
+		publicMetric(RequiredMetricInflation, MetricEconomyInflationBps, true, true, true, true, true, true, true),
+		publicMetric(RequiredMetricBondedRatio, MetricEconomyBondedRatioBps, true, true, true, true, true, true, false),
+		publicMetric(RequiredMetricEstimatedAPR, MetricEconomyEstimatedAPRBps, true, true, true, true, true, true, false),
+		publicMetric(RequiredMetricBurnedFees, MetricEconomyBurnedFeesNaet, true, true, true, true, true, true, false),
+		publicMetric(RequiredMetricTreasuryBalance, MetricEconomyTreasuryBalanceNaet, true, true, true, true, true, true, false),
+		publicMetric(RequiredMetricSlashingEvents, MetricSlashingEventsTotal, true, true, true, true, true, true, false),
+		publicMetric(RequiredMetricJailUnjailEvents, MetricValidatorJailEventsTotal, true, true, true, true, true, true, false),
+		publicMetric(RequiredMetricContractExecutionGas, MetricContractExecutionGas, true, true, true, true, true, true, false),
+		publicMetric(RequiredMetricFailedTxReasons, MetricFailedTxReasons, true, true, true, true, true, true, false),
+		publicMetric(RequiredMetricNodeSyncStatus, MetricNodeSyncStatus, true, true, true, true, true, true, false),
 	}
 }
 
@@ -122,6 +137,7 @@ func BuildPublicMetricsReadinessReport(metrics []PublicMetricSpec, surfaces []Pu
 	seenSurfaces := map[string]PublicSurfaceSpec{}
 	failed := make([]string, 0)
 	prometheusOnly := make([]string, 0)
+	notEmitted := make([]string, 0)
 	requiredCount := 0
 	readyCount := 0
 	surfaceCount := 0
@@ -142,10 +158,19 @@ func BuildPublicMetricsReadinessReport(metrics []PublicMetricSpec, surfaces []Pu
 		if metric.Required {
 			requiredCount++
 		}
-		if metric.Required && !metricReady(metric, knownPrometheus) {
+		surfacesComplete := metricSurfacesComplete(metric, knownPrometheus)
+		if metric.Required && !surfacesComplete {
 			failed = append(failed, metric.ID+":missing_required_surface")
 		}
-		if metric.Required && metricReady(metric, knownPrometheus) {
+		// A metric declared across every surface but not yet populated at
+		// runtime is honestly not-ready: it would expose a permanently-empty
+		// series. Report it distinctly from a surface gap so the wiring
+		// checklist stays legible.
+		if metric.Required && surfacesComplete && !metric.Emitted {
+			failed = append(failed, metric.ID+":not_emitted")
+			notEmitted = append(notEmitted, metric.ID)
+		}
+		if metric.Required && surfacesComplete && metric.Emitted {
 			readyCount++
 		}
 		if metric.Prometheus && !(metric.CLIQuery || metric.GRPCQuery || metric.RESTQuery || metric.IndexerEvent || metric.PublicDashboard) {
@@ -188,6 +213,7 @@ func BuildPublicMetricsReadinessReport(metrics []PublicMetricSpec, surfaces []Pu
 
 	sort.Strings(failed)
 	sort.Strings(prometheusOnly)
+	sort.Strings(notEmitted)
 	return PublicMetricsReadinessReport{
 		Metrics:	metrics,
 		Surfaces:	surfaces,
@@ -196,12 +222,13 @@ func BuildPublicMetricsReadinessReport(metrics []PublicMetricSpec, surfaces []Pu
 		SurfaceCount:	surfaceCount,
 		SurfacesReady:	surfacesReady,
 		PrometheusOnly:	prometheusOnly,
+		NotEmitted:	notEmitted,
 		Failed:		failed,
 		Ready:		len(failed) == 0 && len(prometheusOnly) == 0,
 	}
 }
 
-func publicMetric(id, prometheusName string, cli, grpc, rest, prometheus, indexer, dashboard bool) PublicMetricSpec {
+func publicMetric(id, prometheusName string, cli, grpc, rest, prometheus, indexer, dashboard, emitted bool) PublicMetricSpec {
 	return PublicMetricSpec{
 		ID:			id,
 		PrometheusName:		prometheusName,
@@ -215,10 +242,15 @@ func publicMetric(id, prometheusName string, cli, grpc, rest, prometheus, indexe
 		BoundedLabels:		true,
 		ExplorerCompatible:	true,
 		TestnetDashboardReady:	true,
+		Emitted:		emitted,
 	}
 }
 
-func metricReady(metric PublicMetricSpec, knownPrometheus map[string]bool) bool {
+// metricSurfacesComplete reports whether a metric is declared across every
+// required surface and its Prometheus name is a known definition. It says
+// nothing about whether the metric is actually populated at runtime -- that is
+// the separate Emitted flag, checked by the caller.
+func metricSurfacesComplete(metric PublicMetricSpec, knownPrometheus map[string]bool) bool {
 	if metric.PrometheusName == "" || !knownPrometheus[metric.PrometheusName] {
 		return false
 	}
