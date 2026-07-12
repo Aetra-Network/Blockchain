@@ -139,7 +139,7 @@
     },
     {
       "type": "timeseries", "title": "Contract execution gas (avg)", "id": 42, "datasource": "${DS_PROMETHEUS}",
-      "description": "Not yet emitted: x/contracts sits inside the determinism gate's float-free zone, so this series is currently empty.",
+      "description": "Average gas per AVM contract execution (success + revert), recorded from the contracts keeper.",
       "gridPos": { "h": 6, "w": 12, "x": 12, "y": 29 },
       "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
       "targets": [ { "expr": "sum(rate(aetra_contract_execution_gas_sum{instance=~\"$instance\"}[5m])) / clamp_min(sum(rate(aetra_contract_execution_gas_count{instance=~\"$instance\"}[5m])), 1)", "legendFormat": "gas/exec", "refId": "A" } ]

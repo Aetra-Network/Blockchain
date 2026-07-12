@@ -56,14 +56,15 @@ source when prompted. Panels, per the architecture spec:
 
 ## Not yet emitted
 
-Two required series are declared but not yet populated, so their panels/queries
-show no data (the live status is the `Emitted` flags on
+One required series is declared but not yet populated, so its panel shows no
+data (the live status is the `Emitted` flags on
 `observability.DefaultPublicMetricSpecs`):
 
 - `aetra_node_sync_status` — sync state is owned by CometBFT; use its native
   instrumentation (config.toml `[instrumentation] prometheus = true`) or
   `aetrad status` until an in-process bridge is added.
-- `aetra_contract_execution_gas` — `x/contracts` sits inside the determinism
-  gate's float-free zone, so the emitter cannot live there without a gate change.
 
-Everything else on the dashboard is live.
+Everything else on the dashboard is live — including
+`aetra_contract_execution_gas`, recorded per AVM execution from the contracts
+keeper (the value is passed to the observability package as a plain uint64, so
+no floating-point appears in the determinism gate's float-free zone).

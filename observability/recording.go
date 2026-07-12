@@ -187,6 +187,21 @@ func RecordBondedRatio(bondedRatioBps int64) {
 	SetGauge(MetricEconomyBondedRatioBps, nil, clampBpsFloat(bondedRatioBps))
 }
 
+// RecordContractExecutionGas records the gas consumed by one AVM contract
+// execution, labeled by VM and a bounded result (success or revert). The caller
+// passes a uint64 so no floating-point value appears at the call site (the
+// x/contracts consensus path is inside the determinism gate's float-free zone);
+// the conversion happens here.
+func RecordContractExecutionGas(vm, result string, gasUsed uint64) {
+	if vm == "" {
+		vm = "avm"
+	}
+	if result == "" {
+		result = "unknown"
+	}
+	Observe(MetricContractExecutionGas, Labels{"vm": vm, "result": result}, float64(gasUsed))
+}
+
 // RecordFinalityLatency records the observed proposal-time-to-local-commit
 // latency for a finalized block. Wall-clock based; feeds only the process-local
 // metrics registry, never consensus.

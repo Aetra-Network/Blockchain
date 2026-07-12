@@ -24,9 +24,20 @@ import (
 	"github.com/sovereign-l1/l1/x/aetravm/avm"
 	"github.com/sovereign-l1/l1/x/aetravm/chunk"
 	"github.com/sovereign-l1/l1/x/contracts/types"
+	"github.com/sovereign-l1/l1/observability"
 )
 
 const storageRentReserveModule = "feecollector_storage_rent_reserve"
+
+// contractGasResultLabel maps an AVM result code to the bounded observability
+// label used for the contract-execution-gas metric. Pure string logic — no
+// float — so it is safe inside the determinism gate's float-free zone.
+func contractGasResultLabel(code uint32) string {
+	if code == async.ResultOK {
+		return "success"
+	}
+	return "revert"
+}
 
 var storageRentBaseDenom = "naet"
 
@@ -1311,6 +1322,7 @@ func (k *Keeper) executeContract(ctx context.Context, msg types.MsgExecuteContra
 		if err != nil {
 			return types.ExecuteContractResponse{}, err
 		}
+		observability.RecordContractExecutionGas("avm", contractGasResultLabel(exec.ResultCode), exec.GasUsed)
 		if exec.ResultCode != async.ResultOK {
 			return types.ExecuteContractResponse{}, fmt.Errorf("%s: avm external execution failed with code %d", types.ErrExecutionFailed, exec.ResultCode)
 		}
@@ -1767,6 +1779,7 @@ func (k *Keeper) ReceiveInternalMessage(msg types.MsgReceiveInternalMessage) (ty
 			if err != nil {
 				return types.InternalMessage{}, err
 			}
+			observability.RecordContractExecutionGas("avm", contractGasResultLabel(exec.ResultCode), exec.GasUsed)
 			if exec.ResultCode != async.ResultOK {
 				return types.InternalMessage{}, fmt.Errorf("%s: avm internal execution failed with code %d", types.ErrExecutionFailed, exec.ResultCode)
 			}
@@ -1869,6 +1882,7 @@ func (k *Keeper) ReceiveInternalMessage(msg types.MsgReceiveInternalMessage) (ty
 			if err != nil {
 				return types.InternalMessage{}, err
 			}
+			observability.RecordContractExecutionGas("avm", contractGasResultLabel(exec.ResultCode), exec.GasUsed)
 			if exec.ResultCode != async.ResultOK {
 				return types.InternalMessage{}, fmt.Errorf("%s: avm internal execution failed with code %d", types.ErrExecutionFailed, exec.ResultCode)
 			}

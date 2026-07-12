@@ -209,10 +209,13 @@ The Aetra process endpoint populates:
   counters with bounded reason labels (transition-derived at sweep
   granularity).
 
-Two declared series are **not yet emitted** — do not alert on them:
-`aetra_contract_execution_gas` and `aetra_node_sync_status` (the live status
-is the `Emitted` flags on `observability.DefaultPublicMetricSpecs`; use
-CometBFT's own metrics / `aetrad status` for sync state in the meantime).
+- contract execution gas `aetra_contract_execution_gas{vm,result}` (recorded
+  per AVM execution, success and revert).
+
+One declared series is **not yet emitted** — do not alert on it:
+`aetra_node_sync_status` (the live status is the `Emitted` flags on
+`observability.DefaultPublicMetricSpecs`; sync state is owned by CometBFT — use
+its own metrics / `aetrad status` in the meantime).
 
 A ready-to-import Grafana dashboard, Prometheus scrape config, and alerting
 rules for all of the above live in

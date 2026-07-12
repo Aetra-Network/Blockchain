@@ -27,6 +27,7 @@ var emittedRequiredMetricIDs = map[string]bool{
 	RequiredMetricTreasuryBalance:		true,
 	RequiredMetricSlashingEvents:		true,
 	RequiredMetricJailUnjailEvents:		true,
+	RequiredMetricContractExecutionGas:	true,
 	RequiredMetricFailedTxReasons:		true,
 }
 

@@ -96,7 +96,7 @@ func DefaultPublicMetricSpecs() []PublicMetricSpec {
 		publicMetric(RequiredMetricTreasuryBalance, MetricEconomyTreasuryBalanceNaet, true, true, true, true, true, true, true),
 		publicMetric(RequiredMetricSlashingEvents, MetricSlashingEventsTotal, true, true, true, true, true, true, true),
 		publicMetric(RequiredMetricJailUnjailEvents, MetricValidatorJailEventsTotal, true, true, true, true, true, true, true),
-		publicMetric(RequiredMetricContractExecutionGas, MetricContractExecutionGas, true, true, true, true, true, true, false),
+		publicMetric(RequiredMetricContractExecutionGas, MetricContractExecutionGas, true, true, true, true, true, true, true),
 		publicMetric(RequiredMetricFailedTxReasons, MetricFailedTxReasons, true, true, true, true, true, true, true),
 		publicMetric(RequiredMetricNodeSyncStatus, MetricNodeSyncStatus, true, true, true, true, true, true, false),
 	}

@@ -95,9 +95,9 @@ with matching Prometheus scrape config and alerting rules under
 [`deploy/monitoring/prometheus/`](../../deploy/monitoring/prometheus/) and setup
 steps in [`deploy/monitoring/README.md`](../../deploy/monitoring/README.md). The
 dashboard sources every panel from a metric the process actually emits;
-`node sync status` (CometBFT-owned) and `contract execution gas` (blocked by the
-determinism gate's float-free zone) are present but show no data until wired,
-and are tracked by their `Emitted=false` flags in `DefaultPublicMetricSpecs`.
+`node sync status` (CometBFT-owned) is the sole exception — it is present but
+shows no data until an in-process bridge is added, tracked by its
+`Emitted=false` flag in `DefaultPublicMetricSpecs`.
 
 ## Implementation Contract
 
