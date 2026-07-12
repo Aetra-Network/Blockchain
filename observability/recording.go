@@ -134,15 +134,40 @@ func RecordSlashingRoute(reason string, penaltyNaet, burnNaet, treasuryNaet, rep
 	SetGauge(MetricSlashingReporterNaet, labels, float64(reporterNaet))
 }
 
-func RecordValidatorConcentration(topNShareBps int64, warningCount int) {
-	if topNShareBps < 0 {
-		topNShareBps = 0
-	}
+// RecordValidatorConcentration records the live validator-set voting-power
+// concentration: a headline concentration figure plus the top-10/20/33 power
+// shares (each in basis points, bounded to 0..10000). All are aggregate gauges
+// with bounded labels (no per-validator cardinality).
+func RecordValidatorConcentration(concentrationBps, top10Bps, top20Bps, top33Bps int64) {
+	SetGauge(MetricValidatorConcentrationBps, nil, clampBpsFloat(concentrationBps))
+	SetGauge(MetricValidatorTopNPowerBps, Labels{"n": "10"}, clampBpsFloat(top10Bps))
+	SetGauge(MetricValidatorTopNPowerBps, Labels{"n": "20"}, clampBpsFloat(top20Bps))
+	SetGauge(MetricValidatorTopNPowerBps, Labels{"n": "33"}, clampBpsFloat(top33Bps))
+}
+
+// RecordValidatorConcentrationRisks records the count of active concentration
+// warnings (bounded gauge), kept separate from the share figures above.
+func RecordValidatorConcentrationRisks(warningCount int) {
 	if warningCount < 0 {
 		warningCount = 0
 	}
-	SetGauge(MetricValidatorTopNPowerBps, nil, float64(topNShareBps))
 	SetGauge(MetricValidatorConcentrationRisks, nil, float64(warningCount))
+}
+
+// RecordBondedRatio records the fraction of total supply that is bonded, in
+// basis points (0..10000).
+func RecordBondedRatio(bondedRatioBps int64) {
+	SetGauge(MetricEconomyBondedRatioBps, nil, clampBpsFloat(bondedRatioBps))
+}
+
+func clampBpsFloat(bps int64) float64 {
+	if bps < 0 {
+		return 0
+	}
+	if bps > 10000 {
+		return 10000
+	}
+	return float64(bps)
 }
 
 func (r *Registry) collectRuntime() {

@@ -14,8 +14,11 @@ import (
 // DefaultPublicMetricSpecs). When this set covers every required metric, the
 // readiness report goes green again.
 var emittedRequiredMetricIDs = map[string]bool{
-	RequiredMetricBlockTime: true,
-	RequiredMetricInflation: true,
+	RequiredMetricBlockTime:			true,
+	RequiredMetricInflation:			true,
+	RequiredMetricValidatorConcentration:	true,
+	RequiredMetricTopNVotingPower:		true,
+	RequiredMetricBondedRatio:		true,
 }
 
 func TestDefaultPublicMetricsCoverRequiredSection14Metrics(t *testing.T) {

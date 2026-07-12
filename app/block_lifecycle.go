@@ -26,6 +26,10 @@ func (app *L1App) EndBlocker(ctx sdk.Context) (sdk.EndBlock, error) {
 	if err := app.maybeFinalizeNativeEmissionEpoch(ctx); err != nil {
 		return sdk.EndBlock{}, err
 	}
+	// Pure side-effect: records aggregate validator-health observability gauges
+	// from committed state. Never writes to the store and is internally
+	// recovered, so it cannot affect the AppHash or halt the block.
+	app.recordValidatorObservabilityMetrics(ctx)
 	return res, nil
 }
 
