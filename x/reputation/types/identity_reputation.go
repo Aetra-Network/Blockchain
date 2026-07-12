@@ -481,6 +481,25 @@ func ComputeValidatorTotalScore(vs *ValidatorScore) uint32 {
 	return positive - negative
 }
 
+// AddScoreSaturating returns current + delta, clamped to IdentityScoreMax.
+//
+// It is overflow-safe for an arbitrarily large delta. Score/penalty fields are
+// plain uint32; a bare `field += uint32(amount)` can wrap past 2^32 and land
+// back below IdentityScoreMax, which then slips past ValidateValidatorScore's
+// upper-bound check and silently persists a corrupted score. delta is taken as
+// uint64 so a caller passing a raw signal/message amount cannot pre-truncate it
+// with a uint32() cast before the clamp applies.
+func AddScoreSaturating(current uint32, delta uint64) uint32 {
+	if current >= IdentityScoreMax {
+		return IdentityScoreMax
+	}
+	room := uint64(IdentityScoreMax - current)
+	if delta >= room {
+		return IdentityScoreMax
+	}
+	return current + uint32(delta)
+}
+
 type ServiceTrustScore struct {
 	ServiceAddress		string	`json:"service_address"`
 	Trust			uint32	`json:"trust"`

@@ -6,7 +6,7 @@
 All chain constants that affect state transitions must be represented in genesis or module params. No consensus-critical value should be hardcoded in keeper logic.
 
 Initial Aetra chain choices:
-- Address prefix: `orb`
+- Address prefix: `ae` (bech32 raw form `ae1…`; the user-facing form is `AE…`)
 - Native base denom: `naet`
 - Display denom: `AET`
 - Native base unit name: `Aetra`

@@ -98,9 +98,9 @@ func (m msgServer) applyValidatorPenalty(ctx context.Context, state types.Consol
 
 	switch msg.Component {
 	case types.ComponentMissedBlock:
-		vs.MissedBlocksPenalty += uint32(msg.Amount)
+		vs.MissedBlocksPenalty = types.AddScoreSaturating(vs.MissedBlocksPenalty, uint64(msg.Amount))
 	case types.ComponentSlashing:
-		vs.SlashingPenalty += uint32(msg.Amount)
+		vs.SlashingPenalty = types.AddScoreSaturating(vs.SlashingPenalty, uint64(msg.Amount))
 	}
 	vs.TotalScore = types.ComputeValidatorTotalScore(&vs)
 	vs.LastUpdateHeight = msg.Epoch
@@ -168,11 +168,11 @@ func (m msgServer) applyValidatorReward(ctx context.Context, state types.Consoli
 
 	switch msg.Component {
 	case types.ComponentUptime:
-		vs.UptimeScore += uint32(msg.Amount)
+		vs.UptimeScore = types.AddScoreSaturating(vs.UptimeScore, uint64(msg.Amount))
 	case types.ComponentRecovery:
-		vs.CommissionBehavior += uint32(msg.Amount)
+		vs.CommissionBehavior = types.AddScoreSaturating(vs.CommissionBehavior, uint64(msg.Amount))
 	default:
-		vs.UptimeScore += uint32(msg.Amount)
+		vs.UptimeScore = types.AddScoreSaturating(vs.UptimeScore, uint64(msg.Amount))
 	}
 	vs.TotalScore = types.ComputeValidatorTotalScore(&vs)
 	vs.LastUpdateHeight = msg.Epoch

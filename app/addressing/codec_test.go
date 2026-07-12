@@ -1,6 +1,7 @@
 package addressing_test
 
 import (
+	"encoding/base64"
 	"encoding/hex"
 	"strings"
 	"testing"
@@ -154,6 +155,35 @@ func TestAddressValidationRejectsEmptyMalformedAndLegacyFormats(t *testing.T) {
 			require.Error(t, addressing.ValidateUserAddress("sender", text))
 		})
 	}
+}
+
+// TestUserFriendlyChecksumlessCanonicalMagicIsRejected locks in that the
+// 36-byte checksumless decode path accepts ONLY the legacy (v1) magic. The
+// canonical (v2) form is always emitted checksummed (34/46 bytes), so a
+// 36-byte payload carrying the v2 magic can only be a malformed/spoofed input
+// -- accepting it would let a typo in a v2-tagged address decode unverified.
+func TestUserFriendlyChecksumlessCanonicalMagicIsRejected(t *testing.T) {
+	raw32 := make([]byte, 32)
+	for i := range raw32 {
+		raw32[i] = byte(i + 1)
+	}
+
+	// header + 32 raw bytes = 36-byte payload, no checksum.
+	canonicalMagic36 := append([]byte{0x00, 0x42, 0x64, 0x02}, raw32...)
+	legacyMagic36 := append([]byte{0x00, 0x40, 0x00, 0x01}, raw32...)
+
+	canonicalAddr := base64.RawURLEncoding.EncodeToString(canonicalMagic36)
+	legacyAddr := base64.RawURLEncoding.EncodeToString(legacyMagic36)
+
+	// v2 magic at the checksumless 36-byte length must be rejected.
+	_, err := addressing.Parse(canonicalAddr)
+	require.Error(t, err)
+
+	// Genuine legacy (v1) addresses in this form must still parse (backward
+	// compatibility), and round-trip to the same 32 raw bytes.
+	got, err := addressing.Parse(legacyAddr)
+	require.NoError(t, err)
+	require.Equal(t, raw32, got)
 }
 
 func TestAddressValidationRejectsCurrentSDKBech32InUserFacingAPIs(t *testing.T) {

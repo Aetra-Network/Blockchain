@@ -487,9 +487,14 @@ func BuildCapacityForecast(chain PaymentsState, state LiquidityOptimizationState
 	}
 	pressure := uint32(0)
 	if !ownerCapacity.IsZero() {
-		pressure = uint32(reserved.MulRaw(10_000).Quo(ownerCapacity).Uint64())
-		if pressure > MaxPenaltyRouteBps {
+		// Clamp on the big.Int ratio BEFORE narrowing to uint32: a ratio above
+		// MaxPenaltyRouteBps would otherwise truncate on the uint32() cast and
+		// could land below the cap, skipping the clamp entirely.
+		ratio := reserved.MulRaw(int64(MaxPenaltyRouteBps)).Quo(ownerCapacity)
+		if ratio.GT(sdkmath.NewIntFromUint64(uint64(MaxPenaltyRouteBps))) {
 			pressure = MaxPenaltyRouteBps
+		} else {
+			pressure = uint32(ratio.Uint64())
 		}
 	}
 	forecast := CapacityForecast{

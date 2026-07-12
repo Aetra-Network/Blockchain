@@ -45,7 +45,7 @@ These are never accepted limitations:
 
 - untriaged Critical or High Cosmos security findings,
 - wrong fee denom accepted or fee policy bypass,
-- unauthorized tokenfactory mint, burn, or admin transfer,
+- unauthorized contract-assets mint, burn, or admin transfer,
 - DEX invariant failure, including reserve, module-balance, or LP-supply mismatch,
 - nondeterminism, nondeterministic consensus state write, or AppHash divergence,
 - ABCI/query/genesis panic reachable from malformed public input,

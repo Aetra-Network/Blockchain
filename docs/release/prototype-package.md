@@ -26,8 +26,8 @@ Each package produced by `scripts\release\prototype-package.ps1` contains:
 
 The script also creates:
 
-- `orbitalis-<version>-<os>-<arch>.zip`
-- `orbitalis-<version>-<os>-<arch>.zip.sha256`
+- `aetra-<version>-<os>-<arch>.zip`
+- `aetra-<version>-<os>-<arch>.zip.sha256`
 
 Artifacts must not contain `.work`, `.localnet`, keyrings, mnemonics, validator private keys, node keys, environment files, Redis/PostgreSQL URLs, or local diagnostic bundles unless explicitly copied as sanitized evidence.
 

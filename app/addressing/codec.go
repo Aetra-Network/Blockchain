@@ -207,7 +207,15 @@ func parseUserFriendly(text string) ([]byte, error) {
 		copy(out, payload[14:])
 		return out, nil
 	case 36:
-		if !hasLegacyOrCanonicalUserFriendlyHeader(payload) {
+		// A 36-byte payload is the checksumless legacy (v1) user-friendly form
+		// (4-byte header + 32 raw bytes). The canonical (v2) form is ALWAYS
+		// emitted checksummed -- 34 bytes for a 20-byte account, 46 for a
+		// 32-byte identity -- so a v2 magic can never legitimately appear at
+		// this length. Accepting it here would let a single-character typo in a
+		// v2-tagged address slip through unverified; require the legacy magic
+		// specifically so only genuine legacy addresses take the checksumless
+		// path.
+		if !hasLegacyUserFriendlyHeader(payload) {
 			return nil, fmt.Errorf("invalid AE userfriendly address header")
 		}
 		return FromRawPayload(payload[4:]), nil
@@ -235,18 +243,14 @@ func hasUserFriendlyHeader(payload []byte, version byte) bool {
 		payload[3] == version
 }
 
-func hasLegacyOrCanonicalUserFriendlyHeader(payload []byte) bool {
+func hasLegacyUserFriendlyHeader(payload []byte) bool {
 	if len(payload) < 4 {
 		return false
 	}
-	return (payload[0] == userFriendlyLegacyMagic[0] &&
+	return payload[0] == userFriendlyLegacyMagic[0] &&
 		payload[1] == userFriendlyLegacyMagic[1] &&
 		payload[2] == userFriendlyLegacyMagic[2] &&
-		payload[3] == userFriendlyLegacyVersion) ||
-		(payload[0] == userFriendlyCanonicalMagic[0] &&
-			payload[1] == userFriendlyCanonicalMagic[1] &&
-			payload[2] == userFriendlyCanonicalMagic[2] &&
-			payload[3] == userFriendlyCanonicalVersion)
+		payload[3] == userFriendlyLegacyVersion
 }
 
 func ToRawPayload(bz []byte) ([]byte, error) {

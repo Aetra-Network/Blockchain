@@ -129,10 +129,10 @@ func ApplyValidatorSignal(vs *ValidatorScore, signal ReputationSignal, effectPar
 	if vs.IsJailed || vs.IsSlashed {
 		switch signal.SignalType {
 		case SignalTypeValidatorSlashed:
-			vs.SlashingPenalty += uint32(signal.Amount)
+			vs.SlashingPenalty = AddScoreSaturating(vs.SlashingPenalty, signal.Amount)
 			vs.IsSlashed = true
 		case SignalTypeValidatorMissed:
-			vs.MissedBlocksPenalty += uint32(signal.Amount)
+			vs.MissedBlocksPenalty = AddScoreSaturating(vs.MissedBlocksPenalty, signal.Amount)
 		default:
 		}
 		vs.TotalScore = ComputeValidatorTotalScore(vs)
@@ -142,20 +142,14 @@ func ApplyValidatorSignal(vs *ValidatorScore, signal ReputationSignal, effectPar
 
 	switch signal.SignalType {
 	case SignalTypeValidatorUptime:
-		vs.UptimeScore += uint32(signal.Amount)
-		if vs.UptimeScore > IdentityScoreMax {
-			vs.UptimeScore = IdentityScoreMax
-		}
+		vs.UptimeScore = AddScoreSaturating(vs.UptimeScore, signal.Amount)
 	case SignalTypeValidatorMissed:
-		vs.MissedBlocksPenalty += uint32(signal.Amount)
+		vs.MissedBlocksPenalty = AddScoreSaturating(vs.MissedBlocksPenalty, signal.Amount)
 	case SignalTypeValidatorSlashed:
-		vs.SlashingPenalty += uint32(signal.Amount)
+		vs.SlashingPenalty = AddScoreSaturating(vs.SlashingPenalty, signal.Amount)
 		vs.IsSlashed = true
 	case SignalTypeValidatorCommission:
-		vs.CommissionBehavior += uint32(signal.Amount)
-		if vs.CommissionBehavior > IdentityScoreMax {
-			vs.CommissionBehavior = IdentityScoreMax
-		}
+		vs.CommissionBehavior = AddScoreSaturating(vs.CommissionBehavior, signal.Amount)
 	}
 
 	vs.TotalScore = ComputeValidatorTotalScore(vs)
@@ -173,30 +167,21 @@ func ApplyServiceSignal(sts *ServiceTrustScore, signal ReputationSignal) (*Servi
 
 	switch signal.SignalType {
 	case SignalTypeServiceAvailable:
-		sts.Trust += uint32(signal.Amount)
-		if sts.Trust > IdentityScoreMax {
-			sts.Trust = IdentityScoreMax
-		}
-		sts.Reliability += uint32(signal.Amount) / 2
-		if sts.Reliability > IdentityScoreMax {
-			sts.Reliability = IdentityScoreMax
-		}
+		sts.Trust = AddScoreSaturating(sts.Trust, signal.Amount)
+		sts.Reliability = AddScoreSaturating(sts.Reliability, signal.Amount/2)
 	case SignalTypeServiceUnavailable:
-		if sts.Trust > uint32(signal.Amount) {
+		if uint64(sts.Trust) > signal.Amount {
 			sts.Trust -= uint32(signal.Amount)
 		} else {
 			sts.Trust = 0
 		}
-		if sts.Reliability > uint32(signal.Amount) {
+		if uint64(sts.Reliability) > signal.Amount {
 			sts.Reliability -= uint32(signal.Amount)
 		} else {
 			sts.Reliability = 0
 		}
 	case SignalTypeServiceProofQuality:
-		sts.Reliability += uint32(signal.Amount)
-		if sts.Reliability > IdentityScoreMax {
-			sts.Reliability = IdentityScoreMax
-		}
+		sts.Reliability = AddScoreSaturating(sts.Reliability, signal.Amount)
 	}
 
 	sts.LastUpdateHeight = signal.Height
