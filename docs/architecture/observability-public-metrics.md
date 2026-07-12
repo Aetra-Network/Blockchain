@@ -93,11 +93,11 @@ The shipped implementation of these five panels is
 [`deploy/monitoring/grafana/aetra-public-testnet-dashboard.json`](../../deploy/monitoring/grafana/aetra-public-testnet-dashboard.json),
 with matching Prometheus scrape config and alerting rules under
 [`deploy/monitoring/prometheus/`](../../deploy/monitoring/prometheus/) and setup
-steps in [`deploy/monitoring/README.md`](../../deploy/monitoring/README.md). The
-dashboard sources every panel from a metric the process actually emits;
-`node sync status` (CometBFT-owned) is the sole exception — it is present but
-shows no data until an in-process bridge is added, tracked by its
-`Emitted=false` flag in `DefaultPublicMetricSpecs`.
+steps in [`deploy/monitoring/README.md`](../../deploy/monitoring/README.md). All 16 required metrics are emitted, so the dashboard sources every panel from a
+live series and the readiness report (`DefaultPublicMetricSpecs`) is green.
+`node sync status` is derived in-process from block-timestamp lag (CometBFT's
+`sync_info.catching_up` remains authoritative); everything else is recorded
+directly from block/fee/economic/validator state.
 
 ## Implementation Contract
 

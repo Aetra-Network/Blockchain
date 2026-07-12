@@ -210,12 +210,15 @@ The Aetra process endpoint populates:
   granularity).
 
 - contract execution gas `aetra_contract_execution_gas{vm,result}` (recorded
-  per AVM execution, success and revert).
+  per AVM execution, success and revert);
+- node sync status `aetra_node_sync_status` (1 = catching up, 0 = caught up),
+  inferred from how far the latest finalized block's timestamp lags wall-clock.
 
-One declared series is **not yet emitted** — do not alert on it:
-`aetra_node_sync_status` (the live status is the `Emitted` flags on
-`observability.DefaultPublicMetricSpecs`; sync state is owned by CometBFT — use
-its own metrics / `aetrad status` in the meantime).
+All 16 required public metrics are now emitted. Note that `aetra_node_sync_status`
+is an in-process heuristic (block-timestamp lag); CometBFT's own
+`sync_info.catching_up` remains the authoritative source, and a genuinely halted
+chain will read 1 even on a caught-up node (covered directly by the chain-stalled
+alert).
 
 A ready-to-import Grafana dashboard, Prometheus scrape config, and alerting
 rules for all of the above live in

@@ -63,7 +63,7 @@
     {
       "type": "stat", "title": "Node sync status (0=synced, 1=catching up)", "id": 5, "datasource": "${DS_PROMETHEUS}",
       "gridPos": { "h": 6, "w": 6, "x": 18, "y": 1 },
-      "description": "Not yet emitted by the Aetra endpoint; use CometBFT's own sync metrics until wired.",
+      "description": "In-process heuristic from block-timestamp lag. A halted chain reads 1 even when caught up (see the chain-stalled alert); CometBFT sync_info.catching_up is authoritative.",
       "fieldConfig": { "defaults": { "unit": "none", "mappings": [ { "type": "value", "options": { "0": { "text": "synced", "color": "green" }, "1": { "text": "catching up", "color": "red" } } } ] }, "overrides": [] },
       "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "none" },
       "targets": [ { "expr": "max(aetra_node_sync_status{instance=~\"$instance\"})", "refId": "A" } ]

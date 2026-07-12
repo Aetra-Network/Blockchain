@@ -1,18 +1,17 @@
 package observability
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
 
 // emittedRequiredMetricIDs is the honest set of required public metrics that
-// production code actually records at runtime today. It is the living
-// checklist for the observability wiring effort: add an ID here in the same
-// change that wires its emitter (and flips Emitted=true in
-// DefaultPublicMetricSpecs). When this set covers every required metric, the
-// readiness report goes green again.
+// production code actually records at runtime. It was the living checklist for
+// the observability wiring effort; it now covers every required metric, so the
+// readiness report is green. If a future change adds a required metric without
+// an emitter, drop it from this set — the test below will then correctly report
+// the readiness regression instead of silently claiming full coverage.
 var emittedRequiredMetricIDs = map[string]bool{
 	RequiredMetricBlockTime:			true,
 	RequiredMetricFinalityLatency:		true,
@@ -29,38 +28,33 @@ var emittedRequiredMetricIDs = map[string]bool{
 	RequiredMetricJailUnjailEvents:		true,
 	RequiredMetricContractExecutionGas:	true,
 	RequiredMetricFailedTxReasons:		true,
+	RequiredMetricNodeSyncStatus:		true,
 }
 
 func TestDefaultPublicMetricsCoverRequiredSection14Metrics(t *testing.T) {
 	report := BuildPublicMetricsReadinessReport(nil, nil)
 
-	// Every required metric is declared across every surface, so the ONLY
-	// readiness failures must be honest not-yet-emitted markers -- never a
-	// surface gap or an unknown/duplicate/missing metric.
+	// Every required metric is declared across every surface AND emitted, so the
+	// report is fully green: no failures, nothing prometheus-only, nothing
+	// not-yet-emitted.
 	require.Equal(t, len(requiredPublicMetricIDs()), report.RequiredCount)
 	require.Empty(t, report.PrometheusOnly)
+	require.Empty(t, report.Failed)
+	require.Empty(t, report.NotEmitted)
 	require.Equal(t, len(requiredPublicSurfaceIDs()), report.SurfaceCount)
 	require.Equal(t, report.SurfaceCount, report.SurfacesReady)
-	for _, f := range report.Failed {
-		require.True(t, strings.HasSuffix(f, ":not_emitted"), "unexpected non-emission failure: %s", f)
-	}
 
-	// Exactly the metrics whose emitters are wired count as ready; the rest are
-	// reported as not-yet-emitted rather than silently claimed ready.
-	require.Equal(t, len(emittedRequiredMetricIDs), report.ReadyCount)
-	require.Len(t, report.NotEmitted, report.RequiredCount-len(emittedRequiredMetricIDs))
+	// Every required metric is wired, so ready count == required count and the
+	// emitted checklist covers the full required set (guards against a future
+	// required metric being added without an emitter).
+	require.Equal(t, report.RequiredCount, report.ReadyCount)
+	require.Len(t, emittedRequiredMetricIDs, report.RequiredCount)
 	for id := range requiredPublicMetricIDs() {
-		if emittedRequiredMetricIDs[id] {
-			require.NotContains(t, report.NotEmitted, id)
-		} else {
-			require.Contains(t, report.NotEmitted, id)
-		}
+		require.True(t, emittedRequiredMetricIDs[id], "required metric %s missing from emitted checklist", id)
 	}
 
-	// Until every required emitter is wired, overall readiness is honestly
-	// false and validation surfaces the not-emitted set.
-	require.False(t, report.Ready)
-	require.Error(t, ValidatePublicMetricsReadiness(nil, nil))
+	require.True(t, report.Ready)
+	require.NoError(t, ValidatePublicMetricsReadiness(nil, nil))
 }
 
 func TestPublicMetricsRejectMissingRequiredMetricSurface(t *testing.T) {

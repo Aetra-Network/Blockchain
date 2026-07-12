@@ -56,15 +56,16 @@ source when prompted. Panels, per the architecture spec:
 
 ## Not yet emitted
 
-One required series is declared but not yet populated, so its panel shows no
-data (the live status is the `Emitted` flags on
-`observability.DefaultPublicMetricSpecs`):
+All 16 required series are now emitted; every dashboard panel is live.
 
-- `aetra_node_sync_status` — sync state is owned by CometBFT; use its native
-  instrumentation (config.toml `[instrumentation] prometheus = true`) or
-  `aetrad status` until an in-process bridge is added.
+Two notes on how specific series are derived:
 
-Everything else on the dashboard is live — including
-`aetra_contract_execution_gas`, recorded per AVM execution from the contracts
-keeper (the value is passed to the observability package as a plain uint64, so
-no floating-point appears in the determinism gate's float-free zone).
+- `aetra_contract_execution_gas` is recorded per AVM execution from the
+  contracts keeper (the value is passed to the observability package as a plain
+  uint64, so no floating-point appears in the determinism gate's float-free
+  zone).
+- `aetra_node_sync_status` (1 = catching up, 0 = caught up) is an in-process
+  heuristic based on how far the latest finalized block lags wall-clock;
+  CometBFT's `sync_info.catching_up` is the authoritative source. A genuinely
+  halted chain reads 1 even on a caught-up node — covered by the
+  `AetraChainStalled` alert.

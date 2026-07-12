@@ -98,7 +98,7 @@ func DefaultPublicMetricSpecs() []PublicMetricSpec {
 		publicMetric(RequiredMetricJailUnjailEvents, MetricValidatorJailEventsTotal, true, true, true, true, true, true, true),
 		publicMetric(RequiredMetricContractExecutionGas, MetricContractExecutionGas, true, true, true, true, true, true, true),
 		publicMetric(RequiredMetricFailedTxReasons, MetricFailedTxReasons, true, true, true, true, true, true, true),
-		publicMetric(RequiredMetricNodeSyncStatus, MetricNodeSyncStatus, true, true, true, true, true, true, false),
+		publicMetric(RequiredMetricNodeSyncStatus, MetricNodeSyncStatus, true, true, true, true, true, true, true),
 	}
 }
 

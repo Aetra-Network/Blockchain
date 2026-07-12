@@ -202,3 +202,13 @@ func renderRegistry(t *testing.T, reg *Registry) string {
 	require.NoError(t, reg.WritePrometheus(&out))
 	return out.String()
 }
+
+func TestNodeSyncStatusValue(t *testing.T) {
+	// A fresh (live) block lags wall-clock by well under the threshold => caught up.
+	require.Equal(t, float64(0), nodeSyncStatusValue(0))
+	require.Equal(t, float64(0), nodeSyncStatusValue(5*time.Second))
+	require.Equal(t, float64(0), nodeSyncStatusValue(nodeSyncLagThreshold))
+	// Historical replay blocks during state sync lag far more => catching up.
+	require.Equal(t, float64(1), nodeSyncStatusValue(nodeSyncLagThreshold+time.Second))
+	require.Equal(t, float64(1), nodeSyncStatusValue(48*time.Hour))
+}

@@ -16,6 +16,13 @@ func StartFinalizeObservation(height int64, blockTime time.Time, txCount int) fu
 	started := time.Now()
 	return func(failed bool, failedTxCodespaces []string) {
 		RecordFinalizeBlock(height, blockTime, txCount, time.Since(started))
+		// Node sync status is derived from how far the just-finalized block's
+		// timestamp lags wall-clock: a node catching up replays historical
+		// blocks (large lag), a caught-up node finalizes blocks stamped ~now
+		// (small lag). Recorded regardless of tx-execution success.
+		if !blockTime.IsZero() {
+			RecordNodeSyncStatus(time.Since(blockTime))
+		}
 		if failed {
 			RecordModuleError("app", "finalize_block", "error")
 			return
@@ -200,6 +207,32 @@ func RecordContractExecutionGas(vm, result string, gasUsed uint64) {
 		result = "unknown"
 	}
 	Observe(MetricContractExecutionGas, Labels{"vm": vm, "result": result}, float64(gasUsed))
+}
+
+// nodeSyncLagThreshold is the block-timestamp-to-wall-clock lag above which the
+// node is treated as catching up rather than caught up. It is generously larger
+// than a normal block interval (~5s) plus jitter/propagation, so ordinary live
+// operation reads 0, while historical-replay blocks during state sync (minutes
+// to days old) clearly read 1. Caveat: a genuinely halted chain also reads 1
+// even on a caught-up node — that degenerate case is covered directly by the
+// AetraChainStalled alert.
+const nodeSyncLagThreshold = 30 * time.Second
+
+// nodeSyncStatusValue maps block-timestamp lag to the node-sync gauge value:
+// 1 = catching up, 0 = caught up.
+func nodeSyncStatusValue(lag time.Duration) float64 {
+	if lag > nodeSyncLagThreshold {
+		return 1
+	}
+	return 0
+}
+
+// RecordNodeSyncStatus records whether the node is catching up (1) or caught up
+// (0), inferred from how far the latest finalized block lags wall-clock. This
+// is an in-process heuristic; CometBFT's own sync_info.catching_up remains the
+// authoritative source.
+func RecordNodeSyncStatus(lag time.Duration) {
+	SetGauge(MetricNodeSyncStatus, nil, nodeSyncStatusValue(lag))
 }
 
 // RecordFinalityLatency records the observed proposal-time-to-local-commit
