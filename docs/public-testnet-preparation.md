@@ -213,7 +213,7 @@ balancer/uptime checks. Tests: `cmd/l1d/cmd/faucet_test.go` (rate limiter,
 HTTP handler validation, rate-limit release-on-failure, all with a fake
 broadcaster — no live chain required).
 
-## Explorer And Indexer
+## Explorer And Indexer Plan
 
 Implemented: `l1-explorer` is the block-explorer data source — a block/tx
 indexer over CometBFT RPC plus a live gRPC proxy for contract/validator/supply
