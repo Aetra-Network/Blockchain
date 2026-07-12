@@ -57,7 +57,7 @@ jobs:
           fi
 
           mapfile -t findings < <(grep -E '^Vulnerability #[0-9]+: GO-[0-9]+-[0-9]+' govulncheck.txt | awk '{print $3}' | sort -u)
-          mapfile -t triaged < <(grep -E '^GO-[0-9]+-[0-9]+' "${triage_source}" | sort -u)
+          mapfile -t triaged < <(grep -E '^GO-[0-9]+-[0-9]+' "${triage_source}" | awk '{print $1}' | sort -u)
 
           if [[ "${#findings[@]}" -eq 0 ]]; then
             printf 'govulncheck failed without parseable GO advisory IDs.\n'
