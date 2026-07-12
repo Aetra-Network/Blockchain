@@ -194,22 +194,25 @@ Prometheus metrics (enable with `--observability-metrics true --observability-me
 curl http://localhost:27780/metrics
 ```
 
-The Aetra process endpoint currently populates block-liveness and
-fee/economic-controller series (block height/time, block-processing and tx
-latency, module errors, fees accepted/rejected, inflation/burn/validator-fee
-controller output), plus the validator-set decentralization gauges
-`aetra_validator_concentration_bps` and `aetra_validator_top_n_power_bps`
-(labeled `n=10/20/33`) and `aetra_economy_bonded_ratio_bps`, recorded from
-committed state on an interval in EndBlock. The remaining validator-health
-series (`aetra_validator_missed_blocks_total`, `aetra_validator_uptime_bps`,
-`aetra_slashing_events_total`, `aetra_validator_jail_events_total`) and some
-economic gauges (`aetra_economy_estimated_apr_bps`,
-`aetra_economy_burned_fees_naet`, `aetra_economy_treasury_balance_naet`,
-`aetra_finality_latency_seconds`) are declared and scrapeable but **not yet
-emitted** — do not build alerts on them until they are wired (the live status
-is the `Emitted` flags on `observability.DefaultPublicMetricSpecs`). For those,
-use the CometBFT metrics / `aetrad query staking validators` / `aetrad status`
-sources above in the meantime.
+The Aetra process endpoint populates:
+
+- block liveness: block height/time, block-processing and per-tx latency,
+  finality latency, failed-tx reasons (labeled by codespace), module errors;
+- fee/economic series: fees accepted/rejected, inflation/burn/validator-fee
+  controller output, bonded ratio, estimated gross staking APR, cumulative
+  burned coins, treasury balance;
+- validator health (recorded from committed state on an interval in EndBlock):
+  concentration `aetra_validator_concentration_bps`, top-N power shares
+  `aetra_validator_top_n_power_bps{n=10|20|33}`, bonded-set uptime
+  `aetra_validator_uptime_bps{stat=min|avg}`, missed blocks
+  `aetra_validator_missed_blocks_total`, and jail/unjail/slashing event
+  counters with bounded reason labels (transition-derived at sweep
+  granularity).
+
+Two declared series are **not yet emitted** — do not alert on them:
+`aetra_contract_execution_gas` and `aetra_node_sync_status` (the live status
+is the `Emitted` flags on `observability.DefaultPublicMetricSpecs`; use
+CometBFT's own metrics / `aetrad status` for sync state in the meantime).
 
 gRPC queries (any module, port 9090):
 

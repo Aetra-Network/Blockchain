@@ -5,6 +5,33 @@ import (
 	"time"
 )
 
+// StartFinalizeObservation begins timing a FinalizeBlock execution and returns
+// a completion callback that records every finalize-related metric (block
+// gauges, processing duration, finality latency, failed-tx reasons). ALL
+// wall-clock reads live here, inside the metrics package, so consensus source
+// files stay free of time tokens (enforced by the consensus-source scanner in
+// app/security_attack_audit_test.go); the callback returns nothing, so no
+// clock-derived value can flow back into consensus logic.
+func StartFinalizeObservation(height int64, blockTime time.Time, txCount int) func(failed bool, failedTxCodespaces []string) {
+	started := time.Now()
+	return func(failed bool, failedTxCodespaces []string) {
+		RecordFinalizeBlock(height, blockTime, txCount, time.Since(started))
+		if failed {
+			RecordModuleError("app", "finalize_block", "error")
+			return
+		}
+		// Finality latency: proposal timestamp to local commit completion.
+		if !blockTime.IsZero() {
+			if latency := time.Since(blockTime); latency > 0 {
+				RecordFinalityLatency(latency.Seconds())
+			}
+		}
+		for _, codespace := range failedTxCodespaces {
+			RecordFailedTx(codespace)
+		}
+	}
+}
+
 func RecordFinalizeBlock(height int64, blockTime time.Time, txCount int, duration time.Duration) {
 	if height >= 0 {
 		SetGauge(MetricBlockHeight, nil, float64(height))
@@ -158,6 +185,96 @@ func RecordValidatorConcentrationRisks(warningCount int) {
 // basis points (0..10000).
 func RecordBondedRatio(bondedRatioBps int64) {
 	SetGauge(MetricEconomyBondedRatioBps, nil, clampBpsFloat(bondedRatioBps))
+}
+
+// RecordFinalityLatency records the observed proposal-time-to-local-commit
+// latency for a finalized block. Wall-clock based; feeds only the process-local
+// metrics registry, never consensus.
+func RecordFinalityLatency(seconds float64) {
+	if seconds < 0 {
+		return
+	}
+	Observe(MetricFinalityLatencySeconds, Labels{"phase": "finalize"}, seconds)
+}
+
+// RecordFailedTx counts a failed transaction from a finalized block, labeled by
+// its error codespace (bounded: codespaces are module names).
+func RecordFailedTx(codespace string) {
+	if codespace == "" {
+		codespace = "unknown"
+	}
+	IncCounter(MetricFailedTxReasons, Labels{"codespace": codespace}, 1)
+}
+
+// RecordBurnedTotal records the cumulative protocol coins burned in naet (fee
+// routing plus the emission burn bucket), from x/burn's by-denom ledger.
+func RecordBurnedTotal(naet int64) {
+	if naet < 0 {
+		return
+	}
+	SetGauge(MetricEconomyBurnedFeesNaet, Labels{"denom": "naet"}, float64(naet))
+}
+
+// RecordTreasuryBalance records the treasury module account's spendable balance
+// in naet.
+func RecordTreasuryBalance(naet int64) {
+	if naet < 0 {
+		return
+	}
+	SetGauge(MetricEconomyTreasuryBalanceNaet, Labels{"denom": "naet"}, float64(naet))
+}
+
+// RecordEstimatedAPR records the estimated gross staking APR in basis points
+// (before validator commissions). Not clamped to 10000: APR can legitimately
+// exceed 100% when bonded stake is small relative to emissions.
+func RecordEstimatedAPR(aprBps int64) {
+	if aprBps < 0 {
+		aprBps = 0
+	}
+	SetGauge(MetricEconomyEstimatedAPRBps, nil, float64(aprBps))
+}
+
+// RecordValidatorUptime records the minimum and average uptime across the
+// bonded validator set, in basis points over the slashing signed-blocks window.
+func RecordValidatorUptime(minBps, avgBps int64) {
+	SetGauge(MetricValidatorUptimeBps, Labels{"stat": "min"}, clampBpsFloat(minBps))
+	SetGauge(MetricValidatorUptimeBps, Labels{"stat": "avg"}, clampBpsFloat(avgBps))
+}
+
+// RecordValidatorMissedBlocks counts newly observed missed blocks, aggregated
+// across the validator set (positive deltas of the slashing signing-info
+// missed-blocks counters between observations).
+func RecordValidatorMissedBlocks(delta int64) {
+	if delta <= 0 {
+		return
+	}
+	IncCounter(MetricValidatorMissedBlocks, Labels{"scope": "validator_set"}, float64(delta))
+}
+
+// RecordValidatorJailEvent counts an observed jail transition, labeled by the
+// inferred reason (downtime or double_sign).
+func RecordValidatorJailEvent(reason string) {
+	IncCounter(MetricValidatorJailEventsTotal, Labels{"reason": boundedSlashReason(reason)}, 1)
+}
+
+// RecordValidatorUnjailEvent counts an observed unjail transition.
+func RecordValidatorUnjailEvent() {
+	IncCounter(MetricValidatorUnjailEventsTotal, Labels{"reason": "unjail"}, 1)
+}
+
+// RecordSlashingEvent counts an observed slashing event, labeled by the
+// inferred reason (downtime or double_sign).
+func RecordSlashingEvent(reason string) {
+	IncCounter(MetricSlashingEventsTotal, Labels{"reason": boundedSlashReason(reason)}, 1)
+}
+
+func boundedSlashReason(reason string) string {
+	switch reason {
+	case "downtime", "double_sign":
+		return reason
+	default:
+		return "other"
+	}
 }
 
 func clampBpsFloat(bps int64) float64 {

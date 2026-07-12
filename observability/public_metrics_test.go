@@ -15,10 +15,19 @@ import (
 // readiness report goes green again.
 var emittedRequiredMetricIDs = map[string]bool{
 	RequiredMetricBlockTime:			true,
-	RequiredMetricInflation:			true,
+	RequiredMetricFinalityLatency:		true,
+	RequiredMetricMissedBlocks:		true,
+	RequiredMetricValidatorUptime:		true,
 	RequiredMetricValidatorConcentration:	true,
 	RequiredMetricTopNVotingPower:		true,
+	RequiredMetricInflation:			true,
 	RequiredMetricBondedRatio:		true,
+	RequiredMetricEstimatedAPR:		true,
+	RequiredMetricBurnedFees:		true,
+	RequiredMetricTreasuryBalance:		true,
+	RequiredMetricSlashingEvents:		true,
+	RequiredMetricJailUnjailEvents:		true,
+	RequiredMetricFailedTxReasons:		true,
 }
 
 func TestDefaultPublicMetricsCoverRequiredSection14Metrics(t *testing.T) {

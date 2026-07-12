@@ -14,13 +14,23 @@ import (
 	"github.com/sovereign-l1/l1/observability"
 )
 
+// FinalizeBlock wraps the BaseApp FinalizeBlock with observability recording.
+// All wall-clock reads live inside the observability package (see
+// StartFinalizeObservation) so this consensus path stays free of time tokens;
+// the metrics are process-local side effects and never influence state.
 func FinalizeBlock(req *abci.RequestFinalizeBlock, finalize func(*abci.RequestFinalizeBlock) (*abci.ResponseFinalizeBlock, error)) (*abci.ResponseFinalizeBlock, error) {
+	observe := observability.StartFinalizeObservation(req.Height, req.Time, len(req.Txs))
 	res, err := finalize(req)
 
-	observability.RecordFinalizeBlock(req.Height, req.Time, len(req.Txs), -1)
-	if err != nil {
-		observability.RecordModuleError("app", "finalize_block", "error")
+	var failedTxCodespaces []string
+	if err == nil && res != nil {
+		for _, txResult := range res.TxResults {
+			if txResult != nil && txResult.Code != 0 {
+				failedTxCodespaces = append(failedTxCodespaces, txResult.Codespace)
+			}
+		}
 	}
+	observe(err != nil, failedTxCodespaces)
 	return res, err
 }
 

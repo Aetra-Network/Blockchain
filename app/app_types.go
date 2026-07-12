@@ -158,4 +158,10 @@ type L1App struct {
 
 	// module configurator
 	configurator	module.Configurator
+
+	// validatorHealthObs is the process-local snapshot the observability sweep
+	// diffs against to derive event counters (missed blocks, jail/unjail,
+	// slashing). Metrics-only state: never persisted, never read by consensus
+	// logic. See app/observability_metrics.go.
+	validatorHealthObs	*validatorHealthObsSnapshot
 }
