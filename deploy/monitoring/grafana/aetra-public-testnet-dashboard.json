@@ -1,0 +1,148 @@
+{
+  "__inputs": [
+    {
+      "name": "DS_PROMETHEUS",
+      "label": "Prometheus",
+      "description": "Prometheus data source scraping the Aetra process metrics endpoint (default :27780).",
+      "type": "datasource",
+      "pluginId": "prometheus",
+      "pluginName": "Prometheus"
+    }
+  ],
+  "annotations": { "list": [] },
+  "editable": true,
+  "graphTooltip": 1,
+  "schemaVersion": 39,
+  "tags": ["aetra", "public-testnet"],
+  "time": { "from": "now-6h", "to": "now" },
+  "timezone": "",
+  "title": "Aetra Public Testnet",
+  "uid": "aetra-public-testnet",
+  "templating": {
+    "list": [
+      {
+        "name": "DS_PROMETHEUS",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0
+      },
+      {
+        "name": "instance",
+        "type": "query",
+        "datasource": "${DS_PROMETHEUS}",
+        "query": "label_values(aetra_block_height, instance)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" }
+      }
+    ]
+  },
+  "panels": [
+    { "type": "row", "title": "Consensus health", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }, "collapsed": false, "id": 1 },
+    {
+      "type": "stat", "title": "Block height", "id": 2, "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area" },
+      "targets": [ { "expr": "max(aetra_block_height{instance=~\"$instance\"})", "refId": "A" } ]
+    },
+    {
+      "type": "timeseries", "title": "Block processing (avg, s)", "id": 3, "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [ { "expr": "sum(rate(aetra_block_processing_seconds_sum{instance=~\"$instance\"}[5m])) / clamp_min(sum(rate(aetra_block_processing_seconds_count{instance=~\"$instance\"}[5m])), 1)", "legendFormat": "block processing", "refId": "A" } ]
+    },
+    {
+      "type": "timeseries", "title": "Finality latency (avg, s)", "id": 4, "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [ { "expr": "sum(rate(aetra_finality_latency_seconds_sum{instance=~\"$instance\"}[5m])) / clamp_min(sum(rate(aetra_finality_latency_seconds_count{instance=~\"$instance\"}[5m])), 1)", "legendFormat": "finality latency", "refId": "A" } ]
+    },
+    {
+      "type": "stat", "title": "Node sync status (0=synced, 1=catching up)", "id": 5, "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 1 },
+      "description": "Not yet emitted by the Aetra endpoint; use CometBFT's own sync metrics until wired.",
+      "fieldConfig": { "defaults": { "unit": "none", "mappings": [ { "type": "value", "options": { "0": { "text": "synced", "color": "green" }, "1": { "text": "catching up", "color": "red" } } } ] }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "none" },
+      "targets": [ { "expr": "max(aetra_node_sync_status{instance=~\"$instance\"})", "refId": "A" } ]
+    },
+
+    { "type": "row", "title": "Validator reliability", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 7 }, "collapsed": false, "id": 10 },
+    {
+      "type": "timeseries", "title": "Validator uptime (%)", "id": 11, "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100 }, "overrides": [] },
+      "targets": [ { "expr": "aetra_validator_uptime_bps{instance=~\"$instance\"} / 100", "legendFormat": "uptime {{stat}}", "refId": "A" } ]
+    },
+    {
+      "type": "timeseries", "title": "Missed blocks (rate/s)", "id": 12, "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
+      "targets": [ { "expr": "sum(rate(aetra_validator_missed_blocks_total{instance=~\"$instance\"}[5m]))", "legendFormat": "missed blocks/s", "refId": "A" } ]
+    },
+    {
+      "type": "timeseries", "title": "Jail / unjail / slashing events (per 1h)", "id": 13, "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
+      "targets": [
+        { "expr": "sum(increase(aetra_validator_jail_events_total{instance=~\"$instance\"}[1h])) by (reason)", "legendFormat": "jail {{reason}}", "refId": "A" },
+        { "expr": "sum(increase(aetra_validator_unjail_events_total{instance=~\"$instance\"}[1h]))", "legendFormat": "unjail", "refId": "B" },
+        { "expr": "sum(increase(aetra_slashing_events_total{instance=~\"$instance\"}[1h])) by (reason)", "legendFormat": "slash {{reason}}", "refId": "C" }
+      ]
+    },
+
+    { "type": "row", "title": "Decentralization", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 14 }, "collapsed": false, "id": 20 },
+    {
+      "type": "timeseries", "title": "Voting-power concentration (%)", "id": 21, "datasource": "${DS_PROMETHEUS}",
+      "description": "Headline = top-33 share. Alert threshold is the one-third (33.34%) halt boundary.",
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 15 },
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 33.34 } ] } }, "overrides": [] },
+      "targets": [ { "expr": "aetra_validator_concentration_bps{instance=~\"$instance\"} / 100", "legendFormat": "concentration (top-33)", "refId": "A" } ]
+    },
+    {
+      "type": "timeseries", "title": "Top-10 / Top-20 / Top-33 voting power (%)", "id": 22, "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 15 },
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100 }, "overrides": [] },
+      "targets": [ { "expr": "aetra_validator_top_n_power_bps{instance=~\"$instance\"} / 100", "legendFormat": "top-{{n}}", "refId": "A" } ]
+    },
+
+    { "type": "row", "title": "Economics", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 21 }, "collapsed": false, "id": 30 },
+    {
+      "type": "timeseries", "title": "Inflation / Bonded ratio / Estimated APR (%)", "id": 31, "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 22 },
+      "fieldConfig": { "defaults": { "unit": "percent" }, "overrides": [] },
+      "targets": [
+        { "expr": "aetra_economy_inflation_bps{instance=~\"$instance\"} / 100", "legendFormat": "inflation", "refId": "A" },
+        { "expr": "aetra_economy_bonded_ratio_bps{instance=~\"$instance\"} / 100", "legendFormat": "bonded ratio", "refId": "B" },
+        { "expr": "aetra_economy_estimated_apr_bps{instance=~\"$instance\"} / 100", "legendFormat": "estimated APR", "refId": "C" }
+      ]
+    },
+    {
+      "type": "timeseries", "title": "Burned coins / Treasury balance (AET)", "id": 32, "datasource": "${DS_PROMETHEUS}",
+      "description": "naet converted to AET (1 AET = 1e9 naet).",
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 22 },
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
+      "targets": [
+        { "expr": "aetra_economy_burned_fees_naet{instance=~\"$instance\"} / 1e9", "legendFormat": "burned (cumulative)", "refId": "A" },
+        { "expr": "aetra_economy_treasury_balance_naet{instance=~\"$instance\"} / 1e9", "legendFormat": "treasury balance", "refId": "B" }
+      ]
+    },
+
+    { "type": "row", "title": "VM and transactions", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 28 }, "collapsed": false, "id": 40 },
+    {
+      "type": "timeseries", "title": "Failed tx (rate/s by codespace)", "id": 41, "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 29 },
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
+      "targets": [ { "expr": "sum(rate(aetra_failed_tx_reasons_total{instance=~\"$instance\"}[5m])) by (codespace)", "legendFormat": "{{codespace}}", "refId": "A" } ]
+    },
+    {
+      "type": "timeseries", "title": "Contract execution gas (avg)", "id": 42, "datasource": "${DS_PROMETHEUS}",
+      "description": "Not yet emitted: x/contracts sits inside the determinism gate's float-free zone, so this series is currently empty.",
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 29 },
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
+      "targets": [ { "expr": "sum(rate(aetra_contract_execution_gas_sum{instance=~\"$instance\"}[5m])) / clamp_min(sum(rate(aetra_contract_execution_gas_count{instance=~\"$instance\"}[5m])), 1)", "legendFormat": "gas/exec", "refId": "A" } ]
+    }
+  ]
+}

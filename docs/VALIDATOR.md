@@ -214,6 +214,10 @@ Two declared series are **not yet emitted** — do not alert on them:
 is the `Emitted` flags on `observability.DefaultPublicMetricSpecs`; use
 CometBFT's own metrics / `aetrad status` for sync state in the meantime).
 
+A ready-to-import Grafana dashboard, Prometheus scrape config, and alerting
+rules for all of the above live in
+[`deploy/monitoring/`](../deploy/monitoring/README.md).
+
 gRPC queries (any module, port 9090):
 
 ```powershell

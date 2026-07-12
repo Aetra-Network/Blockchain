@@ -89,6 +89,16 @@ Public testnet dashboards must include:
 
 Dashboards are not consensus-critical, but dashboard readiness is a public testnet gate because operators and delegators need shared visibility during incidents.
 
+The shipped implementation of these five panels is
+[`deploy/monitoring/grafana/aetra-public-testnet-dashboard.json`](../../deploy/monitoring/grafana/aetra-public-testnet-dashboard.json),
+with matching Prometheus scrape config and alerting rules under
+[`deploy/monitoring/prometheus/`](../../deploy/monitoring/prometheus/) and setup
+steps in [`deploy/monitoring/README.md`](../../deploy/monitoring/README.md). The
+dashboard sources every panel from a metric the process actually emits;
+`node sync status` (CometBFT-owned) and `contract execution gas` (blocked by the
+determinism gate's float-free zone) are present but show no data until wired,
+and are tracked by their `Emitted=false` flags in `DefaultPublicMetricSpecs`.
+
 ## Implementation Contract
 
 The implementation catalog is `DefaultPublicMetricSpecs` in `observability/public_metrics.go`.

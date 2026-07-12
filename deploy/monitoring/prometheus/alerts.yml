@@ -1,0 +1,94 @@
+# Aetra public-testnet alerting rules.
+#
+# Load from prometheus.yml via `rule_files: ["alerts.yml"]`. Thresholds are
+# starting points for a public testnet — tune per network size before a broad
+# validator/delegator campaign. Every alert is derived from a metric the Aetra
+# process endpoint actually emits today (see observability.DefaultPublicMetricSpecs).
+groups:
+  - name: aetra-liveness
+    rules:
+      - alert: AetraMetricsEndpointDown
+        expr: up{job="aetra"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "Aetra metrics endpoint unreachable ({{ $labels.instance }})"
+          description: "Prometheus cannot scrape the Aetra process metrics endpoint for 2m. The node may be down or the observability endpoint disabled."
+
+      - alert: AetraChainStalled
+        expr: increase(aetra_block_height[5m]) == 0
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "Chain height not advancing ({{ $labels.instance }})"
+          description: "aetra_block_height has not increased in 5m — the chain may be halted or the node stuck."
+
+      - alert: AetraHighFinalityLatency
+        expr: >
+          sum(rate(aetra_finality_latency_seconds_sum[5m])) by (instance)
+          / clamp_min(sum(rate(aetra_finality_latency_seconds_count[5m])) by (instance), 1) > 10
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "High finality latency ({{ $labels.instance }})"
+          description: "Average proposal-to-commit latency has exceeded 10s for 10m."
+
+  - name: aetra-validator-health
+    rules:
+      - alert: AetraSlashingEvent
+        expr: increase(aetra_slashing_events_total[10m]) > 0
+        for: 0m
+        labels: { severity: warning }
+        annotations:
+          summary: "Slashing event observed (reason={{ $labels.reason }})"
+          description: "A validator slashing event was observed in the last 10m."
+
+      - alert: AetraValidatorJailed
+        expr: increase(aetra_validator_jail_events_total[10m]) > 0
+        for: 0m
+        labels: { severity: warning }
+        annotations:
+          summary: "Validator jailed (reason={{ $labels.reason }})"
+          description: "A validator jail transition was observed in the last 10m."
+
+      - alert: AetraLowValidatorUptime
+        expr: aetra_validator_uptime_bps{stat="min"} < 9500
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "A bonded validator's uptime is below 95%"
+          description: "The minimum bonded-set uptime has been below 9500 bps (95%) for 10m — a validator is close to a downtime jail."
+
+      - alert: AetraHighMissedBlocks
+        expr: sum(rate(aetra_validator_missed_blocks_total[5m])) by (instance) > 1
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Elevated missed-block rate ({{ $labels.instance }})"
+          description: "The validator set is missing more than 1 block/s (aggregate) over 10m."
+
+  - name: aetra-decentralization-economics
+    rules:
+      - alert: AetraValidatorConcentrationCritical
+        expr: aetra_validator_concentration_bps > 3334
+        for: 15m
+        labels: { severity: critical }
+        annotations:
+          summary: "Voting-power concentration above the one-third halt boundary"
+          description: "The top-33 validators hold more than 33.34% of voting power (aetra_validator_concentration_bps > 3334) — a colluding subset could halt the chain."
+
+      - alert: AetraLowBondedRatio
+        expr: aetra_economy_bonded_ratio_bps < 2000
+        for: 30m
+        labels: { severity: warning }
+        annotations:
+          summary: "Bonded ratio below 20%"
+          description: "Less than 20% of supply is bonded for 30m — low economic security backing the validator set."
+
+      - alert: AetraTelemetryDisabled
+        expr: aetra_telemetry_enabled == 0
+        for: 5m
+        labels: { severity: info }
+        annotations:
+          summary: "Aetra telemetry disabled ({{ $labels.instance }})"
+          description: "The endpoint is reachable but telemetry is off, so metrics read zero. Start with --observability-metrics true."

@@ -1467,6 +1467,24 @@ func (k *Keeper) ApplyPoolSlash(poolID string, slashAmount uint64) (types.Nomina
 	return k.savePoolOnly(idx, pool)
 }
 
+// ApplyValidatorSlash reduces pooled stake and advances the pool slash index
+// when a validator a pool delegates to is slashed.
+//
+// It is intentionally not yet reachable in production: it has no msg-server
+// route and no caller, because the nominator-pool liquid-staking subsystem is
+// not economically live. Deposits are pure keeper accounting — no module
+// account, no real token custody or cosmos delegation (see
+// DepositToStakingPool, which only mutates in-memory share/stake fields) — so
+// there is currently no real pooled stake for a validator fault to slash. The
+// real consensus slashing path is cosmos x/slashing plus the x/evidence
+// pipeline (runSlashingHooks), which bridges faults to validator-registry,
+// reputation, and validator-insurance but deliberately NOT to nominator-pool.
+//
+// When the liquid-staking subsystem is made economically live (real delegation
+// custody), this is the intended bridge to wire into that evidence slashing
+// pipeline. Until then it is exercised only by tests. Do not delete it as dead
+// code, and do not wire it into consensus slashing on its own — it is coherent
+// only together with the rest of the not-yet-live liquid-staking machinery.
 func (k *Keeper) ApplyValidatorSlash(msg types.MsgApplyValidatorSlash) ([]types.ValidatorSlashEvent, error) {
 	if err := k.genesis.Params.Authorize(msg.Authority); err != nil {
 		return nil, err

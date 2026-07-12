@@ -1,0 +1,29 @@
+# Minimal Prometheus config for scraping an Aetra public-testnet node.
+#
+# The Aetra process exposes metrics at the address set by
+# --observability-metrics-addr (default 127.0.0.1:27780) when started with
+# --observability-metrics true. CometBFT's own consensus/p2p metrics are a
+# separate endpoint (enabled in config.toml [instrumentation]) and can be added
+# as a second job if desired.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - alerts.yml
+
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  - job_name: aetra
+    metrics_path: /metrics
+    static_configs:
+      # One target per validator/full node metrics endpoint. Replace with your
+      # hosts (or use service discovery).
+      - targets:
+          - "127.0.0.1:27780"
+        labels:
+          network: aetra-public-testnet
