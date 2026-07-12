@@ -132,6 +132,35 @@ func TestPhase34SlashedStateExportImportAndLegacyMigrationCannotRecoverStake(t *
 	require.Equal(t, slashedExport.State.ValidatorSlashEvents, migratedExport.State.ValidatorSlashEvents)
 }
 
+// TestPhase34UpdateParamsRejectsSlashBpsAboveMaxBasisPoints guards against a
+// governance-approved (or otherwise programmatic) params update setting a
+// slash bps above 10000 -- every other bps field in Params.Validate() is
+// bounds-checked this way; DowntimeSlashBps/DoubleSignSlashBps previously
+// were not.
+func TestPhase34UpdateParamsRejectsSlashBpsAboveMaxBasisPoints(t *testing.T) {
+	k := NewKeeper()
+	params := k.ExportGenesis().Params
+
+	downtimeTooHigh := params
+	downtimeTooHigh.DowntimeSlashBps = uint32(types.MaxBasisPoints) + 1
+	_, err := k.UpdateParams(types.MsgUpdateParams{
+		Authority:	prototype.DefaultAuthority,
+		Params:		downtimeTooHigh,
+		Height:		2,
+	})
+	require.ErrorContains(t, err, "downtime slash bps")
+
+	doubleSignTooHigh := params
+	doubleSignTooHigh.DoubleSignSlashBps = uint32(types.MaxBasisPoints) + 1
+	_, err = k.UpdateParams(types.MsgUpdateParams{
+		Authority:	prototype.DefaultAuthority,
+		Params:		doubleSignTooHigh,
+		Height:		3,
+	})
+	require.ErrorContains(t, err, "double-sign slash bps")
+}
+
+
 func phase34PoolWithValidatorAllocation(t *testing.T, poolID string, validatorHex string, amount uint64) (Keeper, types.NominatorPool, string) {
 	t.Helper()
 	user := aePoolAddress(t, "a0")

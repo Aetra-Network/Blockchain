@@ -867,6 +867,12 @@ func (p Params) Validate() error {
 	if !p.DoubleSignTombstone {
 		return errors.New("double-sign slash must tombstone")
 	}
+	if p.DowntimeSlashBps > MaxBasisPoints {
+		return fmt.Errorf("nominator pool downtime slash bps must be <= %d", MaxBasisPoints)
+	}
+	if p.DoubleSignSlashBps > MaxBasisPoints {
+		return fmt.Errorf("nominator pool double-sign slash bps must be <= %d", MaxBasisPoints)
+	}
 	if p.OverflowRewardMultiplierMinBps > p.OverflowRewardMultiplierMaxBps || p.OverflowRewardMultiplierMaxBps > 3_000 {
 		return errors.New("nominator pool overflow reward multiplier must stay within 0-3000 bps")
 	}

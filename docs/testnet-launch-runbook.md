@@ -4,7 +4,7 @@ The end-to-end sequence to stand up the Aetra public testnet and the services
 around it (explorer, faucet, monitoring). Each step links the detailed doc.
 This is the "do these in order" playbook; the linked docs are the reference.
 
-Chain IDs are numeric: **testnet `19`**, mainnet `18`
+Chain IDs are numeric: **testnet `-19`**, mainnet `18`
 ([app/params/chain_id.go](../app/params/chain_id.go)). Average transfer fee is
 **~0.5 AET**, dynamic and governance-adjustable.
 
@@ -25,7 +25,7 @@ Chain IDs are numeric: **testnet `19`**, mainnet `18`
 2. Generate per-validator node homes + gentxs. For a coordinated multi-host
    set, each operator runs `init` + `gentx` and submits their gentx; the
    coordinator collects them. For a single-operator bootstrap, use
-   `aetrad testnet init-files --validator-count N --chain-id 19 ...`
+   `aetrad testnet init-files --validator-count N --chain-id -19 ...`
    (this also pre-populates the `x/native-account` bootstrap records so the
    founding keys can call AVM entrypoints without a self-activation tx — see
    [validator-onboarding.md](validator-onboarding.md)).

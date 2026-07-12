@@ -206,12 +206,11 @@ func TestGoldenNativeEconomyLoopCoversFeesEmissionsPoolRewardsAndStorageRent(t *
 
 func configureGoldenBurnParams(t *testing.T, app *L1App, ctx sdk.Context) {
 	t.Helper()
-	params := burntypes.DefaultParams()
-	params.ProtocolBurnPermissions = append(params.ProtocolBurnPermissions, burntypes.BurnPermission{
-		ModuleName:    authtypes.FeeCollectorName,
-		AllowedDenoms: []string{appparams.BaseDenom},
-	})
-	require.NoError(t, app.BurnKeeper.SetParams(ctx, params))
+	// DefaultParams() already authorizes authtypes.FeeCollectorName to burn
+	// (fee_collector's own EndBlock burn permission is granted by default,
+	// see x/burn/types/genesis.go) -- appending it again here would produce a
+	// duplicate ProtocolBurnPermissions entry and fail SetParams' validation.
+	require.NoError(t, app.BurnKeeper.SetParams(ctx, burntypes.DefaultParams()))
 }
 
 func configureGoldenEmissionParams(t *testing.T, app *L1App, ctx sdk.Context) {
@@ -325,6 +324,33 @@ func TestMaybeFinalizeNativeEmissionEpochAtEpochBoundary(t *testing.T) {
 
 	err = app.maybeFinalizeNativeEmissionEpoch(ctx)
 	require.NoError(t, err)
+}
+
+// TestEndBlockerBurnsFromFeeCollectorOnFreshChainDefaults reproduces, against
+// the real ABCI EndBlocker entrypoint (not just FinalizeNativeEconomyEpoch
+// directly), a chain-halt that a freshly launched chain running default
+// genesis params would hit deterministically at its first emission epoch:
+// native-emission distribution burns a portion of every epoch's emission
+// from authtypes.FeeCollectorName (x/emissions' default distribution
+// weights allocate a nonzero burn-bucket share), and an EndBlocker that
+// returns a non-nil error halts the chain. Deliberately does NOT call
+// configureGoldenBurnParams -- the whole point is that burn must work from
+// x/burn's own DefaultParams() alone, with no test-only or operator-applied
+// permission grant required.
+func TestEndBlockerBurnsFromFeeCollectorOnFreshChainDefaults(t *testing.T) {
+	app := Setup(t, false)
+
+	epochBoundary := int64(nominatorpooltypes.DefaultRewardEpochDurationBlocks)
+	ctx := app.NewContext(false).WithBlockHeight(epochBoundary)
+	configureGoldenEmissionParams(t, app, ctx)
+
+	_, err := app.EndBlocker(ctx)
+	require.NoError(t, err)
+
+	entry, found, err := app.BurnKeeper.GetBurnedEpochEntry(ctx, 1)
+	require.NoError(t, err)
+	require.True(t, found, "epoch 1's native-emission burn should have been recorded, not silently skipped")
+	require.True(t, entry.Amount.IsAllPositive(), "burned amount should be positive given DefaultDistributionWeights' nonzero burn-bucket share")
 }
 
 func TestMintAuthorityRejectsNonCanonicalBaseDenomUpdateAndFinalizeStillWorks(t *testing.T) {

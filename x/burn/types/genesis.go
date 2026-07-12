@@ -6,15 +6,31 @@ import (
 	"strings"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
+	authtypes "github.com/cosmos/cosmos-sdk/x/auth/types"
 )
 
 func DefaultParams() Params {
 	return Params{
 		AllowedDenoms:	[]string{BaseDenom},
-		ProtocolBurnPermissions: []BurnPermission{{
-			ModuleName:	ModuleName,
-			AllowedDenoms:	[]string{BaseDenom},
-		}},
+		// fee_collector must be authorized by default: app/native_economy.go's
+		// EndBlock-driven native-emission distribution burns a portion of
+		// every epoch's emission directly from authtypes.FeeCollectorName
+		// (that burn-bucket weight is on by default, DefaultDistributionWeights
+		// in x/emissions). Without this permission, that burn call returns
+		// ErrUnauthorized, and an EndBlocker returning a non-nil error halts
+		// the chain -- so omitting it here means any freshly launched chain
+		// with default params deterministically halts at its first emission
+		// epoch with a positive burn amount.
+		ProtocolBurnPermissions: []BurnPermission{
+			{
+				ModuleName:	ModuleName,
+				AllowedDenoms:	[]string{BaseDenom},
+			},
+			{
+				ModuleName:	authtypes.FeeCollectorName,
+				AllowedDenoms:	[]string{BaseDenom},
+			},
+		},
 		MaxReasonBytes:	DefaultMaxReasonBytes,
 	}
 }

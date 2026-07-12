@@ -1531,7 +1531,17 @@ func (k *Keeper) ApplyValidatorSlash(msg types.MsgApplyValidatorSlash) ([]types.
 
 		for allocIdx, alloc := range pool.Allocations {
 			if alloc.ValidatorAddress == msg.ValidatorAddress {
-				loss := alloc.Amount * uint64(slashBps) / uint64(types.MaxBasisPoints)
+				loss, err := types.MulDivUint64(alloc.Amount, uint64(slashBps), uint64(types.MaxBasisPoints))
+				if err != nil {
+					return nil, err
+				}
+				// slashBps is bounds-checked <= MaxBasisPoints by
+				// Params.Validate(), so loss <= alloc.Amount should already
+				// hold; clamp defensively so a subtraction can never
+				// underflow if that invariant is ever violated.
+				if loss > alloc.Amount {
+					loss = alloc.Amount
+				}
 				slashAmount += loss
 				pool.Allocations[allocIdx].Amount -= loss
 			}
@@ -1569,7 +1579,10 @@ func (k *Keeper) ApplyValidatorSlash(msg types.MsgApplyValidatorSlash) ([]types.
 			for pvIdx, pv := range k.genesis.State.PoolValidatorAllocations {
 				if pv.PoolID == pool.PoolID && pv.Validator == msg.ValidatorAddress {
 
-					loss := pv.ActiveStake * uint64(slashBps) / uint64(types.MaxBasisPoints)
+					loss, err := types.MulDivUint64(pv.ActiveStake, uint64(slashBps), uint64(types.MaxBasisPoints))
+					if err != nil {
+						return nil, err
+					}
 					if pv.ActiveStake >= loss {
 						k.genesis.State.PoolValidatorAllocations[pvIdx].ActiveStake -= loss
 					} else {
