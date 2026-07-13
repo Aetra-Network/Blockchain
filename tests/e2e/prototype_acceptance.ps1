@@ -181,6 +181,14 @@ try {
   }
   Write-Host "base CLI/gRPC/REST queries passed"
 
+  # Capture native supply before any fee-paying tx. Emission fires only at a
+  # ~1-day reward-epoch boundary (not crossed in this short run), so within the
+  # acceptance the only supply change is fee burn. Total naet supply must
+  # therefore strictly decrease after fee-paying txs -- a live proof that the
+  # burn process executes at runtime (full emission cycle is covered by the Go
+  # test TestEndBlockerFinalizesEmissionInflationAndBurnAtEpochBoundary).
+  $naetSupplyBefore = [decimal]((Get-LocalnetBankSupplyOf -Binary $Binary -Denom "naet" -RPCPort $node0Ports.RPC).amount)
+
   Write-AcceptanceStep "bank send"
   $node1Before = Get-AcceptanceBalanceAmount -Context $ctx -Address $node1 -Denom "naet"
   Send-LocalnetBankTx `
@@ -246,6 +254,13 @@ try {
     -ExpectedLog "direct user delegation to validators is disabled; use official liquid staking pool deposit" | Out-Null
   Write-Host "direct user staking delegation rejected by pool-only policy"
   Write-Host "staking/slashing query surfaces and direct-delegation policy checks passed"
+
+  Write-AcceptanceStep "fee burn reduces supply"
+  $naetSupplyAfter = [decimal]((Get-LocalnetBankSupplyOf -Binary $Binary -Denom "naet" -RPCPort $node0Ports.RPC).amount)
+  if ($naetSupplyAfter -ge $naetSupplyBefore) {
+    throw "fee burn did not reduce total naet supply: before=$naetSupplyBefore after=$naetSupplyAfter"
+  }
+  Write-Host "fee burn reduced total naet supply: $naetSupplyBefore -> $naetSupplyAfter"
 
   if ($Profile -eq "Full") {
     Write-AcceptanceStep "full profile restart/health"

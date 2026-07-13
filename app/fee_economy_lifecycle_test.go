@@ -265,6 +265,80 @@ func TestEmissionCapInvariant(t *testing.T) {
 		"total distributed rewards must equal total emission amount")
 }
 
+// TestEndBlockerFinalizesEmissionInflationAndBurnAtEpochBoundary proves the
+// inflation/emission/burn processes actually execute through the real runtime
+// path — the EndBlocker hook maybeFinalizeNativeEmissionEpoch — rather than only
+// via a direct FinalizeNativeEconomyEpoch call (which the golden loop test
+// covers). It confirms an epoch is finalized exactly at a reward-epoch boundary,
+// that total supply inflates by the minted emission net of its burn, that the
+// burn is accounted, that the treasury is credited, and that re-finalizing the
+// same height does not double-mint.
+func TestEndBlockerFinalizesEmissionInflationAndBurnAtEpochBoundary(t *testing.T) {
+	app := Setup(t, false)
+	ctx := app.NewContext(false)
+	configureGoldenBurnParams(t, app, ctx)
+	configureGoldenEmissionParams(t, app, ctx)
+
+	interval := int64(nominatorpooltypes.DefaultRewardEpochDurationBlocks)
+	require.Greater(t, interval, int64(1), "reward epoch must span multiple blocks")
+
+	burnedBase := func(c sdk.Context) sdkmath.Int {
+		entry, found, err := app.BurnKeeper.GetBurnedDenomEntry(c, burntypes.BaseDenom)
+		require.NoError(t, err)
+		if !found {
+			return sdkmath.ZeroInt()
+		}
+		return entry.Amount.AmountOf(appparams.BaseDenom)
+	}
+	treasuryBalance := func(c sdk.Context) sdkmath.Int {
+		return app.BankKeeper.GetBalance(c, app.AccountKeeper.GetModuleAddress(feecollectortypes.TreasuryModuleName), appparams.BaseDenom).Amount
+	}
+
+	// Off a boundary (height 1, interval > 1), EndBlocker must not emit.
+	offBoundary := ctx.WithBlockHeight(1)
+	supplyOffBefore := app.BankKeeper.GetSupply(offBoundary, appparams.BaseDenom).Amount
+	_, err := app.EndBlocker(offBoundary)
+	require.NoError(t, err)
+	require.Equal(t, supplyOffBefore, app.BankKeeper.GetSupply(offBoundary, appparams.BaseDenom).Amount,
+		"no emission may occur off a reward-epoch boundary")
+	_, found, err := app.EmissionsKeeper.GetEmissionEpoch(offBoundary, 1)
+	require.NoError(t, err)
+	require.False(t, found, "no epoch may be finalized off a boundary")
+
+	// At the boundary, the EndBlocker hook finalizes emission epoch 1.
+	boundary := ctx.WithBlockHeight(interval)
+	supplyBefore := app.BankKeeper.GetSupply(boundary, appparams.BaseDenom).Amount
+	burnBefore := burnedBase(boundary)
+	treasuryBefore := treasuryBalance(boundary)
+
+	_, err = app.EndBlocker(boundary)
+	require.NoError(t, err)
+
+	record, found, err := app.EmissionsKeeper.GetEmissionEpoch(boundary, 1)
+	require.NoError(t, err)
+	require.True(t, found, "EndBlocker must finalize emission epoch 1 at the boundary")
+	require.True(t, record.EmissionAmount.IsPositive(), "epoch must mint a positive emission")
+
+	// Inflation: supply grew by the minted emission net of its burn portion.
+	supplyAfter := app.BankKeeper.GetSupply(boundary, appparams.BaseDenom).Amount
+	require.Equal(t, supplyBefore.Add(record.EmissionAmount.Amount).Sub(record.Burn.Amount), supplyAfter,
+		"supply must inflate by emission minus emission-burn")
+
+	// Burn: the emission burn was accounted in the burn module.
+	require.Equal(t, burnBefore.Add(record.Burn.Amount), burnedBase(boundary),
+		"burn ledger must record the emission burn")
+
+	// Economics: the treasury received at least its emission share.
+	require.True(t, treasuryBalance(boundary).GTE(treasuryBefore.Add(record.Treasury.Amount)),
+		"treasury must receive its emission allocation")
+
+	// Idempotency: re-finalizing the same height must not double-mint.
+	_, err = app.EndBlocker(boundary)
+	require.NoError(t, err)
+	require.Equal(t, supplyAfter, app.BankKeeper.GetSupply(boundary, appparams.BaseDenom).Amount,
+		"re-running EndBlocker at the same boundary must not double-mint")
+}
+
 func TestJailedValidatorProducesZeroPoolRewards(t *testing.T) {
 	app := Setup(t, false)
 	ctx := app.NewContext(false).WithBlockHeight(42)
