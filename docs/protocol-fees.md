@@ -13,8 +13,8 @@ Default v1 params:
 
 - allowed fee denom: `naet`
 - minimum fee: `1naet`
-- base fee: `1naet`
-- hard max fee cap: `1000naet`
+- base fee: `400000000naet` (0.4 AET; `DefaultBaseFeeAmount` in `x/fees/types/fee_model.go`)
+- hard max fee cap: `5000000000naet` (5 AET; `DefaultMaxFeeAmount` in `x/fees/types/fee_model.go`)
 - target block utilization: `50%`
 - congestion threshold: `80%`
 - max tx gas: `1,000,000`

@@ -21,6 +21,7 @@ import (
 	minttypes "github.com/cosmos/cosmos-sdk/x/mint/types"
 	stakingtypes "github.com/cosmos/cosmos-sdk/x/staking/types"
 	appparams "github.com/sovereign-l1/l1/app/params"
+	contractstypes "github.com/sovereign-l1/l1/x/contracts/types"
 	nativeaccounttypes "github.com/sovereign-l1/l1/x/native-account/types"
 )
 
@@ -63,6 +64,35 @@ func initGenFiles(
 	clientCtx.Codec.MustUnmarshalJSON(appGenState[stakingtypes.ModuleName], &stakingGenState)
 	stakingGenState.Params.MaxValidators = appparams.AetraValidatorSetGenesisMax
 	appGenState[stakingtypes.ModuleName] = clientCtx.Codec.MustMarshalJSON(&stakingGenState)
+
+	// AVM smart-contract execution ships DISABLED for the public-testnet launch
+	// profile. The on-chain contract runtime (StoreCode bytecode verification,
+	// inter-contract async delivery, and live-node execution evidence) is still
+	// behind the keeper gate per docs/public-testnet-production-gates.md, which
+	// explicitly allows launching the base chain without contracts. A
+	// validator-liveness testnet therefore runs base-chain modules only;
+	// contracts are turned on later via governance MsgUpdateContractParams once
+	// the AVM hardening + adversarial + audit gates are green.
+	//
+	// x/contracts marshals its genesis with plain encoding/json (see
+	// x/contracts/module.go mustMarshalGenesis), not the proto JSONCodec. The
+	// genesis state root commits to Params.Enabled (ComputeContractsStateRoot),
+	// so it must be recomputed after flipping the flag or Validate() rejects the
+	// state-root mismatch.
+	var contractsGenState contractstypes.GenesisState
+	if err := json.Unmarshal(appGenState[contractstypes.ModuleName], &contractsGenState); err != nil {
+		return fmt.Errorf("unmarshal contracts default genesis: %w", err)
+	}
+	contractsGenState.Params.Enabled = false
+	contractsGenState.StateRoot = contractstypes.ComputeContractsStateRoot(contractsGenState)
+	if err := contractsGenState.Validate(); err != nil {
+		return fmt.Errorf("invalid disabled-contracts launch genesis: %w", err)
+	}
+	contractsGenStateJSON, err := json.Marshal(contractsGenState)
+	if err != nil {
+		return fmt.Errorf("marshal contracts genesis: %w", err)
+	}
+	appGenState[contractstypes.ModuleName] = contractsGenStateJSON
 
 	// x/native-account uses plain encoding/json for its genesis (see
 	// x/native-account/module.go mustMarshalGenesis/unmarshalGenesis), not

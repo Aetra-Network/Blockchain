@@ -32,6 +32,7 @@ import (
 	l1app "github.com/sovereign-l1/l1/app"
 	aetraaddress "github.com/sovereign-l1/l1/app/addressing"
 	appparams "github.com/sovereign-l1/l1/app/params"
+	contractstypes "github.com/sovereign-l1/l1/x/contracts/types"
 	feestypes "github.com/sovereign-l1/l1/x/fees/types"
 	nativeaccounttypes "github.com/sovereign-l1/l1/x/native-account/types"
 )
@@ -200,6 +201,17 @@ func assertPrototypeGenesisProfile(
 	var feesGenState feestypes.GenesisState
 	cdc.MustUnmarshalJSON(appState[feestypes.ModuleName], &feesGenState)
 	require.Equal(t, feestypes.DefaultGenesisState(), &feesGenState)
+
+	// AVM smart-contract execution must ship DISABLED in the public-testnet
+	// launch profile: a validator-liveness testnet runs the base chain only,
+	// and contracts are enabled later via governance once the AVM hardening and
+	// audit gates are green (see initGenFiles). The genesis state root commits
+	// to Params.Enabled, so a valid recomputed root proves the flip is coherent.
+	var contractsGenState contractstypes.GenesisState
+	require.NoError(t, json.Unmarshal(appState[contractstypes.ModuleName], &contractsGenState))
+	require.False(t, contractsGenState.Params.Enabled, "AVM contracts must be disabled in the launch genesis profile")
+	require.NoError(t, contractsGenState.Validate())
+	require.Equal(t, contractstypes.ComputeContractsStateRoot(contractsGenState), contractsGenState.StateRoot)
 
 	genutilGenState := genutiltypes.GetGenesisStateFromAppState(cdc, appState)
 	require.Len(t, genutilGenState.GenTxs, validatorCount)

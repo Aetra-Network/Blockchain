@@ -281,6 +281,48 @@ func TestSlashingParamsAndSigningInfoRoundTrip(t *testing.T) {
 	require.False(t, missed)
 }
 
+// TestConsensusSlashingReducesBondedStakeAndJails proves the live consensus
+// slashing path actually burns a validator's bonded stake and jails it. The
+// x/slashing downtime handler performs exactly StakingKeeper.Slash(consAddr,
+// infractionHeight, power, SlashFractionDowntime) followed by Jail(consAddr);
+// exercising that end-to-end here closes the readiness-audit gap that no test
+// drove a real Slash which reduces a validator's tokens. Pool-level slashing in
+// x/nominator-pool is a separate, deliberately-deferred subsystem (its
+// liquid-staking machinery is not yet economically live) and is out of scope
+// for the validator-liveness testnet.
+func TestConsensusSlashingReducesBondedStakeAndJails(t *testing.T) {
+	app := Setup(t, false)
+	ctx := app.NewContext(false).WithBlockHeight(10).WithBlockTime(time.Now().UTC())
+
+	selfDelegation := sdk.TokensFromConsensusPower(100, sdk.DefaultPowerReduction)
+	valAddr, validator := createFundedValidator(t, app, ctx, "downtime-slash-validator", selfDelegation)
+	require.Equal(t, stakingtypes.Bonded, validator.Status)
+	require.False(t, validator.Jailed)
+
+	consAddrBytes, err := validator.GetConsAddr()
+	require.NoError(t, err)
+	consAddr := sdk.ConsAddress(consAddrBytes)
+
+	power := validator.GetConsensusPower(sdk.DefaultPowerReduction)
+	require.Positive(t, power)
+	tokensBefore := validator.Tokens
+
+	// The exact downtime Slash + Jail pair the x/slashing keeper performs on a
+	// liveness fault, at the default downtime slash fraction.
+	slashFraction := appparams.BpsToLegacyDec(appparams.DowntimeFirstSlashDefaultBps)
+	burned, err := app.StakingKeeper.Slash(ctx, consAddr, ctx.BlockHeight(), power, slashFraction)
+	require.NoError(t, err)
+	require.True(t, burned.IsPositive(), "downtime slash must burn a positive amount of stake")
+	require.NoError(t, app.StakingKeeper.Jail(ctx, consAddr))
+
+	after, err := app.StakingKeeper.GetValidator(ctx, valAddr)
+	require.NoError(t, err)
+	require.True(t, after.Jailed, "a downtime-slashed validator must be jailed")
+	require.True(t, after.Tokens.LT(tokensBefore), "slash must reduce bonded stake")
+	require.Equal(t, tokensBefore.Sub(burned), after.Tokens, "post-slash tokens must equal pre-slash minus the burned amount")
+	require.Equal(t, slashFraction.MulInt(tokensBefore).TruncateInt(), burned, "burned amount must equal the downtime fraction of pre-infraction stake")
+}
+
 func TestStakingRewardsDistributionCanBeWithdrawn(t *testing.T) {
 	app := Setup(t, false)
 	ctx := app.NewContext(false).WithBlockTime(time.Now().UTC())
