@@ -54,9 +54,16 @@ if ($nodes.Count -ne $ValidatorCount) {
 
 $firstHash = $null
 $secretPattern = '(?i)\b(mnemonic|private[_-]?key|priv_validator|secret|seed|wallet)\b'
+# Canonical bootstrap-account funding produced by initGenFiles (cmd/l1d/cmd),
+# asserted by Test_TestnetCmd/assertPrototypeGenesisProfile in
+# cmd/l1d/cmd/testnet_test.go: TokensFromConsensusPower(1000) testtoken,
+# TokensFromConsensusPower(1_000_000) naet (1000 AET), and a
+# TokensFromConsensusPower(100_000) naet (100 AET) gentx self-delegation.
+# These previously read 500000000 / 100000000 and drifted when the funding was
+# raised; keep them in lock-step with the Go generator.
 $expectedTestAssetAmount = "1000000000"
-$expectedNativeAmount = "500000000"
-$expectedSelfDelegation = "100000000"
+$expectedNativeAmount = "1000000000000"
+$expectedSelfDelegation = "100000000000"
 
 foreach ($node in $nodes) {
   $nodeHome = Join-Path $node.FullName "aetrad"

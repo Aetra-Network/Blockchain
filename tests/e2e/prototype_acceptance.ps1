@@ -21,7 +21,11 @@ param(
   [bool]$EnableGRPC = $true,
   [bool]$EnableRPC = $true,
   [string]$Node = "",
-  [string]$Fees = "300000naet",
+  # Valid fee must clear the dynamic base fee (DefaultBaseFeeAmount = 0.4 AET =
+  # 400000000naet in x/fees/types/fee_model.go). 0.6 AET leaves headroom under
+  # the 5 AET hard cap. The old 300000naet default predated the fee model and
+  # is now always rejected as underpaid.
+  [string]$Fees = "600000000naet",
   [string]$WrongFees = "1000testtoken",
   [string]$DelegationAmount = "5000000naet",
   [switch]$SkipBuild,
@@ -218,12 +222,16 @@ try {
 
   $acceptanceUserKey = "acceptance-user"
   $acceptanceUser = New-AcceptanceUserKey -BinaryPath $Binary -NodeHomePath $node0Home -KeyName $acceptanceUserKey
+  # Fund the acceptance user enough to cover a valid dynamic fee (>= 0.4 AET) so
+  # the delegate tx clears the ante fee check and reaches the pool-only policy
+  # rejection in app/stakingpolicy (a staking msg-server wrapper, i.e. it runs
+  # after fee deduction). The old 7000000naet predated the 0.4 AET base fee.
   Send-LocalnetBankTx `
     -Binary $Binary `
     -FromHome $node0Home `
     -FromKey "node0" `
     -ToAddress $acceptanceUser `
-    -Amount "7000000naet" `
+    -Amount "2000000000naet" `
     -Fees $Fees `
     -ChainId $ChainId `
     -RPCPort $node0Ports.RPC `
@@ -233,6 +241,7 @@ try {
     -ActionArgs @("tx", "staking", "delegate", $selectedValidator.operator_address, $DelegationAmount) `
     -FromHome $node0Home `
     -FromKey $acceptanceUserKey `
+    -Fees $Fees `
     -ExpectFailure `
     -ExpectedLog "direct user delegation to validators is disabled; use official liquid staking pool deposit" | Out-Null
   Write-Host "direct user staking delegation rejected by pool-only policy"

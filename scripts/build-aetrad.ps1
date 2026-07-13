@@ -79,12 +79,20 @@ function Get-GoTool {
 function Assert-GoVersionMatchesMod {
   param([string]$Go, [string]$GoVersionOutput)
   $goMod = Get-Content -Raw -LiteralPath (Join-Path (Get-BuildRepoRoot) "go.mod")
-  if ($goMod -notmatch '(?m)^go\s+([0-9]+)\.([0-9]+)') {
+  # Prefer the pinned `toolchain goX.Y.Z` directive: that is the toolchain the
+  # `go` command actually selects and builds with (GOTOOLCHAIN=auto), so it is
+  # the reproducibility pin. Fall back to the language `go X.Y` directive only
+  # when no toolchain is pinned. Matching the language directive alone rejects
+  # the very toolchain the repo pins (e.g. go 1.25 + toolchain go1.26.5).
+  if ($goMod -match '(?m)^toolchain\s+go([0-9]+)\.([0-9]+)') {
+    $required = "$($Matches[1]).$($Matches[2])"
+  } elseif ($goMod -match '(?m)^go\s+([0-9]+)\.([0-9]+)') {
+    $required = "$($Matches[1]).$($Matches[2])"
+  } else {
     throw "Could not read Go version from go.mod"
   }
-  $required = "$($Matches[1]).$($Matches[2])"
   if ($GoVersionOutput -notmatch "go$required\.") {
-    throw "Go toolchain mismatch: go.mod requires $required.x, got: $GoVersionOutput"
+    throw "Go toolchain mismatch: go.mod requires go$required.x, got: $GoVersionOutput"
   }
 }
 
