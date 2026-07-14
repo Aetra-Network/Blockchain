@@ -19,8 +19,12 @@ on:
         default: false
 
 permissions:
-  contents: write
-  security-events: write
+  # Least-privilege default: only the `prerelease` job needs to write, and
+  # only that job declares `contents: write` (see FINDING-018c). This
+  # workflow does not upload SARIF or otherwise touch the code-scanning API,
+  # so `security-events: write` was unused here and has been dropped rather
+  # than relocated.
+  contents: read
 
 env:
   BUF_VERSION: "1.70.0"
@@ -48,10 +52,14 @@ jobs:
 
       - name: Install tools
         shell: pwsh
+        # Tool versions are pinned (not @latest) so CI is reproducible and an
+        # upstream compromise or malicious release can't execute in this
+        # runner unreviewed (see FINDING-018b). Bump deliberately on periodic
+        # review; keep in sync with .github/workflows/security.yml.
         run: |
           go install github.com/zricethezav/gitleaks/v8@v8.28.0
-          go install github.com/securego/gosec/v2/cmd/gosec@latest
-          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install github.com/securego/gosec/v2/cmd/gosec@v2.28.0
+          go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
           .\scripts\tooling\ensure-buf.ps1 -Version $env:BUF_VERSION | Out-Null
           "$PWD\.work\tools\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
@@ -166,6 +174,11 @@ jobs:
     name: GitHub Prerelease
     if: ${{ always() && inputs.create_release && needs.checks.result == 'success' && needs.package.result == 'success' && (!inputs.run_e2e || needs.acceptance.result == 'success') }}
     runs-on: ubuntu-latest
+    # Only this job creates a release, so only this job gets contents: write
+    # (see FINDING-018c). checks/acceptance/package inherit the workflow's
+    # read-only default.
+    permissions:
+      contents: write
     needs:
       - checks
       - acceptance
@@ -177,7 +190,12 @@ jobs:
           path: release-artifacts
 
       - name: Create prerelease
-        uses: softprops/action-gh-release@v2
+        # SHA-pinned third-party action (mutable tag = supply-chain risk in a
+        # contents: write job, see FINDING-018c). SHA resolved from the `v2`
+        # tag on 2026-07-14; at that time `v2` pointed to release v2.6.2
+        # (upstream has since moved a `v3` major tag, out of scope here --
+        # this pin intentionally preserves current v2.x behavior).
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2 (v2.6.2)
         with:
           tag_name: ${{ inputs.version }}
           name: Aetra ${{ inputs.version }}

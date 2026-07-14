@@ -53,7 +53,7 @@ func testFaucetRecipient(t *testing.T) sdk.AccAddress {
 
 func newTestFaucetService(t *testing.T, cooldown time.Duration, broadcastFn func(ctx context.Context, recipient sdk.AccAddress) (string, error)) *faucetService {
 	t.Helper()
-	s := newFaucetService(client.Context{}, nil, sdk.NewCoins(sdk.NewInt64Coin("naet", 1_000_000)), newFaucetRateLimiter(cooldown), log.NewNopLogger())
+	s := newFaucetService(client.Context{}, nil, sdk.NewCoins(sdk.NewInt64Coin("naet", 1_000_000)), newFaucetRateLimiter(cooldown), log.NewNopLogger(), nil)
 	s.broadcastFn = broadcastFn
 	return s
 }
@@ -154,6 +154,154 @@ func TestFaucetHandlerReleasesRateLimitOnBroadcastFailure(t *testing.T) {
 	rec2 := httptest.NewRecorder()
 	s.handleFaucet(rec2, req2)
 	require.Equal(t, http.StatusOK, rec2.Code, "a failed broadcast must not burn the recipient's cooldown window")
+}
+
+// --- security-audit FINDING-015: reverse-proxy IP rate-limit regression tests ---
+
+func TestClientIPFromRequestUsesDirectPeerWhenNoTrustedProxyConfigured(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/faucet", nil)
+	req.RemoteAddr = "203.0.113.9:54321"
+	req.Header.Set("X-Forwarded-For", "198.51.100.7")
+	req.Header.Set("X-Real-IP", "198.51.100.7")
+
+	require.Equal(t, "203.0.113.9", clientIPFromRequest(req, nil),
+		"with no trusted-proxy configuration, forwarded headers must never be honored")
+}
+
+func TestClientIPFromRequestIgnoresHeadersFromUntrustedPeer(t *testing.T) {
+	trusted, err := parseTrustedProxies([]string{"203.0.113.9/32"})
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodPost, "/faucet", nil)
+	req.RemoteAddr = "192.0.2.55:1234" // not in the trusted list
+	req.Header.Set("X-Forwarded-For", "198.51.100.7")
+
+	require.Equal(t, "192.0.2.55", clientIPFromRequest(req, trusted),
+		"a peer outside the trusted-proxy allowlist must not have its forwarded header honored")
+}
+
+func TestClientIPFromRequestHonorsForwardedForFromTrustedProxy(t *testing.T) {
+	trusted, err := parseTrustedProxies([]string{"203.0.113.9/32"})
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodPost, "/faucet", nil)
+	req.RemoteAddr = "203.0.113.9:54321"
+	req.Header.Set("X-Forwarded-For", "198.51.100.7")
+
+	require.Equal(t, "198.51.100.7", clientIPFromRequest(req, trusted))
+}
+
+func TestClientIPFromRequestPrefersXRealIPOverForwardedFor(t *testing.T) {
+	trusted, err := parseTrustedProxies([]string{"203.0.113.9"})
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodPost, "/faucet", nil)
+	req.RemoteAddr = "203.0.113.9:54321"
+	req.Header.Set("X-Real-IP", "198.51.100.42")
+	req.Header.Set("X-Forwarded-For", "198.51.100.7")
+
+	require.Equal(t, "198.51.100.42", clientIPFromRequest(req, trusted))
+}
+
+func TestClientIPFromRequestUsesRightmostForwardedForEntry(t *testing.T) {
+	trusted, err := parseTrustedProxies([]string{"203.0.113.9"})
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodPost, "/faucet", nil)
+	req.RemoteAddr = "203.0.113.9:54321"
+	// The left-most entry can be attacker-supplied; only the entry the
+	// trusted (nearest) hop appended is authoritative.
+	req.Header.Set("X-Forwarded-For", "198.51.100.7, 203.0.113.9")
+
+	require.Equal(t, "203.0.113.9", clientIPFromRequest(req, trusted))
+}
+
+func TestParseTrustedProxiesRejectsInvalidValues(t *testing.T) {
+	_, err := parseTrustedProxies([]string{"not-an-ip"})
+	require.Error(t, err)
+}
+
+// TestFaucetHandlerBehindTrustedProxyRateLimitsPerRealClientNotPerProxy is the
+// finding's recommended regression test: simulate requests behind a reverse
+// proxy (identical RemoteAddr, distinct recipients/forwarded client IPs) and
+// confirm each real client gets its own grant once a trusted-proxy config is
+// wired in, instead of the whole cooldown window collapsing to a single
+// global grant.
+func TestFaucetHandlerBehindTrustedProxyRateLimitsPerRealClientNotPerProxy(t *testing.T) {
+	trusted, err := parseTrustedProxies([]string{"203.0.113.9/32"})
+	require.NoError(t, err)
+
+	calls := 0
+	s := newTestFaucetService(t, time.Hour, func(context.Context, sdk.AccAddress) (string, error) {
+		calls++
+		return "TXHASH", nil
+	})
+	s.trustedProxies = trusted
+
+	recipientA, err := aetraaddress.ParseAccAddress(aeAddressForCLI(0x71))
+	require.NoError(t, err)
+	recipientB, err := aetraaddress.ParseAccAddress(aeAddressForCLI(0x72))
+	require.NoError(t, err)
+
+	bodyA, err := json.Marshal(faucetRequest{Address: recipientA.String()})
+	require.NoError(t, err)
+	reqA := httptest.NewRequest(http.MethodPost, "/faucet", bytes.NewReader(bodyA))
+	reqA.RemoteAddr = "203.0.113.9:11111" // shared reverse-proxy peer address
+	reqA.Header.Set("X-Forwarded-For", "198.51.100.1")
+	recA := httptest.NewRecorder()
+	s.handleFaucet(recA, reqA)
+	require.Equal(t, http.StatusOK, recA.Code)
+
+	bodyB, err := json.Marshal(faucetRequest{Address: recipientB.String()})
+	require.NoError(t, err)
+	reqB := httptest.NewRequest(http.MethodPost, "/faucet", bytes.NewReader(bodyB))
+	reqB.RemoteAddr = "203.0.113.9:22222" // same proxy peer, different ephemeral port
+	reqB.Header.Set("X-Forwarded-For", "198.51.100.2")
+	recB := httptest.NewRecorder()
+	s.handleFaucet(recB, reqB)
+	require.Equal(t, http.StatusOK, recB.Code,
+		"a different real client behind the same trusted proxy must still get its own grant")
+
+	require.Equal(t, 2, calls)
+}
+
+// TestFaucetHandlerBehindUntrustedProxyStillCollapsesToOneGrant is the
+// safe-by-default counterpart: without --trusted-proxy configuration, two
+// distinct recipients arriving through what looks like a proxy (same
+// RemoteAddr) must still collapse to a single IP-side grant per cooldown, so
+// operators who forget to configure trusted proxies keep today's safe (if
+// degraded) behavior rather than silently trusting spoofable headers.
+func TestFaucetHandlerBehindUntrustedProxyStillCollapsesToOneGrant(t *testing.T) {
+	calls := 0
+	s := newTestFaucetService(t, time.Hour, func(context.Context, sdk.AccAddress) (string, error) {
+		calls++
+		return "TXHASH", nil
+	})
+
+	recipientA, err := aetraaddress.ParseAccAddress(aeAddressForCLI(0x71))
+	require.NoError(t, err)
+	recipientB, err := aetraaddress.ParseAccAddress(aeAddressForCLI(0x72))
+	require.NoError(t, err)
+
+	bodyA, err := json.Marshal(faucetRequest{Address: recipientA.String()})
+	require.NoError(t, err)
+	reqA := httptest.NewRequest(http.MethodPost, "/faucet", bytes.NewReader(bodyA))
+	reqA.RemoteAddr = "203.0.113.9:11111"
+	reqA.Header.Set("X-Forwarded-For", "198.51.100.1")
+	recA := httptest.NewRecorder()
+	s.handleFaucet(recA, reqA)
+	require.Equal(t, http.StatusOK, recA.Code)
+
+	bodyB, err := json.Marshal(faucetRequest{Address: recipientB.String()})
+	require.NoError(t, err)
+	reqB := httptest.NewRequest(http.MethodPost, "/faucet", bytes.NewReader(bodyB))
+	reqB.RemoteAddr = "203.0.113.9:22222"
+	reqB.Header.Set("X-Forwarded-For", "198.51.100.2")
+	recB := httptest.NewRecorder()
+	s.handleFaucet(recB, reqB)
+	require.Equal(t, http.StatusTooManyRequests, recB.Code)
+
+	require.Equal(t, 1, calls)
 }
 
 func TestFaucetHandlerHealthz(t *testing.T) {

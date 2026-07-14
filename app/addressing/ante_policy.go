@@ -17,13 +17,26 @@ const (
 	AddressPolicyRoleAuthority	AddressPolicyRole	= "authority"
 )
 
+// ValidateAnteAddressPolicy validates every message a tx will execute,
+// including messages nested inside a wrapper like authz.MsgExec. Walking
+// through NestedMsgProvider first (WalkMessages) rather than reflecting into
+// tx.GetMsgs() alone matters here specifically: MsgExec's nested messages
+// live behind an opaque Any (unexported Value []byte / cachedValue fields),
+// which reflection cannot decode, so a purely reflective top-level walk
+// silently skips them. Unwrapping via GetMessages() first hands
+// ValidateMsgAddressPolicy a concrete, typed sdk.Msg for every nested
+// message too, so its existing field reflection applies to them exactly as
+// it does to top-level messages (FINDING-014).
 func ValidateAnteAddressPolicy(tx sdk.Tx) error {
-	for i, msg := range tx.GetMsgs() {
+	i := 0
+	return WalkMessages(tx.GetMsgs(), func(msg sdk.Msg) error {
+		idx := i
+		i++
 		if err := ValidateMsgAddressPolicy(msg); err != nil {
-			return fmt.Errorf("message %d: %w", i, err)
+			return fmt.Errorf("message %d: %w", idx, err)
 		}
-	}
-	return nil
+		return nil
+	})
 }
 
 func ValidateMsgAddressPolicy(msg sdk.Msg) error {

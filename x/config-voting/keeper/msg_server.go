@@ -23,6 +23,9 @@ func (m msgServer) SubmitConfigProposal(ctx context.Context, msg *v1.MsgSubmitCo
 	if msg == nil {
 		return nil, errEmptyRequest("SubmitConfigProposal")
 	}
+	if err := m.Keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	nativeMsg := types.MsgSubmitConfigProposal{
 		Authority: msg.Authority,
 		Proposal:  configProposalProtoToNative(msg.Proposal),
@@ -44,6 +47,9 @@ func (m msgServer) SubmitConfigProposal(ctx context.Context, msg *v1.MsgSubmitCo
 func (m msgServer) VoteConfigProposal(ctx context.Context, msg *v1.MsgVoteConfigProposal) (*v1.MsgVoteConfigProposalResponse, error) {
 	if msg == nil {
 		return nil, errEmptyRequest("VoteConfigProposal")
+	}
+	if err := m.Keeper.loadForBlock(ctx); err != nil {
+		return nil, err
 	}
 	nativeMsg := types.MsgVoteConfigProposal{
 		Voter:      msg.Voter,
@@ -70,6 +76,9 @@ func (m msgServer) ExecuteConfigProposal(ctx context.Context, msg *v1.MsgExecute
 	if msg == nil {
 		return nil, errEmptyRequest("ExecuteConfigProposal")
 	}
+	if err := m.Keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	nativeMsg := types.MsgExecuteConfigProposal{
 		Authority: msg.Authority,
 		ProposalID: msg.ProposalId,
@@ -92,6 +101,9 @@ func (m msgServer) ExecuteConfigProposal(ctx context.Context, msg *v1.MsgExecute
 func (m msgServer) VetoConfigProposal(ctx context.Context, msg *v1.MsgVetoConfigProposal) (*v1.MsgVetoConfigProposalResponse, error) {
 	if msg == nil {
 		return nil, errEmptyRequest("VetoConfigProposal")
+	}
+	if err := m.Keeper.loadForBlock(ctx); err != nil {
+		return nil, err
 	}
 	nativeMsg := types.MsgVetoConfigProposal{
 		Authority: msg.Authority,

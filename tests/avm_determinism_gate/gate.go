@@ -70,6 +70,15 @@ func (g Gate) ScanDir(dir string) ([]Violation, error) {
 		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
+		// *.pb.gw.go files (grpc-gateway REST route registration, hand-written
+		// or generated) are never part of the consensus-executed AVM/contracts
+		// runtime: their handlers run once at REST-server bootstrap, invoked
+		// from api_services.go-style wiring, never from a msg/query handler or
+		// EndBlock. Mirrors the identical exemption already established in
+		// app/security_attack_audit_test.go's consensus-purity sweep.
+		if strings.HasSuffix(path, ".pb.gw.go") {
+			return nil
+		}
 		fileViolations, err := g.ScanFile(path)
 		if err != nil {
 			return err

@@ -19,6 +19,9 @@ func (m msgServer) CreateNominatorPool(ctx context.Context, msg *types.MsgCreate
 	if msg == nil {
 		return nil, errors.New("empty nominator pool creation request")
 	}
+	if err := m.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	msg.Height = defaultHeight(ctx, msg.Height)
 	pool, err := m.keeper.CreateNominatorPool(*msg)
 	if err != nil {
@@ -30,6 +33,9 @@ func (m msgServer) CreateNominatorPool(ctx context.Context, msg *types.MsgCreate
 func (m msgServer) DepositToPool(ctx context.Context, msg *types.MsgDepositToPool) (*types.MsgDepositToPoolResponse, error) {
 	if msg == nil {
 		return nil, errors.New("empty nominator pool deposit request")
+	}
+	if err := m.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
 	}
 	msg.Height = defaultHeight(ctx, msg.Height)
 	delegator, err := m.keeper.DepositToPool(*msg)
@@ -43,6 +49,9 @@ func (m msgServer) RequestPoolWithdrawal(ctx context.Context, msg *types.MsgRequ
 	if msg == nil {
 		return nil, errors.New("empty nominator pool withdrawal request")
 	}
+	if err := m.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	msg.Height = defaultHeight(ctx, msg.Height)
 	withdrawal, err := m.keeper.RequestPoolWithdrawal(*msg)
 	if err != nil {
@@ -54,6 +63,9 @@ func (m msgServer) RequestPoolWithdrawal(ctx context.Context, msg *types.MsgRequ
 func (m msgServer) CancelPoolWithdrawal(ctx context.Context, msg *types.MsgCancelPoolWithdrawal) (*types.MsgCancelPoolWithdrawalResponse, error) {
 	if msg == nil {
 		return nil, errors.New("empty nominator pool withdrawal cancellation request")
+	}
+	if err := m.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
 	}
 	msg.Height = defaultHeight(ctx, msg.Height)
 	withdrawal, err := m.keeper.CancelPoolWithdrawal(*msg)
@@ -67,6 +79,9 @@ func (m msgServer) DepositToStakingPool(ctx context.Context, msg *types.MsgDepos
 	if msg == nil {
 		return nil, errors.New("empty nominator pool deposit request")
 	}
+	if err := m.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	// The wallet signs with (and carries in wallet_address) its PLAIN address;
 	// resolve it to the account's v2 identity before the keeper's activation
 	// check and share bookkeeping. See keeper.normalizeAccountIdentity.
@@ -75,7 +90,6 @@ func (m msgServer) DepositToStakingPool(ctx context.Context, msg *types.MsgDepos
 		return nil, err
 	}
 	msg.WalletAddress = identity
-	m.bindRuntimeContext(ctx)
 	msg.Height = defaultHeight(ctx, msg.Height)
 	receipt, err := m.keeper.DepositToStakingPool(*msg)
 	if err != nil {
@@ -94,6 +108,9 @@ func (m msgServer) DepositToStakingPool(ctx context.Context, msg *types.MsgDepos
 func (m msgServer) RequestPoolUnbond(ctx context.Context, msg *types.MsgRequestPoolUnbond) (*types.MsgRequestPoolUnbondResponse, error) {
 	if msg == nil {
 		return nil, errors.New("empty nominator pool unbond request")
+	}
+	if err := m.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
 	}
 	// See DepositToStakingPool: owner_address arrives as the signer's PLAIN
 	// address; resolve it to the account's v2 identity before keeper bookkeeping.
@@ -121,6 +138,9 @@ func (m msgServer) WithdrawPoolStake(ctx context.Context, msg *types.MsgWithdraw
 	if msg == nil {
 		return nil, errors.New("empty nominator pool withdrawal request")
 	}
+	if err := m.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	msg.Height = defaultHeight(ctx, msg.Height)
 	receipt, err := m.keeper.WithdrawPoolStake(*msg)
 	if err != nil {
@@ -139,6 +159,9 @@ func (m msgServer) TopUpPoolReserve(ctx context.Context, msg *types.MsgTopUpPool
 	if msg == nil {
 		return nil, errors.New("empty nominator pool top-up request")
 	}
+	if err := m.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	msg.Height = defaultHeight(ctx, msg.Height)
 	receipt, err := m.keeper.TopUpPoolReserve(*msg)
 	if err != nil {
@@ -155,6 +178,9 @@ func (m msgServer) TopUpPoolReserve(ctx context.Context, msg *types.MsgTopUpPool
 func (m msgServer) ClaimPoolRewards(ctx context.Context, msg *types.MsgClaimPoolRewards) (*types.MsgClaimPoolRewardsResponse, error) {
 	if msg == nil {
 		return nil, errors.New("empty nominator pool reward claim request")
+	}
+	if err := m.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
 	}
 	// A user claim carries the signer's PLAIN owner_address; resolve it to the
 	// v2 identity. The keeper requires a user claim's authority to equal its
@@ -188,6 +214,9 @@ func (m msgServer) SyncPoolRewards(ctx context.Context, msg *types.MsgSyncPoolRe
 	if msg == nil {
 		return nil, errors.New("empty nominator pool reward sync request")
 	}
+	if err := m.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	msg.Height = defaultHeight(ctx, msg.Height)
 	summary, err := m.keeper.SyncPoolRewards(*msg)
 	if err != nil {
@@ -205,6 +234,9 @@ func (m msgServer) ClaimStakingRewards(ctx context.Context, msg *types.MsgClaimS
 	if msg == nil {
 		return nil, errors.New("empty staking reward claim request")
 	}
+	if err := m.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	msg.Height = defaultHeight(ctx, msg.Height)
 	amount, err := m.keeper.ClaimStakingRewards(*msg)
 	if err != nil {
@@ -216,6 +248,9 @@ func (m msgServer) ClaimStakingRewards(ctx context.Context, msg *types.MsgClaimS
 func (m msgServer) ClaimStakeReputation(ctx context.Context, msg *types.MsgClaimStakeReputation) (*types.MsgClaimStakeReputationResponse, error) {
 	if msg == nil {
 		return nil, errors.New("empty stake reputation claim request")
+	}
+	if err := m.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
 	}
 	msg.Height = defaultHeight(ctx, msg.Height)
 	receipt, err := m.keeper.ClaimStakeReputation(*msg)
@@ -234,6 +269,9 @@ func (m msgServer) DelegateToValidator(ctx context.Context, msg *types.MsgDelega
 	if msg == nil {
 		return nil, errors.New("empty direct validator delegation request")
 	}
+	if err := m.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	msg.Height = defaultHeight(ctx, msg.Height)
 	if msg.Authority == "" {
 		msg.Authority = m.keeper.genesis.Params.Authority
@@ -248,6 +286,9 @@ func (m msgServer) RegisterValidator(ctx context.Context, msg *types.MsgRegister
 	if msg == nil {
 		return nil, errors.New("empty validator registration request")
 	}
+	if err := m.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	msg.Height = defaultHeight(ctx, msg.Height)
 	receipt, err := m.keeper.RegisterValidator(*msg)
 	if err != nil {
@@ -259,6 +300,9 @@ func (m msgServer) RegisterValidator(ctx context.Context, msg *types.MsgRegister
 func (m msgServer) UpdateValidator(ctx context.Context, msg *types.MsgUpdateValidator) (*types.MsgUpdateValidatorResponse, error) {
 	if msg == nil {
 		return nil, errors.New("empty validator update request")
+	}
+	if err := m.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
 	}
 	msg.Height = defaultHeight(ctx, msg.Height)
 	receipt, err := m.keeper.UpdateValidator(*msg)
@@ -272,6 +316,9 @@ func (m msgServer) UpdateStakingParams(ctx context.Context, msg *types.MsgUpdate
 	if msg == nil {
 		return nil, errors.New("empty staking params update request")
 	}
+	if err := m.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	msg.Height = defaultHeight(ctx, msg.Height)
 	if _, err := m.keeper.UpdateStakingParams(*msg); err != nil {
 		return nil, err
@@ -283,7 +330,9 @@ func (m msgServer) CreateOfficialLiquidStakingPool(ctx context.Context, msg *typ
 	if msg == nil {
 		return nil, errors.New("empty official liquid staking pool creation request")
 	}
-	m.bindRuntimeContext(ctx)
+	if err := m.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	msg.Height = defaultHeight(ctx, msg.Height)
 	pool, err := m.keeper.CreateOfficialLiquidStakingPool(*msg)
 	if err != nil {
@@ -300,6 +349,9 @@ func (m msgServer) UpdatePoolCommission(ctx context.Context, msg *types.MsgUpdat
 	if msg == nil {
 		return nil, errors.New("empty nominator pool commission update request")
 	}
+	if err := m.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	msg.Height = defaultHeight(ctx, msg.Height)
 	pool, err := m.keeper.UpdatePoolCommission(*msg)
 	if err != nil {
@@ -311,6 +363,9 @@ func (m msgServer) UpdatePoolCommission(ctx context.Context, msg *types.MsgUpdat
 func (m msgServer) ChangePoolValidator(ctx context.Context, msg *types.MsgChangePoolValidator) (*types.MsgChangePoolValidatorResponse, error) {
 	if msg == nil {
 		return nil, errors.New("empty nominator pool validator change request")
+	}
+	if err := m.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
 	}
 	msg.Height = defaultHeight(ctx, msg.Height)
 	pool, err := m.keeper.ChangePoolValidator(*msg)
@@ -331,8 +386,3 @@ func defaultHeight(ctx context.Context, provided uint64) uint64 {
 	return uint64(height)
 }
 
-func (m msgServer) bindRuntimeContext(ctx context.Context) {
-	if ctx != nil {
-		m.keeper.runtimeCtx = ctx
-	}
-}

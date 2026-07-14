@@ -142,6 +142,62 @@ func TestExportImportPreservesFreezeAndDeletionQueues(t *testing.T) {
 	require.Equal(t, frozen[0].DeletionEligibilityHeight, deletionQueue[0].DeletionEligibilityHeight)
 }
 
+// TestRestartedNodeViaMsgServerDoesNotDivergeOnPayStorageRent is the
+// regression PoC for FINDING-006
+// (security-audit/05-findings/FINDING-006-inmemory-genesis-not-rehydrated-consensus-halt.md)
+// applied to x/storage-rent, and simultaneously its fix verification: it
+// drives PayStorageRent -- storage-rent's only genuinely user-reachable
+// handler (no authority/wallet-status gate, see keeper.go PayStorageRent) --
+// through the REAL msgServer entry point on a keeper reconstructed over the
+// same committed store without InitGenesis (simulating a validator restart or
+// state-sync join). Before the fix, this would fail with "contract rent
+// record not found" on the restarted node while succeeding on a
+// continuously-running one -- an AppHash/DeliverTx-result divergence. After
+// wiring Keeper.loadForBlock(ctx) into every storage-rent msgServer handler,
+// both nodes must produce identical results.
+func TestRestartedNodeViaMsgServerDoesNotDivergeOnPayStorageRent(t *testing.T) {
+	ctx := context.Background()
+	service := kvtest.NewStoreService()
+
+	// Continuously-running node: register the contract's rent record and pay
+	// once, through the real msgServer entry point.
+	source := NewPersistentKeeper(service)
+	gs := DefaultGenesis()
+	gs.Params = prototype.TestnetParams()
+	gs.RentParams.FreeStorageAllowance = 0
+	require.NoError(t, source.InitGenesisState(ctx, gs))
+	_, err := source.TrackContractStorageUsage(authority, contract, actor, 10, 10, 1)
+	require.NoError(t, err)
+	sourceServer := NewMsgServer(&source)
+
+	_, err = sourceServer.PayStorageRent(ctx, &types.MsgPayStorageRent{
+		Payer: "payer", ContractAddress: contract, Amount: 100, Height: 1,
+	})
+	require.NoError(t, err, "the continuously-running node must accept the rent payment")
+
+	// Sanity: the contract rent record IS committed to the shared store.
+	committed, err := NewPersistentKeeper(service).ExportGenesisState(ctx)
+	require.NoError(t, err)
+	require.Len(t, committed.State.Contracts, 1, "contract rent record must be committed to the shared store")
+
+	// Simulate a validator restart / state-sync join: a fresh keeper over the
+	// SAME committed store, without InitGenesis.
+	restarted := NewPersistentKeeper(service)
+	require.Empty(t, restarted.genesis.State.Contracts, "a freshly-constructed keeper starts at the empty default in memory")
+	restartedServer := NewMsgServer(&restarted)
+
+	// The SAME rent payment, delivered through the REAL msgServer entry point
+	// on the restarted node. It must succeed: PayStorageRent's loadForBlock
+	// call reloads k.genesis from the committed store before any contract
+	// lookup.
+	_, err = restartedServer.PayStorageRent(ctx, &types.MsgPayStorageRent{
+		Payer: "payer", ContractAddress: contract, Amount: 100, Height: 2,
+	})
+	require.NoError(t, err,
+		"FIX VERIFIED: the restarted node must accept the rent payment via the real msgServer entry point, "+
+			"matching the continuously-running node -- no more AppHash/DeliverTx-result divergence on restart.")
+}
+
 func TestPersistentRuntimeMutationSurvivesRestartAndImport(t *testing.T) {
 	ctx := context.Background()
 	service := kvtest.NewStoreService()

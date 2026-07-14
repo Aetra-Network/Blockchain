@@ -150,8 +150,7 @@ func TestAppRuntimeInvariantsPassAfterCoreFlows(t *testing.T) {
 
 	contractAccount := nativeAccountActivateViaRoute(t, app, ctx, nativeAccountModuleTestPubKey())
 	wallet := contractAccount.AddressUser
-	bytecode := []byte("AVM1 invariant contract")
-	stored, err := app.ContractsKeeper.StoreCodeState(ctx, contractstypes.MsgStoreCode{Authority: wallet, Bytecode: bytecode})
+	stored, err := app.ContractsKeeper.StoreCodeState(ctx, contractstypes.MsgStoreCode{Authority: wallet, CodeHash: fakeCodeHash("invariant contract"), CodeBytes: 128})
 	require.NoError(t, err)
 	deployed, err := app.ContractsKeeper.DeployContractState(ctx, contractstypes.MsgDeployContract{
 		Creator:	wallet,

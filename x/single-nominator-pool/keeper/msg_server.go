@@ -25,6 +25,9 @@ func (m msgServer) CreateSingleNominatorPool(ctx context.Context, msg *v1.MsgCre
 	if msg == nil {
 		return nil, v1.ErrInvalidParams.Wrap("empty request")
 	}
+	if err := m.Keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
 	}
@@ -55,6 +58,9 @@ func (m msgServer) DepositSingleNominator(ctx context.Context, msg *v1.MsgDeposi
 	if msg == nil {
 		return nil, v1.ErrInvalidParams.Wrap("empty request")
 	}
+	if err := m.Keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
 	}
@@ -83,6 +89,9 @@ func (m msgServer) DepositSingleNominator(ctx context.Context, msg *v1.MsgDeposi
 func (m msgServer) WithdrawSingleNominator(ctx context.Context, msg *v1.MsgWithdrawSingleNominator) (*v1.MsgWithdrawSingleNominatorResponse, error) {
 	if msg == nil {
 		return nil, v1.ErrInvalidParams.Wrap("empty request")
+	}
+	if err := m.Keeper.loadForBlock(ctx); err != nil {
+		return nil, err
 	}
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
@@ -113,6 +122,9 @@ func (m msgServer) ClaimSingleNominatorRewards(ctx context.Context, msg *v1.MsgC
 	if msg == nil {
 		return nil, v1.ErrInvalidParams.Wrap("empty request")
 	}
+	if err := m.Keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
 	}
@@ -140,6 +152,9 @@ func (m msgServer) ClaimSingleNominatorRewards(ctx context.Context, msg *v1.MsgC
 func (m msgServer) EmergencyLockSingleNominator(ctx context.Context, msg *v1.MsgEmergencyLockSingleNominator) (*v1.MsgEmergencyLockSingleNominatorResponse, error) {
 	if msg == nil {
 		return nil, v1.ErrInvalidParams.Wrap("empty request")
+	}
+	if err := m.Keeper.loadForBlock(ctx); err != nil {
+		return nil, err
 	}
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
@@ -169,6 +184,9 @@ func (m msgServer) EmergencyLockSingleNominator(ctx context.Context, msg *v1.Msg
 func (m msgServer) ChangeSingleNominatorValidator(ctx context.Context, msg *v1.MsgChangeSingleNominatorValidator) (*v1.MsgChangeSingleNominatorValidatorResponse, error) {
 	if msg == nil {
 		return nil, v1.ErrInvalidParams.Wrap("empty request")
+	}
+	if err := m.Keeper.loadForBlock(ctx); err != nil {
+		return nil, err
 	}
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err

@@ -12,8 +12,10 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	corestore "cosmossdk.io/core/store"
 	sdkmath "cosmossdk.io/math"
@@ -47,12 +49,52 @@ type BankKeeper interface {
 }
 
 type Keeper struct {
-	genesis                 types.GenesisState
-	storeService            corestore.KVStoreService
+	genesis      types.GenesisState
+	storeService corestore.KVStoreService
+	// mu guards genesis against the concurrent gRPC/REST query goroutines
+	// racing the (single-threaded, ABCI-serialized) msg-handler write path.
+	// See FINDING-008. It is a *sync.RWMutex, not a value, deliberately:
+	// several Keeper methods below (WithBankKeeper and friends) are value
+	// receivers that return a modified copy during app wiring, and a
+	// handful of internal read-only helpers are value receivers too — a
+	// pointer field lets those keep compiling (and keep sharing the SAME
+	// lock across every copy) without `go vet` flagging a copied lock.
+	// Every method that reads genesis from a goroutine that can run
+	// concurrently with block processing (the query surface) must be a
+	// pointer receiver and go through snapshotGenesis/assignGenesis below —
+	// a value-receiver copy of Keeper itself would read the genesis field
+	// unsynchronized as part of the copy, defeating the lock.
+	mu                      *sync.RWMutex
 	accountStatusReader     AccountStatusReader
 	bankKeeper              BankKeeper
 	runtimeCtx              context.Context
 	storageRentRateProvider StorageRentRateProvider
+}
+
+// snapshotGenesis returns a consistent, point-in-time copy of the keeper's
+// in-memory genesis state under a read lock. Query methods must call this
+// exactly ONCE at the top of the method and use the returned value for the
+// rest of the call, instead of referencing k.genesis again directly.
+func (k *Keeper) snapshotGenesis() types.GenesisState {
+	k.mu.RLock()
+	defer k.mu.RUnlock()
+	return k.genesis
+}
+
+// assignGenesis replaces the keeper's in-memory genesis state under a write
+// lock. Every `k.genesis = ...` write site must go through this method
+// instead of assigning the field directly. Mutation methods build the new
+// value via the existing copy-on-write pattern (next := k.genesis; ...
+// mutate next...; k.assignGenesis(next)) and only need to take the lock at
+// this final step: ABCI processes messages one at a time, so no other
+// mutation runs concurrently with this one — only queries do, and they only
+// ever read via snapshotGenesis. A reader that already copied out the old
+// value under RLock is unaffected by this call: it is superseded, never
+// mutated in place.
+func (k *Keeper) assignGenesis(gs types.GenesisState) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.genesis = gs
 }
 
 const (
@@ -73,11 +115,11 @@ type StorageRentRateProvider interface {
 }
 
 func NewKeeper() Keeper {
-	return Keeper{genesis: types.DefaultGenesis()}
+	return Keeper{genesis: types.DefaultGenesis(), mu: &sync.RWMutex{}}
 }
 
 func NewPersistentKeeper(storeService corestore.KVStoreService) Keeper {
-	return Keeper{genesis: types.DefaultGenesis(), storeService: storeService}
+	return Keeper{genesis: types.DefaultGenesis(), storeService: storeService, mu: &sync.RWMutex{}}
 }
 
 func NewKeeperWithAccountStatus(reader AccountStatusReader) Keeper {
@@ -110,7 +152,7 @@ func (k *Keeper) InitGenesis(gs types.GenesisState) error {
 	if err := gs.Validate(); err != nil {
 		return err
 	}
-	k.genesis = gs
+	k.assignGenesis(gs)
 	return nil
 }
 
@@ -151,27 +193,42 @@ func (k Keeper) ExportGenesisState(ctx context.Context) (types.GenesisState, err
 	return gs, nil
 }
 
-func (k Keeper) Params() types.Params {
-	return k.genesis.Params
+func (k *Keeper) Params() types.Params {
+	return k.snapshotGenesis().Params
 }
 
-func (k Keeper) Code(req types.QueryCodeRequest) (types.CodeRecord, bool, error) {
+func (k *Keeper) Code(req types.QueryCodeRequest) (types.CodeRecord, bool, error) {
 	if req.CodeID == "" {
 		return types.CodeRecord{}, false, errors.New("contract code id is required")
 	}
-	code, found := findCode(k.genesis.State.Codes, req.CodeID)
+	gs := k.snapshotGenesis()
+	code, found := findCode(gs.State.Codes, req.CodeID)
 	return code, found, nil
 }
 
-func (k Keeper) Codes(req types.QueryCodesRequest) ([]types.CodeRecord, error) {
+// Codes returns a bounded page of stored code records. See FINDING-010: the
+// previous implementation called State.Normalize(), which deep-clones EVERY
+// stored Bytecode payload for the WHOLE state before truncating to the
+// page — an unmetered, unauthenticated O(total-state-size) cost per call
+// regardless of how small Pagination.Limit is. Every mutation path already
+// normalizes (sorts) State before committing it (RefreshStateRoot), so
+// k.genesis.State.Codes is already in the canonical CodeID order; this
+// re-sorts defensively (cheap: it only reorders CodeRecord struct headers,
+// not their Bytecode contents) in case that invariant is ever violated, then
+// truncates to the page BEFORE doing the one deep clone — so the expensive
+// per-Bytecode copy is bounded by the page size actually returned, not the
+// total number/size of stored codes.
+func (k *Keeper) Codes(req types.QueryCodesRequest) ([]types.CodeRecord, error) {
 	if err := types.ValidateQueryPagination(req.Pagination); err != nil {
 		return nil, err
 	}
-	codes := k.genesis.State.Normalize().Codes
+	gs := k.snapshotGenesis()
+	codes := append([]types.CodeRecord(nil), gs.State.Codes...)
+	sort.SliceStable(codes, func(i, j int) bool { return codes[i].CodeID < codes[j].CodeID })
 	if uint32(len(codes)) > req.Pagination.Limit {
 		codes = codes[:req.Pagination.Limit]
 	}
-	return append([]types.CodeRecord(nil), codes...), nil
+	return types.CloneCodeRecords(codes), nil
 }
 
 func (k Keeper) ValidateInvariants() error {
@@ -205,6 +262,37 @@ func (k *Keeper) storeCodeUnchecked(msg types.MsgStoreCode) (types.StoreCodeResp
 		if err := types.ValidateAVMBytecode(k.genesis.Params, msg.Bytecode); err != nil {
 			return types.StoreCodeResponse{}, err
 		}
+		// FINDING-004: ValidateAVMBytecode only checks the AVM1 header,
+		// governance size ceiling and (previously) a heuristic forbidden-
+		// substring scan — it never confirmed the bytes are an actual,
+		// well-formed, verifiable AVM module. That let a same-prefix,
+		// non-module blob through StoreCode; the resulting code record
+		// silently became non-executable (executable=false, decided later
+		// at deploy/first-execute by loadAVMModule swallowing the decode
+		// error) instead of being rejected up front. Do the real decode +
+		// verify HERE, once, at the point bytecode is accepted into state,
+		// using the same avm.DefaultParams() the runtime itself verifies
+		// against at execution time (avm.Runner.Run calls Verifier.Verify
+		// internally) — so nothing that passes this gate can later fail
+		// verification at run time either. This intentionally lives in the
+		// keeper (which already imports avm for loadAVMModule), not in
+		// types.ValidateAVMBytecode: x/aetravm/avm imports x/contracts/types
+		// for StateInit/address-derivation support, so the reverse import
+		// would cycle. Keeping it here also avoids re-paying a decode+verify
+		// pass on every unrelated mutation's next.Validate() invariant
+		// re-check (ValidateAVMBytecode, called from CodeRecord.Validate, is
+		// deliberately kept cheap for that reason).
+		module, err := avm.DecodeModule(msg.Bytecode)
+		if err != nil {
+			return types.StoreCodeResponse{}, fmt.Errorf("%s: bytecode does not decode as an AVM module: %w", types.ErrInvalidBytecode, err)
+		}
+		verifier, err := avm.NewVerifier(avm.DefaultParams())
+		if err != nil {
+			return types.StoreCodeResponse{}, fmt.Errorf("%s: %w", types.ErrInvalidBytecode, err)
+		}
+		if err := verifier.Verify(module); err != nil {
+			return types.StoreCodeResponse{}, fmt.Errorf("%s: bytecode failed AVM module verification: %w", types.ErrInvalidBytecode, err)
+		}
 		codeHash := types.CanonicalCodeHash(msg.Bytecode)
 		if msg.CodeHash != "" && msg.CodeHash != codeHash {
 			return types.StoreCodeResponse{}, errors.New(types.ErrInvalidBytecode + ": code hash must match canonical bytecode hash")
@@ -230,8 +318,8 @@ func (k *Keeper) storeCodeUnchecked(msg types.MsgStoreCode) (types.StoreCodeResp
 	if err := next.Validate(); err != nil {
 		return types.StoreCodeResponse{}, err
 	}
-	k.genesis = next
-	return types.StoreCodeResponse{CodeID: msg.CodeHash, StateRoot: k.genesis.StateRoot}, nil
+	k.assignGenesis(next)
+	return types.StoreCodeResponse{CodeID: msg.CodeHash, StateRoot: next.StateRoot}, nil
 }
 
 func (k *Keeper) StoreCodeState(ctx context.Context, msg types.MsgStoreCode) (types.StoreCodeResponse, error) {
@@ -386,7 +474,7 @@ func (k *Keeper) UpdateContractParams(msg types.MsgUpdateContractParams) error {
 	if err := next.Validate(); err != nil {
 		return err
 	}
-	k.genesis = next
+	k.assignGenesis(next)
 	return nil
 }
 
@@ -407,7 +495,7 @@ func (k *Keeper) SubmitSecurityAttestation(msg types.MsgSubmitSecurityAttestatio
 	if err := next.Validate(); err != nil {
 		return types.MsgSubmitSecurityAttestationResponse{}, err
 	}
-	k.genesis = next
+	k.assignGenesis(next)
 	return types.MsgSubmitSecurityAttestationResponse{Attestation: attestation, StateRoot: next.StateRoot}, nil
 }
 
@@ -425,7 +513,7 @@ func (k *Keeper) RevokeSecurityAttestation(msg types.MsgRevokeSecurityAttestatio
 	if err := next.Validate(); err != nil {
 		return types.MsgRevokeSecurityAttestationResponse{}, err
 	}
-	k.genesis = next
+	k.assignGenesis(next)
 	attestation, ok := findSecurityAttestation(next.State.SecurityAttestations, msg.AttestationID)
 	if !ok {
 		return types.MsgRevokeSecurityAttestationResponse{}, errors.New("security attestation not found after revoke")
@@ -433,9 +521,10 @@ func (k *Keeper) RevokeSecurityAttestation(msg types.MsgRevokeSecurityAttestatio
 	return types.MsgRevokeSecurityAttestationResponse{Attestation: attestation, StateRoot: next.StateRoot}, nil
 }
 
-func (k Keeper) Contract(req types.QueryContractRequest) (types.QueryContractResponse, error) {
+func (k *Keeper) Contract(req types.QueryContractRequest) (types.QueryContractResponse, error) {
+	gs := k.snapshotGenesis()
 	if strings.TrimSpace(req.ContractAddress) == "" && req.StateInit != nil {
-		user, _, err := types.DeriveContractAddressFromStateInit(req.ChainID, req.Namespace, req.Deployer, *req.StateInit, k.genesis.Params)
+		user, _, err := types.DeriveContractAddressFromStateInit(req.ChainID, req.Namespace, req.Deployer, *req.StateInit, gs.Params)
 		if err != nil {
 			return types.QueryContractResponse{}, err
 		}
@@ -444,45 +533,53 @@ func (k Keeper) Contract(req types.QueryContractRequest) (types.QueryContractRes
 	if err := types.ValidateContractAddress(req.ContractAddress); err != nil {
 		return types.QueryContractResponse{}, err
 	}
-	contract, found := findContract(k.genesis.State.Contracts, req.ContractAddress)
+	contract, found := findContract(gs.State.Contracts, req.ContractAddress)
 	if !found && req.StateInit != nil {
-		user, _, err := types.DeriveContractAddressFromStateInit(req.ChainID, req.Namespace, req.Deployer, *req.StateInit, k.genesis.Params)
+		user, _, err := types.DeriveContractAddressFromStateInit(req.ChainID, req.Namespace, req.Deployer, *req.StateInit, gs.Params)
 		if err != nil {
 			return types.QueryContractResponse{}, err
 		}
 		if user != req.ContractAddress {
 			return types.QueryContractResponse{}, errors.New(types.ErrContractNotFound + ": state init address does not match query address")
 		}
-		return types.QueryContractResponse{ContractAddress: req.ContractAddress, StateRoot: k.genesis.StateRoot, Found: false, Virtual: true, Status: types.ContractStatusUninit}, nil
+		return types.QueryContractResponse{ContractAddress: req.ContractAddress, StateRoot: gs.StateRoot, Found: false, Virtual: true, Status: types.ContractStatusUninit}, nil
 	}
 	if found {
 		if err := types.EnsureContractLifecycleAction(contract, types.ContractLifecycleActionQuery); err != nil {
 			return types.QueryContractResponse{}, err
 		}
-		return types.QueryContractResponse{ContractAddress: req.ContractAddress, StateRoot: k.genesis.StateRoot, Found: true, Contract: contract, Status: contract.Status}, nil
+		return types.QueryContractResponse{ContractAddress: req.ContractAddress, StateRoot: gs.StateRoot, Found: true, Contract: contract, Status: contract.Status}, nil
 	}
-	return types.QueryContractResponse{ContractAddress: req.ContractAddress, StateRoot: k.genesis.StateRoot, Found: false, Status: types.ContractStatusNonExistent}, nil
+	return types.QueryContractResponse{ContractAddress: req.ContractAddress, StateRoot: gs.StateRoot, Found: false, Status: types.ContractStatusNonExistent}, nil
 }
 
-func (k Keeper) Contracts(req types.QueryContractsRequest) ([]types.Contract, error) {
+// Contracts returns a bounded page of deployed contracts. See the Codes doc
+// comment (FINDING-010): pagination now happens BEFORE the deep clone
+// (Contract has multiple nested byte slices — InitMsg, Data — plus a nested
+// StateInit), so cost scales with the page returned, not total contract
+// count/state size.
+func (k *Keeper) Contracts(req types.QueryContractsRequest) ([]types.Contract, error) {
 	if err := types.ValidateQueryPagination(req.Pagination); err != nil {
 		return nil, err
 	}
-	contracts := k.genesis.State.Normalize().Contracts
+	gs := k.snapshotGenesis()
+	contracts := append([]types.Contract(nil), gs.State.Contracts...)
+	sort.SliceStable(contracts, func(i, j int) bool { return contracts[i].AddressUser < contracts[j].AddressUser })
 	if uint32(len(contracts)) > req.Pagination.Limit {
 		contracts = contracts[:req.Pagination.Limit]
 	}
-	return append([]types.Contract(nil), contracts...), nil
+	return types.CloneContracts(contracts), nil
 }
 
-func (k Keeper) ContractStorage(req types.QueryContractStorageRequest) ([]types.ContractStorageEntry, error) {
+func (k *Keeper) ContractStorage(req types.QueryContractStorageRequest) ([]types.ContractStorageEntry, error) {
 	if err := types.ValidateContractAddress(req.ContractAddress); err != nil {
 		return nil, err
 	}
 	if err := types.ValidateQueryPagination(req.Pagination); err != nil {
 		return nil, err
 	}
-	contract, found := findContract(k.genesis.State.Contracts, req.ContractAddress)
+	gs := k.snapshotGenesis()
+	contract, found := findContract(gs.State.Contracts, req.ContractAddress)
 	if !found {
 		return nil, errors.New(types.ErrContractNotFound + ": contract not found")
 	}
@@ -517,22 +614,43 @@ func (k Keeper) ContractStorage(req types.QueryContractStorageRequest) ([]types.
 	return out, nil
 }
 
-func (k Keeper) ContractReceipts(req types.QueryContractReceiptsRequest) ([]types.ContractReceipt, error) {
+// ContractReceipts returns a bounded page of receipts for one contract. See
+// the Codes doc comment (FINDING-010): the previous implementation called
+// State.Normalize() to get Receipts, which deep-clones the ENTIRE state
+// (every Bytecode/Data/InitMsg in Codes and Contracts too) just to read the
+// Receipts slice — ContractReceipt itself has no nested byte slices, so
+// copying it is already a full independent copy with no cloning helper
+// needed. This reads Receipts directly (defensively re-sorted by the same
+// key Normalize uses) instead of paying for a full-state clone.
+func (k *Keeper) ContractReceipts(req types.QueryContractReceiptsRequest) ([]types.ContractReceipt, error) {
 	if err := types.ValidateContractAddress(req.ContractAddress); err != nil {
 		return nil, err
 	}
 	if err := types.ValidateQueryPagination(req.Pagination); err != nil {
 		return nil, err
 	}
-	receipts := k.genesis.State.Normalize().Receipts
-	out := make([]types.ContractReceipt, 0)
-	contract, found := findContract(k.genesis.State.Contracts, req.ContractAddress)
+	gs := k.snapshotGenesis()
+	contract, found := findContract(gs.State.Contracts, req.ContractAddress)
 	if !found {
 		return nil, errors.New(types.ErrContractNotFound + ": contract not found")
 	}
 	if err := types.EnsureContractLifecycleAction(contract, types.ContractLifecycleActionQuery); err != nil {
 		return nil, err
 	}
+	receipts := append([]types.ContractReceipt(nil), gs.State.Receipts...)
+	sort.SliceStable(receipts, func(i, j int) bool {
+		if receipts[i].Height != receipts[j].Height {
+			return receipts[i].Height < receipts[j].Height
+		}
+		if receipts[i].LogicalTime != receipts[j].LogicalTime {
+			return receipts[i].LogicalTime < receipts[j].LogicalTime
+		}
+		if receipts[i].ContractAddress != receipts[j].ContractAddress {
+			return receipts[i].ContractAddress < receipts[j].ContractAddress
+		}
+		return receipts[i].ReceiptID < receipts[j].ReceiptID
+	})
+	out := make([]types.ContractReceipt, 0)
 	for _, receipt := range receipts {
 		if receipt.ContractAddress != req.ContractAddress {
 			continue
@@ -545,22 +663,43 @@ func (k Keeper) ContractReceipts(req types.QueryContractReceiptsRequest) ([]type
 	return out, nil
 }
 
-func (k Keeper) ContractQueue(req types.QueryContractQueueRequest) ([]types.InternalMessage, error) {
+// ContractQueue returns a bounded page of queued internal messages touching
+// one contract. See the Codes doc comment (FINDING-010): pagination now
+// happens before the (small, page-bounded) clone of Body/StateInit, instead
+// of calling State.Normalize() to deep-clone the whole state up front.
+func (k *Keeper) ContractQueue(req types.QueryContractQueueRequest) ([]types.InternalMessage, error) {
 	if err := types.ValidateContractAddress(req.ContractAddress); err != nil {
 		return nil, err
 	}
 	if err := types.ValidateQueryPagination(req.Pagination); err != nil {
 		return nil, err
 	}
-	queue := make([]types.InternalMessage, 0)
-	contract, found := findContract(k.genesis.State.Contracts, req.ContractAddress)
+	gs := k.snapshotGenesis()
+	contract, found := findContract(gs.State.Contracts, req.ContractAddress)
 	if !found {
 		return nil, errors.New(types.ErrContractNotFound + ": contract not found")
 	}
 	if err := types.EnsureContractLifecycleAction(contract, types.ContractLifecycleActionQuery); err != nil {
 		return nil, err
 	}
-	for _, msg := range k.genesis.State.Normalize().InternalMessages {
+	messages := append([]types.InternalMessage(nil), gs.State.InternalMessages...)
+	sort.SliceStable(messages, func(i, j int) bool {
+		if messages[i].Height != messages[j].Height {
+			return messages[i].Height < messages[j].Height
+		}
+		if messages[i].LogicalTime != messages[j].LogicalTime {
+			return messages[i].LogicalTime < messages[j].LogicalTime
+		}
+		if messages[i].MessageID != messages[j].MessageID {
+			return messages[i].MessageID < messages[j].MessageID
+		}
+		if messages[i].SourceContractUser != messages[j].SourceContractUser {
+			return messages[i].SourceContractUser < messages[j].SourceContractUser
+		}
+		return messages[i].DestinationAccount < messages[j].DestinationAccount
+	})
+	queue := make([]types.InternalMessage, 0)
+	for _, msg := range messages {
 		if msg.SourceContractUser == req.ContractAddress || msg.DestinationAccount == req.ContractAddress {
 			queue = append(queue, msg)
 			if uint32(len(queue)) == req.Pagination.Limit {
@@ -568,21 +707,22 @@ func (k Keeper) ContractQueue(req types.QueryContractQueueRequest) ([]types.Inte
 			}
 		}
 	}
-	return queue, nil
+	return types.CloneInternalMessages(queue), nil
 }
 
-func (k Keeper) ContractEvents(req types.QueryContractEventsRequest) error {
+func (k *Keeper) ContractEvents(req types.QueryContractEventsRequest) error {
 	if err := types.ValidateContractAddress(req.ContractAddress); err != nil {
 		return err
 	}
 	return types.ValidateQueryPagination(req.Pagination)
 }
 
-func (k Keeper) ContractStateRoot(req types.QueryContractStateRootRequest) (string, error) {
+func (k *Keeper) ContractStateRoot(req types.QueryContractStateRootRequest) (string, error) {
 	if err := types.ValidateContractAddress(req.ContractAddress); err != nil {
 		return "", err
 	}
-	contract, found := findContract(k.genesis.State.Contracts, req.ContractAddress)
+	gs := k.snapshotGenesis()
+	contract, found := findContract(gs.State.Contracts, req.ContractAddress)
 	if !found {
 		return "", errors.New(types.ErrContractNotFound + ": contract not found")
 	}
@@ -592,25 +732,27 @@ func (k Keeper) ContractStateRoot(req types.QueryContractStateRootRequest) (stri
 	return contract.StateRoot, nil
 }
 
-func (k Keeper) SecurityAttestations(req types.QuerySecurityAttestationsRequest) ([]types.ContractSecurityAttestation, error) {
+func (k *Keeper) SecurityAttestations(req types.QuerySecurityAttestationsRequest) ([]types.ContractSecurityAttestation, error) {
 	if err := types.ValidateContractAddress(req.ContractAddress); err != nil {
 		return nil, err
 	}
 	if err := types.ValidateQueryPagination(req.Pagination); err != nil {
 		return nil, err
 	}
-	out := k.genesis.State.SecurityAttestationsFor(req.ContractAddress, req.IncludeRevoked)
+	gs := k.snapshotGenesis()
+	out := gs.State.SecurityAttestationsFor(req.ContractAddress, req.IncludeRevoked)
 	if uint32(len(out)) > req.Pagination.Limit {
 		out = out[:req.Pagination.Limit]
 	}
 	return append([]types.ContractSecurityAttestation(nil), out...), nil
 }
 
-func (k Keeper) SecurityBadge(req types.QuerySecurityBadgeRequest) (types.ContractSecurityBadge, bool, error) {
+func (k *Keeper) SecurityBadge(req types.QuerySecurityBadgeRequest) (types.ContractSecurityBadge, bool, error) {
 	if err := types.ValidateContractAddress(req.ContractAddress); err != nil {
 		return types.ContractSecurityBadge{}, false, err
 	}
-	badge := k.genesis.State.SecurityBadge(req.ContractAddress)
+	gs := k.snapshotGenesis()
+	badge := gs.State.SecurityBadge(req.ContractAddress)
 	return badge, badge.AttestationCount > 0, nil
 }
 
@@ -736,7 +878,7 @@ func (k *Keeper) instantiateContract(ctx context.Context, msg types.MsgInstantia
 	if err := k.collectRentPayment(ctx, msg.Creator, initialStorageFee); err != nil {
 		return types.InstantiateContractResponse{}, err
 	}
-	k.genesis = next
+	k.assignGenesis(next)
 	return types.InstantiateContractResponse{
 		ContractAddressUser: user,
 		ContractAddressRaw:  raw,
@@ -811,13 +953,19 @@ func (k *Keeper) UpgradeContractCode(msg types.MsgUpgradeContractCode) (types.Co
 	nextContract.StateRoot = types.ComputeContractStateRoot(nextContract)
 	receipt := newContractReceipt(nextContract.AddressUser, receiptActor(contract, msg.Actor), "upgrade_code", types.ExitCodeOK, 0, 0, nextContract.LogicalTime, msg.Height)
 	next := k.genesis
+	// Clone Contracts before the index-write below: next is a SHALLOW copy of
+	// k.genesis (the Contracts slice header, not its backing array), so
+	// writing next.State.Contracts[idx] in place would otherwise mutate the
+	// same backing array a concurrent query's snapshotGenesis() may still be
+	// reading. See FINDING-008.
+	next.State.Contracts = append([]types.Contract(nil), next.State.Contracts...)
 	next.State.Contracts[idx] = nextContract
 	next.State.Receipts = append(next.State.Receipts, receipt)
 	next = types.RefreshStateRoot(next)
 	if err := next.Validate(); err != nil {
 		return types.ContractReceipt{}, err
 	}
-	k.genesis = next
+	k.assignGenesis(next)
 	return receipt, nil
 }
 
@@ -871,13 +1019,15 @@ func (k *Keeper) MigrateContractState(msg types.MsgMigrateContractState) (types.
 	nextContract.StateRoot = types.ComputeContractStateRoot(nextContract)
 	receipt := newContractReceipt(nextContract.AddressUser, receiptActor(contract, msg.Actor), "migrate_state", types.ExitCodeOK, msg.ToSchemaVersion, 0, nextContract.LogicalTime, msg.Height)
 	next := k.genesis
+	// Clone before index-write; see UpgradeContractCode above (FINDING-008).
+	next.State.Contracts = append([]types.Contract(nil), next.State.Contracts...)
 	next.State.Contracts[idx] = nextContract
 	next.State.Receipts = append(next.State.Receipts, receipt)
 	next = types.RefreshStateRoot(next)
 	if err := next.Validate(); err != nil {
 		return types.ContractReceipt{}, err
 	}
-	k.genesis = next
+	k.assignGenesis(next)
 	return receipt, nil
 }
 
@@ -901,13 +1051,15 @@ func (k *Keeper) SetContractAdmin(msg types.MsgSetContractAdmin) (types.Contract
 	contract.StateRoot = types.ComputeContractStateRoot(contract)
 	receipt := newContractReceipt(contract.AddressUser, receiptActor(contract, msg.Actor), "set_admin", types.ExitCodeOK, 0, 0, contract.LogicalTime, msg.Height)
 	next := k.genesis
+	// Clone before index-write; see UpgradeContractCode above (FINDING-008).
+	next.State.Contracts = append([]types.Contract(nil), next.State.Contracts...)
 	next.State.Contracts[idx] = contract
 	next.State.Receipts = append(next.State.Receipts, receipt)
 	next = types.RefreshStateRoot(next)
 	if err := next.Validate(); err != nil {
 		return types.ContractReceipt{}, err
 	}
-	k.genesis = next
+	k.assignGenesis(next)
 	return receipt, nil
 }
 
@@ -932,13 +1084,15 @@ func (k *Keeper) DisableContractUpgrades(msg types.MsgDisableContractUpgrades) (
 	contract.StateRoot = types.ComputeContractStateRoot(contract)
 	receipt := newContractReceipt(contract.AddressUser, receiptActor(contract, msg.Actor), "disable_upgrades", types.ExitCodeOK, 0, 0, contract.LogicalTime, msg.Height)
 	next := k.genesis
+	// Clone before index-write; see UpgradeContractCode above (FINDING-008).
+	next.State.Contracts = append([]types.Contract(nil), next.State.Contracts...)
 	next.State.Contracts[idx] = contract
 	next.State.Receipts = append(next.State.Receipts, receipt)
 	next = types.RefreshStateRoot(next)
 	if err := next.Validate(); err != nil {
 		return types.ContractReceipt{}, err
 	}
-	k.genesis = next
+	k.assignGenesis(next)
 	return receipt, nil
 }
 
@@ -1329,6 +1483,23 @@ func (k *Keeper) executeContract(ctx context.Context, msg types.MsgExecuteContra
 		contract.Data = encodeSnapshotStorage(exec.State)
 		outgoing = append([]async.MessageEnvelope(nil), exec.Outgoing...)
 	} else {
+		// FINDING-004 / lifecycle.go owner-check gap: a code record can still
+		// be non-executable after the StoreCode decode+verify hardening
+		// above — StoreCode also accepts a bytecode-less record (only
+		// CodeHash/CodeBytes set; see storeCodeUnchecked's `len(msg.Bytecode)
+		// > 0` guard), which loadAVMModule treats as executable=false without
+		// ever calling DecodeModule. That path is a deliberate, tested
+		// lightweight code-registration flow (storeContractCode in
+		// keeper_test.go and others), not itself a bug, so it stays legal —
+		// but EnsureContractLifecycleAction only gates on contract.Status,
+		// never on the caller's identity, so ANY active wallet could
+		// previously overwrite this contract's public data blob. Require the
+		// caller to be the contract's owner, matching the access-control
+		// every executable AVM contract already gets implicitly (its own
+		// code decides who may mutate its storage).
+		if msg.Sender != contract.Owner {
+			return types.ExecuteContractResponse{}, errors.New(types.ErrUnauthorized + ": non-executable contract data can only be written by its owner")
+		}
 		contract.Data = append([]byte(nil), msg.Msg...)
 	}
 	contract.LogicalTime++
@@ -1343,6 +1514,8 @@ func (k *Keeper) executeContract(ctx context.Context, msg types.MsgExecuteContra
 	contract.UpdatedHeight = msg.Height
 	contract.StateRoot = types.ComputeContractStateRoot(contract)
 	next := k.genesis
+	// Clone before index-write; see UpgradeContractCode above (FINDING-008).
+	next.State.Contracts = append([]types.Contract(nil), next.State.Contracts...)
 	next.State.Contracts[idx] = contract
 	queued, err := k.appendAVMOutgoingMessages(&next, contract, outgoing, msg.Height)
 	if err != nil {
@@ -1358,7 +1531,7 @@ func (k *Keeper) executeContract(ctx context.Context, msg types.MsgExecuteContra
 			return types.ExecuteContractResponse{}, err
 		}
 	}
-	k.genesis = next
+	k.assignGenesis(next)
 	emitSDKEvents(ctx, executionChainEvents(contract.AddressUser, msg.Sender, msg.Funds, msg.Opcode, queued)...)
 	return types.ExecuteContractResponse{
 		ContractAddressUser: contract.AddressUser,
@@ -1447,12 +1620,14 @@ func (k *Keeper) TopUpContract(msg types.MsgTopUpContract) (types.Contract, erro
 	contract.Balance = balance
 	contract.UpdatedHeight = msg.Height
 	next := k.genesis
+	// Clone before index-write; see UpgradeContractCode above (FINDING-008).
+	next.State.Contracts = append([]types.Contract(nil), next.State.Contracts...)
 	next.State.Contracts[idx] = contract
 	next = types.RefreshStateRoot(next)
 	if err := next.Validate(); err != nil {
 		return types.Contract{}, err
 	}
-	k.genesis = next
+	k.assignGenesis(next)
 	return contract, nil
 }
 
@@ -1493,12 +1668,14 @@ func (k *Keeper) PayContractStorageDebt(msg types.MsgPayContractStorageDebt) (ty
 	contract.StorageRentDebt -= applied
 	contract.UpdatedHeight = msg.Height
 	next := k.genesis
+	// Clone before index-write; see UpgradeContractCode above (FINDING-008).
+	next.State.Contracts = append([]types.Contract(nil), next.State.Contracts...)
 	next.State.Contracts[idx] = contract
 	next = types.RefreshStateRoot(next)
 	if err := next.Validate(); err != nil {
 		return types.Contract{}, err
 	}
-	k.genesis = next
+	k.assignGenesis(next)
 	return contract, nil
 }
 
@@ -1546,12 +1723,14 @@ func (k *Keeper) unfreezeContract(ctx context.Context, msg types.MsgUnfreezeCont
 	contract.LastStorageChargeHeight = msg.Height
 	contract.UpdatedHeight = msg.Height
 	next := k.genesis
+	// Clone before index-write; see UpgradeContractCode above (FINDING-008).
+	next.State.Contracts = append([]types.Contract(nil), next.State.Contracts...)
 	next.State.Contracts[idx] = contract
 	next = types.RefreshStateRoot(next)
 	if err := next.Validate(); err != nil {
 		return types.Contract{}, err
 	}
-	k.genesis = next
+	k.assignGenesis(next)
 	return contract, nil
 }
 
@@ -1581,7 +1760,7 @@ func (k *Keeper) GrantNativeStakingCapability(msg types.MsgGrantNativeStakingCap
 	if err := next.Validate(); err != nil {
 		return types.ContractCapability{}, err
 	}
-	k.genesis = next
+	k.assignGenesis(next)
 	return capability, nil
 }
 
@@ -1614,6 +1793,8 @@ func (k *Keeper) InjectNativeStaking(msg types.MsgInjectNativeStaking) (types.Na
 		Height:              msg.Height,
 	}
 	next := k.genesis
+	// Clone before index-write; see UpgradeContractCode above (FINDING-008).
+	next.State.Contracts = append([]types.Contract(nil), next.State.Contracts...)
 	next.State.Contracts[idx] = contract
 	next.State.NativeStakingInjects = append(next.State.NativeStakingInjects, record)
 	next = types.RefreshStateRoot(next)
@@ -1625,7 +1806,7 @@ func (k *Keeper) InjectNativeStaking(msg types.MsgInjectNativeStaking) (types.Na
 			return types.NativeStakingInjectionRecord{}, err
 		}
 	}
-	k.genesis = next
+	k.assignGenesis(next)
 	return record, nil
 }
 
@@ -1952,7 +2133,7 @@ func (k *Keeper) ReceiveInternalMessage(msg types.MsgReceiveInternalMessage) (ty
 			return types.InternalMessage{}, err
 		}
 	}
-	k.genesis = next
+	k.assignGenesis(next)
 	return record, nil
 }
 
@@ -2056,7 +2237,7 @@ func (k *Keeper) dropQueuedInternalMessage(messageID string) bool {
 	if err := next.Validate(); err != nil {
 		return false
 	}
-	k.genesis = next
+	k.assignGenesis(next)
 	return true
 }
 
@@ -2209,7 +2390,7 @@ func (k *Keeper) SetAssetOwner(record types.AssetOwnershipRecord) error {
 	if err := next.Validate(); err != nil {
 		return err
 	}
-	k.genesis = next
+	k.assignGenesis(next)
 	return nil
 }
 
@@ -2264,12 +2445,14 @@ func (k *Keeper) persistContractAt(idx int, contract types.Contract) error {
 		return errors.New(types.ErrContractNotFound + ": contract index out of bounds")
 	}
 	next := k.genesis
+	// Clone before index-write; see UpgradeContractCode above (FINDING-008).
+	next.State.Contracts = append([]types.Contract(nil), next.State.Contracts...)
 	next.State.Contracts[idx] = contract
 	next = types.RefreshStateRoot(next)
 	if err := next.Validate(); err != nil {
 		return err
 	}
-	k.genesis = next
+	k.assignGenesis(next)
 	return nil
 }
 
@@ -2532,7 +2715,7 @@ func (k *Keeper) loadForBlock(ctx context.Context) error {
 	if err := gs.Validate(); err != nil {
 		return err
 	}
-	k.genesis = gs
+	k.assignGenesis(gs)
 	return nil
 }
 

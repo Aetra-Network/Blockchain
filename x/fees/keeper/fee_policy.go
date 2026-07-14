@@ -7,6 +7,7 @@ import (
 	sdkmath "cosmossdk.io/math"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 
+	aetraaddress "github.com/sovereign-l1/l1/app/addressing"
 	appparams "github.com/sovereign-l1/l1/app/params"
 	"github.com/sovereign-l1/l1/observability"
 	"github.com/sovereign-l1/l1/x/fees/types"
@@ -77,11 +78,21 @@ func (k Keeper) AdmitTx(ctx sdk.Context, tx sdk.FeeTx, sender sdk.AccAddress, si
 
 	storageRentNaet := sdkmath.ZeroInt()
 	if srDefault, parseErr := formulaParams.StorageRentSideEffectsInt(); parseErr == nil && srDefault.IsPositive() {
-		for _, msg := range tx.GetMsgs() {
+		// Walk nested messages too (e.g. a MsgStoreCode wrapped inside an
+		// authz.MsgExec), not just the top-level envelope, so this side-effect
+		// fee can't be evaded the same way the message-count cap could
+		// (FINDING-013's root cause applied to this closely related check).
+		hasStateCreatingMsg := false
+		if err := aetraaddress.WalkMessages(tx.GetMsgs(), func(msg sdk.Msg) error {
 			if stateCreatingMsgTypes[sdk.MsgTypeURL(msg)] {
-				storageRentNaet = srDefault
-				break
+				hasStateCreatingMsg = true
 			}
+			return nil
+		}); err != nil {
+			return types.FeeQuote{}, err
+		}
+		if hasStateCreatingMsg {
+			storageRentNaet = srDefault
 		}
 	}
 
@@ -90,7 +101,13 @@ func (k Keeper) AdmitTx(ctx sdk.Context, tx sdk.FeeTx, sender sdk.AccAddress, si
 	if txBytes := ctx.TxBytes(); len(txBytes) > 0 {
 		txSizeBytes = uint64(len(txBytes))
 	}
-	msgCount := uint64(len(tx.GetMsgs()))
+	// Count nested messages too (e.g. inside an authz.MsgExec), not just the
+	// top-level envelope, so the per-message fee component actually charges
+	// for every message that will execute (FINDING-013).
+	msgCount, err := aetraaddress.CountMessages(tx.GetMsgs())
+	if err != nil {
+		return types.FeeQuote{}, err
+	}
 
 	requiredFull, err := types.ComputeFullTransferFee(
 		params,

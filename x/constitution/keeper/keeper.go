@@ -2,13 +2,13 @@ package keeper
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 
 	corestore "cosmossdk.io/core/store"
 
 	configtypes "github.com/sovereign-l1/l1/x/config/types"
 	"github.com/sovereign-l1/l1/x/constitution/types"
+	"github.com/sovereign-l1/l1/x/internal/prefixgenesis"
 	"github.com/sovereign-l1/l1/x/internal/prototype"
 )
 
@@ -23,6 +23,7 @@ type GenesisState struct {
 type Keeper struct {
 	genesis		GenesisState
 	storeService	corestore.KVStoreService
+	runtimeCtx	context.Context
 }
 
 func NewKeeper() Keeper {
@@ -59,18 +60,16 @@ func (k *Keeper) InitGenesis(gs GenesisState) error {
 	return nil
 }
 
-func (k Keeper) InitGenesisState(ctx context.Context, gs GenesisState) error {
+func (k *Keeper) InitGenesisState(ctx context.Context, gs GenesisState) error {
 	if err := gs.Validate(); err != nil {
 		return err
 	}
+	k.genesis = cloneGenesis(gs)
+	k.runtimeCtx = ctx
 	if k.storeService == nil {
-		return errors.New("constitution persistent store is not configured")
+		return nil
 	}
-	bz, err := json.Marshal(cloneGenesis(gs))
-	if err != nil {
-		return err
-	}
-	return k.storeService.OpenKVStore(ctx).Set(genesisKey, bz)
+	return prefixgenesis.Save(ctx, k.storeService, genesisKey, k.genesis)
 }
 
 func (k Keeper) ExportGenesis() GenesisState {
@@ -81,21 +80,50 @@ func (k Keeper) ExportGenesisState(ctx context.Context) (GenesisState, error) {
 	if k.storeService == nil {
 		return k.ExportGenesis(), nil
 	}
-	bz, err := k.storeService.OpenKVStore(ctx).Get(genesisKey)
+	gs, _, err := prefixgenesis.Load(ctx, k.storeService, genesisKey, DefaultGenesis())
 	if err != nil {
-		return GenesisState{}, err
-	}
-	if len(bz) == 0 {
-		return DefaultGenesis(), nil
-	}
-	var gs GenesisState
-	if err := json.Unmarshal(bz, &gs); err != nil {
 		return GenesisState{}, err
 	}
 	if err := gs.Validate(); err != nil {
 		return GenesisState{}, err
 	}
 	return cloneGenesis(gs), nil
+}
+
+func (k *Keeper) saveGenesis(next GenesisState) error {
+	next = cloneGenesis(next)
+	if err := next.Validate(); err != nil {
+		return err
+	}
+	k.genesis = next
+	if k.storeService == nil || k.runtimeCtx == nil {
+		return nil
+	}
+	return prefixgenesis.Save(k.runtimeCtx, k.storeService, genesisKey, next)
+}
+
+// loadForBlock refreshes the in-memory genesis from the committed store using
+// the live block context and points runtimeCtx at that same context. It MUST
+// be called at the start of every consensus entry point (each Msg handler) so
+// a restarted or state-synced node -- where InitChain/InitGenesis is not
+// re-run -- operates on the same committed state as a continuously running
+// node, and so writes persist through the current block rather than a stale
+// InitChain-era context. Mirrors the fix applied to x/validator-election
+// (SEC-HIGH). See security-audit/05-findings/FINDING-006-inmemory-genesis-not-rehydrated-consensus-halt.md.
+func (k *Keeper) loadForBlock(ctx context.Context) error {
+	k.runtimeCtx = ctx
+	if k.storeService == nil {
+		return nil
+	}
+	gs, _, err := prefixgenesis.Load(ctx, k.storeService, genesisKey, DefaultGenesis())
+	if err != nil {
+		return err
+	}
+	if err := gs.Validate(); err != nil {
+		return err
+	}
+	k.genesis = cloneGenesis(gs)
+	return nil
 }
 
 func (k *Keeper) ProposeConstitutionAmendment(msg types.MsgProposeConstitutionAmendment, height uint64) (types.Amendment, error) {
@@ -120,7 +148,9 @@ func (k *Keeper) ProposeConstitutionAmendment(msg types.MsgProposeConstitutionAm
 	if err := next.Validate(); err != nil {
 		return types.Amendment{}, err
 	}
-	k.genesis = next
+	if err := k.saveGenesis(next); err != nil {
+		return types.Amendment{}, err
+	}
 	return amendment, nil
 }
 
@@ -178,7 +208,9 @@ func (k *Keeper) ExecuteConstitutionAmendment(msg types.MsgExecuteConstitutionAm
 	if err := next.Validate(); err != nil {
 		return types.Constitution{}, types.Amendment{}, err
 	}
-	k.genesis = next
+	if err := k.saveGenesis(next); err != nil {
+		return types.Constitution{}, types.Amendment{}, err
+	}
 	return next.State.Constitution, amendment, nil
 }
 
@@ -212,8 +244,7 @@ func (k *Keeper) ActivateEmergencyPause(authority string, currentHeight uint64, 
 	if err := next.Validate(); err != nil {
 		return err
 	}
-	k.genesis = next
-	return nil
+	return k.saveGenesis(next)
 }
 
 func (k *Keeper) ExpireEmergencyPause(currentHeight uint64) bool {
@@ -296,7 +327,9 @@ func (k *Keeper) transitionAmendment(id string, height uint64, mutate func(types
 	if err := next.Validate(); err != nil {
 		return types.Amendment{}, err
 	}
-	k.genesis = next
+	if err := k.saveGenesis(next); err != nil {
+		return types.Amendment{}, err
+	}
 	return updated, nil
 }
 

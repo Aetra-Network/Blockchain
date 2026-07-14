@@ -50,7 +50,11 @@ must still leave the tree passing the same commands locally or in CI.
 `govulncheck` findings that are already documented and owner-triaged are listed
 in `.github/security/govulncheck-triage.txt`. Any new `GO-*` advisory ID emitted
 by the workflow is untriaged by default and fails the PR until this policy's
-finding record is completed or the dependency is fixed.
+finding record is completed or the dependency is fixed. Each entry in that file
+must also carry a `status=` and an `expires=` review date (the machine-enforced
+form of the "review date" / "target date" requirement above); an expired entry
+fails the gate until a human re-reviews it and deliberately bumps the date
+(FINDING-018a).
 
 ## Finding Record Format
 

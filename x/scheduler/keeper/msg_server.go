@@ -26,6 +26,9 @@ func (m msgServer) UpdateParams(ctx context.Context, msg *v1.MsgUpdateParams) (*
 	if msg == nil {
 		return nil, v1.ErrInvalidParams.Wrap("empty request")
 	}
+	if err := m.Keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
 	}
@@ -44,6 +47,9 @@ func (m msgServer) UpdateParams(ctx context.Context, msg *v1.MsgUpdateParams) (*
 func (m msgServer) RegisterScheduledJob(ctx context.Context, msg *v1.MsgRegisterScheduledJob) (*v1.MsgRegisterScheduledJobResponse, error) {
 	if msg == nil {
 		return nil, v1.ErrInvalidParams.Wrap("empty request")
+	}
+	if err := m.Keeper.loadForBlock(ctx); err != nil {
+		return nil, err
 	}
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
@@ -67,6 +73,9 @@ func (m msgServer) RegisterScheduledJob(ctx context.Context, msg *v1.MsgRegister
 func (m msgServer) PauseScheduledJob(ctx context.Context, msg *v1.MsgPauseScheduledJob) (*v1.MsgPauseScheduledJobResponse, error) {
 	if msg == nil {
 		return nil, v1.ErrInvalidParams.Wrap("empty request")
+	}
+	if err := m.Keeper.loadForBlock(ctx); err != nil {
+		return nil, err
 	}
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
@@ -92,6 +101,9 @@ func (m msgServer) ResumeScheduledJob(ctx context.Context, msg *v1.MsgResumeSche
 	if msg == nil {
 		return nil, v1.ErrInvalidParams.Wrap("empty request")
 	}
+	if err := m.Keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
 	}
@@ -116,6 +128,9 @@ func (m msgServer) CancelScheduledJob(ctx context.Context, msg *v1.MsgCancelSche
 	if msg == nil {
 		return nil, v1.ErrInvalidParams.Wrap("empty request")
 	}
+	if err := m.Keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
 	}
@@ -139,6 +154,9 @@ func (m msgServer) CancelScheduledJob(ctx context.Context, msg *v1.MsgCancelSche
 func (m msgServer) ExecuteDueJobs(ctx context.Context, msg *v1.MsgExecuteDueJobs) (*v1.MsgExecuteDueJobsResponse, error) {
 	if msg == nil {
 		return nil, v1.ErrInvalidParams.Wrap("empty request")
+	}
+	if err := m.Keeper.loadForBlock(ctx); err != nil {
+		return nil, err
 	}
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err

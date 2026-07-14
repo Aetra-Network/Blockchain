@@ -2,6 +2,8 @@ package app
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -23,6 +25,24 @@ import (
 	nativeaccounttypes "github.com/sovereign-l1/l1/x/native-account/types"
 )
 
+// fakeCodeHash stands in for a real compiled module hash in tests that only
+// deploy/execute against the resulting contract's non-executable stub path
+// (raw payload written straight to Contract.Data — see executeContract's
+// `else` branch in x/contracts/keeper/keeper.go). Storing code this way
+// (CodeHash/CodeBytes only, no Bytecode) is a deliberately-supported,
+// already-tested lightweight registration flow — see storeContractCode in
+// x/contracts/keeper/keeper_test.go — and sidesteps FINDING-004's StoreCode
+// decode+verify gate entirely (it only runs `if len(msg.Bytecode) > 0`), so
+// these app-level tests don't need a real AVM module: they were never
+// testing AVM execution semantics, only deploy/execute/query wiring at the
+// app level, and a REAL module would in fact break them (avm.Runner.Run
+// hard-errors on any entrypoint the module doesn't export, and a minimal
+// module here would only export EntryDeploy, not EntryReceiveExternal).
+func fakeCodeHash(seed string) string {
+	h := sha256.Sum256([]byte(seed))
+	return hex.EncodeToString(h[:])
+}
+
 func TestAVMRuntimeAppLevelDeployExecuteQueueStorageReceiptsAndExportImport(t *testing.T) {
 	app := Setup(t, false)
 	ctx := app.NewContext(false).WithBlockHeight(100)
@@ -39,13 +59,13 @@ func TestAVMRuntimeAppLevelDeployExecuteQueueStorageReceiptsAndExportImport(t *t
 	require.NotNil(t, app.GRPCQueryRouter().Route("/l1.contracts.v1.Query/ContractReceipts"))
 
 	storeRoute := app.MsgServiceRouter().Handler(&contractstypes.MsgStoreCode{})
-	bytecode := []byte("AVM1 app-runtime deterministic")
+	codeID := fakeCodeHash("app-runtime deterministic")
 	_, err := storeRoute(ctx, &contractstypes.MsgStoreCode{
 		Authority: account.AddressUser,
-		Bytecode:  bytecode,
+		CodeHash:  codeID,
+		CodeBytes: 128,
 	})
 	require.NoError(t, err)
-	codeID := contractstypes.CanonicalCodeHash(bytecode)
 	code, found, err := app.ContractsKeeper.Code(contractstypes.QueryCodeRequest{CodeID: codeID})
 	require.NoError(t, err)
 	require.True(t, found)
@@ -152,13 +172,13 @@ func TestAVMRuntimeAppLevelExecuteInternalRouteAndExportImport(t *testing.T) {
 	account := nativeAccountActivateViaRoute(t, app, ctx, nativeAccountModuleTestPubKey())
 
 	storeRoute := app.MsgServiceRouter().Handler(&contractstypes.MsgStoreCode{})
-	bytecode := []byte("AVM1 app-runtime internal deterministic")
+	codeID := fakeCodeHash("app-runtime internal deterministic")
 	_, err := storeRoute(ctx, &contractstypes.MsgStoreCode{
 		Authority: account.AddressUser,
-		Bytecode:  bytecode,
+		CodeHash:  codeID,
+		CodeBytes: 128,
 	})
 	require.NoError(t, err)
-	codeID := contractstypes.CanonicalCodeHash(bytecode)
 
 	deployRoute := app.MsgServiceRouter().Handler(&contractstypes.MsgDeployContract{})
 	_, err = deployRoute(ctx.WithBlockHeight(601), &contractstypes.MsgDeployContract{
@@ -254,13 +274,13 @@ func TestAVMRuntimeAppLevelExportImportPreservesActiveContractsAndBehavior(t *te
 	account := nativeAccountActivateViaRoute(t, source, ctx, nativeAccountModuleTestPubKey())
 
 	storeRoute := source.MsgServiceRouter().Handler(&contractstypes.MsgStoreCode{})
-	bytecode := []byte("AVM1 export-import active contract")
+	codeID := fakeCodeHash("export-import active contract")
 	_, err := storeRoute(ctx, &contractstypes.MsgStoreCode{
 		Authority: account.AddressUser,
-		Bytecode:  bytecode,
+		CodeHash:  codeID,
+		CodeBytes: 128,
 	})
 	require.NoError(t, err)
-	codeID := contractstypes.CanonicalCodeHash(bytecode)
 
 	deployRoute := source.MsgServiceRouter().Handler(&contractstypes.MsgDeployContract{})
 	_, err = deployRoute(ctx.WithBlockHeight(801), &contractstypes.MsgDeployContract{
@@ -422,13 +442,13 @@ func TestAVMRuntimeAppLevelLifecycleCoversMigrateAndPolicyGuards(t *testing.T) {
 	account := nativeAccountActivateViaRoute(t, app, ctx, nativeAccountModuleTestPubKey())
 
 	storeRoute := app.MsgServiceRouter().Handler(&contractstypes.MsgStoreCode{})
-	bytecodeV1 := []byte("AVM1 lifecycle v1")
+	codeIDV1 := fakeCodeHash("lifecycle v1")
 	_, err := storeRoute(ctx, &contractstypes.MsgStoreCode{
 		Authority: account.AddressUser,
-		Bytecode:  bytecodeV1,
+		CodeHash:  codeIDV1,
+		CodeBytes: 128,
 	})
 	require.NoError(t, err)
-	codeIDV1 := contractstypes.CanonicalCodeHash(bytecodeV1)
 
 	_, err = app.ContractsKeeper.StoreCodeState(ctx, contractstypes.MsgStoreCode{
 		Authority: addressing.ZeroUserFriendly,
@@ -436,13 +456,13 @@ func TestAVMRuntimeAppLevelLifecycleCoversMigrateAndPolicyGuards(t *testing.T) {
 	})
 	require.ErrorContains(t, err, "zero address")
 
-	bytecodeV2 := []byte("AVM1 lifecycle v2")
+	codeIDV2 := fakeCodeHash("lifecycle v2")
 	_, err = app.ContractsKeeper.StoreCodeState(ctx, contractstypes.MsgStoreCode{
 		Authority: account.AddressUser,
-		Bytecode:  bytecodeV2,
+		CodeHash:  codeIDV2,
+		CodeBytes: 128,
 	})
 	require.NoError(t, err)
-	codeIDV2 := contractstypes.CanonicalCodeHash(bytecodeV2)
 
 	deployed, err := app.ContractsKeeper.DeployContractState(ctx.WithBlockHeight(701), contractstypes.MsgDeployContract{
 		Creator:        account.AddressUser,
@@ -582,8 +602,16 @@ func TestAVMRuntimeRejectsFrozenAccountsReservedZeroAndRecoversFrozenContracts(t
 
 func TestAVMRuntimeDeterminismGateRejectsNondeterminismAndKeepsStableRoots(t *testing.T) {
 	params := contractstypes.DefaultParams()
+	// types.ValidateAVMBytecode only runs the cheap structural checks
+	// (header/size) -- it cannot decode/verify a module without importing
+	// x/aetravm/avm, which itself imports x/contracts/types and would cycle
+	// (see bytecode.go's doc comment). Real nondeterminism/malformed-module
+	// rejection now happens once, at StoreCode time, via
+	// x/contracts/keeper.storeCodeUnchecked (FINDING-004) calling the real
+	// avm.DecodeModule + Verifier.Verify -- exercised below through the
+	// actual StoreCode message route, not this narrower helper.
 	require.NoError(t, contractstypes.ValidateAVMBytecode(params, []byte("AVM1 set key value")))
-	require.ErrorContains(t, contractstypes.ValidateAVMBytecode(params, []byte("AVM1 random")), contractstypes.ErrInvalidBytecode)
+	require.ErrorContains(t, contractstypes.ValidateAVMBytecode(params, []byte("BAD1 wrong header")), contractstypes.ErrInvalidBytecode)
 
 	app := Setup(t, false)
 	ctx := app.NewContext(false).WithBlockHeight(500)
@@ -692,7 +720,8 @@ func appAVMRuntimeStoreCode(t testing.TB, app *L1App, ctx sdk.Context, authority
 	t.Helper()
 	resp, err := app.ContractsKeeper.StoreCodeState(ctx, contractstypes.MsgStoreCode{
 		Authority: authority,
-		Bytecode:  []byte("AVM1 app-runtime helper"),
+		CodeHash:  fakeCodeHash("app-runtime helper"),
+		CodeBytes: 128,
 	})
 	require.NoError(t, err)
 	return resp.CodeID

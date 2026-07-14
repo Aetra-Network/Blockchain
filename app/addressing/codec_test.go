@@ -3,11 +3,13 @@ package addressing_test
 import (
 	"encoding/base64"
 	"encoding/hex"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/cosmos/cosmos-sdk/crypto/keys/secp256k1"
 	sdk "github.com/cosmos/cosmos-sdk/types"
+	"github.com/cosmos/cosmos-sdk/types/bech32"
 	"github.com/stretchr/testify/require"
 
 	"github.com/sovereign-l1/l1/app/addressing"
@@ -70,6 +72,57 @@ func TestRawLongAddressRoundTrip(t *testing.T) {
 	parsed, err := addressing.Parse(text)
 	require.NoError(t, err)
 	require.Equal(t, raw, parsed)
+}
+
+// TestParseBech32BranchCanonicalizesZeroPaddedTwin is the regression test for
+// FINDING-012: a 20-byte account and its non-canonical, directly-bech32-
+// encoded zero-padded 32-byte "twin" must decode to the SAME bytes (and thus
+// the same sdk.AccAddress bech32 string, which is the key the bank module
+// and every other keeper actually use), instead of silently diverging as two
+// different-length byte slices that only addressBytesKey treats as equal.
+func TestParseBech32BranchCanonicalizesZeroPaddedTwin(t *testing.T) {
+	short := bytes20(0x2f)
+
+	shortText := addressing.Format(short)
+
+	padded := make([]byte, 32)
+	copy(padded[12:], short)
+	// Bypass addressing.Format's canonicalization entirely and bech32-encode
+	// the non-canonical zero-padded 32-byte payload directly, exactly like an
+	// external tool or attacker constructing a non-canonical string would.
+	paddedText, err := bech32.ConvertAndEncode(addressing.Bech32HRP, padded)
+	require.NoError(t, err)
+	require.NotEqual(t, shortText, paddedText, "the two encodings must be textually different inputs")
+
+	x, err := addressing.Parse(shortText)
+	require.NoError(t, err)
+	y, err := addressing.Parse(paddedText)
+	require.NoError(t, err)
+
+	require.Equal(t, x, y, "20-byte account and its zero-padded 32-byte twin must canonicalize to the same bytes")
+	require.Len(t, y, 20, "the zero-padded twin must collapse to its 20-byte canonical form")
+	require.Equal(t, sdk.AccAddress(x).String(), sdk.AccAddress(y).String(),
+		"canonicalized bytes must also match at the bank/keeper bech32-string layer")
+}
+
+// TestParseBech32BranchRejectsNonCanonicalLengths locks in that Parse's
+// bech32 branch only ever accepts the two legal address widths (20 or 32
+// bytes) -- payloads of any other length that no other address path on this
+// chain accepts must now be rejected, not silently passed through.
+func TestParseBech32BranchRejectsNonCanonicalLengths(t *testing.T) {
+	for _, n := range []int{1, 10, 19, 21, 25, 31, 33, 40, 64, 100} {
+		t.Run(fmt.Sprintf("%d_bytes", n), func(t *testing.T) {
+			bz := make([]byte, n)
+			for i := range bz {
+				bz[i] = byte(i + 1)
+			}
+			text, err := bech32.ConvertAndEncode(addressing.Bech32HRP, bz)
+			require.NoError(t, err)
+
+			_, err = addressing.Parse(text)
+			require.Errorf(t, err, "a %d-byte bech32 payload must be rejected", n)
+		})
+	}
 }
 
 // TestSystemRawAddressRoundTrip: reserved system addresses no longer use a

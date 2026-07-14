@@ -178,6 +178,11 @@ func (p FeeFormulaParams) StorageRentSideEffectsInt() (sdkmath.Int, error) {
 //	  + low_reputation_premium_naet
 //	  + storage_rent_side_effects_naet
 //	  - bounded_reputation_discount_naet
+//
+// The result is always clamped to [min_tx_fee_naet, max_fee_amount]: the
+// byte/gas/message components are otherwise unbounded, but a required fee
+// above the governance hard cap would make an otherwise-legal tx permanently
+// unpayable (FINDING-011).
 func ComputeFullTransferFee(
 	baseParams Params,
 	formulaParams FeeFormulaParams,
@@ -204,6 +209,10 @@ func ComputeFullTransferFee(
 		return sdkmath.Int{}, err
 	}
 	baseFee, err := baseParams.BaseFeeInt()
+	if err != nil {
+		return sdkmath.Int{}, err
+	}
+	maxFee, err := baseParams.MaxFeeInt()
 	if err != nil {
 		return sdkmath.Int{}, err
 	}
@@ -262,6 +271,20 @@ func ComputeFullTransferFee(
 
 	if total.LT(minFee) {
 		total = minFee
+	}
+	// The byte/gas/message components above are unbounded in principle (e.g. a
+	// large tx linearly inflates byteComponent), but the protocol never admits
+	// a fee above the governance hard cap (Params.MaxFeeAmount) -- AdmitTx
+	// separately rejects any paid fee > maxFee. Without this clamp, a
+	// large-but-envelope-legal tx could have a full-formula requirement that
+	// exceeds maxFee, making it permanently unpayable: paying the maximum
+	// legal fee would still be "insufficient" against the uncapped
+	// requirement. Clamp here -- the single point where the full-formula
+	// requirement is computed -- so every caller (not only AdmitTx) gets a
+	// requirement that is always <= maxFee and therefore payable
+	// (FINDING-011).
+	if total.GT(maxFee) {
+		total = maxFee
 	}
 
 	return total, nil

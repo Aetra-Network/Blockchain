@@ -30,7 +30,10 @@ jobs:
           cache: true
 
       - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+        # Pinned (not @latest) so CI is reproducible and an upstream compromise
+        # or malicious release can't execute in this runner unreviewed (see
+        # FINDING-018b). Bump deliberately on periodic review.
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
 
       - name: Run govulncheck
         shell: bash
@@ -57,27 +60,63 @@ jobs:
           fi
 
           mapfile -t findings < <(grep -E '^Vulnerability #[0-9]+: GO-[0-9]+-[0-9]+' govulncheck.txt | awk '{print $3}' | sort -u)
-          mapfile -t triaged < <(grep -E '^GO-[0-9]+-[0-9]+' "${triage_source}" | awk '{print $1}' | sort -u)
 
           if [[ "${#findings[@]}" -eq 0 ]]; then
             printf 'govulncheck failed without parseable GO advisory IDs.\n'
             exit "${govuln_status}"
           fi
 
+          # A finding is only suppressed when its triage entry (a) exists, (b)
+          # declares a recognized status, and (c) is not past its expires=
+          # re-review date. Matching by bare ID alone would let one old triage
+          # decision suppress a finding forever regardless of whether it is
+          # still accurate (see FINDING-018a); requiring status+expiry makes
+          # suppression a deliberate, time-boxed decision instead of a
+          # permanent one.
+          today="$(date -u +%Y-%m-%d)"
           untriaged=()
+          expired=()
           for finding in "${findings[@]}"; do
-            if ! printf '%s\n' "${triaged[@]}" | grep -qx "${finding}"; then
-              untriaged+=("${finding}")
+            entry="$(grep -E "^${finding}[[:space:]]" "${triage_source}" | head -n1 || true)"
+
+            if [[ -z "${entry}" ]]; then
+              untriaged+=("${finding} (no triage entry)")
+              continue
+            fi
+
+            status="$(printf '%s\n' "${entry}" | grep -oE 'status=[A-Za-z-]+' | head -n1 | cut -d= -f2 || true)"
+            case "${status}" in
+              fixed|accepted|triaged|false-positive) ;;
+              *)
+                untriaged+=("${finding} (triage entry missing or has unrecognized status=)")
+                continue
+                ;;
+            esac
+
+            expires="$(printf '%s\n' "${entry}" | grep -oE 'expires=[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -n1 | cut -d= -f2 || true)"
+            if [[ -z "${expires}" ]]; then
+              untriaged+=("${finding} (triage entry missing expires=YYYY-MM-DD)")
+              continue
+            fi
+
+            if [[ "${expires}" < "${today}" ]]; then
+              expired+=("${finding} (status=${status}, expired ${expires})")
             fi
           done
 
-          if [[ "${#untriaged[@]}" -gt 0 ]]; then
-            printf 'Untriaged govulncheck findings:\n'
-            printf '  %s\n' "${untriaged[@]}"
+          if [[ "${#untriaged[@]}" -gt 0 || "${#expired[@]}" -gt 0 ]]; then
+            if [[ "${#untriaged[@]}" -gt 0 ]]; then
+              printf 'Untriaged govulncheck findings:\n'
+              printf '  %s\n' "${untriaged[@]}"
+            fi
+            if [[ "${#expired[@]}" -gt 0 ]]; then
+              printf 'Expired govulncheck triage entries -- re-review reachability/status and bump expires= in %s:\n' "${triage_file}"
+              printf '  %s\n' "${expired[@]}"
+            fi
             exit 1
           fi
 
-          printf 'govulncheck reported only triaged findings:\n'
+          printf 'govulncheck reported only triaged, non-expired findings:\n'
           printf '  %s\n' "${findings[@]}"
 
   determinism-gate:
@@ -123,7 +162,10 @@ jobs:
           cache: true
 
       - name: Install gosec
-        run: go install github.com/securego/gosec/v2/cmd/gosec@latest
+        # Pinned (not @latest) so CI is reproducible and an upstream compromise
+        # or malicious release can't execute in this runner unreviewed (see
+        # FINDING-018b). Bump deliberately on periodic review.
+        run: go install github.com/securego/gosec/v2/cmd/gosec@v2.28.0
 
       - name: Run gosec
         run: |

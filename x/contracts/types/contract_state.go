@@ -915,6 +915,23 @@ func cloneReceipts(values []ContractReceipt) []ContractReceipt {
 	return append([]ContractReceipt(nil), values...)
 }
 
+// CloneCodeRecords, CloneContracts and CloneInternalMessages return
+// independent copies of the given records, including their nested byte
+// slices (Bytecode / InitMsg / Data / Body) and, for Contract, its nested
+// StateInit. See FINDING-010: query methods that only need a bounded page of
+// results should slice to that page FIRST and clone the (small) page
+// afterward, instead of deep-cloning the entire backing slice before
+// truncating. Exported so x/contracts/keeper can clone just the page it is
+// about to hand back to a caller without duplicating this per-field cloning
+// logic.
+func CloneCodeRecords(values []CodeRecord) []CodeRecord { return cloneCodes(values) }
+
+func CloneContracts(values []Contract) []Contract { return cloneContracts(values) }
+
+func CloneInternalMessages(values []InternalMessage) []InternalMessage {
+	return cloneInternalMessages(values)
+}
+
 func assetKey(a AssetOwnershipRecord) string {
 	return a.AssetType + "/" + a.ContractAddressUser + "/" + a.AssetID
 }

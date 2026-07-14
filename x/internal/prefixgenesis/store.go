@@ -1,6 +1,7 @@
 package prefixgenesis
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -11,7 +12,10 @@ import (
 	corestore "cosmossdk.io/core/store"
 )
 
-var layoutKey = []byte("prefix_genesis/layout")
+var (
+	layoutKey     = []byte("prefix_genesis/layout")
+	layoutVersion = []byte("v2")
+)
 
 // Load reads a deterministic per-field genesis layout. If an old monolithic
 // genesis blob exists under legacyKey, it is migrated into the prefix layout.
@@ -62,14 +66,27 @@ func Load[T any](ctx context.Context, storeService corestore.KVStoreService, leg
 	return out, true, nil
 }
 
-// Save writes each exported genesis struct field under a deterministic prefix key.
+// Save writes each exported genesis struct field under a deterministic prefix
+// key. Every top-level field is marshaled and compared against what is
+// already committed under that field's key; the store write is skipped when
+// the bytes are identical. This bounds write amplification (FINDING-009) for
+// the common case where a single mutation only touches a subset of a large
+// genesis struct's fields, without changing what Load returns -- an
+// unchanged field already reads back the same bytes whether or not this call
+// physically rewrites them. The extra per-field Get is an accepted
+// read-before-write tradeoff. The full per-entity-KV remediation the finding
+// also recommends is a separate, out-of-scope architectural change.
 func Save[T any](ctx context.Context, storeService corestore.KVStoreService, legacyKey []byte, value T) error {
 	if storeService == nil {
 		return nil
 	}
 	store := storeService.OpenKVStore(ctx)
-	if err := store.Set(layoutKey, []byte("v2")); err != nil {
+	if marker, err := store.Get(layoutKey); err != nil {
 		return err
+	} else if !bytes.Equal(marker, layoutVersion) {
+		if err := store.Set(layoutKey, layoutVersion); err != nil {
+			return err
+		}
 	}
 	source := reflect.ValueOf(value)
 	if source.Kind() == reflect.Pointer {
@@ -87,7 +104,15 @@ func Save[T any](ctx context.Context, storeService corestore.KVStoreService, leg
 		if err != nil {
 			return fmt.Errorf("write prefix genesis field %s: %w", field.Name, err)
 		}
-		if err := store.Set(fieldKey(field.Name), bz); err != nil {
+		key := fieldKey(field.Name)
+		existing, err := store.Get(key)
+		if err != nil {
+			return err
+		}
+		if bytes.Equal(existing, bz) {
+			continue
+		}
+		if err := store.Set(key, bz); err != nil {
 			return err
 		}
 	}

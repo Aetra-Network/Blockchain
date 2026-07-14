@@ -23,6 +23,7 @@ type GenesisState struct {
 type Keeper struct {
 	genesis		GenesisState
 	storeService	corestore.KVStoreService
+	runtimeCtx	context.Context
 }
 
 func NewKeeper() Keeper {
@@ -62,6 +63,7 @@ func (k *Keeper) InitGenesisState(ctx context.Context, gs GenesisState) error {
 		return err
 	}
 	k.genesis = cloneGenesis(gs)
+	k.runtimeCtx = ctx
 	if k.storeService == nil {
 		return nil
 	}
@@ -70,6 +72,53 @@ func (k *Keeper) InitGenesisState(ctx context.Context, gs GenesisState) error {
 		return err
 	}
 	return k.storeService.OpenKVStore(ctx).Set(genesisKey, bz)
+}
+
+func (k *Keeper) saveGenesis(next GenesisState) error {
+	next = cloneGenesis(next)
+	if err := next.Validate(); err != nil {
+		return err
+	}
+	k.genesis = next
+	if k.storeService == nil || k.runtimeCtx == nil {
+		return nil
+	}
+	bz, err := json.Marshal(next)
+	if err != nil {
+		return err
+	}
+	return k.storeService.OpenKVStore(k.runtimeCtx).Set(genesisKey, bz)
+}
+
+// loadForBlock refreshes the in-memory genesis from the committed store using
+// the live block context and points runtimeCtx at that same context. It MUST
+// be called at the start of every consensus entry point (each Msg handler) so
+// a restarted or state-synced node -- where InitChain/InitGenesis is not
+// re-run -- operates on the same committed state as a continuously running
+// node, and so writes persist through the current block rather than a stale
+// InitChain-era context. Mirrors the fix applied to x/validator-election
+// (SEC-HIGH). See security-audit/05-findings/FINDING-006-inmemory-genesis-not-rehydrated-consensus-halt.md.
+func (k *Keeper) loadForBlock(ctx context.Context) error {
+	k.runtimeCtx = ctx
+	if k.storeService == nil {
+		return nil
+	}
+	bz, err := k.storeService.OpenKVStore(ctx).Get(genesisKey)
+	if err != nil {
+		return err
+	}
+	if len(bz) == 0 {
+		return nil
+	}
+	var gs GenesisState
+	if err := json.Unmarshal(bz, &gs); err != nil {
+		return err
+	}
+	if err := gs.Validate(); err != nil {
+		return err
+	}
+	k.genesis = cloneGenesis(gs)
+	return nil
 }
 
 func (k Keeper) ExportGenesis() GenesisState {
@@ -124,7 +173,9 @@ func (k *Keeper) RegisterReporter(msg types.MsgRegisterReporter) (types.Reporter
 	if err := next.Validate(); err != nil {
 		return types.ReporterRecord{}, err
 	}
-	k.genesis = next
+	if err := k.saveGenesis(next); err != nil {
+		return types.ReporterRecord{}, err
+	}
 	return reporter, nil
 }
 
@@ -155,7 +206,9 @@ func (k *Keeper) BondReporter(msg types.MsgBondReporter) (types.ReporterRecord, 
 	if err := next.Validate(); err != nil {
 		return types.ReporterRecord{}, err
 	}
-	k.genesis = next
+	if err := k.saveGenesis(next); err != nil {
+		return types.ReporterRecord{}, err
+	}
 	return reporter, nil
 }
 
@@ -192,7 +245,9 @@ func (k *Keeper) UnbondReporter(msg types.MsgUnbondReporter) (types.ReporterReco
 	if err := next.Validate(); err != nil {
 		return types.ReporterRecord{}, err
 	}
-	k.genesis = next
+	if err := k.saveGenesis(next); err != nil {
+		return types.ReporterRecord{}, err
+	}
 	return reporter, nil
 }
 
@@ -275,7 +330,9 @@ func (k *Keeper) SubmitReport(msg types.MsgSubmitReport) (types.ReportRecord, er
 	if err := next.Validate(); err != nil {
 		return types.ReportRecord{}, err
 	}
-	k.genesis = next
+	if err := k.saveGenesis(next); err != nil {
+		return types.ReportRecord{}, err
+	}
 	return report, nil
 }
 
@@ -320,7 +377,9 @@ func (k *Keeper) ClaimReporterReward(msg types.MsgClaimReporterReward) (types.Re
 	if err := next.Validate(); err != nil {
 		return types.ReporterReward{}, err
 	}
-	k.genesis = next
+	if err := k.saveGenesis(next); err != nil {
+		return types.ReporterReward{}, err
+	}
 	return reward, nil
 }
 

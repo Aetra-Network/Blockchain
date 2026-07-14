@@ -3,6 +3,21 @@
 # Full owner/severity/mitigation/milestone records live in docs/security/security-gates-triage.md.
 # New GO-* IDs from the Security Gate workflow are untriaged and must fail PRs until added with full triage.
 #
+# Required fields per entry (parsed by security.yml -- see FINDING-018a):
+#   status=fixed|accepted|triaged|false-positive
+#     Unrecognized or missing status is treated as untriaged (gate fails).
+#   expires=YYYY-MM-DD
+#     Mandatory re-review date. A finding whose entry has no expires= field, or
+#     whose expires= date has passed, no longer silently suppresses the gate: it
+#     fails as "untriaged" (missing field) or "expired" (past date) until a human
+#     re-reviews the finding's current reachability/status and deliberately bumps
+#     the date. This closes the gap where one old triage decision could suppress
+#     a finding forever regardless of whether it is still accurate.
+# Suggested review cadence: ~90 days for status=triaged (genuinely unfixed,
+# actively tracked) entries; ~180 days for status=fixed/accepted (more settled,
+# but still reconfirmed periodically in case the underlying fix/acceptance
+# rationale bitrots -- e.g. a dependency or toolchain downgrade reintroduces it).
+#
 # Re-triaged 2026-07-09 against a live `govulncheck ./...` run (default reachability mode,
 # the same mode this repo's CI parses). Only advisories that actually appear as a reachable
 # "Vulnerability #" finding need an entry here for CI to pass; govulncheck's default mode
@@ -11,27 +26,30 @@
 # never require an allowlist entry). The 2026-07-09 run found only 3 reachable findings;
 # every other ID below is kept only as a defensive/historical record in case an older or
 # future govulncheck run resurfaces it (e.g. after a temporary dependency downgrade).
-GO-2023-1821 owner=security severity=high impact=dependency milestone=public-testnet-gate mitigation=track-upstream-upgrade status=triaged
-GO-2023-1881 owner=security severity=high impact=dependency milestone=public-testnet-gate mitigation=track-upstream-upgrade status=triaged
-GO-2024-2584 owner=security severity=high impact=consensus-adjacent-dependency milestone=public-testnet-gate mitigation=false-positive-fix-already-present-in-pinned-v0.54.3-stale-osv-range status=fixed
-GO-2025-3442 owner=security severity=high impact=dependency milestone=public-testnet-gate mitigation=track-upstream-upgrade status=triaged
-GO-2026-4479 owner=security severity=high impact=networking-dependency milestone=public-testnet-gate mitigation=pion-dtls-nonce-reuse-unreachable-without-optional-libp2p-webrtc-transport status=accepted
-GO-2026-4970 owner=security severity=high impact=dependency milestone=public-testnet-gate mitigation=fixed-by-go-toolchain-1.26.5 status=fixed
-GO-2026-5005 owner=security severity=high impact=dependency milestone=public-testnet-gate mitigation=track-upstream-upgrade status=triaged
-GO-2026-5006 owner=security severity=high impact=dependency milestone=public-testnet-gate mitigation=track-upstream-upgrade status=triaged
-GO-2026-5013 owner=security severity=high impact=dependency milestone=public-testnet-gate mitigation=track-upstream-upgrade status=triaged
-GO-2026-5014 owner=security severity=high impact=dependency milestone=public-testnet-gate mitigation=track-upstream-upgrade status=triaged
-GO-2026-5015 owner=security severity=high impact=dependency milestone=public-testnet-gate mitigation=track-upstream-upgrade status=triaged
-GO-2026-5016 owner=security severity=high impact=dependency milestone=public-testnet-gate mitigation=track-upstream-upgrade status=triaged
-GO-2026-5017 owner=security severity=high impact=dependency milestone=public-testnet-gate mitigation=track-upstream-upgrade status=triaged
-GO-2026-5018 owner=security severity=high impact=dependency milestone=public-testnet-gate mitigation=track-upstream-upgrade status=triaged
-GO-2026-5019 owner=security severity=high impact=dependency milestone=public-testnet-gate mitigation=track-upstream-upgrade status=triaged
-GO-2026-5020 owner=security severity=high impact=dependency milestone=public-testnet-gate mitigation=track-upstream-upgrade status=triaged
-GO-2026-5021 owner=security severity=high impact=dependency milestone=public-testnet-gate mitigation=track-upstream-upgrade status=triaged
-GO-2026-5023 owner=security severity=high impact=dependency milestone=public-testnet-gate mitigation=track-upstream-upgrade status=triaged
-GO-2026-5024 owner=security severity=high impact=dependency milestone=public-testnet-gate mitigation=track-upstream-upgrade status=triaged
-GO-2026-5026 owner=security severity=high impact=dependency milestone=public-testnet-gate mitigation=track-upstream-upgrade status=triaged
-GO-2026-5033 owner=security severity=high impact=dependency milestone=public-testnet-gate mitigation=track-upstream-upgrade status=triaged
-GO-2026-5676 owner=security severity=high impact=dependency milestone=public-testnet-gate mitigation=fixed-by-quic-go-0.59.1 status=fixed
-GO-2026-5856 owner=security severity=high impact=dependency milestone=public-testnet-gate mitigation=fixed-by-go-toolchain-1.26.5 status=fixed
-GO-2026-5932 owner=security severity=high impact=dependency milestone=public-testnet-gate mitigation=x-crypto-openpgp-unmaintained-no-fix-avoid-ascii-armor-keyring-export status=accepted
+# expires= dates below were (re)set 2026-07-14 when the expiry mechanism was introduced;
+# bumping an expires= date on re-review does not itself require re-litigating status
+# unless the underlying reachability/fix facts have actually changed.
+GO-2023-1821 owner=security severity=high impact=dependency milestone=public-testnet-gate mitigation=track-upstream-upgrade status=triaged expires=2026-10-12
+GO-2023-1881 owner=security severity=high impact=dependency milestone=public-testnet-gate mitigation=track-upstream-upgrade status=triaged expires=2026-10-12
+GO-2024-2584 owner=security severity=high impact=consensus-adjacent-dependency milestone=public-testnet-gate mitigation=false-positive-fix-already-present-in-pinned-v0.54.3-stale-osv-range status=fixed expires=2027-01-10
+GO-2025-3442 owner=security severity=high impact=dependency milestone=public-testnet-gate mitigation=track-upstream-upgrade status=triaged expires=2026-10-12
+GO-2026-4479 owner=security severity=high impact=networking-dependency milestone=public-testnet-gate mitigation=pion-dtls-nonce-reuse-unreachable-without-optional-libp2p-webrtc-transport status=accepted expires=2027-01-10
+GO-2026-4970 owner=security severity=high impact=dependency milestone=public-testnet-gate mitigation=fixed-by-go-toolchain-1.26.5 status=fixed expires=2027-01-10
+GO-2026-5005 owner=security severity=high impact=dependency milestone=public-testnet-gate mitigation=track-upstream-upgrade status=triaged expires=2026-10-12
+GO-2026-5006 owner=security severity=high impact=dependency milestone=public-testnet-gate mitigation=track-upstream-upgrade status=triaged expires=2026-10-12
+GO-2026-5013 owner=security severity=high impact=dependency milestone=public-testnet-gate mitigation=track-upstream-upgrade status=triaged expires=2026-10-12
+GO-2026-5014 owner=security severity=high impact=dependency milestone=public-testnet-gate mitigation=track-upstream-upgrade status=triaged expires=2026-10-12
+GO-2026-5015 owner=security severity=high impact=dependency milestone=public-testnet-gate mitigation=track-upstream-upgrade status=triaged expires=2026-10-12
+GO-2026-5016 owner=security severity=high impact=dependency milestone=public-testnet-gate mitigation=track-upstream-upgrade status=triaged expires=2026-10-12
+GO-2026-5017 owner=security severity=high impact=dependency milestone=public-testnet-gate mitigation=track-upstream-upgrade status=triaged expires=2026-10-12
+GO-2026-5018 owner=security severity=high impact=dependency milestone=public-testnet-gate mitigation=track-upstream-upgrade status=triaged expires=2026-10-12
+GO-2026-5019 owner=security severity=high impact=dependency milestone=public-testnet-gate mitigation=track-upstream-upgrade status=triaged expires=2026-10-12
+GO-2026-5020 owner=security severity=high impact=dependency milestone=public-testnet-gate mitigation=track-upstream-upgrade status=triaged expires=2026-10-12
+GO-2026-5021 owner=security severity=high impact=dependency milestone=public-testnet-gate mitigation=track-upstream-upgrade status=triaged expires=2026-10-12
+GO-2026-5023 owner=security severity=high impact=dependency milestone=public-testnet-gate mitigation=track-upstream-upgrade status=triaged expires=2026-10-12
+GO-2026-5024 owner=security severity=high impact=dependency milestone=public-testnet-gate mitigation=track-upstream-upgrade status=triaged expires=2026-10-12
+GO-2026-5026 owner=security severity=high impact=dependency milestone=public-testnet-gate mitigation=track-upstream-upgrade status=triaged expires=2026-10-12
+GO-2026-5033 owner=security severity=high impact=dependency milestone=public-testnet-gate mitigation=track-upstream-upgrade status=triaged expires=2026-10-12
+GO-2026-5676 owner=security severity=high impact=dependency milestone=public-testnet-gate mitigation=fixed-by-quic-go-0.59.1 status=fixed expires=2027-01-10
+GO-2026-5856 owner=security severity=high impact=dependency milestone=public-testnet-gate mitigation=fixed-by-go-toolchain-1.26.5 status=fixed expires=2027-01-10
+GO-2026-5932 owner=security severity=high impact=dependency milestone=public-testnet-gate mitigation=x-crypto-openpgp-unmaintained-no-fix-avoid-ascii-armor-keyring-export status=accepted expires=2027-01-10

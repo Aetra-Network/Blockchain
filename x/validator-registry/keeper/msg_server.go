@@ -25,6 +25,9 @@ func (m msgServer) RegisterValidator(ctx context.Context, msg *v1.MsgRegisterVal
 	if msg == nil {
 		return nil, v1.ErrInvalidParams.Wrap("empty request")
 	}
+	if err := m.Keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
 	}
@@ -52,6 +55,9 @@ func (m msgServer) UpdateValidatorMetadata(ctx context.Context, msg *v1.MsgUpdat
 	if msg == nil {
 		return nil, v1.ErrInvalidParams.Wrap("empty request")
 	}
+	if err := m.Keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
 	}
@@ -78,6 +84,9 @@ func (m msgServer) UpdateValidatorMetadata(ctx context.Context, msg *v1.MsgUpdat
 func (m msgServer) RotateConsensusKey(ctx context.Context, msg *v1.MsgRotateConsensusKey) (*v1.MsgRotateConsensusKeyResponse, error) {
 	if msg == nil {
 		return nil, v1.ErrInvalidParams.Wrap("empty request")
+	}
+	if err := m.Keeper.loadForBlock(ctx); err != nil {
+		return nil, err
 	}
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
@@ -108,6 +117,9 @@ func (m msgServer) UpdateWithdrawalAddress(ctx context.Context, msg *v1.MsgUpdat
 	if msg == nil {
 		return nil, v1.ErrInvalidParams.Wrap("empty request")
 	}
+	if err := m.Keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
 	}
@@ -134,6 +146,9 @@ func (m msgServer) UpdateWithdrawalAddress(ctx context.Context, msg *v1.MsgUpdat
 func (m msgServer) UpdateTreasuryAddress(ctx context.Context, msg *v1.MsgUpdateTreasuryAddress) (*v1.MsgUpdateTreasuryAddressResponse, error) {
 	if msg == nil {
 		return nil, v1.ErrInvalidParams.Wrap("empty request")
+	}
+	if err := m.Keeper.loadForBlock(ctx); err != nil {
+		return nil, err
 	}
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
@@ -162,6 +177,9 @@ func (m msgServer) RetireValidator(ctx context.Context, msg *v1.MsgRetireValidat
 	if msg == nil {
 		return nil, v1.ErrInvalidParams.Wrap("empty request")
 	}
+	if err := m.Keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
 	}
@@ -187,6 +205,9 @@ func (m msgServer) RetireValidator(ctx context.Context, msg *v1.MsgRetireValidat
 func (m msgServer) SetValidatorCapabilities(ctx context.Context, msg *v1.MsgSetValidatorCapabilities) (*v1.MsgSetValidatorCapabilitiesResponse, error) {
 	if msg == nil {
 		return nil, v1.ErrInvalidParams.Wrap("empty request")
+	}
+	if err := m.Keeper.loadForBlock(ctx); err != nil {
+		return nil, err
 	}
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err

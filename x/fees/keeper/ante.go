@@ -53,7 +53,14 @@ func (k Keeper) AnteHandlerDecorator(next sdk.AnteHandler) sdk.AnteHandler {
 }
 
 func validateTxEnvelope(ctx sdk.Context, tx sdk.Tx) error {
-	input := types.TxEnvelopeInput{MsgCount: uint64(len(tx.GetMsgs()))}
+	// Count nested messages too (e.g. inside an authz.MsgExec), not just the
+	// top-level envelope, so the per-tx message-count cap actually bounds the
+	// number of messages that will execute (FINDING-013).
+	msgCount, err := aetraaddress.CountMessages(tx.GetMsgs())
+	if err != nil {
+		return types.ErrInvalidFee.Wrap(err.Error())
+	}
+	input := types.TxEnvelopeInput{MsgCount: msgCount}
 	if txBytes := ctx.TxBytes(); len(txBytes) > 0 {
 		input.TxBytes = uint64(len(txBytes))
 	} else if sizedTx, ok := tx.(interface{ Size() int }); ok && sizedTx.Size() > 0 {
@@ -66,10 +73,11 @@ func validateTxEnvelope(ctx sdk.Context, tx sdk.Tx) error {
 }
 
 func validateNoZeroTxAddresses(tx sdk.Tx) error {
-	for _, msg := range tx.GetMsgs() {
-		if err := validateNoZeroMsgAddresses(msg); err != nil {
-			return err
-		}
+	// Walk nested messages too (e.g. inside an authz.MsgExec), not just the
+	// top-level envelope, so a zero-address / reserved-recipient send cannot
+	// evade this guard by being wrapped (FINDING-014).
+	if err := aetraaddress.WalkMessages(tx.GetMsgs(), validateNoZeroMsgAddresses); err != nil {
+		return err
 	}
 	if feeTx, ok := tx.(sdk.FeeTx); ok {
 		if payer := sdk.AccAddress(feeTx.FeePayer()); len(payer) > 0 {

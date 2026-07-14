@@ -151,6 +151,22 @@ type Params struct {
 	MaxStackDepth   uint32
 	MaxMemoryBytes  uint32
 	GasSchedule     map[Opcode]uint64
+	// GasPerOperandUnit is an additional, operand-size-proportional gas
+	// charge layered on top of an opcode's flat GasSchedule cost, for
+	// opcodes whose real implementation cost scales with the size of the
+	// map/tuple/bytes/string value they clone, normalize, or iterate --
+	// OpDup, OpLoadLocal, OpStoreLocal, OpReturn (all of which call
+	// RuntimeValue.clone()), the OpMap* family (which clones the whole map
+	// via AsMap()), and OpReadStorage's whole-state snapshot form. "Unit" is
+	// runtimeValueSizeUnits(v): the number of map entries, tuple elements,
+	// or bytes/string length. Without this, e.g. OpDup on an N-entry runtime
+	// map is deep-cloned (O(N) real work) at the SAME flat price as
+	// duplicating a single integer, regardless of N -- see FINDING-001
+	// (security-audit/05-findings/FINDING-001-avm-gas-mispricing-dos.md).
+	// It is charged in addition to, not instead of, the opcode's flat
+	// GasSchedule cost, so small/typical values (a handful of struct
+	// fields) incur only a negligible extra charge.
+	GasPerOperandUnit uint64
 }
 
 type Module struct {
@@ -317,6 +333,14 @@ func DefaultParams() Params {
 			OpCastCoins:                   2,
 			OpReadRandom:                  25,
 		},
+		// See the GasPerOperandUnit doc comment: 1 extra gas per map entry /
+		// tuple element / byte cloned or iterated, on top of the flat
+		// opcode cost above. A typical contract value (a handful of struct
+		// fields, short strings) is 0 units under runtimeValueSizeUnits, so
+		// this adds nothing for the common case; a large runtime map now
+		// costs proportionally more the more it is cloned, closing
+		// FINDING-001.
+		GasPerOperandUnit: 1,
 	}
 }
 
@@ -349,6 +373,16 @@ func (p Params) Validate() error {
 	}
 	if p.MaxMemoryBytes == 0 {
 		return errors.New("max memory bytes must be positive")
+	}
+	// GasPerOperandUnit must be positive: it is the ONLY thing that prices
+	// OpDup/OpLoadLocal/OpStoreLocal/OpReturn/OpMap*/OpReadStorage-snapshot
+	// proportionally to the runtime map/tuple/bytes/string they clone or
+	// iterate (see FINDING-001). A zero value here would silently reopen
+	// that gap by collapsing every operand-size charge to zero while still
+	// passing Validate(), so require it explicitly rather than allowing an
+	// accidental zero-value Params to disable the mitigation.
+	if p.GasPerOperandUnit == 0 {
+		return errors.New("gas per operand unit must be positive")
 	}
 	for _, op := range []Opcode{
 		OpNop,
@@ -566,6 +600,14 @@ func (r *Runner) Run(module Module, storage Storage, ctx RuntimeContext) (Execut
 		case OpReadStorage:
 			var value RuntimeValue
 			if len(ins.Data) == 0 {
+				// Whole-state snapshot: runtimeStorageSnapshotValue does
+				// O(len(state)) work (sort + clone every key/value) to
+				// build the map, so an already-large storage state must
+				// not be re-snapshotted at the same flat price as reading
+				// a single key. See FINDING-001.
+				if !chargeOperandUnits(&exec.GasUsed, gasLimit, r.params.GasPerOperandUnit, uint64(len(state))) {
+					return rollback(async.ResultLimitExceeded, nil)
+				}
 				value = runtimeStorageSnapshotValue(state)
 			} else {
 				value = runtimeValueFromStorage(state[string(ins.Data)])
@@ -763,7 +805,15 @@ func (r *Runner) Run(module Module, storage Storage, ctx RuntimeContext) (Execut
 			if len(stack) >= int(r.params.MaxStackDepth) {
 				return rollback(async.ResultLimitExceeded, nil)
 			}
-			stack = append(stack, stack[len(stack)-1].clone())
+			// clone() deep-copies the whole value (e.g. every entry of a
+			// runtime map), so an oversized top-of-stack value must not be
+			// duplicated at the same flat price as duplicating a single
+			// integer. See FINDING-001.
+			top := stack[len(stack)-1]
+			if !chargeOperandGas(&exec.GasUsed, gasLimit, r.params.GasPerOperandUnit, top) {
+				return rollback(async.ResultLimitExceeded, nil)
+			}
+			stack = append(stack, top.clone())
 		case OpDrop:
 			if _, ok := pop(&stack); !ok {
 				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on drop"))
@@ -789,6 +839,13 @@ func (r *Runner) Run(module Module, storage Storage, ctx RuntimeContext) (Execut
 			if len(stack) >= int(r.params.MaxStackDepth) {
 				return rollback(async.ResultLimitExceeded, nil)
 			}
+			// Same clone() amplification as OpDup, just reached via a local
+			// slot instead of the stack top -- a contract that keeps its
+			// large map in a local and repeatedly OpLoadLocal's it would
+			// otherwise bypass the OpDup fix entirely. See FINDING-001.
+			if !chargeOperandGas(&exec.GasUsed, gasLimit, r.params.GasPerOperandUnit, locals[slot]) {
+				return rollback(async.ResultLimitExceeded, nil)
+			}
 			stack = append(stack, locals[slot].clone())
 		case OpStoreLocal:
 			if ins.Arg >= uint64(r.params.MaxStackDepth) {
@@ -797,6 +854,11 @@ func (r *Runner) Run(module Module, storage Storage, ctx RuntimeContext) (Execut
 			value, ok := pop(&stack)
 			if !ok {
 				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on store local"))
+			}
+			// locals[slot] = value.clone() below is the same O(N) clone as
+			// OpDup/OpLoadLocal, just on the store side. See FINDING-001.
+			if !chargeOperandGas(&exec.GasUsed, gasLimit, r.params.GasPerOperandUnit, value) {
+				return rollback(async.ResultLimitExceeded, nil)
 			}
 			slot := int(ins.Arg)
 			if slot >= len(locals) {
@@ -939,6 +1001,14 @@ func (r *Runner) Run(module Module, storage Storage, ctx RuntimeContext) (Execut
 			if !ok {
 				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on read field"))
 			}
+			// runtimeFieldValue's TagMap branch does the exact same
+			// AsMap() full-map clone as OpMapGet before looking up a
+			// single named field, and its TagBytes/TagString branches
+			// parse the whole segment-encoded value to find the field --
+			// both O(N) in the source's size. See FINDING-001.
+			if !chargeOperandGas(&exec.GasUsed, gasLimit, r.params.GasPerOperandUnit, source) {
+				return rollback(async.ResultLimitExceeded, nil)
+			}
 			value, err := runtimeFieldValue(source, string(ins.Data))
 			if err != nil {
 				return rollback(async.ResultExecutionFailed, err)
@@ -1028,6 +1098,12 @@ func (r *Runner) Run(module Module, storage Storage, ctx RuntimeContext) (Execut
 			if !ok {
 				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on map get map"))
 			}
+			// AsMap() deep-clones the ENTIRE map before the lookup even
+			// though the lookup itself only touches O(log N) entries, so
+			// the clone must be priced by map size. See FINDING-001.
+			if !chargeOperandGas(&exec.GasUsed, gasLimit, r.params.GasPerOperandUnit, m) {
+				return rollback(async.ResultLimitExceeded, nil)
+			}
 			entries, err := m.AsMap()
 			if err != nil {
 				return rollback(async.ResultExecutionFailed, err)
@@ -1053,6 +1129,13 @@ func (r *Runner) Run(module Module, storage Storage, ctx RuntimeContext) (Execut
 			if !ok {
 				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on map set map"))
 			}
+			// AsMap() clones the whole map, runtimeMapSet below rebuilds
+			// another full copy, and ValueMap() normalizes (sorts + clones)
+			// a third time -- all O(N) in the map's current size. See
+			// FINDING-001.
+			if !chargeOperandGas(&exec.GasUsed, gasLimit, r.params.GasPerOperandUnit, m) {
+				return rollback(async.ResultLimitExceeded, nil)
+			}
 			entries, err := m.AsMap()
 			if err != nil {
 				return rollback(async.ResultExecutionFailed, err)
@@ -1070,6 +1153,10 @@ func (r *Runner) Run(module Module, storage Storage, ctx RuntimeContext) (Execut
 			m, ok := pop(&stack)
 			if !ok {
 				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on map has map"))
+			}
+			// Same AsMap() full-map clone as OpMapGet. See FINDING-001.
+			if !chargeOperandGas(&exec.GasUsed, gasLimit, r.params.GasPerOperandUnit, m) {
+				return rollback(async.ResultLimitExceeded, nil)
 			}
 			entries, err := m.AsMap()
 			if err != nil {
@@ -1089,6 +1176,11 @@ func (r *Runner) Run(module Module, storage Storage, ctx RuntimeContext) (Execut
 			if !ok {
 				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on map delete map"))
 			}
+			// Same AsMap()+rebuild+renormalize triple O(N) pass as
+			// OpMapSet. See FINDING-001.
+			if !chargeOperandGas(&exec.GasUsed, gasLimit, r.params.GasPerOperandUnit, m) {
+				return rollback(async.ResultLimitExceeded, nil)
+			}
 			entries, err := m.AsMap()
 			if err != nil {
 				return rollback(async.ResultExecutionFailed, err)
@@ -1107,6 +1199,11 @@ func (r *Runner) Run(module Module, storage Storage, ctx RuntimeContext) (Execut
 			if !ok {
 				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on map keys map"))
 			}
+			// AsMap() clones the whole map even though the result is
+			// truncated to `limit` keys afterward. See FINDING-001.
+			if !chargeOperandGas(&exec.GasUsed, gasLimit, r.params.GasPerOperandUnit, m) {
+				return rollback(async.ResultLimitExceeded, nil)
+			}
 			entries, err := m.AsMap()
 			if err != nil {
 				return rollback(async.ResultExecutionFailed, err)
@@ -1124,6 +1221,10 @@ func (r *Runner) Run(module Module, storage Storage, ctx RuntimeContext) (Execut
 			m, ok := pop(&stack)
 			if !ok {
 				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on map entries map"))
+			}
+			// Same AsMap() full-map clone as OpMapKeys. See FINDING-001.
+			if !chargeOperandGas(&exec.GasUsed, gasLimit, r.params.GasPerOperandUnit, m) {
+				return rollback(async.ResultLimitExceeded, nil)
 			}
 			entries, err := m.AsMap()
 			if err != nil {
@@ -1170,6 +1271,14 @@ func (r *Runner) Run(module Module, storage Storage, ctx RuntimeContext) (Execut
 				ForwardFee:     sdk.NewCoin(appparams.BaseDenom, async.DefaultParams().ForwardingFee),
 			})
 		case OpReturn:
+			// The final clone() below is the same O(N) operation as OpDup;
+			// price it the same way before committing to a result. See
+			// FINDING-001.
+			if len(stack) > 0 {
+				if !chargeOperandGas(&exec.GasUsed, gasLimit, r.params.GasPerOperandUnit, stack[len(stack)-1]) {
+					return rollback(async.ResultLimitExceeded, nil)
+				}
+			}
 			exec.ResultCode = uint32(ins.Arg)
 			if len(stack) > 0 {
 				exec.ReturnValue = stack[len(stack)-1].clone()
@@ -1184,6 +1293,13 @@ func (r *Runner) Run(module Module, storage Storage, ctx RuntimeContext) (Execut
 			return rollback(async.ResultExecutionFailed, fmt.Errorf("AVM opcode 0x%02x is not executable", byte(ins.Op)))
 		}
 		pc++
+	}
+	// Same OpReturn-path clone() charge for the implicit return when
+	// execution falls off the end of the code. See FINDING-001.
+	if len(stack) > 0 {
+		if !chargeOperandGas(&exec.GasUsed, gasLimit, r.params.GasPerOperandUnit, stack[len(stack)-1]) {
+			return rollback(async.ResultLimitExceeded, nil)
+		}
 	}
 	exec.ResultCode = async.ResultOK
 	exec.State = state
@@ -3256,6 +3372,49 @@ func safeAddU64(left, right uint64) (uint64, bool) {
 		return 0, true
 	}
 	return left + right, false
+}
+
+func safeMulU64(left, right uint64) (uint64, bool) {
+	if left == 0 || right == 0 {
+		return 0, false
+	}
+	result := left * right
+	if result/left != right {
+		return 0, true
+	}
+	return result, false
+}
+
+// chargeOperandUnits adds an operand-size-proportional charge (rate * units)
+// on top of whatever gas has already been charged, honoring the same
+// overflow and gas-limit rules as the interpreter's per-instruction flat
+// charge. It reports false (caller must roll back with
+// ResultLimitExceeded) when the charge would overflow or exceed gasLimit,
+// exactly like the flat per-opcode charge at the top of the interpreter
+// loop. See the Params.GasPerOperandUnit doc comment / FINDING-001.
+func chargeOperandUnits(gasUsed *uint64, gasLimit, rate, units uint64) bool {
+	if rate == 0 || units == 0 {
+		return true
+	}
+	extra, overflow := safeMulU64(rate, units)
+	if overflow {
+		return false
+	}
+	next, overflow := safeAddU64(*gasUsed, extra)
+	if overflow || next > gasLimit {
+		return false
+	}
+	*gasUsed = next
+	return true
+}
+
+// chargeOperandGas charges chargeOperandUnits for the O(N) work that would
+// be performed by cloning, normalizing, or iterating v (a map, tuple, bytes,
+// or string). Called BEFORE the actual clone/AsMap/iteration happens, so an
+// oversized operand is billed (or the execution is aborted for exceeding the
+// gas limit) before, not after, the expensive work runs.
+func chargeOperandGas(gasUsed *uint64, gasLimit, rate uint64, v RuntimeValue) bool {
+	return chargeOperandUnits(gasUsed, gasLimit, rate, runtimeValueSizeUnits(v))
 }
 
 func readU16(reader *bytes.Reader) (uint16, error) {

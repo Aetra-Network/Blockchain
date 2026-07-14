@@ -17,9 +17,12 @@ type grpcQueryServer struct{ keeper *Keeper }
 func NewGRPCMsgServer(k *Keeper) types.MsgServer	{ return grpcMsgServer{keeper: k} }
 func NewGRPCQueryServer(k *Keeper) types.QueryServer	{ return grpcQueryServer{keeper: k} }
 
-func (s grpcMsgServer) RegisterSystemEntity(_ context.Context, msg *types.MsgRegisterSystemEntity) (*types.MsgRegisterSystemEntityResponse, error) {
+func (s grpcMsgServer) RegisterSystemEntity(ctx context.Context, msg *types.MsgRegisterSystemEntity) (*types.MsgRegisterSystemEntityResponse, error) {
 	if msg == nil {
 		return nil, errors.New("empty system entity registration")
+	}
+	if err := s.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
 	}
 	entity, event, err := s.keeper.RegisterSystemEntity(*msg)
 	if err != nil {
@@ -28,9 +31,12 @@ func (s grpcMsgServer) RegisterSystemEntity(_ context.Context, msg *types.MsgReg
 	return &types.MsgRegisterSystemEntityResponse{Entity: entity, Event: event}, nil
 }
 
-func (s grpcMsgServer) UpdateSystemEntity(_ context.Context, msg *types.MsgUpdateSystemEntity) (*types.MsgUpdateSystemEntityResponse, error) {
+func (s grpcMsgServer) UpdateSystemEntity(ctx context.Context, msg *types.MsgUpdateSystemEntity) (*types.MsgUpdateSystemEntityResponse, error) {
 	if msg == nil {
 		return nil, errors.New("empty system entity update")
+	}
+	if err := s.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
 	}
 	entity, event, err := s.keeper.UpdateSystemEntity(*msg)
 	if err != nil {
@@ -39,9 +45,12 @@ func (s grpcMsgServer) UpdateSystemEntity(_ context.Context, msg *types.MsgUpdat
 	return &types.MsgUpdateSystemEntityResponse{Entity: entity, Event: event}, nil
 }
 
-func (s grpcMsgServer) PauseSystemEntity(_ context.Context, msg *types.MsgPauseSystemEntity) (*types.MsgPauseSystemEntityResponse, error) {
+func (s grpcMsgServer) PauseSystemEntity(ctx context.Context, msg *types.MsgPauseSystemEntity) (*types.MsgPauseSystemEntityResponse, error) {
 	if msg == nil {
 		return nil, errors.New("empty system entity pause")
+	}
+	if err := s.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
 	}
 	entity, event, err := s.keeper.PauseSystemEntity(*msg)
 	if err != nil {
@@ -50,9 +59,12 @@ func (s grpcMsgServer) PauseSystemEntity(_ context.Context, msg *types.MsgPauseS
 	return &types.MsgPauseSystemEntityResponse{Entity: entity, Event: event}, nil
 }
 
-func (s grpcMsgServer) ResumeSystemEntity(_ context.Context, msg *types.MsgResumeSystemEntity) (*types.MsgResumeSystemEntityResponse, error) {
+func (s grpcMsgServer) ResumeSystemEntity(ctx context.Context, msg *types.MsgResumeSystemEntity) (*types.MsgResumeSystemEntityResponse, error) {
 	if msg == nil {
 		return nil, errors.New("empty system entity resume")
+	}
+	if err := s.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
 	}
 	entity, event, err := s.keeper.ResumeSystemEntity(*msg)
 	if err != nil {
@@ -61,9 +73,12 @@ func (s grpcMsgServer) ResumeSystemEntity(_ context.Context, msg *types.MsgResum
 	return &types.MsgResumeSystemEntityResponse{Entity: entity, Event: event}, nil
 }
 
-func (s grpcMsgServer) DeprecateSystemEntity(_ context.Context, msg *types.MsgDeprecateSystemEntity) (*types.MsgDeprecateSystemEntityResponse, error) {
+func (s grpcMsgServer) DeprecateSystemEntity(ctx context.Context, msg *types.MsgDeprecateSystemEntity) (*types.MsgDeprecateSystemEntityResponse, error) {
 	if msg == nil {
 		return nil, errors.New("empty system entity deprecation")
+	}
+	if err := s.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
 	}
 	entity, event, err := s.keeper.DeprecateSystemEntity(*msg)
 	if err != nil {

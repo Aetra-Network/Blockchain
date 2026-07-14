@@ -25,6 +25,9 @@ func (m msgServer) SubmitEvidence(ctx context.Context, msg *v1.MsgSubmitEvidence
 	if msg == nil {
 		return nil, v1.ErrInvalidParams.Wrap("empty request")
 	}
+	if err := m.Keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
 	}
@@ -61,6 +64,9 @@ func (m msgServer) VoteEvidence(ctx context.Context, msg *v1.MsgVoteEvidence) (*
 	if msg == nil {
 		return nil, v1.ErrInvalidParams.Wrap("empty request")
 	}
+	if err := m.Keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
 	}
@@ -91,6 +97,9 @@ func (m msgServer) FinalizeEvidence(ctx context.Context, msg *v1.MsgFinalizeEvid
 	if msg == nil {
 		return nil, v1.ErrInvalidParams.Wrap("empty request")
 	}
+	if err := m.Keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
 	}
@@ -117,6 +126,9 @@ func (m msgServer) FinalizeEvidence(ctx context.Context, msg *v1.MsgFinalizeEvid
 func (m msgServer) CancelExpiredEvidence(ctx context.Context, msg *v1.MsgCancelExpiredEvidence) (*v1.MsgCancelExpiredEvidenceResponse, error) {
 	if msg == nil {
 		return nil, v1.ErrInvalidParams.Wrap("empty request")
+	}
+	if err := m.Keeper.loadForBlock(ctx); err != nil {
+		return nil, err
 	}
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err

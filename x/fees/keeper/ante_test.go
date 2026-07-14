@@ -11,6 +11,7 @@ import (
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	sigtypes "github.com/cosmos/cosmos-sdk/types/tx/signing"
 	authtypes "github.com/cosmos/cosmos-sdk/x/auth/types"
+	"github.com/cosmos/cosmos-sdk/x/authz"
 	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
 	distrtypes "github.com/cosmos/cosmos-sdk/x/distribution/types"
 	minttypes "github.com/cosmos/cosmos-sdk/x/mint/types"
@@ -577,4 +578,125 @@ func TestAnteHandlerDecoratorRecordsFeesAfterDeduction(t *testing.T) {
 	require.Equal(t, validatorExpected, state.ValidatorRewards)
 	require.Equal(t, communityExpected, state.CommunityPool)
 	require.NoError(t, state.Validate())
+}
+
+// TestAnteHandlerDecoratorAcceptsLargeTxPayingExactlyHardCap is the
+// end-to-end regression test for FINDING-011. Before the fix, AdmitTx
+// required paidAmount >= requiredFull (the uncapped full-formula
+// requirement) AND paidAmount <= maxFee; a large-but-envelope-legal tx could
+// push requiredFull above maxFee, making those two conditions mutually
+// exclusive so the tx was rejected no matter what fee was attached -- even
+// the maximum legal fee. This converts the finding's PoC sketch into a
+// positive assertion: the tx must now be admitted.
+func TestAnteHandlerDecoratorAcceptsLargeTxPayingExactlyHardCap(t *testing.T) {
+	app := l1app.Setup(t, false)
+	ctx := app.NewContext(false).WithBlockHeight(1)
+
+	maxFee, err := types.DefaultParams().MaxFeeInt()
+	require.NoError(t, err)
+
+	// ~60 KB tx body: comfortably under the 256 KB envelope limit, but large
+	// enough that the uncapped full-formula requirement (byte component
+	// alone: 100_000 naet/byte * 60_000 bytes = 6 AET) exceeds the default
+	// 5 AET hard cap before the base/gas/message components are even added.
+	ctx = ctx.WithTxBytes(make([]byte, 60_000))
+
+	called := false
+	next := func(ctx sdk.Context, tx sdk.Tx, _ bool) (sdk.Context, error) {
+		called = true
+		feeTx := tx.(sdk.FeeTx)
+		require.NoError(t, app.BankKeeper.MintCoins(ctx, minttypes.ModuleName, feeTx.GetFee()))
+		require.NoError(t, app.BankKeeper.SendCoinsFromModuleToModule(ctx, minttypes.ModuleName, authtypes.FeeCollectorName, feeTx.GetFee()))
+		return ctx, nil
+	}
+
+	tx := feeTx{fees: sdk.NewCoins(sdk.NewCoin(types.BondDenom, maxFee))}
+	_, err = app.FeesKeeper.AnteHandlerDecorator(next)(ctx, tx, false)
+	require.NoError(t, err, "a tx paying the maximum legal fee must never be rejected as unpayable")
+	require.True(t, called)
+}
+
+// TestAnteHandlerDecoratorCountsNestedAuthzMessagesTowardEnvelopeCap is the
+// end-to-end regression test for FINDING-013. Before the fix,
+// validateTxEnvelope computed MsgCount as len(tx.GetMsgs()); a single
+// top-level authz.MsgExec wrapping any number of inner messages counted as
+// 1, sailing past MaxMessagesPerTx=16 regardless of how many messages it
+// actually carried -- 100 flat top-level MsgSends would have been rejected
+// at that same limit.
+func TestAnteHandlerDecoratorCountsNestedAuthzMessagesTowardEnvelopeCap(t *testing.T) {
+	app := l1app.Setup(t, false)
+	ctx := app.NewContext(false).WithBlockHeight(1)
+
+	validSender := validRawAddress(11)
+	validRecipient := validRawAddress(12)
+	grantee, err := aetraaddress.Parse(validRawAddress(13))
+	require.NoError(t, err)
+
+	const innerCount = 100
+	inner := make([]sdk.Msg, innerCount)
+	for i := range inner {
+		inner[i] = &banktypes.MsgSend{
+			FromAddress:	validSender,
+			ToAddress:	validRecipient,
+			Amount:		sdk.NewCoins(sdk.NewInt64Coin(types.BondDenom, 1)),
+		}
+	}
+	execMsg := authz.NewMsgExec(grantee, inner)
+
+	called := false
+	next := func(ctx sdk.Context, _ sdk.Tx, _ bool) (sdk.Context, error) {
+		called = true
+		return ctx, nil
+	}
+
+	tx := feeTx{
+		fees:	sdk.NewCoins(sdk.NewInt64Coin(types.BondDenom, 1)),
+		msgs:	[]sdk.Msg{&execMsg},
+	}
+
+	_, err = app.FeesKeeper.AnteHandlerDecorator(next)(ctx, tx, false)
+	require.ErrorIs(t, err, types.ErrInvalidFee)
+	// innerCount nested MsgSends + the MsgExec wrapper itself = 101, not 1.
+	require.Contains(t, err.Error(), "message count 101 exceeds max_messages_per_tx 16")
+	require.False(t, called)
+}
+
+// TestAnteHandlerDecoratorRejectsZeroAddressNestedInAuthzExec is the
+// end-to-end regression test for FINDING-014. Before the fix,
+// validateNoZeroTxAddresses (via validateNoZeroMsgAddresses) only inspected
+// tx.GetMsgs() directly; a MsgSend to the zero address wrapped inside an
+// authz.MsgExec never matched the type switch (MsgExec itself isn't a
+// MsgSend/MsgMultiSend/MsgSetWithdrawAddress) and was never unwrapped, so
+// the same send that is rejected at the top level sailed through when
+// nested.
+func TestAnteHandlerDecoratorRejectsZeroAddressNestedInAuthzExec(t *testing.T) {
+	app := l1app.Setup(t, false)
+	ctx := app.NewContext(false).WithBlockHeight(1)
+
+	validSender := validRawAddress(21)
+	grantee, err := aetraaddress.Parse(validRawAddress(22))
+	require.NoError(t, err)
+
+	inner := &banktypes.MsgSend{
+		FromAddress:	validSender,
+		ToAddress:	aetraaddress.ZeroUserFriendly,
+		Amount:		sdk.NewCoins(sdk.NewInt64Coin(types.BondDenom, 1)),
+	}
+	execMsg := authz.NewMsgExec(grantee, []sdk.Msg{inner})
+
+	called := false
+	next := func(ctx sdk.Context, _ sdk.Tx, _ bool) (sdk.Context, error) {
+		called = true
+		return ctx, nil
+	}
+
+	tx := feeTx{
+		fees:	sdk.NewCoins(sdk.NewInt64Coin(types.BondDenom, 1)),
+		msgs:	[]sdk.Msg{&execMsg},
+	}
+
+	_, err = app.FeesKeeper.AnteHandlerDecorator(next)(ctx, tx, false)
+	require.ErrorIs(t, err, types.ErrInvalidFee)
+	require.Contains(t, err.Error(), "bank send recipient must not be zero address")
+	require.False(t, called)
 }

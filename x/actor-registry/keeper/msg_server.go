@@ -25,6 +25,9 @@ func (m msgServer) RegisterActor(ctx context.Context, msg *v1.MsgRegisterActor) 
 	if msg == nil {
 		return nil, v1.ErrInvalidParams.Wrap("empty request")
 	}
+	if err := m.Keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
 	}
@@ -60,6 +63,9 @@ func (m msgServer) UpdateActorCode(ctx context.Context, msg *v1.MsgUpdateActorCo
 	if msg == nil {
 		return nil, v1.ErrInvalidParams.Wrap("empty request")
 	}
+	if err := m.Keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
 	}
@@ -89,6 +95,9 @@ func (m msgServer) FreezeActor(ctx context.Context, msg *v1.MsgFreezeActor) (*v1
 	if msg == nil {
 		return nil, v1.ErrInvalidParams.Wrap("empty request")
 	}
+	if err := m.Keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
 	}
@@ -115,6 +124,9 @@ func (m msgServer) FreezeActor(ctx context.Context, msg *v1.MsgFreezeActor) (*v1
 func (m msgServer) UnfreezeActor(ctx context.Context, msg *v1.MsgUnfreezeActor) (*v1.MsgUnfreezeActorResponse, error) {
 	if msg == nil {
 		return nil, v1.ErrInvalidParams.Wrap("empty request")
+	}
+	if err := m.Keeper.loadForBlock(ctx); err != nil {
+		return nil, err
 	}
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
@@ -143,6 +155,9 @@ func (m msgServer) DeleteActor(ctx context.Context, msg *v1.MsgDeleteActor) (*v1
 	if msg == nil {
 		return nil, v1.ErrInvalidParams.Wrap("empty request")
 	}
+	if err := m.Keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
 	}
@@ -169,6 +184,9 @@ func (m msgServer) DeleteActor(ctx context.Context, msg *v1.MsgDeleteActor) (*v1
 func (m msgServer) MigrateActor(ctx context.Context, msg *v1.MsgMigrateActor) (*v1.MsgMigrateActorResponse, error) {
 	if msg == nil {
 		return nil, v1.ErrInvalidParams.Wrap("empty request")
+	}
+	if err := m.Keeper.loadForBlock(ctx); err != nil {
+		return nil, err
 	}
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err

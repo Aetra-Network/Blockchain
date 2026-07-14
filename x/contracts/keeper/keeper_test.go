@@ -103,10 +103,23 @@ func TestAVMExitCodesAreSmallStableAndNamed(t *testing.T) {
 	require.Equal(t, "unknown", types.ExitCodeName(105))
 }
 
-func TestStoreCodeAcceptsCanonicalAVMBytecodeAndRejectsNondeterminism(t *testing.T) {
+// TestStoreCodeAcceptsRealCompiledBytecodeAndRejectsUndecodableOrForbiddenModules
+// is the regression guard for FINDING-004: StoreCode used to accept ANY
+// AVM1-prefixed blob that passed a cheap header/size check plus a heuristic
+// forbidden-ASCII-substring scan, never actually confirming the bytes decode
+// as a real AVM module. A same-prefix, non-module blob (like the old fixture
+// here, "AVM1\nset key value\nemit ok" -- readable ASCII text, not a
+// compiled module) was silently accepted, becoming a non-executable stub
+// contract only discovered at first deploy/execute. StoreCode must now
+// reject anything that does not genuinely decode AND verify.
+func TestStoreCodeAcceptsRealCompiledBytecodeAndRejectsUndecodableOrForbiddenModules(t *testing.T) {
 	wallet := aeAddress("11")
 	k := NewKeeperWithAccountStatus(testAccountStatus{wallet: accountStatusActive})
-	bytecode := []byte("AVM1\nset key value\nemit ok")
+
+	c := mustFamilyCompiler(t)
+	res, err := c.Compile([]byte(familySource("StoreCodeAcceptFixture")))
+	require.NoError(t, err)
+	bytecode := res.ModuleBytes
 	codeHash := types.CanonicalCodeHash(bytecode)
 
 	response, err := k.StoreCode(types.MsgStoreCode{Authority: wallet, Bytecode: bytecode})
@@ -118,8 +131,23 @@ func TestStoreCodeAcceptsCanonicalAVMBytecodeAndRejectsNondeterminism(t *testing
 	require.Equal(t, uint64(len(bytecode)), exported.State.Codes[0].CodeBytes)
 	require.Equal(t, codeHash, exported.State.Codes[0].CodeHash)
 
+	// AVM1-prefixed but not a real module at all: decode fails outright.
 	_, err = k.StoreCode(types.MsgStoreCode{Authority: wallet, Bytecode: []byte("AVM1 time.now")})
 	require.ErrorContains(t, err, types.ErrInvalidBytecode)
+
+	// Well-formed (decodes fine) but contains a forbidden, nondeterministic
+	// opcode: this is the real enforcement the old ASCII-substring heuristic
+	// scan stood in for. See avm.Verifier.Verify / IsForbiddenOpcode.
+	forbidden := avm.Module{
+		Version: avm.Version,
+		Exports: map[avm.Entrypoint]uint32{avm.EntryDeploy: 0},
+		Code:    []avm.Instruction{{Op: avm.OpWallClock, Arg: 0}},
+	}
+	forbiddenBytes, err := avm.EncodeModule(forbidden)
+	require.NoError(t, err)
+	_, err = k.StoreCode(types.MsgStoreCode{Authority: wallet, Bytecode: forbiddenBytes})
+	require.ErrorContains(t, err, types.ErrInvalidBytecode)
+
 	_, err = k.StoreCode(types.MsgStoreCode{Authority: wallet, CodeHash: sha256Hex("wrong"), Bytecode: bytecode})
 	require.ErrorContains(t, err, "canonical bytecode hash")
 }
@@ -615,14 +643,23 @@ func TestContractsTypedMsgAndQueryServiceSurface(t *testing.T) {
 	wallet := aeAddress("11")
 	destination := aeAddress("22")
 	k := NewKeeperWithAccountStatus(testAccountStatus{wallet: accountStatusActive})
-	bytecode := []byte("AVM1 typed-service")
-	stored, err := k.StoreCode(types.MsgStoreCode{Authority: wallet, Bytecode: bytecode})
+	// This test exercises the msg/query service surface (store/deploy/
+	// execute/query routing), not AVM execution semantics, so it uses the
+	// same bytecode-less code registration as storeContractCode elsewhere in
+	// this file (CodeHash/CodeBytes only) rather than a fake "AVM1 <text>"
+	// placeholder: since FINDING-004, StoreCode actually decodes/verifies
+	// any Bytecode payload, so a placeholder ASCII string is no longer
+	// accepted. The resulting non-executable contract still exercises
+	// exactly the same executeContract stub path (raw payload written to
+	// Data) this test asserts on below.
+	codeHash := sha256Hex("typed-service")
+	stored, err := k.StoreCode(types.MsgStoreCode{Authority: wallet, CodeHash: codeHash, CodeBytes: 128})
 	require.NoError(t, err)
 
 	code, found, err := k.Code(types.QueryCodeRequest{CodeID: stored.CodeID})
 	require.NoError(t, err)
 	require.True(t, found)
-	require.Equal(t, types.CanonicalCodeHash(bytecode), code.CodeHash)
+	require.Equal(t, codeHash, code.CodeHash)
 	codes, err := k.Codes(types.QueryCodesRequest{Pagination: types.PageRequest{Limit: 1}})
 	require.NoError(t, err)
 	require.Len(t, codes, 1)
@@ -687,6 +724,69 @@ func TestContractsTypedMsgAndQueryServiceSurface(t *testing.T) {
 	require.Equal(t, "deploy", receipts[0].Operation)
 	require.Equal(t, "execute", receipts[1].Operation)
 	require.NoError(t, k.ContractEvents(types.QueryContractEventsRequest{ContractAddress: deployed.ContractAddressUser, Pagination: types.PageRequest{Limit: 1}}))
+}
+
+// TestExecuteExternalRejectsNonContractAddressWithoutMutatingState is the
+// regression guard for the live-testnet finding in
+// security-audit/RESULTS_V1-live-testnet-exercise.md, section 3, item 2:
+// `tx avm execute` against an address that is not an actually-deployed
+// contract must fail with a contract-not-found error and must not touch any
+// contracts-module state, rather than silently succeeding (the live run
+// observed code=0 both on the original mistaken call and on a verbatim
+// repeat). At this layer (direct keeper calls, no ante handler/CheckTx in
+// between) there is no sequence number to reuse, so "repeat" simply means
+// "call the handler again" — it must fail deterministically both times.
+func TestExecuteExternalRejectsNonContractAddressWithoutMutatingState(t *testing.T) {
+	wallet := aeAddress("11")
+	k := NewKeeperWithAccountStatus(testAccountStatus{wallet: accountStatusActive})
+
+	t.Run("plain address that was never deployed", func(t *testing.T) {
+		notAContract := aeAddress("99")
+		before := k.ExportGenesis()
+
+		_, err := k.ExecuteExternal(types.MsgExecuteExternal{
+			Sender:          wallet,
+			ContractAddress: notAContract,
+			Payload:         []byte("call"),
+			GasLimit:        100_000,
+			Height:          11,
+		})
+		require.Error(t, err)
+		require.ErrorContains(t, err, types.ErrContractNotFound)
+		require.Equal(t, before, k.ExportGenesis(), "a rejected execute must not mutate contracts-module state")
+	})
+
+	t.Run("reserved system address (fee_collector, the exact live-test mistake)", func(t *testing.T) {
+		feeCollector, found := addressing.SystemAddressByName("AETFeeCollector")
+		require.True(t, found, "fee_collector must be a registered reserved system address for this test to be meaningful")
+		before := k.ExportGenesis()
+
+		_, err := k.ExecuteExternal(types.MsgExecuteExternal{
+			Sender:          wallet,
+			ContractAddress: feeCollector.UserFriendly,
+			Payload:         []byte("call"),
+			GasLimit:        100_000,
+			Height:          11,
+		})
+		require.Error(t, err, "fee_collector is a reserved system address, never a contract")
+		require.Equal(t, before, k.ExportGenesis(), "a rejected execute must not mutate contracts-module state")
+	})
+
+	t.Run("repeating the exact same call fails the same way both times", func(t *testing.T) {
+		notAContract := aeAddress("99")
+		msg := types.MsgExecuteExternal{
+			Sender:          wallet,
+			ContractAddress: notAContract,
+			Payload:         []byte("call"),
+			GasLimit:        100_000,
+			Height:          11,
+		}
+		_, err1 := k.ExecuteExternal(msg)
+		require.Error(t, err1)
+		_, err2 := k.ExecuteExternal(msg)
+		require.Error(t, err2)
+		require.Equal(t, err1.Error(), err2.Error(), "repeating the same execute must not silently succeed on the second attempt")
+	})
 }
 
 func TestCompiledATLXContractsExecuteThroughAVMRuntimeBridge(t *testing.T) {

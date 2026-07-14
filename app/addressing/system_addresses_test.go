@@ -6,6 +6,7 @@ import (
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
+	"github.com/cosmos/cosmos-sdk/x/authz"
 	"github.com/stretchr/testify/require"
 	protov2 "google.golang.org/protobuf/proto"
 
@@ -124,6 +125,48 @@ func TestReservedAddressPolicyRejectsUserCreationAndAnteRoles(t *testing.T) {
 		Amount:		sdk.NewCoins(sdk.NewInt64Coin("naet", 1)),
 	}}})
 	require.ErrorContains(t, err, "reserved system address")
+}
+
+// TestAnteAddressPolicyCatchesReservedSignerNestedInAuthzExec is the
+// regression test for FINDING-014's app/addressing call site: before the
+// fix, ValidateAnteAddressPolicy only reflected over tx.GetMsgs() directly,
+// so a reserved-address message wrapped inside an authz.MsgExec was
+// invisible to it -- reflection cannot decode MsgExec.Msgs' opaque
+// Any.Value. Walking through GetMessages() first (WalkMessages) hands the
+// reflective validator a concrete, typed message even when it originated
+// inside a MsgExec, so the same policy now applies to nested messages too.
+func TestAnteAddressPolicyCatchesReservedSignerNestedInAuthzExec(t *testing.T) {
+	mint, found := addressing.SystemAddressByName(addressing.SystemAddressAETMintName)
+	require.True(t, found)
+
+	inner := &banktypes.MsgSend{
+		FromAddress:	mint.UserFriendly,
+		ToAddress:	addressing.SystemAddressAETBurnUserFriendly,
+		Amount:		sdk.NewCoins(sdk.NewInt64Coin("naet", 1)),
+	}
+	grantee := sdk.AccAddress(bytes20(0x09))
+	execMsg := authz.NewMsgExec(grantee, []sdk.Msg{inner})
+
+	err := addressing.ValidateAnteAddressPolicy(policyTx{msgs: []sdk.Msg{&execMsg}})
+	require.ErrorContains(t, err, "reserved system address")
+}
+
+// TestAnteAddressPolicyCatchesZeroRecipientNestedInAuthzExec is the
+// companion regression test using a zero-address recipient (the specific
+// self-harm scenario called out in FINDING-014's residual-risk analysis)
+// instead of a reserved system address.
+func TestAnteAddressPolicyCatchesZeroRecipientNestedInAuthzExec(t *testing.T) {
+	sender := addressing.FormatAccAddress(sdk.AccAddress(bytes20(0x0a)))
+	inner := &banktypes.MsgSend{
+		FromAddress:	sender,
+		ToAddress:	addressing.ZeroUserFriendly,
+		Amount:		sdk.NewCoins(sdk.NewInt64Coin("naet", 1)),
+	}
+	grantee := sdk.AccAddress(bytes20(0x0b))
+	execMsg := authz.NewMsgExec(grantee, []sdk.Msg{inner})
+
+	err := addressing.ValidateAnteAddressPolicy(policyTx{msgs: []sdk.Msg{&execMsg}})
+	require.ErrorContains(t, err, "zero address")
 }
 
 func TestReservedSystemAddressCatalogRejectsDuplicateAndZeroFixtures(t *testing.T) {

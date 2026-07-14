@@ -322,27 +322,40 @@ func init() {
 func (m *MsgStoreCode) Reset()         { *m = MsgStoreCode{} }
 func (m *MsgStoreCode) String() string { return gogoproto.CompactTextString(m) }
 func (*MsgStoreCode) ProtoMessage()    {}
+
+// XXX_MessageName pins this type's proto message name so gogoproto.MessageName
+// resolves it correctly regardless of package init order. Without it, if
+// api/l1/contracts/v1 (which registers the same "l1.contracts.v1.*" names for
+// its own, unrelated generated types) happens to run its init() first, this
+// type's entry in gogoproto's global revProtoTypes map is silently never set
+// (see cosmos/gogoproto/proto.RegisterType's duplicate-name no-op), and
+// RegisterInterfaces below panics with "already registered under typeURL /".
+func (*MsgStoreCode) XXX_MessageName() string { return "l1.contracts.v1.MsgStoreCode" }
+
 func (*MsgStoreCode) Descriptor() ([]byte, []int) {
 	return fileDescriptorContractsTx, []int{0}
 }
 
-func (m *MsgDeployContract) Reset()         { *m = MsgDeployContract{} }
-func (m *MsgDeployContract) String() string { return gogoproto.CompactTextString(m) }
-func (*MsgDeployContract) ProtoMessage()    {}
+func (m *MsgDeployContract) Reset()                { *m = MsgDeployContract{} }
+func (m *MsgDeployContract) String() string        { return gogoproto.CompactTextString(m) }
+func (*MsgDeployContract) ProtoMessage()           {}
+func (*MsgDeployContract) XXX_MessageName() string { return "l1.contracts.v1.MsgDeployContract" }
 func (*MsgDeployContract) Descriptor() ([]byte, []int) {
 	return fileDescriptorContractsTx, []int{2}
 }
 
-func (m *MsgExecuteExternal) Reset()         { *m = MsgExecuteExternal{} }
-func (m *MsgExecuteExternal) String() string { return gogoproto.CompactTextString(m) }
-func (*MsgExecuteExternal) ProtoMessage()    {}
+func (m *MsgExecuteExternal) Reset()                { *m = MsgExecuteExternal{} }
+func (m *MsgExecuteExternal) String() string        { return gogoproto.CompactTextString(m) }
+func (*MsgExecuteExternal) ProtoMessage()           {}
+func (*MsgExecuteExternal) XXX_MessageName() string { return "l1.contracts.v1.MsgExecuteExternal" }
 func (*MsgExecuteExternal) Descriptor() ([]byte, []int) {
 	return fileDescriptorContractsTx, []int{4}
 }
 
-func (m *MsgExecuteInternal) Reset()         { *m = MsgExecuteInternal{} }
-func (m *MsgExecuteInternal) String() string { return gogoproto.CompactTextString(m) }
-func (*MsgExecuteInternal) ProtoMessage()    {}
+func (m *MsgExecuteInternal) Reset()                { *m = MsgExecuteInternal{} }
+func (m *MsgExecuteInternal) String() string        { return gogoproto.CompactTextString(m) }
+func (*MsgExecuteInternal) ProtoMessage()           {}
+func (*MsgExecuteInternal) XXX_MessageName() string { return "l1.contracts.v1.MsgExecuteInternal" }
 func (*MsgExecuteInternal) Descriptor() ([]byte, []int) {
 	return fileDescriptorContractsTx, []int{6}
 }
@@ -350,6 +363,9 @@ func (*MsgExecuteInternal) Descriptor() ([]byte, []int) {
 func (m *MsgSendInternalMessage) Reset()         { *m = MsgSendInternalMessage{} }
 func (m *MsgSendInternalMessage) String() string { return gogoproto.CompactTextString(m) }
 func (*MsgSendInternalMessage) ProtoMessage()    {}
+func (*MsgSendInternalMessage) XXX_MessageName() string {
+	return "l1.contracts.v1.MsgSendInternalMessage"
+}
 func (*MsgSendInternalMessage) Descriptor() ([]byte, []int) {
 	return fileDescriptorContractsTx, []int{8}
 }
@@ -357,25 +373,36 @@ func (*MsgSendInternalMessage) Descriptor() ([]byte, []int) {
 func (m *MsgUpdateContractParams) Reset()         { *m = MsgUpdateContractParams{} }
 func (m *MsgUpdateContractParams) String() string { return gogoproto.CompactTextString(m) }
 func (*MsgUpdateContractParams) ProtoMessage()    {}
+func (*MsgUpdateContractParams) XXX_MessageName() string {
+	return "l1.contracts.v1.MsgUpdateContractParams"
+}
 func (*MsgUpdateContractParams) Descriptor() ([]byte, []int) {
 	return fileDescriptorContractsTx, []int{9}
 }
 
-func (m *StoreCodeResponse) Reset()         { *m = StoreCodeResponse{} }
-func (m *StoreCodeResponse) String() string { return gogoproto.CompactTextString(m) }
-func (*StoreCodeResponse) ProtoMessage()    {}
+func (m *StoreCodeResponse) Reset()                { *m = StoreCodeResponse{} }
+func (m *StoreCodeResponse) String() string        { return gogoproto.CompactTextString(m) }
+func (*StoreCodeResponse) ProtoMessage()           {}
+func (*StoreCodeResponse) XXX_MessageName() string { return "l1.contracts.v1.MsgStoreCodeResponse" }
 
 func (m *InstantiateContractResponse) Reset()         { *m = InstantiateContractResponse{} }
 func (m *InstantiateContractResponse) String() string { return gogoproto.CompactTextString(m) }
 func (*InstantiateContractResponse) ProtoMessage()    {}
+func (*InstantiateContractResponse) XXX_MessageName() string {
+	return "l1.contracts.v1.MsgDeployContractResponse"
+}
 
 func (m *ExecuteContractResponse) Reset()         { *m = ExecuteContractResponse{} }
 func (m *ExecuteContractResponse) String() string { return gogoproto.CompactTextString(m) }
 func (*ExecuteContractResponse) ProtoMessage()    {}
+func (*ExecuteContractResponse) XXX_MessageName() string {
+	return "l1.contracts.v1.MsgExecuteExternalResponse"
+}
 
-func (m *InternalMessage) Reset()         { *m = InternalMessage{} }
-func (m *InternalMessage) String() string { return gogoproto.CompactTextString(m) }
-func (*InternalMessage) ProtoMessage()    {}
+func (m *InternalMessage) Reset()                { *m = InternalMessage{} }
+func (m *InternalMessage) String() string        { return gogoproto.CompactTextString(m) }
+func (*InternalMessage) ProtoMessage()           {}
+func (*InternalMessage) XXX_MessageName() string { return "l1.contracts.v1.InternalMessage" }
 func (*InternalMessage) Descriptor() ([]byte, []int) {
 	return fileDescriptorContractsTx, []int{7}
 }
@@ -383,6 +410,9 @@ func (*InternalMessage) Descriptor() ([]byte, []int) {
 func (m *MsgUpdateContractParamsResponse) Reset()         { *m = MsgUpdateContractParamsResponse{} }
 func (m *MsgUpdateContractParamsResponse) String() string { return gogoproto.CompactTextString(m) }
 func (*MsgUpdateContractParamsResponse) ProtoMessage()    {}
+func (*MsgUpdateContractParamsResponse) XXX_MessageName() string {
+	return "l1.contracts.v1.MsgUpdateContractParamsResponse"
+}
 
 func (m *QueryParamsRequest) Reset()         { *m = QueryParamsRequest{} }
 func (m *QueryParamsRequest) String() string { return gogoproto.CompactTextString(m) }
@@ -509,6 +539,9 @@ func (*QueryContractStateRootResponse) ProtoMessage()    {}
 func (m *MsgSubmitSecurityAttestation) Reset()         { *m = MsgSubmitSecurityAttestation{} }
 func (m *MsgSubmitSecurityAttestation) String() string { return gogoproto.CompactTextString(m) }
 func (*MsgSubmitSecurityAttestation) ProtoMessage()    {}
+func (*MsgSubmitSecurityAttestation) XXX_MessageName() string {
+	return "l1.contracts.v1.MsgSubmitSecurityAttestation"
+}
 func (*MsgSubmitSecurityAttestation) Descriptor() ([]byte, []int) {
 	return fileDescriptorContractsTx, []int{11}
 }
@@ -516,17 +549,26 @@ func (*MsgSubmitSecurityAttestation) Descriptor() ([]byte, []int) {
 func (m *MsgRevokeSecurityAttestation) Reset()         { *m = MsgRevokeSecurityAttestation{} }
 func (m *MsgRevokeSecurityAttestation) String() string { return gogoproto.CompactTextString(m) }
 func (*MsgRevokeSecurityAttestation) ProtoMessage()    {}
+func (*MsgRevokeSecurityAttestation) XXX_MessageName() string {
+	return "l1.contracts.v1.MsgRevokeSecurityAttestation"
+}
 func (*MsgRevokeSecurityAttestation) Descriptor() ([]byte, []int) {
-	return fileDescriptorContractsTx, []int{12}
+	return fileDescriptorContractsTx, []int{13}
 }
 
 func (m *MsgSubmitSecurityAttestationResponse) Reset()         { *m = MsgSubmitSecurityAttestationResponse{} }
 func (m *MsgSubmitSecurityAttestationResponse) String() string { return gogoproto.CompactTextString(m) }
 func (*MsgSubmitSecurityAttestationResponse) ProtoMessage()    {}
+func (*MsgSubmitSecurityAttestationResponse) XXX_MessageName() string {
+	return "l1.contracts.v1.MsgSubmitSecurityAttestationResponse"
+}
 
 func (m *MsgRevokeSecurityAttestationResponse) Reset()         { *m = MsgRevokeSecurityAttestationResponse{} }
 func (m *MsgRevokeSecurityAttestationResponse) String() string { return gogoproto.CompactTextString(m) }
 func (*MsgRevokeSecurityAttestationResponse) ProtoMessage()    {}
+func (*MsgRevokeSecurityAttestationResponse) XXX_MessageName() string {
+	return "l1.contracts.v1.MsgRevokeSecurityAttestationResponse"
+}
 
 func (m *QuerySecurityAttestationsRequest) Reset()         { *m = QuerySecurityAttestationsRequest{} }
 func (m *QuerySecurityAttestationsRequest) String() string { return gogoproto.CompactTextString(m) }

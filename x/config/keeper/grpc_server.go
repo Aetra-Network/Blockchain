@@ -31,6 +31,9 @@ func (s grpcMsgServer) SubmitConfigChange(ctx context.Context, msg *types.MsgSub
 	if msg == nil {
 		return nil, errors.New("empty config change submission")
 	}
+	if err := s.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	height := sdkHeight(ctx)
 	change, err := s.keeper.SubmitConfigChange(*msg, height)
 	if err != nil {
@@ -44,6 +47,9 @@ func (s grpcMsgServer) ApproveConfigChange(ctx context.Context, msg *types.MsgAp
 	if msg == nil {
 		return nil, errors.New("empty config change approval")
 	}
+	if err := s.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	change, err := s.keeper.ApproveConfigChange(*msg, sdkHeight(ctx))
 	if err != nil {
 		return nil, err
@@ -55,6 +61,9 @@ func (s grpcMsgServer) ApproveConfigChange(ctx context.Context, msg *types.MsgAp
 func (s grpcMsgServer) RejectConfigChange(ctx context.Context, msg *types.MsgRejectConfigChange) (*types.MsgRejectConfigChangeResponse, error) {
 	if msg == nil {
 		return nil, errors.New("empty config change rejection")
+	}
+	if err := s.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
 	}
 	change, err := s.keeper.RejectConfigChange(*msg, sdkHeight(ctx))
 	if err != nil {
@@ -68,6 +77,9 @@ func (s grpcMsgServer) ExecuteConfigChange(ctx context.Context, msg *types.MsgEx
 	if msg == nil {
 		return nil, errors.New("empty config change execution")
 	}
+	if err := s.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	entry, change, err := s.keeper.ExecuteConfigChange(*msg, sdkHeight(ctx))
 	if err != nil {
 		return nil, err
@@ -79,6 +91,9 @@ func (s grpcMsgServer) ExecuteConfigChange(ctx context.Context, msg *types.MsgEx
 func (s grpcMsgServer) CancelConfigChange(ctx context.Context, msg *types.MsgCancelConfigChange) (*types.MsgCancelConfigChangeResponse, error) {
 	if msg == nil {
 		return nil, errors.New("empty config change cancellation")
+	}
+	if err := s.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
 	}
 	change, err := s.keeper.CancelConfigChange(*msg, sdkHeight(ctx))
 	if err != nil {

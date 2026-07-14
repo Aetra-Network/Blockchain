@@ -25,6 +25,9 @@ func (m msgServer) RegisterReporter(ctx context.Context, msg *v1.MsgRegisterRepo
 	if msg == nil {
 		return nil, v1.ErrInvalidParams.Wrap("empty request")
 	}
+	if err := m.Keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
 	}
@@ -51,6 +54,9 @@ func (m msgServer) RegisterReporter(ctx context.Context, msg *v1.MsgRegisterRepo
 func (m msgServer) BondReporter(ctx context.Context, msg *v1.MsgBondReporter) (*v1.MsgBondReporterResponse, error) {
 	if msg == nil {
 		return nil, v1.ErrInvalidParams.Wrap("empty request")
+	}
+	if err := m.Keeper.loadForBlock(ctx); err != nil {
+		return nil, err
 	}
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
@@ -80,6 +86,9 @@ func (m msgServer) UnbondReporter(ctx context.Context, msg *v1.MsgUnbondReporter
 	if msg == nil {
 		return nil, v1.ErrInvalidParams.Wrap("empty request")
 	}
+	if err := m.Keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
 	}
@@ -106,6 +115,9 @@ func (m msgServer) UnbondReporter(ctx context.Context, msg *v1.MsgUnbondReporter
 func (m msgServer) SubmitReport(ctx context.Context, msg *v1.MsgSubmitReport) (*v1.MsgSubmitReportResponse, error) {
 	if msg == nil {
 		return nil, v1.ErrInvalidParams.Wrap("empty request")
+	}
+	if err := m.Keeper.loadForBlock(ctx); err != nil {
+		return nil, err
 	}
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
@@ -142,6 +154,9 @@ func (m msgServer) SubmitReport(ctx context.Context, msg *v1.MsgSubmitReport) (*
 func (m msgServer) ClaimReporterReward(ctx context.Context, msg *v1.MsgClaimReporterReward) (*v1.MsgClaimReporterRewardResponse, error) {
 	if msg == nil {
 		return nil, v1.ErrInvalidParams.Wrap("empty request")
+	}
+	if err := m.Keeper.loadForBlock(ctx); err != nil {
+		return nil, err
 	}
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err

@@ -22,6 +22,24 @@ func TestConfigureSDKSetsSDKBech32CompatibilityAndBondDenom(t *testing.T) {
 	require.Equal(t, appparams.BaseDenom, sdk.DefaultBondDenom)
 }
 
+// TestConfigureSDKSetsAddressVerifierRejectingNonCanonicalLengths is the
+// regression test for FINDING-012's second remediation step: the SDK's
+// global address verifier must be wired to this chain's 20-or-32-byte
+// invariant, not left at the SDK default (which only rejects length 0 or
+// > 255). This protects any SDK-native bech32 address parsing (e.g.
+// sdk.AccAddressFromBech32), not just this repo's own addressing.Parse.
+func TestConfigureSDKSetsAddressVerifierRejectingNonCanonicalLengths(t *testing.T) {
+	ConfigureSDK(".aetra")
+
+	require.NoError(t, sdk.VerifyAddressFormat(make([]byte, 20)), "20-byte plain accounts must remain valid")
+	require.NoError(t, sdk.VerifyAddressFormat(make([]byte, 32)), "32-byte v2 identities must remain valid")
+
+	for _, n := range []int{0, 1, 19, 21, 31, 33, 64, 255} {
+		err := sdk.VerifyAddressFormat(make([]byte, n))
+		require.Errorf(t, err, "address length %d must be rejected by the configured verifier", n)
+	}
+}
+
 func TestUserFacingAddressFormatIsAEBase64URLNotSDKBech32(t *testing.T) {
 	addr := sdk.AccAddress([]byte{
 		0x01, 0x02, 0x03, 0x04, 0x05,

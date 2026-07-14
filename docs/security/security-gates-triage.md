@@ -9,10 +9,15 @@ fund-safety, consensus-safety, or secret-leak categories.
 Run from the repository root:
 
 ```powershell
-go run golang.org/x/vuln/cmd/govulncheck@latest ./...
-go run github.com/securego/gosec/v2/cmd/gosec@latest -exclude-generated -exclude G115 -severity high -confidence medium ./...
+go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+go run github.com/securego/gosec/v2/cmd/gosec@v2.28.0 -exclude-generated -exclude G115 -severity high -confidence medium ./...
 go run github.com/zricethezav/gitleaks/v8@v8.28.0 git --config .gitleaks.toml --no-banner --redact --log-opts=--all .
 ```
+
+Versions are pinned (not `@latest`) to match `.github/workflows/security.yml` and
+`.github/workflows/prototype-release.yml` exactly, so a local run reproduces CI
+(see FINDING-018b). Bump all three locations together, deliberately, on
+periodic review -- do not let this doc drift from the pinned CI versions.
 
 CodeQL and dependency review are CI gates in `.github/workflows/security.yml`.
 Dependency review runs on pull requests and fails on `high` or higher advisory
@@ -74,3 +79,11 @@ Any new high/critical scanner output is untriaged unless it has:
 
 Untriaged high/critical fund-safety, consensus-safety, or secret-leak findings
 block release.
+
+For `.github/security/govulncheck-triage.txt` specifically, the CI gate in
+`.github/workflows/security.yml` additionally requires and machine-checks an
+`expires=YYYY-MM-DD` re-review date on every entry (see FINDING-018a). An
+entry with no `expires=` field, or whose date has passed, fails the gate as
+untriaged/expired even if its `status=` is otherwise valid -- a single triage
+decision can no longer suppress a finding forever. Re-review and bump the
+date deliberately; do not treat an expiring entry as a rubber stamp.

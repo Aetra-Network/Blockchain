@@ -181,12 +181,42 @@ func Parse(text string) ([]byte, error) {
 	// (account, validator, and consensus prefixes are all Bech32HRP on this
 	// chain, so one decode covers every role).
 	if hrp, bz, err := bech32.DecodeAndConvert(text); err == nil && hrp == Bech32HRP {
-		if verifyErr := sdk.VerifyAddressFormat(bz); verifyErr != nil {
+		// Canonicalize exactly like the user-friendly (AE…) path does: reject
+		// any payload that isn't 20 or 32 bytes, and collapse a legacy
+		// zero-padded 32-byte payload down to its 20-byte canonical form.
+		// Without this, a 20-byte account and its zero-padded 32-byte "twin"
+		// -- or an arbitrary 21-31/33-255-byte payload no other address path
+		// accepts -- would decode to different, non-canonical byte slices
+		// here even though addressBytesKey treats the 20/32 twins as the same
+		// account, desyncing this address-book layer from the bank/keeper
+		// layer, which always keys off sdk.AccAddress(bz).String() over
+		// exactly these bytes (FINDING-012).
+		canonical, canonErr := canonicalBytes(bz)
+		if canonErr != nil {
+			return nil, fmt.Errorf("invalid address format: %w", canonErr)
+		}
+		if verifyErr := sdk.VerifyAddressFormat(canonical); verifyErr != nil {
 			return nil, verifyErr
 		}
-		return bz, nil
+		return canonical, nil
 	}
 	return nil, fmt.Errorf("invalid address format: expected an AE… user-friendly or ae1… bech32 address")
+}
+
+// VerifyAddressBytes enforces this chain's address-byte-length invariant:
+// every address is either a 20-byte plain account/validator/consensus
+// address or a 32-byte v2 identity, never any other length. It is wired as
+// the SDK's global address verifier (sdk.Config.SetAddressVerifier, see
+// appconfig.ConfigureSDK) so SDK-native bech32 address parsing (e.g.
+// sdk.AccAddressFromBech32), not just this package's own Parse, rejects the
+// same malformed lengths (FINDING-012).
+func VerifyAddressBytes(bz []byte) error {
+	switch len(bz) {
+	case shortAddressLength, rawPayloadLength:
+		return nil
+	default:
+		return fmt.Errorf("address must be %d or %d bytes, got %d", shortAddressLength, rawPayloadLength, len(bz))
+	}
 }
 
 func parseUserFriendly(text string) ([]byte, error) {

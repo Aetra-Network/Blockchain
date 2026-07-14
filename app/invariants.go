@@ -169,6 +169,73 @@ func (app *L1App) RunCriticalInvariants(ctx sdk.Context) []AppInvariantFailure {
 	return app.invariantRegistry.Run(ctx)
 }
 
+// criticalInvariantCheckInterval throttles the periodic critical app-invariant
+// sweep (bank supply conservation, emission cap, burn/treasury reconciliation,
+// storage-rent reserve, AVM queue receipts, ...) so its several full-state
+// scans -- including a full duplicate app genesis export inside
+// AppInvariantGenesisExport -- are not run on every block. This mirrors the
+// validatorHealthMetricInterval convention in observability_metrics.go (a
+// lighter, 20-block sweep), scaled up for the registry's much higher per-run
+// cost: 10,000 blocks is roughly a day at the default 6s block time --
+// frequent enough that a state-accounting drift is caught within about a
+// day, infrequent enough that the registry's heaviest scans do not add
+// meaningful per-block overhead. The interval is deliberately its own
+// constant, not reused from the native reward/emission epoch interval
+// (x/nominator-pool/types.DefaultRewardEpochDurationBlocks), so the two
+// heaviest periodic EndBlock operations do not systematically land on the
+// same block. See security audit FINDING-002.
+const criticalInvariantCheckInterval = 10_000
+
+// EventTypeCriticalInvariantViolated is emitted (once per failing route) when
+// the periodic critical-invariant sweep below detects a broken invariant.
+const EventTypeCriticalInvariantViolated = "critical_invariant_violated"
+
+// maybeRunCriticalInvariants periodically re-runs the critical app-invariant
+// registry from EndBlock so the money invariants defined in this file
+// (supply conservation, emission cap, burn/treasury/fee-collector
+// reconciliation, ...) actually execute against live consensus state instead
+// of only being reachable from tests and the offline `l1d invariants check`
+// CLI. See security audit FINDING-002.
+//
+// This is a defense-in-depth cross-check on top of keeper-level enforcement
+// (bank supply conservation on every mint/burn/send, module-account
+// permissions) -- not the primary safety mechanism -- so a violation is
+// logged and evented rather than returned as an EndBlock error: a returned
+// error from EndBlock deterministically halts the whole chain, and a latent
+// false-positive in any one of the ~20 registered invariants would turn a
+// Low-severity accounting cross-check into a self-inflicted chain halt. This
+// matches the fail-soft convention already established for the
+// mint-authority cap in native_economy.go. Operators/monitoring should alert
+// on EventTypeCriticalInvariantViolated; it intentionally does not halt
+// consensus itself.
+//
+// The sweep is read-only (Check funcs never write to the store, so this
+// cannot affect the AppHash) and is defensively recovered so a bug in any
+// single invariant can never panic/halt the chain from EndBlock, mirroring
+// recordValidatorObservabilityMetrics's recover() convention.
+func (app *L1App) maybeRunCriticalInvariants(ctx sdk.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			ctx.Logger().Error("critical invariant sweep panicked; skipping", "recover", r)
+		}
+	}()
+
+	height := ctx.BlockHeight()
+	if height <= 0 || uint64(height)%criticalInvariantCheckInterval != 0 {
+		return
+	}
+
+	for _, failure := range app.RunCriticalInvariants(ctx) {
+		ctx.Logger().Error("critical app invariant violated",
+			"invariant", failure.ID, "error", failure.Error, "height", height)
+		ctx.EventManager().EmitEvent(sdk.NewEvent(
+			EventTypeCriticalInvariantViolated,
+			sdk.NewAttribute("invariant", failure.ID),
+			sdk.NewAttribute("error", failure.Error),
+		))
+	}
+}
+
 func ValidateAppInvariantRegistry(registry []AppInvariant) error {
 	required := RequiredAppInvariantIDs()
 	seen := make(map[string]struct{}, len(registry))
@@ -761,7 +828,13 @@ func validateStorageRentRuntimeState(state storagerenttypes.StorageRentState) er
 }
 
 func (app *L1App) assertEconomicsFeeSplitInvariant(ctx sdk.Context) error {
-	genesis, err := app.AetraEconomicsKeeper.ExportGenesis()
+	// ExportGenesis() (no ctx) returns the persistent keeper's in-memory
+	// genesis snapshot, which is frozen at genesis-import time and never
+	// updated by live SetParams/ApplyEpoch writes (those go straight to the
+	// KV store). Use the ctx-aware, store-backed read so this cross-check
+	// validates live state instead of a permanently stale snapshot. See
+	// security audit FINDING-005.
+	genesis, err := app.AetraEconomicsKeeper.ExportGenesisState(ctx)
 	if err != nil {
 		return err
 	}
@@ -769,7 +842,9 @@ func (app *L1App) assertEconomicsFeeSplitInvariant(ctx sdk.Context) error {
 }
 
 func (app *L1App) assertEconomicsAccountingInvariant(ctx sdk.Context) error {
-	genesis, err := app.AetraEconomicsKeeper.ExportGenesis()
+	// See assertEconomicsFeeSplitInvariant: ExportGenesisState(ctx) reads the
+	// live KV store instead of the frozen in-memory genesis snapshot.
+	genesis, err := app.AetraEconomicsKeeper.ExportGenesisState(ctx)
 	if err != nil {
 		return err
 	}
@@ -940,12 +1015,41 @@ func (app *L1App) assertEmissionCapInvariant(ctx sdk.Context) error {
 		return err
 	}
 	maxAnnualSupply := emParams.AnnualReferenceSupply
-	if maxAnnualSupply.IsZero() {
+	if maxAnnualSupply.IsZero() || emParams.EpochsPerYear == 0 {
 		return nil
 	}
-	maxMintable := maxAnnualSupply.Amount.Mul(sdkmath.NewInt(int64(emParams.ConstitutionalMaxInflationBps))).Quo(sdkmath.NewInt(10_000))
-	if totalMinted.Amount.GT(maxMintable) {
-		return fmt.Errorf("emissions total minted accounting %s exceeds constitutional max %s", totalMinted.String(), sdk.NewCoin(maxAnnualSupply.Denom, maxMintable).String())
+	annualMax := maxAnnualSupply.Amount.Mul(sdkmath.NewInt(int64(emParams.ConstitutionalMaxInflationBps))).Quo(sdkmath.NewInt(10_000))
+
+	// totalMinted (TotalMintedAccounting) is a monotonic lifetime counter:
+	// x/emissions/keeper.go FinalizeEmissionEpoch only ever adds to it and
+	// never resets it. Comparing it directly against annualMax (a single
+	// year's worth of max emission) under-scopes the check: the chain would
+	// pass through year one and then permanently, falsely fail every year
+	// after, since the lifetime total keeps growing past a cap sized for one
+	// year. See security audit FINDING-003.
+	//
+	// Fix: scope the cap to the same lifetime horizon by multiplying
+	// annualMax by the number of emission years elapsed so far. Years
+	// elapsed is derived from the highest emissions epoch actually finalized
+	// (EpochsPerYear epochs == one year by construction; see
+	// ComputeEpochEmission), rounded up so the year currently in progress is
+	// still allowed its full annual budget (a partially elapsed year is not
+	// penalized). This keeps the check permissive within a year and only
+	// grows the cap at year boundaries, matching how totalMinted actually
+	// accumulates.
+	epochHistory, err := app.EmissionsKeeper.GetAllEmissionEpochs(ctx)
+	if err != nil {
+		return err
+	}
+	var latestEpoch uint64
+	if n := len(epochHistory); n > 0 {
+		latestEpoch = epochHistory[n-1].Epoch
+	}
+	yearsElapsed := latestEpoch/emParams.EpochsPerYear + 1
+	lifetimeMax := annualMax.Mul(sdkmath.NewInt(int64(yearsElapsed)))
+
+	if totalMinted.Amount.GT(lifetimeMax) {
+		return fmt.Errorf("emissions total minted accounting %s exceeds constitutional max %s (lifetime cap after %d elapsed emission year(s))", totalMinted.String(), sdk.NewCoin(maxAnnualSupply.Denom, lifetimeMax).String(), yearsElapsed)
 	}
 	return nil
 }

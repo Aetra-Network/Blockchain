@@ -30,6 +30,13 @@ func (app *L1App) EndBlocker(ctx sdk.Context) (sdk.EndBlock, error) {
 	// from committed state. Never writes to the store and is internally
 	// recovered, so it cannot affect the AppHash or halt the block.
 	app.recordValidatorObservabilityMetrics(ctx)
+	// Pure side-effect: periodically re-runs the critical app-invariant
+	// registry (bank supply conservation, emission cap, burn/treasury
+	// reconciliation, ...) as a defense-in-depth cross-check. Never writes to
+	// the store and is internally recovered, so it cannot affect the AppHash
+	// or halt the block; a violation is logged and evented, not returned as
+	// an error. See security audit FINDING-002.
+	app.maybeRunCriticalInvariants(ctx)
 	return res, nil
 }
 

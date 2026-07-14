@@ -43,7 +43,14 @@ func TestContractsStoreCodeAndQueryAPIValidation(t *testing.T) {
 	sender := contractAPIAddress(0x22)
 	bytecode := []byte("AVM1 deterministic")
 	require.NoError(t, MsgStoreCode{Authority: sender, Bytecode: bytecode}.ValidateBasic(params))
-	require.ErrorContains(t, MsgStoreCode{Authority: sender, Bytecode: []byte("AVM1 random")}.ValidateBasic(params), ErrInvalidBytecode)
+	// ValidateBasic only runs the cheap structural checks (header/size); it
+	// cannot decode/verify the module without an x/aetravm/avm import, which
+	// would cycle back into this package (see bytecode.go's doc comment).
+	// The real accept/reject decision now lives in
+	// x/contracts/keeper.storeCodeUnchecked (FINDING-004) and is covered
+	// there, not here. This still proves the header check alone rejects
+	// obviously-malformed input.
+	require.ErrorContains(t, MsgStoreCode{Authority: sender, Bytecode: []byte("BAD1 random")}.ValidateBasic(params), ErrInvalidBytecode)
 
 	require.NoError(t, ValidateQueryPagination(PageRequest{Limit: MaxContractQueryLimit}))
 	require.ErrorContains(t, ValidateQueryPagination(PageRequest{}), "query limit")

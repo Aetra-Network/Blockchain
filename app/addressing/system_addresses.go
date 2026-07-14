@@ -33,6 +33,13 @@ type SystemAddress struct {
 	UserFriendly		string
 	Core			bool
 	CanHoldFunds		bool
+	// CanReceiveUserFunds allows a plain bank send to Raw/UserFriendly above.
+	// For any entity that also has a reserved module account (see
+	// app/accounts.ReservedSystemModuleAccount), that module account -- not
+	// this catalog address -- is what the module actually reads/writes, so
+	// setting this true without review can silently strand user funds at an
+	// address the module never looks at (security-audit FINDING-017). See
+	// app/accounts.fundStrandingReviewedExceptions for the enforced allowlist.
 	CanReceiveUserFunds	bool
 	CanSendFunds		bool
 	Status			string

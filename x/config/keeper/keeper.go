@@ -92,6 +92,32 @@ func (k *Keeper) saveGenesis(next GenesisState) error {
 	return prefixgenesis.Save(k.runtimeCtx, k.storeService, genesisKey, next)
 }
 
+// loadForBlock refreshes the in-memory genesis from the committed store using
+// the live block context and points runtimeCtx at that same context. It MUST
+// be called at the start of every consensus entry point (each Msg handler) so
+// a restarted or state-synced node -- where InitChain/InitGenesis is not
+// re-run -- operates on the same committed state as a continuously running
+// node, and so writes persist through the current block rather than a stale
+// InitChain-era context. Reading through the block context observes writes
+// made earlier in the same block. Mirrors the fix applied to
+// x/validator-election (SEC-HIGH). See security-audit/05-findings/
+// FINDING-006-inmemory-genesis-not-rehydrated-consensus-halt.md.
+func (k *Keeper) loadForBlock(ctx context.Context) error {
+	k.runtimeCtx = ctx
+	if k.storeService == nil {
+		return nil
+	}
+	gs, _, err := prefixgenesis.Load(ctx, k.storeService, genesisKey, DefaultGenesis())
+	if err != nil {
+		return err
+	}
+	if err := gs.Validate(); err != nil {
+		return err
+	}
+	k.genesis = cloneGenesis(gs)
+	return nil
+}
+
 func (k Keeper) ExportGenesis() GenesisState {
 	return cloneGenesis(k.genesis)
 }

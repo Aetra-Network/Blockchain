@@ -36,9 +36,10 @@ import (
 // of a one-shot CLI invocation.
 
 const (
-	flagFaucetServeListenAddr = "listen-addr"
-	flagFaucetServeAmount     = "amount"
-	flagFaucetServeCooldown   = "cooldown"
+	flagFaucetServeListenAddr   = "listen-addr"
+	flagFaucetServeAmount       = "amount"
+	flagFaucetServeCooldown     = "cooldown"
+	flagFaucetServeTrustedProxy = "trusted-proxy"
 
 	defaultFaucetListenAddr = "127.0.0.1:8099"
 	// 5 AET per grant: enough for ~10 transfers at the 0.5 AET average fee.
@@ -57,6 +58,7 @@ func newFaucetServeCmd() *cobra.Command {
 	cmd.Flags().String(flagFaucetServeListenAddr, defaultFaucetListenAddr, "HTTP listen address for the faucet service")
 	cmd.Flags().String(flagFaucetServeAmount, defaultFaucetAmount, "fixed grant amount per successful request (coins, e.g. 1000000naet); the request body cannot override this")
 	cmd.Flags().Duration(flagFaucetServeCooldown, defaultFaucetCooldown, "minimum time between grants to the same recipient address or client IP")
+	cmd.Flags().StringSlice(flagFaucetServeTrustedProxy, nil, "IP address or CIDR of a trusted reverse proxy allowed to set X-Forwarded-For/X-Real-IP (repeatable); by default no proxy is trusted and the IP rate-limit uses the direct TCP peer address, which collapses to one shared bucket when the faucet is deployed behind an untrusted/unconfigured proxy")
 	return cmd
 }
 
@@ -94,9 +96,20 @@ func runFaucetServe(cmd *cobra.Command, _ []string) error {
 	if cooldown <= 0 {
 		return fmt.Errorf("--%s must be positive", flagFaucetServeCooldown)
 	}
+	trustedProxyFlags, err := cmd.Flags().GetStringSlice(flagFaucetServeTrustedProxy)
+	if err != nil {
+		return err
+	}
+	trustedProxies, err := parseTrustedProxies(trustedProxyFlags)
+	if err != nil {
+		return err
+	}
 
 	logger := log.NewLogger(cmd.OutOrStdout())
-	service := newFaucetService(clientCtx, cmd.Flags(), grantAmount, newFaucetRateLimiter(cooldown), logger)
+	service := newFaucetService(clientCtx, cmd.Flags(), grantAmount, newFaucetRateLimiter(cooldown), logger, trustedProxies)
+	if len(trustedProxies) > 0 {
+		logger.Info("faucet trusting forwarded-for headers from configured reverse proxies", "trusted_proxy", strings.Join(trustedProxyFlags, ","))
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", service.handleHealthz)
@@ -136,6 +149,11 @@ type faucetService struct {
 	grantAmount sdk.Coins
 	limiter     *faucetRateLimiter
 	logger      log.Logger
+	// trustedProxies is the operator-configured allowlist of reverse-proxy
+	// peer addresses permitted to set X-Forwarded-For/X-Real-IP (see
+	// clientIPFromRequest). Empty by default: no proxy is trusted and the
+	// direct TCP peer address is always used.
+	trustedProxies trustedProxyList
 	// broadcastMu serializes broadcasts from the single faucet key so
 	// concurrent HTTP requests cannot race on the same account sequence
 	// number (each Factory.Prepare call fetches the account's current
@@ -147,13 +165,14 @@ type faucetService struct {
 	broadcastFn func(ctx context.Context, recipient sdk.AccAddress) (string, error)
 }
 
-func newFaucetService(clientCtx client.Context, flagSet *pflag.FlagSet, grantAmount sdk.Coins, limiter *faucetRateLimiter, logger log.Logger) *faucetService {
+func newFaucetService(clientCtx client.Context, flagSet *pflag.FlagSet, grantAmount sdk.Coins, limiter *faucetRateLimiter, logger log.Logger, trustedProxies trustedProxyList) *faucetService {
 	s := &faucetService{
-		clientCtx:   clientCtx,
-		flagSet:     flagSet,
-		grantAmount: grantAmount,
-		limiter:     limiter,
-		logger:      logger,
+		clientCtx:      clientCtx,
+		flagSet:        flagSet,
+		grantAmount:    grantAmount,
+		limiter:        limiter,
+		logger:         logger,
+		trustedProxies: trustedProxies,
 	}
 	s.broadcastFn = s.broadcast
 	return s
@@ -204,13 +223,17 @@ func (s *faucetService) handleFaucet(w http.ResponseWriter, r *http.Request) {
 	}
 	recipientText := recipient.String()
 
-	clientIP := clientIPFromRequest(r)
+	clientIP := clientIPFromRequest(r, s.trustedProxies)
 
 	// Rate limit by BOTH the recipient address and the client IP: naming a
 	// fresh address from the same IP repeatedly, or draining one address from
-	// many IPs (e.g. behind a NAT-shared IP, an operator can widen the IP
-	// cooldown check by fronting with a proxy that sets a stable per-user
-	// header) is still bounded by the address-side check.
+	// many IPs (e.g. behind a NAT-shared IP) is still bounded by the
+	// address-side check. clientIPFromRequest resolves to the direct TCP peer
+	// address unless --trusted-proxy explicitly allowlists that peer, in
+	// which case it honors X-Forwarded-For/X-Real-IP instead -- otherwise,
+	// deploying the faucet behind any reverse proxy would make every request
+	// appear to share the proxy's IP and collapse this check to one grant
+	// globally per cooldown window (security-audit FINDING-015).
 	if !s.limiter.Allow("addr:" + recipientText) {
 		s.writeError(w, http.StatusTooManyRequests, "recipient address is rate-limited, try again later")
 		return
@@ -252,10 +275,97 @@ func (s *faucetService) broadcast(ctx context.Context, recipient sdk.AccAddress)
 	return res.TxHash, nil
 }
 
-func clientIPFromRequest(r *http.Request) string {
+// trustedProxyList is an operator-configured allowlist of reverse-proxy peer
+// addresses (IPs or CIDR ranges). It is empty by default: an empty list
+// trusts nothing, so clientIPFromRequest always falls back to the direct TCP
+// peer address unless an operator explicitly opts in with --trusted-proxy.
+//
+// This opt-in-only design is deliberate (security-audit FINDING-015): the
+// obvious "fix" of unconditionally trusting X-Forwarded-For/X-Real-IP would
+// let ANY direct client spoof its own rate-limit bucket simply by setting
+// that header itself, which is strictly worse than the original bug (a
+// self-inflicted availability collapse behind an unconfigured proxy). Proxy
+// headers are only honored for a request whose direct peer address is itself
+// in this allowlist, i.e. known to be one of the operator's own reverse
+// proxies.
+type trustedProxyList []*net.IPNet
+
+// parseTrustedProxies parses --trusted-proxy values into a trustedProxyList.
+// Each value may be a bare IP (treated as a /32 or /128 host route) or a
+// CIDR range.
+func parseTrustedProxies(values []string) (trustedProxyList, error) {
+	var out trustedProxyList
+	for _, raw := range values {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		if !strings.Contains(raw, "/") {
+			ip := net.ParseIP(raw)
+			if ip == nil {
+				return nil, fmt.Errorf("invalid --%s value %q: not an IP address or CIDR", flagFaucetServeTrustedProxy, raw)
+			}
+			bits := 32
+			if ip.To4() == nil {
+				bits = 128
+			}
+			raw = fmt.Sprintf("%s/%d", raw, bits)
+		}
+		_, ipNet, err := net.ParseCIDR(raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid --%s value %q: %w", flagFaucetServeTrustedProxy, raw, err)
+		}
+		out = append(out, ipNet)
+	}
+	return out, nil
+}
+
+// trusts reports whether host (a bare IP, no port) is a configured trusted
+// reverse-proxy address.
+func (l trustedProxyList) trusts(host string) bool {
+	if len(l) == 0 {
+		return false
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	for _, ipNet := range l {
+		if ipNet.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// clientIPFromRequest resolves the address to use as the request's IP
+// rate-limit key. By default (no trusted proxies configured, or the direct
+// peer is not one of them) it is always the direct TCP peer address from
+// r.RemoteAddr, which cannot be spoofed by the client. Only when the direct
+// peer is a configured trusted proxy does it honor a forwarded-for header:
+// X-Real-IP first (a single value a reverse proxy typically sets verbatim to
+// its own view of the peer), falling back to the right-most entry of
+// X-Forwarded-For (the entry appended by the nearest -- trusted -- hop;
+// entries to its left may be attacker-supplied and are not used).
+func clientIPFromRequest(r *http.Request, trustedProxies trustedProxyList) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		return r.RemoteAddr
+		host = r.RemoteAddr
+	}
+	if !trustedProxies.trusts(host) {
+		return host
+	}
+	if realIP := strings.TrimSpace(r.Header.Get("X-Real-IP")); realIP != "" {
+		if net.ParseIP(realIP) != nil {
+			return realIP
+		}
+	}
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		parts := strings.Split(xff, ",")
+		last := strings.TrimSpace(parts[len(parts)-1])
+		if net.ParseIP(last) != nil {
+			return last
+		}
 	}
 	return host
 }

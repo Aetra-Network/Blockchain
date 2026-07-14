@@ -2,6 +2,7 @@ package types
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -431,11 +432,34 @@ func cloneMigrations(migrations []ActorMigrationRecord) []ActorMigrationRecord {
 	return out
 }
 
+// hashParts hashes a sequence of parts using length-prefixed framing (an
+// 8-byte big-endian length before each part's raw bytes) so the byte stream
+// fed to sha256 is unambiguous regardless of what bytes a part contains --
+// including an embedded NUL. This mirrors the canonical hashParts/writePart
+// construction in x/aetracore/types/hash.go.
+//
+// This function previously joined parts with a trailing NUL-byte separator
+// (h.Write(part); h.Write([]byte{0})), which is only injective so long as no
+// non-terminal part contains a NUL byte -- see security-audit FINDING-016.
+// That was safe in practice only because callers (DeriveActorID,
+// DeriveContractAddress) happened to be gated by external validation, not
+// because the primitive itself was collision-resistant against arbitrary
+// part boundaries. Changing the byte stream here changes every derived
+// ActorID/ContractAddress output, which would be a consensus-breaking change
+// for any chain with live actor-registry state; it is safe to change
+// directly here (no genesis/consensus version bump) only because
+// x/actor-registry is a dormant "prototype" module -- its genesis Params
+// default to Enabled=false (see x/internal/prototype.DefaultParams and
+// x/actor-registry/keeper.TestDefaultGenesisIsDisabledAndValid) and it ships
+// disabled for the first public testnet, so there is no live chain with
+// state derived from the old formula to stay compatible with.
 func hashParts(parts ...string) string {
 	h := sha256.New()
+	var length [8]byte
 	for _, part := range parts {
+		binary.BigEndian.PutUint64(length[:], uint64(len(part)))
+		h.Write(length[:])
 		h.Write([]byte(part))
-		h.Write([]byte{0})
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }

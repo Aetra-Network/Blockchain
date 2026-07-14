@@ -13,12 +13,14 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/spf13/cobra"
 
 	"github.com/cosmos/cosmos-sdk/client"
 	"github.com/cosmos/cosmos-sdk/client/flags"
+	authtx "github.com/cosmos/cosmos-sdk/x/auth/tx"
 
 	appparams "github.com/sovereign-l1/l1/app/params"
 	"github.com/sovereign-l1/l1/x/aetravm/async"
@@ -62,6 +64,39 @@ const (
 	avmMsgStoreCodeTypeURL       = "/l1.contracts.v1.MsgStoreCode"
 	avmMsgDeployContractTypeURL  = "/l1.contracts.v1.MsgDeployContract"
 	avmMsgExecuteExternalTypeURL = "/l1.contracts.v1.MsgExecuteExternal"
+
+	// avmMsgDeployContractResponseTypeURL is the registered wire name for the
+	// deploy Msg response (see the gogoproto.RegisterType((*InstantiateContractResponse)(nil),
+	// "l1.contracts.v1.MsgDeployContractResponse") call in
+	// x/contracts/types/service.go) -- used to pick MsgDeployContractResponse
+	// back out of a confirmed tx's packed MsgResponses.
+	avmMsgDeployContractResponseTypeURL = "/l1.contracts.v1.MsgDeployContractResponse"
+)
+
+// avmTxConfirmPollInterval and avmTxConfirmMaxAttempts bound how long
+// runAVMBroadcast waits for a synchronously-broadcast AVM tx to actually be
+// included in a block before falling back to reporting the raw (CheckTx-only)
+// result.
+//
+// This matters because in this SDK version --broadcast-mode only supports
+// "sync" and "async" (BroadcastTxCommit was removed), and "sync" returns as
+// soon as CheckTx admits the tx to the mempool -- see
+// client.Context.BroadcastTxSync's own doc comment ("returns after CheckTx
+// execution"). CheckTx itself never runs message handlers: baseapp's runMsgs
+// skips execution entirely unless mode is execModeFinalize or
+// execModeSimulate. So a freshly-broadcast res.Code==0 only means "fees,
+// signature, and sequence checked out and the tx was admitted" -- it does NOT
+// mean the AVM message executed successfully, and res.Data/res.Events are
+// empty at that point because the msg handler (and any contract-not-found
+// style rejection it returns) only runs once the tx is actually included in
+// a block. This is exactly what made a live-testnet `tx avm execute` against
+// a non-contract address look like code=0 "success" even though the keeper
+// correctly rejects it (see RESULTS_V1-live-testnet-exercise.md section 3).
+// Polling for the committed tx result turns that CheckTx-only code=0 into the
+// real FinalizeBlock outcome.
+const (
+	avmTxConfirmPollInterval = 1 * time.Second
+	avmTxConfirmMaxAttempts  = 20
 )
 
 type avmServicePayload struct {
@@ -139,6 +174,7 @@ func NewAVMQueryCmd() *cobra.Command {
 	cmd.AddCommand(
 		newAVMCodeQueryCmd(),
 		newAVMContractQueryCmd(),
+		newAVMContractsQueryCmd(),
 		newAVMStorageQueryCmd(),
 		newAVMReceiptsQueryCmd(),
 	)
@@ -435,15 +471,20 @@ func newAVMExecuteCmd() *cobra.Command {
 func newAVMCodeQueryCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "code [code-id]",
-		Short: "Build l1.contracts.v1.Query/Code request",
+		Short: "Query l1.contracts.v1.Query/Code",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return writeCommandJSON(cmd, avmServicePayload{
-				Service:    avmQueryService,
-				Method:     "Code",
-				FullMethod: "/" + avmQueryService + "/Code",
-				Request:    avmQueryRequest{CodeID: strings.TrimSpace(args[0])},
+			clientCtx, err := client.GetClientQueryContext(cmd)
+			if err != nil {
+				return err
+			}
+			res, err := contractstypes.NewQueryClient(clientCtx).Code(cmd.Context(), &contractstypes.QueryCodeRequest{
+				CodeID: strings.TrimSpace(args[0]),
 			})
+			if err != nil {
+				return err
+			}
+			return clientCtx.PrintProto(res)
 		},
 	}
 	flags.AddQueryFlagsToCmd(cmd)
@@ -453,25 +494,64 @@ func newAVMCodeQueryCmd() *cobra.Command {
 func newAVMContractQueryCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "contract [contract-address]",
-		Short: "Build l1.contracts.v1.Query/Contract request",
+		Short: "Query l1.contracts.v1.Query/Contract",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return writeCommandJSON(cmd, avmServicePayload{
-				Service:    avmQueryService,
-				Method:     "Contract",
-				FullMethod: "/" + avmQueryService + "/Contract",
-				Request:    avmQueryRequest{ContractAddress: strings.TrimSpace(args[0])},
+			clientCtx, err := client.GetClientQueryContext(cmd)
+			if err != nil {
+				return err
+			}
+			res, err := contractstypes.NewQueryClient(clientCtx).Contract(cmd.Context(), &contractstypes.QueryContractRequest{
+				ContractAddress: strings.TrimSpace(args[0]),
 			})
+			if err != nil {
+				return err
+			}
+			return clientCtx.PrintProto(res)
 		},
 	}
 	flags.AddQueryFlagsToCmd(cmd)
 	return cmd
 }
 
+// newAVMContractsQueryCmd lists deployed contracts via the already-implemented
+// keeper method (x/contracts/keeper/grpc_server.go Contracts, backed by
+// types.QueryContractsRequest/Response with Offset/Limit pagination -- see
+// x/contracts/keeper/keeper.go Keeper.Contracts). Without this, finding a
+// deployed contract's address operationally required scraping deploy tx logs
+// (see RESULTS_V1-live-testnet-exercise.md section 3, item 3).
+func newAVMContractsQueryCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "contracts",
+		Short: "Query l1.contracts.v1.Query/Contracts (list deployed contracts)",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			limit, _ := cmd.Flags().GetUint32(flagAVMLimit)
+			if limit == 0 {
+				return errors.New("contracts query limit must be positive")
+			}
+			clientCtx, err := client.GetClientQueryContext(cmd)
+			if err != nil {
+				return err
+			}
+			res, err := contractstypes.NewQueryClient(clientCtx).Contracts(cmd.Context(), &contractstypes.QueryContractsRequest{
+				Pagination: contractstypes.PageRequest{Limit: limit},
+			})
+			if err != nil {
+				return err
+			}
+			return clientCtx.PrintProto(res)
+		},
+	}
+	flags.AddQueryFlagsToCmd(cmd)
+	cmd.Flags().Uint32(flagAVMLimit, 50, "bounded contracts list query limit")
+	return cmd
+}
+
 func newAVMStorageQueryCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "storage [contract-address]",
-		Short: "Build l1.contracts.v1.Query/ContractStorage request",
+		Short: "Query l1.contracts.v1.Query/ContractStorage",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			keyPrefix, err := optionalHexFlag(cmd, flagAVMKeyPrefixHex)
@@ -482,12 +562,19 @@ func newAVMStorageQueryCmd() *cobra.Command {
 			if limit == 0 {
 				return errors.New("storage query limit must be positive")
 			}
-			return writeCommandJSON(cmd, avmServicePayload{
-				Service:    avmQueryService,
-				Method:     "ContractStorage",
-				FullMethod: "/" + avmQueryService + "/ContractStorage",
-				Request:    avmQueryRequest{ContractAddress: strings.TrimSpace(args[0]), KeyPrefix: base64OrEmpty(keyPrefix), Limit: limit},
+			clientCtx, err := client.GetClientQueryContext(cmd)
+			if err != nil {
+				return err
+			}
+			res, err := contractstypes.NewQueryClient(clientCtx).ContractStorage(cmd.Context(), &contractstypes.QueryContractStorageRequest{
+				ContractAddress: strings.TrimSpace(args[0]),
+				KeyPrefix:       keyPrefix,
+				Pagination:      contractstypes.PageRequest{Limit: limit},
 			})
+			if err != nil {
+				return err
+			}
+			return clientCtx.PrintProto(res)
 		},
 	}
 	flags.AddQueryFlagsToCmd(cmd)
@@ -499,19 +586,25 @@ func newAVMStorageQueryCmd() *cobra.Command {
 func newAVMReceiptsQueryCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "receipts [contract-address]",
-		Short: "Build l1.contracts.v1.Query/ContractReceipts request",
+		Short: "Query l1.contracts.v1.Query/ContractReceipts",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			limit, _ := cmd.Flags().GetUint32(flagAVMLimit)
 			if limit == 0 {
 				return errors.New("receipts query limit must be positive")
 			}
-			return writeCommandJSON(cmd, avmServicePayload{
-				Service:    avmQueryService,
-				Method:     "ContractReceipts",
-				FullMethod: "/" + avmQueryService + "/ContractReceipts",
-				Request:    avmQueryRequest{ContractAddress: strings.TrimSpace(args[0]), Limit: limit},
+			clientCtx, err := client.GetClientQueryContext(cmd)
+			if err != nil {
+				return err
+			}
+			res, err := contractstypes.NewQueryClient(clientCtx).ContractReceipts(cmd.Context(), &contractstypes.QueryContractReceiptsRequest{
+				ContractAddress: strings.TrimSpace(args[0]),
+				Pagination:      contractstypes.PageRequest{Limit: limit},
 			})
+			if err != nil {
+				return err
+			}
+			return clientCtx.PrintProto(res)
 		},
 	}
 	flags.AddQueryFlagsToCmd(cmd)
@@ -634,6 +727,20 @@ type avmBroadcastResult struct {
 	TxHash string `json:"txhash"`
 	Code   uint32 `json:"code"`
 	RawLog string `json:"raw_log,omitempty"`
+	// Confirmed is true once Code/RawLog reflect the tx's actual committed
+	// (FinalizeBlock/DeliverTx) result rather than just CheckTx/mempool
+	// admission. See awaitAVMTxConfirmation.
+	Confirmed bool `json:"confirmed"`
+	// Note explains why Confirmed is false when it is: the tx was accepted by
+	// CheckTx but did not show up in a block within the poll window, so
+	// Code/RawLog above are CheckTx-only and do not reflect execution.
+	Note string `json:"note,omitempty"`
+	// ContractAddressUser/ContractAddressRaw are populated for a confirmed,
+	// successful MsgDeployContract broadcast: the deployed contract's address,
+	// decoded from the confirmed tx's MsgDeployContractResponse so the caller
+	// does not have to separately look it up (see decodeDeployContractAddress).
+	ContractAddressUser string `json:"contract_address_user,omitempty"`
+	ContractAddressRaw  string `json:"contract_address_raw,omitempty"`
 }
 
 func runAVMBroadcast(cmd *cobra.Command, msg sdk.Msg) error {
@@ -641,15 +748,100 @@ func runAVMBroadcast(cmd *cobra.Command, msg sdk.Msg) error {
 	if err != nil {
 		return err
 	}
-	res, err := signAndBroadcast(context.Background(), clientCtx, cmd.Flags(), msg)
-	if err != nil && res == nil {
-		return err
+	res, broadcastErr := signAndBroadcast(context.Background(), clientCtx, cmd.Flags(), msg)
+	if broadcastErr != nil && res == nil {
+		return broadcastErr
 	}
+
 	result := avmBroadcastResult{TxHash: res.TxHash, Code: res.Code, RawLog: res.RawLog}
+	finalErr := broadcastErr
+
+	// res.Code == 0 at this point only means CheckTx admitted the tx to the
+	// mempool (see the avmTxConfirmPollInterval doc comment above) -- confirm
+	// the real outcome before reporting success or extracting a deploy
+	// response. A nonzero res.Code here is a genuine CheckTx-level rejection
+	// (bad signature, insufficient fee, sequence mismatch, ...); there is
+	// nothing to wait for in that case since the tx never entered the mempool.
+	if res.Code == 0 {
+		if confirmed, ok := awaitAVMTxConfirmation(cmd, clientCtx, res.TxHash); ok {
+			result.Confirmed = true
+			result.Code = confirmed.Code
+			result.RawLog = confirmed.RawLog
+			if confirmed.Code != 0 {
+				finalErr = fmt.Errorf("tx rejected: code=%d raw_log=%s", confirmed.Code, confirmed.RawLog)
+			} else {
+				finalErr = nil
+				if _, isDeploy := msg.(*contractstypes.MsgDeployContract); isDeploy {
+					if user, raw, found := decodeDeployContractAddress(clientCtx, confirmed); found {
+						result.ContractAddressUser = user
+						result.ContractAddressRaw = raw
+					}
+				}
+			}
+		} else {
+			result.Note = fmt.Sprintf("tx admitted by CheckTx (mempool) but not yet confirmed in a block within %s; code/raw_log above reflect mempool admission only, not execution -- re-check with `l1d query tx %s`", avmTxConfirmPollInterval*avmTxConfirmMaxAttempts, res.TxHash)
+		}
+	}
+
 	if writeErr := writeCommandJSON(cmd, result); writeErr != nil {
 		return writeErr
 	}
-	return err
+	return finalErr
+}
+
+// awaitAVMTxConfirmation polls for txHash's committed (post-block) result and
+// returns it with ok=true once found. It returns ok=false (not an error) if
+// the tx is not yet visible within the poll budget: callers should fall back
+// to the CheckTx-only result rather than fail the whole command, since the tx
+// may simply still be in flight rather than lost.
+func awaitAVMTxConfirmation(cmd *cobra.Command, clientCtx client.Context, txHash string) (*sdk.TxResponse, bool) {
+	clientCtx = clientCtx.WithCmdContext(cmd.Context())
+	waitCtx := clientCtx.GetCmdContextWithFallback()
+	for attempt := 0; attempt < avmTxConfirmMaxAttempts; attempt++ {
+		select {
+		case <-waitCtx.Done():
+			return nil, false
+		case <-time.After(avmTxConfirmPollInterval):
+		}
+		confirmed, err := authtx.QueryTx(clientCtx, txHash)
+		if err == nil && confirmed != nil {
+			return confirmed, true
+		}
+	}
+	return nil, false
+}
+
+// decodeDeployContractAddress extracts the deployed contract's address from a
+// confirmed deploy tx. The deploy keeper method (x/contracts/keeper/keeper.go
+// instantiateContract) does not emit a separate SDK/ABCI event carrying the
+// address the way execute's avm_execute event does, so the only place this is
+// recoverable from is the tx's packed Msg response: res.Data decodes as
+// sdk.TxMsgData{MsgResponses: []*Any}, and the deploy response
+// (MsgDeployContractResponse, wire-aliased to
+// contractstypes.InstantiateContractResponse) is one of those Anys.
+func decodeDeployContractAddress(clientCtx client.Context, res *sdk.TxResponse) (userAddr, rawAddr string, found bool) {
+	if res == nil || res.Data == "" || clientCtx.Codec == nil {
+		return "", "", false
+	}
+	dataBytes, err := hex.DecodeString(res.Data)
+	if err != nil {
+		return "", "", false
+	}
+	var txMsgData sdk.TxMsgData
+	if err := clientCtx.Codec.Unmarshal(dataBytes, &txMsgData); err != nil {
+		return "", "", false
+	}
+	for _, msgResponse := range txMsgData.MsgResponses {
+		if msgResponse == nil || msgResponse.TypeUrl != avmMsgDeployContractResponseTypeURL {
+			continue
+		}
+		var deployResp contractstypes.InstantiateContractResponse
+		if err := clientCtx.Codec.Unmarshal(msgResponse.Value, &deployResp); err != nil {
+			return "", "", false
+		}
+		return deployResp.ContractAddressUser, deployResp.ContractAddressRaw, true
+	}
+	return "", "", false
 }
 
 func validateAVMTxFees(cmd *cobra.Command) error {

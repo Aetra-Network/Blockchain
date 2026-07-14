@@ -400,3 +400,54 @@ func TestStorageRentSideEffectsIncludedInFee(t *testing.T) {
 	require.Equal(t, rentAmount, diff,
 		"storage rent side effects must be included 1:1 in the required fee budget")
 }
+
+// TestComputeFullTransferFeeClampsToHardCap is the regression test for
+// FINDING-011: a large-but-envelope-legal tx (e.g. a big MsgMultiSend
+// airdrop, or -- once contracts are enabled -- a large MsgStoreCode) must
+// never produce a full-formula requirement above the governance hard cap.
+// Before the fix, AdmitTx required paidAmount >= requiredFull AND
+// paidAmount <= maxFee; once requiredFull > maxFee those two conditions are
+// mutually exclusive and the tx is rejected no matter what fee is attached.
+func TestComputeFullTransferFeeClampsToHardCap(t *testing.T) {
+	bp := types.DefaultParams()
+	fp := types.DefaultFeeFormulaParams()
+
+	maxFee, err := bp.MaxFeeInt()
+	require.NoError(t, err)
+
+	// ~60 KB tx body, matching the finding's own PoC sketch: at the default
+	// byte_fee_naet=100000, the byte component alone (100000 * 60000 = 6e9
+	// naet = 6 AET) already exceeds the default 5 AET hard cap before the
+	// base/gas/message components are even added, and well under the 256 KB
+	// envelope limit that would otherwise reject the tx outright.
+	txSizeBytes := uint64(60_000)
+
+	fee, err := types.ComputeFullTransferFee(
+		bp, fp,
+		100_000, txSizeBytes, 0,
+		0,
+		types.ReputationNeutralScore, false,
+		sdkmath.ZeroInt(),
+	)
+	require.NoError(t, err)
+	require.True(t, fee.Equal(maxFee),
+		"full-formula fee %s for a %d-byte tx must be clamped to the hard cap %s, not exceed it", fee, txSizeBytes, maxFee)
+}
+
+// TestComputeFullTransferFeeClampDoesNotMaskUnderCapValues verifies the new
+// clamp only engages when the formula genuinely exceeds the hard cap --
+// ordinary, moderate fees are computed exactly as before.
+func TestComputeFullTransferFeeClampDoesNotMaskUnderCapValues(t *testing.T) {
+	bp := testBaseParams() // MaxFeeAmount = 1e18 naet, effectively unreachable here.
+	fp := testFormulaParams()
+
+	fee, err := types.ComputeFullTransferFee(
+		bp, fp,
+		50_000, 200, 1,
+		0,
+		types.ReputationNeutralScore, false,
+		sdkmath.ZeroInt(),
+	)
+	require.NoError(t, err)
+	require.Equal(t, sdkmath.NewInt(51_300), fee, "clamp must not alter a fee that is already well under the hard cap")
+}

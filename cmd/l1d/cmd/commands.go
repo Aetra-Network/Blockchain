@@ -155,6 +155,7 @@ func queryCommand() *cobra.Command {
 		server.QueryBlockResultsCmd(),
 		NewAVMQueryCmd(),
 		NewSystemQueryCmd(),
+		NewReputationQueryCmd(),
 	)
 
 	return cmd

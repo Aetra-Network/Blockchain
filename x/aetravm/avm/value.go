@@ -169,6 +169,36 @@ type runtimeMapEntry struct {
 	keyBytes []byte
 }
 
+// runtimeValueSizeUnits returns a deterministic measure of the O(N) work
+// that cloning, normalizing, or canonically encoding v would perform: the
+// number of map entries, tuple elements, or bytes/string length. Runtime
+// values of any other tag (integers, bool, address, hash, coins,
+// timestamp, ...) are fixed-size regardless of their contents, so this is
+// 0 for them -- opcodes that only ever touch such values are charged no
+// extra gas by Params.GasPerOperandUnit.
+//
+// This is the size metric behind the FINDING-001 fix
+// (security-audit/05-findings/FINDING-001-avm-gas-mispricing-dos.md): every
+// AVM opcode that clones or iterates a value proportional to this size
+// (OpDup, OpLoadLocal, OpStoreLocal, OpReturn, the OpMap* family, and
+// OpReadStorage's whole-state snapshot form) must charge gas proportional
+// to it, not a flat per-opcode constant, since maps in particular have no
+// runtime cap on element count.
+func runtimeValueSizeUnits(v RuntimeValue) uint64 {
+	switch v.Tag {
+	case TagMap:
+		return uint64(len(v.mapVal))
+	case TagTuple:
+		return uint64(len(v.tupleVal))
+	case TagBytes:
+		return uint64(len(v.bytesVal))
+	case TagString:
+		return uint64(len(v.strVal))
+	default:
+		return 0
+	}
+}
+
 func runtimeMapEntryFrom(key, value RuntimeValue) (runtimeMapEntry, error) {
 	keyBytes, err := CanonicalEncode(key)
 	if err != nil {

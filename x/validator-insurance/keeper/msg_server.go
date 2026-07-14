@@ -25,6 +25,9 @@ func (m msgServer) FundValidatorInsurance(ctx context.Context, msg *v1.MsgFundVa
 	if msg == nil {
 		return nil, v1.ErrInvalidParams.Wrap("empty request")
 	}
+	if err := m.Keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
 	}
@@ -53,6 +56,9 @@ func (m msgServer) FundValidatorInsurance(ctx context.Context, msg *v1.MsgFundVa
 func (m msgServer) WithdrawValidatorInsurance(ctx context.Context, msg *v1.MsgWithdrawValidatorInsurance) (*v1.MsgWithdrawValidatorInsuranceResponse, error) {
 	if msg == nil {
 		return nil, v1.ErrInvalidParams.Wrap("empty request")
+	}
+	if err := m.Keeper.loadForBlock(ctx); err != nil {
+		return nil, err
 	}
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
@@ -84,6 +90,9 @@ func (m msgServer) SubmitInsuranceClaim(ctx context.Context, msg *v1.MsgSubmitIn
 	if msg == nil {
 		return nil, v1.ErrInvalidParams.Wrap("empty request")
 	}
+	if err := m.Keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
 	}
@@ -114,6 +123,9 @@ func (m msgServer) SubmitInsuranceClaim(ctx context.Context, msg *v1.MsgSubmitIn
 func (m msgServer) ResolveInsuranceClaim(ctx context.Context, msg *v1.MsgResolveInsuranceClaim) (*v1.MsgResolveInsuranceClaimResponse, error) {
 	if msg == nil {
 		return nil, v1.ErrInvalidParams.Wrap("empty request")
+	}
+	if err := m.Keeper.loadForBlock(ctx); err != nil {
+		return nil, err
 	}
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err

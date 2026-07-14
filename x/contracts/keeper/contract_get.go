@@ -21,21 +21,22 @@ const contractGetDefaultGas = 200_000
 // character for character — currentCounter and current_counter are different
 // methods. State is never mutated: the VM runs against a copy of the
 // contract's storage snapshot and the result is discarded after rendering.
-func (k Keeper) ContractGet(req types.QueryContractGetRequest) (types.QueryContractGetResponse, error) {
+func (k *Keeper) ContractGet(req types.QueryContractGetRequest) (types.QueryContractGetResponse, error) {
 	if err := req.ValidateBasic(); err != nil {
 		return types.QueryContractGetResponse{}, err
 	}
 	if err := types.ValidateContractAddress(req.ContractAddress); err != nil {
 		return types.QueryContractGetResponse{}, err
 	}
-	contract, found := findContract(k.genesis.State.Contracts, req.ContractAddress)
+	gs := k.snapshotGenesis()
+	contract, found := findContract(gs.State.Contracts, req.ContractAddress)
 	if !found {
 		return types.QueryContractGetResponse{}, errors.New(types.ErrContractNotFound + ": no contract at address")
 	}
 	if err := types.EnsureContractLifecycleAction(contract, types.ContractLifecycleActionQuery); err != nil {
 		return types.QueryContractGetResponse{}, err
 	}
-	code, ok := findCode(k.genesis.State.Codes, contract.CodeID)
+	code, ok := findCode(gs.State.Codes, contract.CodeID)
 	if !ok {
 		return types.QueryContractGetResponse{}, errors.New(types.ErrContractNotFound + ": contract code record missing")
 	}
@@ -71,7 +72,7 @@ func (k Keeper) ContractGet(req types.QueryContractGetRequest) (types.QueryContr
 	if gas == 0 {
 		gas = contractGetDefaultGas
 	}
-	if max := k.genesis.Params.MaxGasPerExecution; max > 0 && gas > max {
+	if max := gs.Params.MaxGasPerExecution; max > 0 && gas > max {
 		gas = max
 	}
 

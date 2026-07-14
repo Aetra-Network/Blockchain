@@ -22,6 +22,9 @@ func (s grpcMsgServer) ProposeConstitutionAmendment(ctx context.Context, msg *ty
 	if msg == nil {
 		return nil, errors.New("empty constitution amendment proposal")
 	}
+	if err := s.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	amendment, err := s.keeper.ProposeConstitutionAmendment(*msg, sdkHeight(ctx))
 	if err != nil {
 		return nil, err
@@ -32,6 +35,9 @@ func (s grpcMsgServer) ProposeConstitutionAmendment(ctx context.Context, msg *ty
 func (s grpcMsgServer) VoteConstitutionAmendment(ctx context.Context, msg *types.MsgVoteConstitutionAmendment) (*types.MsgVoteConstitutionAmendmentResponse, error) {
 	if msg == nil {
 		return nil, errors.New("empty constitution amendment vote")
+	}
+	if err := s.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
 	}
 	amendment, err := s.keeper.VoteConstitutionAmendment(*msg, sdkHeight(ctx))
 	if err != nil {
@@ -44,6 +50,9 @@ func (s grpcMsgServer) ExecuteConstitutionAmendment(ctx context.Context, msg *ty
 	if msg == nil {
 		return nil, errors.New("empty constitution amendment execution")
 	}
+	if err := s.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	constitution, amendment, err := s.keeper.ExecuteConstitutionAmendment(*msg, sdkHeight(ctx))
 	if err != nil {
 		return nil, err
@@ -54,6 +63,9 @@ func (s grpcMsgServer) ExecuteConstitutionAmendment(ctx context.Context, msg *ty
 func (s grpcMsgServer) CancelConstitutionAmendment(ctx context.Context, msg *types.MsgCancelConstitutionAmendment) (*types.MsgCancelConstitutionAmendmentResponse, error) {
 	if msg == nil {
 		return nil, errors.New("empty constitution amendment cancellation")
+	}
+	if err := s.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
 	}
 	amendment, err := s.keeper.CancelConstitutionAmendment(*msg, sdkHeight(ctx))
 	if err != nil {

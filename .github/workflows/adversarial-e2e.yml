@@ -92,7 +92,12 @@ jobs:
           cache: true
 
       - name: Setup Buf
-        uses: bufbuild/buf-setup-action@v1
+        # SHA-pinned third-party action (mutable tag = supply-chain risk, see
+        # FINDING-018c). Note bufbuild/buf-setup-action's `v1` is actually a
+        # branch ref, not a tag -- even more mutable than a typical version
+        # tag. SHA resolved from that `v1` branch HEAD on 2026-07-14, which
+        # at that time matched release v1.50.0.
+        uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99 # v1 (v1.50.0)
         with:
           version: ${{ env.BUF_VERSION }}
 

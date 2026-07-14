@@ -35,9 +35,55 @@ type ReservedSystemModuleAccount struct {
 	UserFriendly		string
 	Core			bool
 	CanHoldFunds		bool
+	// CanReceiveUserFunds allows a plain bank send to this entity's reserved
+	// catalog ("vanity") address, Raw/UserFriendly above. That address is
+	// deliberately distinct from the cosmos module account this entity's
+	// module actually reads/writes (authtypes.NewModuleAddress(ModuleAccountName);
+	// see the "two-layer address model" documented on
+	// TestReservedSystemModuleAccountsBackedByLiveModuleAccounts in
+	// app/system_module_accounts_test.go). Coins sent to the catalog address
+	// are therefore NOT visible to the module's own SendCoinsFromModule*/
+	// BurnCoins accounting -- they simply sit there, unspendable, forever.
+	// Setting this true for a fund-bearing module without confirming the
+	// module never needs to read that balance is security-audit FINDING-017
+	// (a fund-loss footgun found on AETReporterRewards); see
+	// fundStrandingReviewedExceptions, which validateFundStrandingExceptions
+	// enforces via ValidateReservedSystemModuleAccountWiring.
 	CanReceiveUserFunds	bool
 	CanSendFunds		bool
 	Permissions		[]string
+}
+
+// fundStrandingReviewedExceptions lists reserved system entities where
+// CanReceiveUserFunds=true is a deliberate, reviewed exception despite the
+// entity's real funds being custodied by a distinct cosmos module account
+// (see the CanReceiveUserFunds doc comment above). AETBurn is the only
+// current member: a plain send to the AETBurn catalog address lands coins at
+// an address nobody holds the key for, which is economically indistinguishable
+// from an on-chain burn even though the x/burn module's own accounting never
+// reads it -- TestReservedSystemBankSendPolicy (app/system_module_accounts_test.go)
+// exercises this on purpose.
+//
+// Do not add a new name here without the same reasoning: the destination
+// module must have no need to ever read balance received at the catalog
+// address, or user funds sent there (e.g. expecting a rewards pool to later
+// pay them out) will be silently and permanently stranded.
+var fundStrandingReviewedExceptions = map[string]bool{
+	"AETBurn": true,
+}
+
+// validateFundStrandingExceptions enforces that CanReceiveUserFunds=true is
+// only set for a reserved module account when it is an explicitly reviewed
+// exception. It is factored out of ValidateReservedSystemModuleAccountWiring
+// so the FINDING-017 regression tests can exercise it against synthetic
+// accounts without mutating the real address catalog.
+func validateFundStrandingExceptions(accounts []ReservedSystemModuleAccount) error {
+	for _, account := range accounts {
+		if account.CanReceiveUserFunds && !fundStrandingReviewedExceptions[account.Name] {
+			return fmt.Errorf("reserved module account %s allows direct user sends to its reserved catalog address but is not a reviewed fund-stranding exception: its funds are custodied by the distinct module account %q, which a plain bank send to the catalog address would never reach (security-audit FINDING-017)", account.Name, account.ModuleAccountName)
+		}
+	}
+	return nil
 }
 
 var moduleAccountPermissions = map[string][]string{
@@ -230,6 +276,9 @@ func ValidateReservedSystemModuleAccountWiring(blocked map[string]bool) error {
 		burn.ModuleAccountName != burntypes.ModuleName ||
 		burn.Raw != "ae1qpqsgyzpqsgyzpqsgyzpqsgyzpqsgyzpqsgyzpqsgyzpqsg9g3xsnus8fg" {
 		return fmt.Errorf("burn sink address must be AETBurn")
+	}
+	if err := validateFundStrandingExceptions(ReservedSystemModuleAccounts()); err != nil {
+		return err
 	}
 	return nil
 }

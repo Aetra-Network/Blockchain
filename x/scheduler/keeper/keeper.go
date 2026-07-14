@@ -27,6 +27,7 @@ type GenesisState struct {
 type Keeper struct {
 	genesis		GenesisState
 	storeService	corestore.KVStoreService
+	runtimeCtx	context.Context
 	handlers	map[string]JobHandler
 }
 
@@ -70,6 +71,7 @@ func (k *Keeper) InitGenesisState(ctx context.Context, gs GenesisState) error {
 		return err
 	}
 	k.genesis = cloneGenesis(gs)
+	k.runtimeCtx = ctx
 	if k.storeService == nil {
 		return nil
 	}
@@ -78,6 +80,53 @@ func (k *Keeper) InitGenesisState(ctx context.Context, gs GenesisState) error {
 		return err
 	}
 	return k.storeService.OpenKVStore(ctx).Set(genesisKey, bz)
+}
+
+func (k *Keeper) saveGenesis(next GenesisState) error {
+	next = cloneGenesis(next)
+	if err := next.Validate(); err != nil {
+		return err
+	}
+	k.genesis = next
+	if k.storeService == nil || k.runtimeCtx == nil {
+		return nil
+	}
+	bz, err := json.Marshal(next)
+	if err != nil {
+		return err
+	}
+	return k.storeService.OpenKVStore(k.runtimeCtx).Set(genesisKey, bz)
+}
+
+// loadForBlock refreshes the in-memory genesis from the committed store using
+// the live block context and points runtimeCtx at that same context. It MUST
+// be called at the start of every consensus entry point (each Msg handler) so
+// a restarted or state-synced node -- where InitChain/InitGenesis is not
+// re-run -- operates on the same committed state as a continuously running
+// node, and so writes persist through the current block rather than a stale
+// InitChain-era context. Mirrors the fix applied to x/validator-election
+// (SEC-HIGH). See security-audit/05-findings/FINDING-006-inmemory-genesis-not-rehydrated-consensus-halt.md.
+func (k *Keeper) loadForBlock(ctx context.Context) error {
+	k.runtimeCtx = ctx
+	if k.storeService == nil {
+		return nil
+	}
+	bz, err := k.storeService.OpenKVStore(ctx).Get(genesisKey)
+	if err != nil {
+		return err
+	}
+	if len(bz) == 0 {
+		return nil
+	}
+	var gs GenesisState
+	if err := json.Unmarshal(bz, &gs); err != nil {
+		return err
+	}
+	if err := gs.Validate(); err != nil {
+		return err
+	}
+	k.genesis = cloneGenesis(gs)
+	return nil
 }
 
 func (k Keeper) ExportGenesis() GenesisState {
@@ -119,9 +168,13 @@ func (k *Keeper) UpdateParams(authority string, params prototype.Params, schedul
 	if err := k.genesis.State.Validate(schedulerParams); err != nil {
 		return err
 	}
-	k.genesis.Params = params
-	k.genesis.SchedulerParams = schedulerParams
-	return nil
+	next := cloneGenesis(k.genesis)
+	next.Params = params
+	next.SchedulerParams = schedulerParams
+	if err := next.Validate(); err != nil {
+		return err
+	}
+	return k.saveGenesis(next)
 }
 
 func (k *Keeper) RegisterJobHandler(ownerModule string, handler JobHandler) error {
@@ -157,8 +210,7 @@ func (k *Keeper) RegisterScheduledJob(msg schedulertypes.MsgRegisterScheduledJob
 	if err := next.Validate(); err != nil {
 		return err
 	}
-	k.genesis = next
-	return nil
+	return k.saveGenesis(next)
 }
 
 func (k *Keeper) PauseScheduledJob(msg schedulertypes.MsgPauseScheduledJob) error {
@@ -189,8 +241,7 @@ func (k *Keeper) CancelScheduledJob(msg schedulertypes.MsgCancelScheduledJob) er
 	if err := next.Validate(); err != nil {
 		return err
 	}
-	k.genesis = next
-	return nil
+	return k.saveGenesis(next)
 }
 
 func (k *Keeper) ExecuteDueJobs(msg schedulertypes.MsgExecuteDueJobs) (schedulertypes.ExecutionBatchResult, error) {
@@ -228,7 +279,9 @@ func (k *Keeper) ExecuteDueJobs(msg schedulertypes.MsgExecuteDueJobs) (scheduler
 	if err := next.Validate(); err != nil {
 		return schedulertypes.ExecutionBatchResult{}, err
 	}
-	k.genesis = next
+	if err := k.saveGenesis(next); err != nil {
+		return schedulertypes.ExecutionBatchResult{}, err
+	}
 	result.RemainingDue = schedulertypes.DueJobs(k.genesis.State, msg.CurrentHeight)
 	return result, nil
 }
@@ -315,8 +368,7 @@ func (k *Keeper) setJobPaused(authority, ownerModule, jobID string, paused bool)
 	if err := next.Validate(); err != nil {
 		return err
 	}
-	k.genesis = next
-	return nil
+	return k.saveGenesis(next)
 }
 
 func (k Keeper) executeJob(job schedulertypes.ScheduledJob, currentHeight uint64) (schedulertypes.JobHistoryRecord, schedulertypes.ScheduledJob) {

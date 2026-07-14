@@ -17,6 +17,9 @@ func NewMsgServer(k *Keeper) types.MsgServer {
 var _ types.MsgServer = &msgServer{}
 
 func (m *msgServer) PayStorageRent(ctx context.Context, req *types.MsgPayStorageRent) (*types.MsgPayStorageRentResponse, error) {
+	if err := m.k.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	_, _, err := m.k.PayStorageRent(ctx, *req)
 	if err != nil {
 		return nil, err
@@ -25,6 +28,9 @@ func (m *msgServer) PayStorageRent(ctx context.Context, req *types.MsgPayStorage
 }
 
 func (m *msgServer) UnfreezeContract(ctx context.Context, req *types.MsgUnfreezeContract) (*types.MsgUnfreezeContractResponse, error) {
+	if err := m.k.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	_, _, err := m.k.UnfreezeContract(ctx, *req)
 	if err != nil {
 		return nil, err
@@ -32,7 +38,10 @@ func (m *msgServer) UnfreezeContract(ctx context.Context, req *types.MsgUnfreeze
 	return &types.MsgUnfreezeContractResponse{}, nil
 }
 
-func (m *msgServer) WithdrawExcessRent(_ context.Context, req *types.MsgWithdrawExcessRent) (*types.MsgWithdrawExcessRentResponse, error) {
+func (m *msgServer) WithdrawExcessRent(ctx context.Context, req *types.MsgWithdrawExcessRent) (*types.MsgWithdrawExcessRentResponse, error) {
+	if err := m.k.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	_, err := m.k.WithdrawExcessRent(*req)
 	if err != nil {
 		return nil, err
@@ -40,7 +49,10 @@ func (m *msgServer) WithdrawExcessRent(_ context.Context, req *types.MsgWithdraw
 	return &types.MsgWithdrawExcessRentResponse{}, nil
 }
 
-func (m *msgServer) FreezeExpiredContract(_ context.Context, req *types.MsgFreezeExpiredContract) (*types.MsgFreezeExpiredContractResponse, error) {
+func (m *msgServer) FreezeExpiredContract(ctx context.Context, req *types.MsgFreezeExpiredContract) (*types.MsgFreezeExpiredContractResponse, error) {
+	if err := m.k.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	_, err := m.k.FreezeExpiredContract(*req)
 	if err != nil {
 		return nil, err
@@ -48,7 +60,10 @@ func (m *msgServer) FreezeExpiredContract(_ context.Context, req *types.MsgFreez
 	return &types.MsgFreezeExpiredContractResponse{}, nil
 }
 
-func (m *msgServer) DeleteExpiredContract(_ context.Context, req *types.MsgDeleteExpiredContract) (*types.MsgDeleteExpiredContractResponse, error) {
+func (m *msgServer) DeleteExpiredContract(ctx context.Context, req *types.MsgDeleteExpiredContract) (*types.MsgDeleteExpiredContractResponse, error) {
+	if err := m.k.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	_, err := m.k.DeleteExpiredContract(*req)
 	if err != nil {
 		return nil, err
@@ -56,7 +71,10 @@ func (m *msgServer) DeleteExpiredContract(_ context.Context, req *types.MsgDelet
 	return &types.MsgDeleteExpiredContractResponse{}, nil
 }
 
-func (m *msgServer) UpdateStorageRentParams(_ context.Context, req *types.MsgUpdateStorageRentParams) (*types.MsgUpdateStorageRentParamsResponse, error) {
+func (m *msgServer) UpdateStorageRentParams(ctx context.Context, req *types.MsgUpdateStorageRentParams) (*types.MsgUpdateStorageRentParamsResponse, error) {
+	if err := m.k.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
 	err := m.k.UpdateStorageRentParams(*req)
 	if err != nil {
 		return nil, err

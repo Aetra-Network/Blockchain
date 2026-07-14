@@ -37,6 +37,11 @@ func ConfigureSDK(homeName string) string {
 	cfg.SetBech32PrefixForAccount(SDKBech32AccountPrefix, SDKBech32AccountPrefix+"pub")
 	cfg.SetBech32PrefixForValidator(sdkBech32ValidatorPrefix, sdkBech32ValidatorPrefix+"pub")
 	cfg.SetBech32PrefixForConsensusNode(sdkBech32ConsensusPrefix, sdkBech32ConsensusPrefix+"pub")
+	// Restrict every SDK-native bech32 address parse (not just this repo's own
+	// addressing.Parse) to this chain's two legal address widths, closing the
+	// gap where sdk.VerifyAddressFormat's default check only rejects length 0
+	// or > 255 (FINDING-012).
+	cfg.SetAddressVerifier(addressing.VerifyAddressBytes)
 	sdk.DefaultBondDenom = BondDenom
 	return nodeHome
 }

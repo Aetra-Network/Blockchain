@@ -45,6 +45,7 @@ func TestAVMCLICommandConstruction(t *testing.T) {
 		{name: "avm lsp", root: shimCommand(NewAVMCmd()), path: []string{"lsp"}},
 		{name: "query code", root: shimCommand(NewAVMQueryCmd()), path: []string{"code"}},
 		{name: "query contract", root: shimCommand(NewAVMQueryCmd()), path: []string{"contract"}},
+		{name: "query contracts", root: shimCommand(NewAVMQueryCmd()), path: []string{"contracts"}},
 		{name: "query storage", root: shimCommand(NewAVMQueryCmd()), path: []string{"storage"}},
 		{name: "query receipts", root: shimCommand(NewAVMQueryCmd()), path: []string{"receipts"}},
 		{name: "debug encode-message", root: shimCommand(NewAVMDebugCmd()), path: []string{"encode-message"}},

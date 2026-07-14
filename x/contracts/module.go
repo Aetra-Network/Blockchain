@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/grpc-ecosystem/grpc-gateway/runtime"
 	"github.com/spf13/cobra"
 
 	"cosmossdk.io/core/appmodule"
@@ -50,8 +49,6 @@ func (AppModule) RegisterLegacyAminoCodec(cdc *codec.LegacyAmino) {
 }
 func (AppModule) RegisterInterfaces(registry codectypes.InterfaceRegistry) {
 	types.RegisterInterfaces(registry)
-}
-func (AppModule) RegisterGRPCGatewayRoutes(client.Context, *runtime.ServeMux) {
 }
 
 func (am AppModule) RegisterServices(cfg module.Configurator) {
