@@ -15,8 +15,15 @@
 | #19 `ApplyPoolReward` unchecked uint64 commission multiply | use checked `MulDivUint64` | `be7eeccc` |
 | #14 SA2-S02 frozen-stake bound is a production no-op | add `MaxFrozenStakesV1=512` hard cap in `Normalize` | `ea45434b` |
 | #4 co-signature replay — native-account lifecycle handlers never increment the sequence | `next.Sequence++` in all 7 co-signed handlers | `5c680dc4` |
+| #32 localnet/testnet validator commission = 100% | default to 5% / 20% / 1% | `22df43c1` |
+| #22 auth policy accepts two keys sharing a public key | reject duplicate public keys in `validateAuthKeys` | `a8facbb8` |
+| #26 evidence proof hash uses a NUL separator (non-injective) | length-prefix framing (matches FINDING-016) | `94075f71` |
+| #20 `messageBeaconHash` concatenates variable-length fields without framing | length-prefix Source/Destination/Body | `0c11a618` |
+| #8 kill-switch not enforced on top-up / pay-storage-debt / unfreeze | add the `Enabled` guard to all three | `156f5b6d` |
 
 (Earlier Pass-2 fixes SA2-S02/S03/S04/S05/S06/S07/S08/I02 remain committed; see `SECOND-AUDIT-REPORT.md`.)
+
+**#7 (TopUpContract free value)** — NOT a one-liner: `contract.Balance` credit needs collection into a **contract-balance escrow**, but `collectRentPayment` routes only to the rent reserve and is a no-op when `bankKeeper==nil`. This is the same value-custody design decision as #2/SA2-F01 (which module account backs contract/pool balances). Left for a deliberate change, not a mis-routing patch.
 
 ---
 
