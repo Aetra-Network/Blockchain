@@ -10,6 +10,10 @@ import (
 
 var _ types.QueryServer = queryServer{}
 
+// maxQueryPageSize bounds list-query pages so an unauthenticated caller cannot
+// force a full-store load and copy. SA2-S08.
+const maxQueryPageSize uint64 = 100
+
 type queryServer struct{ keeper *Keeper }
 
 func NewQueryServerImpl(k *Keeper) types.QueryServer	{ return queryServer{keeper: k} }
@@ -34,9 +38,10 @@ func (q queryServer) NominatorPools(_ context.Context, req *types.QueryNominator
 
 	off := req.Offset
 	tlimit := req.Limit
-	if tlimit == 0 {
-
-		tlimit = total
+	// SA2-S08: bound the page. Treating Limit==0 as "all" and not clamping a
+	// large Limit lets an unauthenticated query force a full-store load + copy.
+	if tlimit == 0 || tlimit > maxQueryPageSize {
+		tlimit = maxQueryPageSize
 	}
 	if off >= total {
 		return &types.QueryNominatorPoolsResponse{Pools: []types.NominatorPool{}, NextOffset: 0, Total: total}, nil

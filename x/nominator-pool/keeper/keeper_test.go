@@ -1,6 +1,7 @@
 package keeper
 
 import (
+	"context"
 	"encoding/hex"
 	"fmt"
 	"strings"
@@ -963,6 +964,40 @@ func createPoolWithCommission(t *testing.T, k *Keeper, poolID string, commission
 	})
 	require.NoError(t, err)
 	return pool
+}
+
+// TestNominatorPoolsQueryBoundsPageSize covers SA2-S08: the list query must not
+// return the whole store. A Limit of 0 or an oversized Limit is clamped to
+// maxQueryPageSize instead of loading and copying every pool.
+func TestNominatorPoolsQueryBoundsPageSize(t *testing.T) {
+	k := NewKeeper()
+	const n = 150
+	for i := 0; i < n; i++ {
+		_, err := k.CreateNominatorPool(types.MsgCreateNominatorPool{
+			Authority:         prototype.DefaultAuthority,
+			PoolID:            fmt.Sprintf("pool-%03d", i),
+			PoolOperator:      rawPoolAddressFromInt(2*i + 1),
+			ValidatorTarget:   rawPoolAddressFromInt(2*i + 2),
+			PoolCommissionBps: 100,
+			Height:            1,
+			ValidatorStatus:   validatorregistrytypes.StatusActive,
+		})
+		require.NoError(t, err)
+	}
+
+	qs := NewQueryServerImpl(&k)
+
+	// Limit == 0 is clamped, not treated as "return all".
+	res, err := qs.NominatorPools(context.Background(), &types.QueryNominatorPoolsRequest{Limit: 0})
+	require.NoError(t, err)
+	require.Len(t, res.Pools, int(maxQueryPageSize))
+	require.Equal(t, uint64(n), res.Total)
+	require.Equal(t, maxQueryPageSize, res.NextOffset)
+
+	// An oversized Limit is clamped too.
+	res, err = qs.NominatorPools(context.Background(), &types.QueryNominatorPoolsRequest{Limit: 100_000})
+	require.NoError(t, err)
+	require.Len(t, res.Pools, int(maxQueryPageSize))
 }
 
 func createOfficialLiquidStakingPool(t *testing.T, k *Keeper, poolID string) types.NominatorPool {
