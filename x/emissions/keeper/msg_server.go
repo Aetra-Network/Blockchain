@@ -2,7 +2,6 @@ package keeper
 
 import (
 	"context"
-	"fmt"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
 
@@ -39,21 +38,14 @@ func (m msgServer) FinalizeEmissionEpoch(ctx context.Context, msg *types.MsgFina
 	if msg == nil {
 		return nil, types.ErrInvalidEpoch.Wrap("empty request")
 	}
-	if err := m.requireAuthority(msg.Authority); err != nil {
-		return nil, err
-	}
-	record, err := m.Keeper.FinalizeEmissionEpoch(ctx, msg.Epoch, msg.StakingRatioBps)
-	if err != nil {
-		return nil, err
-	}
-	sdk.UnwrapSDKContext(ctx).EventManager().EmitEvent(sdk.NewEvent(
-		types.EventTypeFinalizeEpoch,
-		sdk.NewAttribute(types.AttributeKeyAuthority, msg.Authority),
-		sdk.NewAttribute(types.AttributeKeyEpoch, fmt.Sprintf("%d", record.Epoch)),
-		sdk.NewAttribute(types.AttributeKeyInflationBps, fmt.Sprintf("%d", record.InflationBps)),
-		sdk.NewAttribute(types.AttributeKeyAmount, record.EmissionAmount.String()),
-	))
-	return &types.MsgFinalizeEmissionEpochResponse{EmissionEpoch: record}, nil
+	// SA2-S06: emission epochs are finalized exclusively by the protocol
+	// EndBlocker (app/native_economy.go), which finalizes the epoch, mints the
+	// emission, and enforces the mint-authority caps in a single commit.
+	// Finalizing through this standalone authority message records the epoch and
+	// advances TotalMintedAccounting WITHOUT minting or cap-checking; the
+	// EndBlocker then skips that epoch as already-finalized, suppressing the real
+	// emission and overstating accounting versus bank supply. Reject it.
+	return nil, types.ErrUnauthorized.Wrap("emission epochs are finalized by the protocol end-blocker, not by a standalone message")
 }
 
 func (m msgServer) requireAuthority(authority string) error {

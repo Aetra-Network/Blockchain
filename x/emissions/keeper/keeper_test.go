@@ -18,18 +18,14 @@ func TestStakingRatioBelowTargetIncreasesRewardsWithinBounds(t *testing.T) {
 	ctx := app.NewContext(false)
 	params := testParams()
 	require.NoError(t, app.EmissionsKeeper.SetParams(ctx, params))
-	msgServer := emissionskeeper.NewMsgServerImpl(app.EmissionsKeeper)
-
-	res, err := msgServer.FinalizeEmissionEpoch(ctx, &types.MsgFinalizeEmissionEpoch{
-		Authority:		app.EmissionsKeeper.Authority(),
-		Epoch:			1,
-		StakingRatioBps:	5_000,
-	})
+	// SA2-S06: emission finalization runs through the keeper method, exactly as
+	// the protocol EndBlocker does; the standalone Msg path is disabled.
+	record, err := app.EmissionsKeeper.FinalizeEmissionEpoch(ctx, 1, 5_000)
 	require.NoError(t, err)
 
-	require.Equal(t, uint32(400), res.EmissionEpoch.InflationBps)
-	require.Equal(t, sdkmath.NewInt(400), res.EmissionEpoch.EmissionAmount.Amount)
-	require.Equal(t, sdkmath.NewInt(280), res.EmissionEpoch.ValidatorReward.Amount)
+	require.Equal(t, uint32(400), record.InflationBps)
+	require.Equal(t, sdkmath.NewInt(400), record.EmissionAmount.Amount)
+	require.Equal(t, sdkmath.NewInt(280), record.ValidatorReward.Amount)
 	stored, err := app.EmissionsKeeper.GetParams(ctx)
 	require.NoError(t, err)
 	require.Equal(t, uint32(400), stored.CurrentInflationBps)
@@ -40,18 +36,22 @@ func TestStakingRatioAboveTargetDecreasesRewardsWithinBounds(t *testing.T) {
 	ctx := app.NewContext(false)
 	params := testParams()
 	require.NoError(t, app.EmissionsKeeper.SetParams(ctx, params))
-	msgServer := emissionskeeper.NewMsgServerImpl(app.EmissionsKeeper)
-
-	res, err := msgServer.FinalizeEmissionEpoch(ctx, &types.MsgFinalizeEmissionEpoch{
-		Authority:		app.EmissionsKeeper.Authority(),
-		Epoch:			1,
-		StakingRatioBps:	8_000,
-	})
+	record, err := app.EmissionsKeeper.FinalizeEmissionEpoch(ctx, 1, 8_000)
 	require.NoError(t, err)
 
-	require.Equal(t, uint32(100), res.EmissionEpoch.InflationBps)
-	require.Equal(t, sdkmath.NewInt(100), res.EmissionEpoch.EmissionAmount.Amount)
-	require.Equal(t, sdkmath.NewInt(70), res.EmissionEpoch.ValidatorReward.Amount)
+	require.Equal(t, uint32(100), record.InflationBps)
+	require.Equal(t, sdkmath.NewInt(100), record.EmissionAmount.Amount)
+	require.Equal(t, sdkmath.NewInt(70), record.ValidatorReward.Amount)
+
+	// SA2-S06: the standalone Msg finalize path is rejected so it cannot record
+	// an epoch without minting and suppress the protocol EndBlocker's emission.
+	msgServer := emissionskeeper.NewMsgServerImpl(app.EmissionsKeeper)
+	_, err = msgServer.FinalizeEmissionEpoch(ctx, &types.MsgFinalizeEmissionEpoch{
+		Authority:		app.EmissionsKeeper.Authority(),
+		Epoch:			2,
+		StakingRatioBps:	5_000,
+	})
+	require.Error(t, err)
 }
 
 func TestDistributionWeightsSumValidation(t *testing.T) {
