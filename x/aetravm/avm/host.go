@@ -331,16 +331,23 @@ func RandomBeacon(previousStateRoot, blockEntropy, messageHash, domain []byte) [
 // validators computing the same message derive the same hash.
 func messageBeaconHash(msg async.MessageEnvelope) []byte {
 	h := sha256.New()
-	h.Write(msg.Source)
-	h.Write(msg.Destination)
 	var scratch [8]byte
-	binary.BigEndian.PutUint64(scratch[:], uint64(msg.Opcode))
-	h.Write(scratch[:])
-	binary.BigEndian.PutUint64(scratch[:], msg.QueryID)
-	h.Write(scratch[:])
-	binary.BigEndian.PutUint64(scratch[:], msg.CreatedLogicalTime)
-	h.Write(scratch[:])
-	h.Write(msg.Body)
+	writeUint64 := func(v uint64) {
+		binary.BigEndian.PutUint64(scratch[:], v)
+		h.Write(scratch[:])
+	}
+	// SA2 #20: length-prefix the variable-length fields so distinct
+	// (Source, Destination, Body) triples cannot collide via boundary shifting.
+	writeBytes := func(b []byte) {
+		writeUint64(uint64(len(b)))
+		h.Write(b)
+	}
+	writeBytes(msg.Source)
+	writeBytes(msg.Destination)
+	writeUint64(uint64(msg.Opcode))
+	writeUint64(msg.QueryID)
+	writeUint64(msg.CreatedLogicalTime)
+	writeBytes(msg.Body)
 	return h.Sum(nil)
 }
 
