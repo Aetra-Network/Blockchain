@@ -20,6 +20,11 @@ func TestConsensusCriticalSourceRejectsNondeterminismAndExternalNetworkCalls(t *
 		risk	string
 	}{
 		{token: "time.Now(", risk: "wall-clock time is non-deterministic in consensus paths"},
+		{token: "time.Since(", risk: "wall-clock time is non-deterministic in consensus paths"},
+		{token: "time.After(", risk: "timer scheduling is non-deterministic in consensus paths"},
+		{token: "time.Tick(", risk: "timer scheduling is non-deterministic in consensus paths"},
+		{token: "time.NewTimer(", risk: "timer scheduling is non-deterministic in consensus paths"},
+		{token: "time.NewTicker(", risk: "timer scheduling is non-deterministic in consensus paths"},
 		{token: "rand.", risk: "randomness is non-deterministic in consensus paths"},
 		{token: "go func", risk: "goroutines can make consensus execution order non-deterministic"},
 		{token: "select {", risk: "select can make consensus execution order non-deterministic"},
