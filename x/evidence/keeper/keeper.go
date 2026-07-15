@@ -3,6 +3,7 @@ package keeper
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -777,10 +778,16 @@ func validateHexHash(field, value string) error {
 }
 
 func proofHashParts(parts ...string) string {
+	// SA2 #26: length-prefix framing (matching x/actor-registry hashParts and the
+	// FINDING-016 canonical form) so the hash is injective; a NUL separator lets
+	// crafted part boundaries collide (e.g. ["a\0","b"] vs ["a","\0b"]).
 	hash := sha256.New()
+	var length [8]byte
 	for _, part := range parts {
-		_, _ = hash.Write([]byte(strings.TrimSpace(part)))
-		_, _ = hash.Write([]byte{0})
+		part = strings.TrimSpace(part)
+		binary.BigEndian.PutUint64(length[:], uint64(len(part)))
+		_, _ = hash.Write(length[:])
+		_, _ = hash.Write([]byte(part))
 	}
 	return hex.EncodeToString(hash.Sum(nil))
 }
