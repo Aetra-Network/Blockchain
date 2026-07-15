@@ -67,6 +67,28 @@ func TestFinalizeElectionDoesNotHaltOnCommittedEmptySet(t *testing.T) {
 	require.Equal(t, uint64(2), k.Election().ElectionEpoch)
 }
 
+// TestApplyForValidatorSetRejectsDuplicateConsensusKey covers the SA2-S05
+// regression fix: a duplicate consensus key must be rejected at submission so
+// the auto-commit EndBlocker never builds a set that trips validateValidatorSet
+// and halts the chain.
+func TestApplyForValidatorSetRejectsDuplicateConsensusKey(t *testing.T) {
+	k := NewKeeper()
+	applyCandidate(t, &k, 0x11, 100, 100, 2)
+
+	_, err := k.ApplyForValidatorSet(types.MsgApplyForValidatorSet{
+		Authority: prototype.DefaultAuthority,
+		Application: types.CandidateApplication{
+			OperatorAddress:    testAddress(0x22),
+			ConsensusPublicKey: testConsensusKey(0x11), // same key as candidate 0x11
+			RequestedPower:     50,
+			SelfBond:           50,
+			ValidatorStatus:    validatorregistrytypes.StatusCandidate,
+		},
+		Height: 3,
+	})
+	require.ErrorContains(t, err, "consensus key already used")
+}
+
 func TestExportImportDuringActiveElection(t *testing.T) {
 	source := NewKeeper()
 	applyCandidate(t, &source, 0x11, 100, 100, 2)

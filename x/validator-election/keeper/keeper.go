@@ -147,6 +147,19 @@ func (k *Keeper) ApplyForValidatorSet(msg types.MsgApplyForValidatorSet) (types.
 	if existing, found := getApplication(next.State.CandidateApplications, app.OperatorAddress); found && existing.Status == types.ApplicationStatusPending {
 		return types.CandidateApplication{}, errors.New("validator election candidate application already pending")
 	}
+	// SA2-S05 (regression fix): reject a duplicate consensus key at SUBMISSION,
+	// fail-closed to the caller, so the auto-commit EndBlocker never builds a set
+	// that trips the duplicate-consensus-key check in validateValidatorSet and
+	// halts the chain. Two distinct operators sharing a consensus key would also
+	// collapse to one in the CometBFT override.
+	for _, existing := range next.State.CandidateApplications {
+		if existing.OperatorAddress == app.OperatorAddress || existing.Status == types.ApplicationStatusWithdrawn {
+			continue
+		}
+		if existing.ConsensusPublicKey == app.ConsensusPublicKey {
+			return types.CandidateApplication{}, errors.New("validator election consensus key already used by another candidate")
+		}
+	}
 	next.State.CandidateApplications = upsertApplication(next.State.CandidateApplications, app)
 	next.State.FrozenStakes = append(next.State.FrozenStakes, types.FrozenStake{
 		OperatorAddress:	app.OperatorAddress,
