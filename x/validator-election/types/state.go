@@ -26,6 +26,7 @@ const (
 	MaxTransitionHistoryV1 = uint32(512)
 	MaxElectionResultsV1   = uint32(512)
 	MaxRewardSnapshotsV1   = uint32(512)
+	MaxFrozenStakesV1      = uint32(512)
 	DefaultElectionWindow  = uint64(100)
 	DefaultWithdrawCutoff  = uint64(80)
 	DefaultFrozenUnlock    = uint64(1_000)
@@ -368,7 +369,13 @@ func (s State) Normalize(params Params) State {
 	s.CurrentValidatorSet = SortValidatorSet(s.CurrentValidatorSet)
 	s.NextValidatorSet = SortValidatorSet(s.NextValidatorSet)
 	s.CandidateApplications = SortApplications(normalizeApplications(s.CandidateApplications))
+	// SA2 #14: drop released stakes AND hard-cap the slice (keep the most recent
+	// by unlock height) so FrozenStakes stays bounded even though the current
+	// wiring may never mark entries Released (making the drop alone a no-op).
 	s.FrozenStakes = dropReleasedFrozenStakes(SortFrozenStakes(s.FrozenStakes))
+	if uint32(len(s.FrozenStakes)) > MaxFrozenStakesV1 {
+		s.FrozenStakes = s.FrozenStakes[len(s.FrozenStakes)-int(MaxFrozenStakesV1):]
+	}
 	s.PendingExits = SortPendingExits(s.PendingExits)
 	s.ValidatorPowerCaps = SortPowerCaps(s.ValidatorPowerCaps)
 	// SA2-S02: bound the epoch-keyed history slices so per-block load+validate

@@ -100,9 +100,9 @@ func TestNormalizeBoundsUnboundedHistorySlices(t *testing.T) {
 		s.ElectionResults = append(s.ElectionResults, ElectionResult{Epoch: uint64(i), Height: uint64(i), Committed: true})
 		s.RewardDistributionSnapshots = append(s.RewardDistributionSnapshots, RewardDistributionSnapshot{Epoch: uint64(i), Height: uint64(i)})
 	}
-	s.FrozenStakes = []FrozenStake{
-		{OperatorAddress: "op", Amount: 1, FrozenAtHeight: 1, UnlockHeight: 2, Released: true},
-		{OperatorAddress: "op", Amount: 1, FrozenAtHeight: 1, UnlockHeight: 3, Released: false},
+	s.FrozenStakes = []FrozenStake{{OperatorAddress: "op", Amount: 1, FrozenAtHeight: 1, UnlockHeight: 2, Released: true}}
+	for i := 0; i < int(MaxFrozenStakesV1)+50; i++ {
+		s.FrozenStakes = append(s.FrozenStakes, FrozenStake{OperatorAddress: "op", Amount: 1, FrozenAtHeight: 1, UnlockHeight: uint64(100 + i), Released: false})
 	}
 
 	out := s.Normalize(params)
@@ -117,7 +117,12 @@ func TestNormalizeBoundsUnboundedHistorySlices(t *testing.T) {
 	if last := out.ElectionResults[len(out.ElectionResults)-1]; last.Epoch != uint64(overfill) {
 		t.Fatalf("expected the most-recent epoch retained, got %d", last.Epoch)
 	}
-	if len(out.FrozenStakes) != 1 || out.FrozenStakes[0].Released {
-		t.Fatalf("released frozen stake should be dropped and the unreleased kept, got %+v", out.FrozenStakes)
+	if uint32(len(out.FrozenStakes)) != MaxFrozenStakesV1 {
+		t.Fatalf("FrozenStakes must be hard-capped to %d, got %d", MaxFrozenStakesV1, len(out.FrozenStakes))
+	}
+	for _, fs := range out.FrozenStakes {
+		if fs.Released {
+			t.Fatalf("released frozen stakes must be dropped, got %+v", fs)
+		}
 	}
 }
