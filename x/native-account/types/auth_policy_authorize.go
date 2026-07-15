@@ -140,6 +140,7 @@ func validateAuthKeys(keys []AuthKey, allowEmpty bool) error {
 		return errors.New("native account auth policy keys are required")
 	}
 	previous := ""
+	seenPubKeys := map[string]struct{}{}
 	for _, key := range keys {
 		key = key.Normalize()
 		if key.ID == "" || key.PublicKey == "" {
@@ -151,6 +152,12 @@ func validateAuthKeys(keys []AuthKey, allowEmpty bool) error {
 		if key.ID <= previous {
 			return errors.New("native account auth keys must be sorted and unique")
 		}
+		// SA2 #22: reject two keys sharing a public key, so a single private key
+		// cannot satisfy a multi-signature threshold on its own.
+		if _, dup := seenPubKeys[key.PublicKey]; dup {
+			return errors.New("native account auth keys must have distinct public keys")
+		}
+		seenPubKeys[key.PublicKey] = struct{}{}
 		previous = key.ID
 	}
 	return nil

@@ -59,6 +59,22 @@ func TestStepUpNotSatisfiedByCallerControllingOnlyPrimaryKey(t *testing.T) {
 	require.Error(t, err, "guardian step-up must not be satisfiable by naming a public key the caller does not control")
 }
 
+// TestAuthPolicyRejectsDuplicatePublicKey covers SA2 #22: two keys sharing a
+// public key would let a single private key satisfy a multi-signature
+// threshold, so the policy must be rejected at validation.
+func TestAuthPolicyRejectsDuplicatePublicKey(t *testing.T) {
+	policy := AuthPolicy{
+		Version:   1,
+		Mode:      AuthModeThreshold,
+		Threshold: 2,
+		Keys: []AuthKey{
+			{ID: "a", PublicKey: authKeyPrimaryPub, Role: AuthKeyRolePrimary},
+			{ID: "b", PublicKey: authKeyPrimaryPub, Role: AuthKeyRoleGuardian},
+		},
+	}
+	require.ErrorContains(t, policy.Validate(), "distinct public keys")
+}
+
 func TestMultisigThresholdPolicyRejectsInsufficientSignatures(t *testing.T) {
 	account := accountWithPolicy(t, AuthPolicy{
 		Version:   1,
