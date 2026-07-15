@@ -1460,7 +1460,13 @@ func (k *Keeper) ApplyPoolReward(poolID string, rewardAmount uint64) (types.Nomi
 	if rewardAmount == 0 {
 		return pool, nil
 	}
-	commission := rewardAmount * uint64(pool.PoolCommissionBps) / uint64(types.MaxBasisPoints)
+	// SA2 #19: use the checked big.Int helper (as the sibling reward/slash paths
+	// do) so a large reward * bps multiply cannot overflow uint64 and corrupt the
+	// commission split.
+	commission, err := types.MulDivUint64(rewardAmount, uint64(pool.PoolCommissionBps), uint64(types.MaxBasisPoints))
+	if err != nil {
+		return types.NominatorPool{}, err
+	}
 	netReward := rewardAmount - commission
 	// Credit the reward only to the per-share RewardIndex, not to
 	// TotalBondedStake (the principal/exchange-rate pool). Crediting both
