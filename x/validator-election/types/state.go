@@ -24,6 +24,8 @@ const (
 	MaxCandidatesV1        = uint32(10_000)
 	MaxValidatorSetSizeV1  = uint32(512)
 	MaxTransitionHistoryV1 = uint32(512)
+	MaxElectionResultsV1   = uint32(512)
+	MaxRewardSnapshotsV1   = uint32(512)
 	DefaultElectionWindow  = uint64(100)
 	DefaultWithdrawCutoff  = uint64(80)
 	DefaultFrozenUnlock    = uint64(1_000)
@@ -366,16 +368,39 @@ func (s State) Normalize(params Params) State {
 	s.CurrentValidatorSet = SortValidatorSet(s.CurrentValidatorSet)
 	s.NextValidatorSet = SortValidatorSet(s.NextValidatorSet)
 	s.CandidateApplications = SortApplications(normalizeApplications(s.CandidateApplications))
-	s.FrozenStakes = SortFrozenStakes(s.FrozenStakes)
+	s.FrozenStakes = dropReleasedFrozenStakes(SortFrozenStakes(s.FrozenStakes))
 	s.PendingExits = SortPendingExits(s.PendingExits)
 	s.ValidatorPowerCaps = SortPowerCaps(s.ValidatorPowerCaps)
+	// SA2-S02: bound the epoch-keyed history slices so per-block load+validate
+	// cost stays O(window) instead of O(all past epochs) — they grow +1/epoch
+	// forever and are only read for the current epoch (or export/history).
 	s.ElectionResults = SortResults(s.ElectionResults)
+	if uint32(len(s.ElectionResults)) > MaxElectionResultsV1 {
+		s.ElectionResults = s.ElectionResults[len(s.ElectionResults)-int(MaxElectionResultsV1):]
+	}
 	s.RewardDistributionSnapshots = SortSnapshots(s.RewardDistributionSnapshots)
+	if uint32(len(s.RewardDistributionSnapshots)) > MaxRewardSnapshotsV1 {
+		s.RewardDistributionSnapshots = s.RewardDistributionSnapshots[len(s.RewardDistributionSnapshots)-int(MaxRewardSnapshotsV1):]
+	}
 	s.TransitionHistory = SortTransitions(s.TransitionHistory)
 	if uint32(len(s.TransitionHistory)) > params.MaxTransitionHistory {
 		s.TransitionHistory = s.TransitionHistory[len(s.TransitionHistory)-int(params.MaxTransitionHistory):]
 	}
 	return s
+}
+
+// dropReleasedFrozenStakes removes frozen-stake records whose release is already
+// complete. Retaining them grows state unbounded (SA2-S02) and can collide with
+// the operator:unlockHeight uniqueness key when an operator re-applies.
+func dropReleasedFrozenStakes(values []FrozenStake) []FrozenStake {
+	out := make([]FrozenStake, 0, len(values))
+	for _, v := range values {
+		if v.Released {
+			continue
+		}
+		out = append(out, v)
+	}
+	return out
 }
 
 func SortValidatorSet(values []ValidatorPower) []ValidatorPower {

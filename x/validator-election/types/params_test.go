@@ -87,3 +87,37 @@ func TestValidateValidatorSetTotalPowerCheckIsUnderflowSafe(t *testing.T) {
 		t.Fatalf("expected the oversized validator to be rejected (underflow-safe), got nil")
 	}
 }
+
+// TestNormalizeBoundsUnboundedHistorySlices covers SA2-S02: the epoch-keyed
+// history slices must be trimmed to a window (they grow +1/epoch forever), and
+// released frozen stakes must be dropped, so per-block load+validate cost does
+// not creep toward the block timeout on a long-running chain.
+func TestNormalizeBoundsUnboundedHistorySlices(t *testing.T) {
+	params := DefaultParams()
+	var s State
+	overfill := int(MaxElectionResultsV1) + 50
+	for i := 1; i <= overfill; i++ {
+		s.ElectionResults = append(s.ElectionResults, ElectionResult{Epoch: uint64(i), Height: uint64(i), Committed: true})
+		s.RewardDistributionSnapshots = append(s.RewardDistributionSnapshots, RewardDistributionSnapshot{Epoch: uint64(i), Height: uint64(i)})
+	}
+	s.FrozenStakes = []FrozenStake{
+		{OperatorAddress: "op", Amount: 1, FrozenAtHeight: 1, UnlockHeight: 2, Released: true},
+		{OperatorAddress: "op", Amount: 1, FrozenAtHeight: 1, UnlockHeight: 3, Released: false},
+	}
+
+	out := s.Normalize(params)
+
+	if uint32(len(out.ElectionResults)) != MaxElectionResultsV1 {
+		t.Fatalf("ElectionResults not bounded: got %d want %d", len(out.ElectionResults), MaxElectionResultsV1)
+	}
+	if uint32(len(out.RewardDistributionSnapshots)) != MaxRewardSnapshotsV1 {
+		t.Fatalf("RewardDistributionSnapshots not bounded: got %d want %d", len(out.RewardDistributionSnapshots), MaxRewardSnapshotsV1)
+	}
+	// The most recent epoch (the tail) must be retained, not an old one.
+	if last := out.ElectionResults[len(out.ElectionResults)-1]; last.Epoch != uint64(overfill) {
+		t.Fatalf("expected the most-recent epoch retained, got %d", last.Epoch)
+	}
+	if len(out.FrozenStakes) != 1 || out.FrozenStakes[0].Released {
+		t.Fatalf("released frozen stake should be dropped and the unreleased kept, got %+v", out.FrozenStakes)
+	}
+}
