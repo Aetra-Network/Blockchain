@@ -9,6 +9,18 @@
 > **Scope note.** This document is the second pass over the codebase, building on the 22-finding Pass-1 audit (`security-audit/` on branch `security-audit-2026-07`). It (a) confirms which Pass-1 fixes are real, (b) records new findings from a fresh independent scan, and (c) is primarily a **prioritized remediation & implementation backlog** — everything still to be fixed, finished, or built before the feature-complete network and mainnet. An external third-party audit is still required and is listed as a launch gate (the project's own `mainnet_readiness.go` correctly reports `security_audit_completed=false`).
 >
 > **Addendum (same day, commit `bc361fc9`).** §3.5 below adds 4 more findings from a live end-to-end verification pass (deploy/execute/query a real contract against a running localnet, not a static scan) — all 4 are already fixed as of this commit. SA2-S15 in §4 is resolved as part of that pass. Everything else in this document (§1–§3, §4 minus S15, §5, §6) still describes `d77f1b2b` and is unchanged.
+>
+> **Remediation progress (branch `remediation/pass2-security`, 8 fixes landed — each with a regression test and a scoped commit; whole-tree `go build` green):**
+> - **SA2-S04** bound election voting-power params to the CometBFT `MaxInt64/8` ceiling — `a08b187c`
+> - **SA2-S05** reject duplicate consensus keys in validator-set validation — `b532b558`
+> - **SA2-I02** underflow-safe election total-power cap check — `b6e55ca0`
+> - **SA2-S03** no chain halt on a committed-but-empty election — `a7f96042`
+> - **SA2-S02** bound the unbounded election history slices — `dc77d56d`
+> - **SA2-S07** require a non-zero gov `MinInitialDepositRatio` — `eab584a5`
+> - **SA2-S06** disable the desync-causing standalone emission-finalize message — `b2ba8f47`
+> - **SA2-S08** bound the nominator-pool list-query page size — `f253b516`
+>
+> Still open: **SA2-I01** (needs a mint-authorization redesign, not a quick patch), **SA2-S14** (CI regression guards), the `x/contracts`-touching **SA2-S13 / S12 / N02** (coordinate with in-flight contract work), **SA2-N01a** (couples with SA2-F01), and the **F01–F07** feature tracks.
 
 ---
 
