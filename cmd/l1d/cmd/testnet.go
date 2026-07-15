@@ -490,7 +490,10 @@ func initTestnetFiles(
 			valPubKeys[i],
 			sdk.NewCoin(args.bondTokenDenom, valTokens),
 			stakingtypes.NewDescription(nodeDirName, "", "", "", ""),
-			stakingtypes.NewCommissionRates(math.LegacyOneDec(), math.LegacyOneDec(), math.LegacyOneDec()),
+			// SA2 #32: default validators to a realistic 5% rate / 20% max / 1%
+			// max daily change (was 100%/100%/100%), consistent with the
+			// app/params commission floor and ceiling.
+			stakingtypes.NewCommissionRates(math.LegacyNewDecWithPrec(5, 2), math.LegacyNewDecWithPrec(20, 2), math.LegacyNewDecWithPrec(1, 2)),
 			math.OneInt(),
 		)
 		if err != nil {
