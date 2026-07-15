@@ -71,3 +71,19 @@ func TestValidateValidatorSetRejectsDuplicateConsensusKey(t *testing.T) {
 		t.Fatalf("distinct valid entries must validate, got %v", err)
 	}
 }
+
+// TestValidateValidatorSetTotalPowerCheckIsUnderflowSafe covers SA2-I02: under
+// misconfigured params where a per-validator power exceeds the total cap, an
+// oversized validator must be rejected, not silently admitted via a uint64
+// underflow of (MaxTotalVotingPower - VotingPower).
+func TestValidateValidatorSetTotalPowerCheckIsUnderflowSafe(t *testing.T) {
+	params := DefaultParams()
+	params.MaxValidatorPower = 1000 // per-validator cap above the total cap (misconfig)
+	params.MaxTotalVotingPower = 100
+	set := SortValidatorSet([]ValidatorPower{
+		{OperatorAddress: "ae1vpckp78tsyp2w5u6za0lazsqljsyx83cc0ha7n", ConsensusPublicKey: "ed25519:" + strings.Repeat("ab", 32), VotingPower: 500, ValidatorStatus: validatorregistrytypes.StatusActive},
+	})
+	if err := validateValidatorSet("current", set, params, false); err == nil {
+		t.Fatalf("expected the oversized validator to be rejected (underflow-safe), got nil")
+	}
+}

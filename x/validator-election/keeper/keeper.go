@@ -467,7 +467,12 @@ func (k Keeper) computeNextSet() []types.ValidatorPower {
 	total := uint64(0)
 	for _, candidate := range candidates {
 		power := types.CandidateRank(candidate, caps[candidate.OperatorAddress], k.genesis.Params)
-		if power.VotingPower == 0 || total > k.genesis.Params.MaxTotalVotingPower-power.VotingPower {
+		// SA2-I02: compare against remaining headroom (MaxTotal - total) instead
+		// of (MaxTotal - power). total <= MaxTotal is maintained below, so this
+		// never underflows — even under misconfigured params where a single
+		// capped power exceeds the total cap (which would otherwise wrap and
+		// admit the candidate past the cap).
+		if power.VotingPower == 0 || power.VotingPower > k.genesis.Params.MaxTotalVotingPower-total {
 			continue
 		}
 		nextSet = append(nextSet, power)

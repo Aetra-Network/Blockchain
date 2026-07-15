@@ -507,7 +507,11 @@ func validateValidatorSet(label string, values []ValidatorPower, params Params, 
 		if err := value.Validate(params, rejectJailed); err != nil {
 			return err
 		}
-		if total > params.MaxTotalVotingPower-value.VotingPower {
+		// SA2-I02: compare against remaining headroom (MaxTotal - total) rather
+		// than (MaxTotal - value.VotingPower); total <= MaxTotal is maintained,
+		// so this never underflows even under misconfigured params where a
+		// per-validator power exceeds the total cap.
+		if value.VotingPower > params.MaxTotalVotingPower-total {
 			return errors.New("validator election total voting power exceeds configured max")
 		}
 		total += value.VotingPower
