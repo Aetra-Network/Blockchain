@@ -187,9 +187,21 @@ type runtimeMapEntry struct {
 func runtimeValueSizeUnits(v RuntimeValue) uint64 {
 	switch v.Tag {
 	case TagMap:
-		return uint64(len(v.mapVal))
+		// SA2 #5: count RECURSIVELY, not just top-level fan-out. A map whose
+		// entries are themselves large maps/tuples does O(total-nodes) work when
+		// cloned or iterated but was charged only for the top-level element count,
+		// allowing a gas-mispricing DoS via nesting. Sum the whole tree.
+		total := uint64(len(v.mapVal))
+		for _, entry := range v.mapVal {
+			total += runtimeValueSizeUnits(entry.Key) + runtimeValueSizeUnits(entry.Value)
+		}
+		return total
 	case TagTuple:
-		return uint64(len(v.tupleVal))
+		total := uint64(len(v.tupleVal))
+		for _, element := range v.tupleVal {
+			total += runtimeValueSizeUnits(element)
+		}
+		return total
 	case TagBytes:
 		return uint64(len(v.bytesVal))
 	case TagString:

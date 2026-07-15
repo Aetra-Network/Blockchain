@@ -321,6 +321,23 @@ func TestCanonicalEmptyTuple(t *testing.T) {
 	}
 }
 
+func TestRuntimeValueSizeUnitsCountsNestedRecursively(t *testing.T) {
+	// SA2 #5: a map whose values are themselves maps must be sized by the total
+	// node count (recursive), not just the top-level fan-out, so cloning or
+	// iterating a nested structure is charged for the work it actually does.
+	inner := ValueMap([]runtimeMapEntry{
+		{Key: ValueString("x"), Value: ValueUint64(1)},
+		{Key: ValueString("y"), Value: ValueUint64(2)},
+		{Key: ValueString("z"), Value: ValueUint64(3)},
+	})
+	outer := ValueMap([]runtimeMapEntry{
+		{Key: ValueString("a"), Value: inner},
+		{Key: ValueString("b"), Value: inner},
+	})
+	require.Greater(t, runtimeValueSizeUnits(outer), uint64(2))                     // more than the 2-entry top-level fan-out
+	require.Greater(t, runtimeValueSizeUnits(outer), runtimeValueSizeUnits(inner)) // the tree dominates a single inner map
+}
+
 func TestCanonicalEncodeDecodeMap(t *testing.T) {
 	entries := []runtimeMapEntry{
 		{Key: ValueString("b"), Value: ValueUint64(2)},
