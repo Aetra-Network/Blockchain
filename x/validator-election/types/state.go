@@ -483,6 +483,7 @@ func validateValidatorSet(label string, values []ValidatorPower, params Params, 
 		return fmt.Errorf("validator election %s set exceeds max size", label)
 	}
 	seen := map[string]struct{}{}
+	seenKey := map[string]struct{}{}
 	total := uint64(0)
 	sorted := SortValidatorSet(values)
 	for i, value := range values {
@@ -493,6 +494,16 @@ func validateValidatorSet(label string, values []ValidatorPower, params Params, 
 			return fmt.Errorf("validator election %s set has duplicate operator", label)
 		}
 		seen[value.OperatorAddress] = struct{}{}
+		// SA2-S05: reject duplicate consensus keys too. Two distinct operators
+		// carrying the same consensus pubkey collapse to one entry in the
+		// CometBFT override (keyed by pubkey), silently dropping one operator's
+		// power and desyncing the recorded set from the live set.
+		if value.ConsensusPublicKey != "" {
+			if _, found := seenKey[value.ConsensusPublicKey]; found {
+				return fmt.Errorf("validator election %s set has duplicate consensus key", label)
+			}
+			seenKey[value.ConsensusPublicKey] = struct{}{}
+		}
 		if err := value.Validate(params, rejectJailed); err != nil {
 			return err
 		}
