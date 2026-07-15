@@ -151,7 +151,7 @@ func TestFrozenWalletAllowsTopUpDebtPaymentAndUnfreezeButBlocksNormalActions(t *
 	require.Equal(t, AccountStatusFrozen, paid.Status)
 	require.Equal(t, account.AddressUser, paid.AddressUser)
 	require.Equal(t, account.AddressRaw, paid.AddressRaw)
-	require.Equal(t, account.Sequence, paid.Sequence)
+	require.Equal(t, account.Sequence+1, paid.Sequence) // SA2 #4: pay-storage-debt advances the sequence (replay protection)
 
 	unfrozen, err := ApplyMsgUnfreezeAccount(paid, MsgUnfreezeAccount{
 		AccountUser:		paid.AddressUser,
@@ -165,7 +165,7 @@ func TestFrozenWalletAllowsTopUpDebtPaymentAndUnfreezeButBlocksNormalActions(t *
 	require.Equal(t, paid.AddressUser, unfrozen.AddressUser)
 	require.Equal(t, paid.AddressRaw, unfrozen.AddressRaw)
 	require.Equal(t, paid.AccountNumber, unfrozen.AccountNumber)
-	require.Equal(t, paid.Sequence, unfrozen.Sequence)
+	require.Equal(t, paid.Sequence+1, unfrozen.Sequence) // SA2 #4: unfreeze advances the sequence (replay protection)
 	require.Equal(t, paid.AuthPolicy, unfrozen.AuthPolicy)
 }
 

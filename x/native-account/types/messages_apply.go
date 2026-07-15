@@ -28,6 +28,7 @@ func ApplyMsgUpdateAuthPolicy(account Account, msg MsgUpdateAuthPolicy) (Account
 		return Account{}, err
 	}
 	next := cloneAccount(account)
+	next.Sequence++ // SA2 #4: advance the account sequence so a captured co-signed message cannot be replayed
 	next.AuthPolicy = nextPolicy
 	return next, ValidateAccountInvariant(next)
 }
@@ -54,6 +55,7 @@ func ApplyMsgRotateKey(account Account, msg MsgRotateKey) (Account, error) {
 		return Account{}, errors.New("native account rotated key must not contain private keys or seed phrases")
 	}
 	next := cloneAccount(account)
+	next.Sequence++ // SA2 #4: replay protection
 	next.AuthPolicy = next.AuthPolicy.Normalize()
 	replaced := false
 	for idx, key := range next.AuthPolicy.Keys {
@@ -107,6 +109,7 @@ func ApplyMsgFreezeAccount(account Account, msg MsgFreezeAccount) (Account, erro
 		return Account{}, err
 	}
 	next := cloneAccount(account)
+	next.Sequence++ // SA2 #4: replay protection
 	next.Status = AccountStatusFrozen
 	return next, ValidateAccountInvariant(next)
 }
@@ -132,6 +135,7 @@ func ApplyMsgUnfreezeAccount(account Account, msg MsgUnfreezeAccount) (Account, 
 		return Account{}, err
 	}
 	next := cloneAccount(account)
+	next.Sequence++ // SA2 #4: replay protection
 	next.Status = AccountStatusActive
 	return next, ValidateAccountInvariant(next)
 }
@@ -158,6 +162,7 @@ func ApplyMsgPayStorageDebt(account Account, msg MsgPayStorageDebt) (Account, er
 		return Account{}, err
 	}
 	next := cloneAccount(account)
+	next.Sequence++ // SA2 #4: replay protection
 	if msg.Amount >= next.StorageRentDebt {
 		next.StorageRentDebt = 0
 	} else {
@@ -188,6 +193,7 @@ func ApplyMsgUpdateAccountMetadata(account Account, msg MsgUpdateAccountMetadata
 		return Account{}, err
 	}
 	next := cloneAccount(account)
+	next.Sequence++ // SA2 #4: replay protection
 	next.Metadata = msg.Metadata
 	return next, ValidateAccountInvariant(next)
 }
@@ -208,6 +214,7 @@ func ApplyMsgUpdateAccountParams(account Account, msg MsgUpdateAccountParams) (A
 		return Account{}, err
 	}
 	next := cloneAccount(account)
+	next.Sequence++ // SA2 #4: replay protection
 	next.FeatureFlags = cloneStrings(msg.FeatureFlags)
 	next = normalizeAccount(next)
 	return next, ValidateAccountInvariant(next)
