@@ -147,6 +147,48 @@ func (m grpcMsgServer) RevokeSecurityAttestation(ctx context.Context, msg *types
 	return &res, nil
 }
 
+func (m grpcMsgServer) TopUpContract(ctx context.Context, msg *types.MsgTopUpContract) (*types.MsgTopUpContractResponse, error) {
+	if msg == nil {
+		return nil, errors.New("empty contracts top-up request")
+	}
+	if err := m.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
+	contract, err := m.keeper.TopUpContractState(ctx, *msg)
+	if err != nil {
+		return nil, err
+	}
+	return &types.MsgTopUpContractResponse{Contract: contract}, nil
+}
+
+func (m grpcMsgServer) PayContractStorageDebt(ctx context.Context, msg *types.MsgPayContractStorageDebt) (*types.MsgPayContractStorageDebtResponse, error) {
+	if msg == nil {
+		return nil, errors.New("empty contracts storage debt payment request")
+	}
+	if err := m.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
+	contract, err := m.keeper.PayContractStorageDebtState(ctx, *msg)
+	if err != nil {
+		return nil, err
+	}
+	return &types.MsgPayContractStorageDebtResponse{Contract: contract}, nil
+}
+
+func (m grpcMsgServer) UnfreezeContract(ctx context.Context, msg *types.MsgUnfreezeContract) (*types.MsgUnfreezeContractResponse, error) {
+	if msg == nil {
+		return nil, errors.New("empty contracts unfreeze request")
+	}
+	if err := m.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
+	contract, err := m.keeper.UnfreezeContractState(ctx, *msg)
+	if err != nil {
+		return nil, err
+	}
+	return &types.MsgUnfreezeContractResponse{Contract: contract}, nil
+}
+
 func (q grpcQueryServer) Params(context.Context, *types.QueryParamsRequest) (*types.QueryParamsResponse, error) {
 	return &types.QueryParamsResponse{Params: q.keeper.Params()}, nil
 }

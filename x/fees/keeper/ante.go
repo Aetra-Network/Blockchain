@@ -1,6 +1,8 @@
 package keeper
 
 import (
+	"fmt"
+
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	authsigning "github.com/cosmos/cosmos-sdk/x/auth/signing"
 	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
@@ -126,13 +128,13 @@ func selectTxSender(tx sdk.Tx, feeTx sdk.FeeTx) sdk.AccAddress {
 func validateNoZeroMsgAddresses(msg sdk.Msg) error {
 	switch msg := msg.(type) {
 	case *banktypes.MsgSend:
-		if err := aetraaddress.ValidateUserAddress("bank send sender", msg.FromAddress); err != nil {
+		if err := validateWellFormedNonZeroAddress("bank send sender", msg.FromAddress); err != nil {
 			return types.ErrInvalidFee.Wrap(err.Error())
 		}
 		if err := validateUserFundSender("bank send sender", msg.FromAddress); err != nil {
 			return err
 		}
-		if err := aetraaddress.ValidateUserAddress("bank send recipient", msg.ToAddress); err != nil {
+		if err := validateWellFormedNonZeroAddress("bank send recipient", msg.ToAddress); err != nil {
 			return types.ErrInvalidFee.Wrap(err.Error())
 		}
 		if err := validateUserFundRecipient("bank send recipient", msg.ToAddress); err != nil {
@@ -140,7 +142,7 @@ func validateNoZeroMsgAddresses(msg sdk.Msg) error {
 		}
 	case *banktypes.MsgMultiSend:
 		for i, input := range msg.Inputs {
-			if err := aetraaddress.ValidateUserAddress("bank multisend input", input.Address); err != nil {
+			if err := validateWellFormedNonZeroAddress("bank multisend input", input.Address); err != nil {
 				return types.ErrInvalidFee.Wrapf("input %d: %s", i, err.Error())
 			}
 			if err := validateUserFundSender("bank multisend input", input.Address); err != nil {
@@ -148,7 +150,7 @@ func validateNoZeroMsgAddresses(msg sdk.Msg) error {
 			}
 		}
 		for i, output := range msg.Outputs {
-			if err := aetraaddress.ValidateUserAddress("bank multisend output", output.Address); err != nil {
+			if err := validateWellFormedNonZeroAddress("bank multisend output", output.Address); err != nil {
 				return types.ErrInvalidFee.Wrapf("output %d: %s", i, err.Error())
 			}
 			if err := validateUserFundRecipient("bank multisend output", output.Address); err != nil {
@@ -156,10 +158,10 @@ func validateNoZeroMsgAddresses(msg sdk.Msg) error {
 			}
 		}
 	case *distrtypes.MsgSetWithdrawAddress:
-		if err := aetraaddress.ValidateUserAddress("distribution withdraw delegator", msg.DelegatorAddress); err != nil {
+		if err := validateWellFormedNonZeroAddress("distribution withdraw delegator", msg.DelegatorAddress); err != nil {
 			return types.ErrInvalidFee.Wrap(err.Error())
 		}
-		if err := aetraaddress.ValidateUserAddress("distribution withdraw address", msg.WithdrawAddress); err != nil {
+		if err := validateWellFormedNonZeroAddress("distribution withdraw address", msg.WithdrawAddress); err != nil {
 			return types.ErrInvalidFee.Wrap(err.Error())
 		}
 		if err := validateUserFundRecipient("distribution withdraw address", msg.WithdrawAddress); err != nil {
@@ -167,6 +169,25 @@ func validateNoZeroMsgAddresses(msg sdk.Msg) error {
 		}
 	}
 	return nil
+}
+
+// validateWellFormedNonZeroAddress checks that text is a well-formed,
+// non-zero address in either form aetraaddress.Parse accepts (the "AE…"
+// user-facing form or the "ae1…" bech32 form). Unlike
+// aetraaddress.ValidateUserAddress, it does not require the "AE…" form
+// specifically: the fields validated here belong to stock cosmos-sdk
+// message types (bank.MsgSend/MsgMultiSend,
+// distribution.MsgSetWithdrawAddress), whose address string fields are
+// always populated by the SDK's own bech32 (ae1…) address-to-string
+// conversion when a client builds these messages -- there is no way for a
+// client to make these fields carry the "AE…" form instead, so requiring it
+// here rejected every legitimate transaction using these message types.
+func validateWellFormedNonZeroAddress(field, text string) error {
+	bz, err := aetraaddress.Parse(text)
+	if err != nil {
+		return fmt.Errorf("invalid %s: %w", field, err)
+	}
+	return aetraaddress.RejectZeroAddress(field, bz)
 }
 
 func validateUserFundSender(field, text string) error {

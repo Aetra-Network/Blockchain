@@ -58,6 +58,7 @@ const (
 	flagAVMQueryID        = "query-id"
 	flagAVMReceiptJSON    = "receipt-json"
 	flagAVMReceiptFile    = "receipt-file"
+	flagAVMAmount         = "amount"
 )
 
 const (
@@ -71,6 +72,10 @@ const (
 	// x/contracts/types/service.go) -- used to pick MsgDeployContractResponse
 	// back out of a confirmed tx's packed MsgResponses.
 	avmMsgDeployContractResponseTypeURL = "/l1.contracts.v1.MsgDeployContractResponse"
+
+	avmMsgTopUpContractTypeURL          = "/l1.contracts.v1.MsgTopUpContract"
+	avmMsgPayContractStorageDebtTypeURL = "/l1.contracts.v1.MsgPayContractStorageDebt"
+	avmMsgUnfreezeContractTypeURL       = "/l1.contracts.v1.MsgUnfreezeContract"
 )
 
 // avmTxConfirmPollInterval and avmTxConfirmMaxAttempts bound how long
@@ -136,6 +141,26 @@ type avmExecuteRequest struct {
 	Opcode          uint32 `json:"opcode,omitempty"`
 }
 
+type avmTopUpRequest struct {
+	Sender          string `json:"sender"`
+	ContractAddress string `json:"contract_address"`
+	Amount          uint64 `json:"amount"`
+	Height          uint64 `json:"height"`
+}
+
+type avmPayDebtRequest struct {
+	Sender          string `json:"sender"`
+	ContractAddress string `json:"contract_address"`
+	Amount          uint64 `json:"amount"`
+	Height          uint64 `json:"height"`
+}
+
+type avmUnfreezeRequest struct {
+	Sender          string `json:"sender"`
+	ContractAddress string `json:"contract_address"`
+	Height          uint64 `json:"height"`
+}
+
 type avmQueryRequest struct {
 	ContractAddress string `json:"contract_address,omitempty"`
 	CodeID          string `json:"code_id,omitempty"`
@@ -162,6 +187,9 @@ func NewAVMTxCmd() *cobra.Command {
 		newAVMStoreCodeCmd(),
 		newAVMDeployCmd(),
 		newAVMExecuteCmd(),
+		newAVMTopUpCmd(),
+		newAVMPayDebtCmd(),
+		newAVMUnfreezeCmd(),
 	)
 	return cmd
 }
@@ -465,6 +493,200 @@ func newAVMExecuteCmd() *cobra.Command {
 	cmd.Flags().Uint64(flagAVMGasLimit, 100_000, "AVM gas limit")
 	cmd.Flags().Uint64(flagAVMHeight, 1, "execution height (with --broadcast, defaults to the chain's current height when not set explicitly)")
 	cmd.Flags().Uint32(flagAVMOpcode, 0, "external message @message opcode to route a union-typed incomingExternal; auto-filled from --source/--message")
+	return cmd
+}
+
+func newAVMTopUpCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "top-up [contract-address]",
+		Short: "Build l1.contracts.v1.Msg/TopUpContract request",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateAVMTxFees(cmd); err != nil {
+				return err
+			}
+			sender, err := avmAddressOverride(cmd, flagAVMSender, "top-up sender")
+			if err != nil {
+				return err
+			}
+			broadcast, _ := cmd.Flags().GetBool(flagBroadcast)
+			var clientCtx client.Context
+			height, _ := cmd.Flags().GetUint64(flagAVMHeight)
+			if broadcast {
+				clientCtx, err = client.GetClientTxContext(cmd)
+				if err != nil {
+					return err
+				}
+				height, err = avmBroadcastHeight(cmd, clientCtx)
+				if err != nil {
+					return err
+				}
+			}
+			amount, _ := cmd.Flags().GetUint64(flagAVMAmount)
+			req := avmTopUpRequest{
+				Sender:          sender,
+				ContractAddress: strings.TrimSpace(args[0]),
+				Amount:          amount,
+				Height:          height,
+			}
+			if req.ContractAddress == "" {
+				return errors.New("top-up contract address is required")
+			}
+			if req.Amount == 0 {
+				return errors.New("top-up amount must be positive")
+			}
+			if req.Height == 0 {
+				return errors.New("top-up height must be positive")
+			}
+			if broadcast {
+				return runAVMBroadcast(cmd, &contractstypes.MsgTopUpContract{
+					Sender:          req.Sender,
+					ContractAddress: req.ContractAddress,
+					Amount:          req.Amount,
+					Height:          req.Height,
+				})
+			}
+			return writeCommandJSON(cmd, avmServicePayload{
+				Service:    avmMsgService,
+				Method:     "TopUpContract",
+				FullMethod: "/" + avmMsgService + "/TopUpContract",
+				TypeURL:    avmMsgTopUpContractTypeURL,
+				Request:    req,
+			})
+		},
+	}
+	addAVMTxFlags(cmd)
+	addBroadcastFlag(cmd)
+	cmd.Flags().String(flagAVMSender, "", "top-up sender AE address; defaults to --from (only usable if --from is itself a valid AE address)")
+	cmd.Flags().Uint64(flagAVMAmount, 0, "amount in naet to add to the contract's balance")
+	cmd.Flags().Uint64(flagAVMHeight, 1, "execution height (with --broadcast, defaults to the chain's current height when not set explicitly)")
+	return cmd
+}
+
+func newAVMPayDebtCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "pay-debt [contract-address]",
+		Short: "Build l1.contracts.v1.Msg/PayContractStorageDebt request",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateAVMTxFees(cmd); err != nil {
+				return err
+			}
+			sender, err := avmAddressOverride(cmd, flagAVMSender, "storage debt payer")
+			if err != nil {
+				return err
+			}
+			broadcast, _ := cmd.Flags().GetBool(flagBroadcast)
+			var clientCtx client.Context
+			height, _ := cmd.Flags().GetUint64(flagAVMHeight)
+			if broadcast {
+				clientCtx, err = client.GetClientTxContext(cmd)
+				if err != nil {
+					return err
+				}
+				height, err = avmBroadcastHeight(cmd, clientCtx)
+				if err != nil {
+					return err
+				}
+			}
+			amount, _ := cmd.Flags().GetUint64(flagAVMAmount)
+			req := avmPayDebtRequest{
+				Sender:          sender,
+				ContractAddress: strings.TrimSpace(args[0]),
+				Amount:          amount,
+				Height:          height,
+			}
+			if req.ContractAddress == "" {
+				return errors.New("pay-debt contract address is required")
+			}
+			if req.Amount == 0 {
+				return errors.New("pay-debt amount must be positive")
+			}
+			if req.Height == 0 {
+				return errors.New("pay-debt height must be positive")
+			}
+			if broadcast {
+				return runAVMBroadcast(cmd, &contractstypes.MsgPayContractStorageDebt{
+					Sender:          req.Sender,
+					ContractAddress: req.ContractAddress,
+					Amount:          req.Amount,
+					Height:          req.Height,
+				})
+			}
+			return writeCommandJSON(cmd, avmServicePayload{
+				Service:    avmMsgService,
+				Method:     "PayContractStorageDebt",
+				FullMethod: "/" + avmMsgService + "/PayContractStorageDebt",
+				TypeURL:    avmMsgPayContractStorageDebtTypeURL,
+				Request:    req,
+			})
+		},
+	}
+	addAVMTxFlags(cmd)
+	addBroadcastFlag(cmd)
+	cmd.Flags().String(flagAVMSender, "", "storage debt payer AE address; defaults to --from (only usable if --from is itself a valid AE address)")
+	cmd.Flags().Uint64(flagAVMAmount, 0, "amount in naet to pay against the contract's storage rent debt")
+	cmd.Flags().Uint64(flagAVMHeight, 1, "execution height (with --broadcast, defaults to the chain's current height when not set explicitly)")
+	return cmd
+}
+
+func newAVMUnfreezeCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "unfreeze [contract-address]",
+		Short: "Build l1.contracts.v1.Msg/UnfreezeContract request",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateAVMTxFees(cmd); err != nil {
+				return err
+			}
+			sender, err := avmAddressOverride(cmd, flagAVMSender, "unfreeze sender")
+			if err != nil {
+				return err
+			}
+			broadcast, _ := cmd.Flags().GetBool(flagBroadcast)
+			var clientCtx client.Context
+			height, _ := cmd.Flags().GetUint64(flagAVMHeight)
+			if broadcast {
+				clientCtx, err = client.GetClientTxContext(cmd)
+				if err != nil {
+					return err
+				}
+				height, err = avmBroadcastHeight(cmd, clientCtx)
+				if err != nil {
+					return err
+				}
+			}
+			req := avmUnfreezeRequest{
+				Sender:          sender,
+				ContractAddress: strings.TrimSpace(args[0]),
+				Height:          height,
+			}
+			if req.ContractAddress == "" {
+				return errors.New("unfreeze contract address is required")
+			}
+			if req.Height == 0 {
+				return errors.New("unfreeze height must be positive")
+			}
+			if broadcast {
+				return runAVMBroadcast(cmd, &contractstypes.MsgUnfreezeContract{
+					Sender:          req.Sender,
+					ContractAddress: req.ContractAddress,
+					Height:          req.Height,
+				})
+			}
+			return writeCommandJSON(cmd, avmServicePayload{
+				Service:    avmMsgService,
+				Method:     "UnfreezeContract",
+				FullMethod: "/" + avmMsgService + "/UnfreezeContract",
+				TypeURL:    avmMsgUnfreezeContractTypeURL,
+				Request:    req,
+			})
+		},
+	}
+	addAVMTxFlags(cmd)
+	addBroadcastFlag(cmd)
+	cmd.Flags().String(flagAVMSender, "", "unfreeze sender AE address; defaults to --from (only usable if --from is itself a valid AE address)")
+	cmd.Flags().Uint64(flagAVMHeight, 1, "execution height (with --broadcast, defaults to the chain's current height when not set explicitly)")
 	return cmd
 }
 

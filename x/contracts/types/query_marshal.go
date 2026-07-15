@@ -3,6 +3,8 @@ package types
 import (
 	"fmt"
 	"math/bits"
+
+	gogoproto "github.com/cosmos/gogoproto/proto"
 )
 
 // This file (together with query_marshal_size.go and
@@ -15,11 +17,28 @@ import (
 //
 // Those structs already carry correct protobuf field-number tags (used
 // below as the source of truth for field numbers -- nothing here invents a
-// new one) and already implement Reset()/String()/ProtoMessage() (see
-// service.go), which is enough for this codebase's in-process ABCI query
-// routing and for codectypes.Any-wrapping of Msg types during tx signing --
-// both paths go through gogoproto's reflection-based marshaler, which
-// tolerates the missing wire-format methods.
+// new one). The top-level Query*Request/Query*Response wrapper types also
+// already implement Reset()/String()/ProtoMessage() (see service.go), but
+// the leaf value types nested inside those responses -- Params, CodeRecord,
+// PageRequest, CodeDependency, StateInit, Contract, ContractStorageEntry,
+// and ContractReceipt -- never did; each is a plain data struct defined in
+// its own file (types.go, api.go, state_init.go, contract_state.go) with no
+// gogoproto marker methods at all. That was invisible from this file's own
+// wire-format round-trip tests (Marshal/Unmarshal call each other directly,
+// never through the proto.Message interface), and invisible to
+// codec.ProtoCodec.GRPCCodec()'s binary path too (the parent
+// Query*Response's own MarshalToSizedBuffer inlines each leaf field's bytes
+// directly without going through the leaf's Marshal via an interface
+// assertion). It only surfaces in clientCtx.PrintProto's JSON path (used by
+// every `l1d query avm ...` CLI command), which walks the full nested
+// object graph and requires every level -- leaf types included -- to
+// satisfy proto.Message: without these methods, e.g. `query avm contract`
+// fails with "types.Contract does not implement proto.Message" despite the
+// underlying query succeeding. The three methods below are the same
+// trivial, no-op-bodied triple already used for every other hand-written
+// message in this package (see service.go): Reset zeroes the receiver,
+// String defers to gogoproto's reflection-based text formatter, and
+// ProtoMessage is the empty marker method the interface requires.
 //
 // cosmos-sdk's real production gRPC codec (codec.ProtoCodec.GRPCCodec(),
 // forced via grpc.ForceServerCodec in server/grpc/server.go) does not
@@ -45,6 +64,38 @@ import (
 // namespaced for l1/contracts/v1/query.proto, so they cannot collide with a
 // genuinely protoc-generated query.pb.go if one is ever introduced into this
 // package.
+func (m *Params) Reset()         { *m = Params{} }
+func (m *Params) String() string { return gogoproto.CompactTextString(m) }
+func (*Params) ProtoMessage()    {}
+
+func (m *CodeRecord) Reset()         { *m = CodeRecord{} }
+func (m *CodeRecord) String() string { return gogoproto.CompactTextString(m) }
+func (*CodeRecord) ProtoMessage()    {}
+
+func (m *PageRequest) Reset()         { *m = PageRequest{} }
+func (m *PageRequest) String() string { return gogoproto.CompactTextString(m) }
+func (*PageRequest) ProtoMessage()    {}
+
+func (m *CodeDependency) Reset()         { *m = CodeDependency{} }
+func (m *CodeDependency) String() string { return gogoproto.CompactTextString(m) }
+func (*CodeDependency) ProtoMessage()    {}
+
+func (m *StateInit) Reset()         { *m = StateInit{} }
+func (m *StateInit) String() string { return gogoproto.CompactTextString(m) }
+func (*StateInit) ProtoMessage()    {}
+
+func (m *Contract) Reset()         { *m = Contract{} }
+func (m *Contract) String() string { return gogoproto.CompactTextString(m) }
+func (*Contract) ProtoMessage()    {}
+
+func (m *ContractStorageEntry) Reset()         { *m = ContractStorageEntry{} }
+func (m *ContractStorageEntry) String() string { return gogoproto.CompactTextString(m) }
+func (*ContractStorageEntry) ProtoMessage()    {}
+
+func (m *ContractReceipt) Reset()         { *m = ContractReceipt{} }
+func (m *ContractReceipt) String() string { return gogoproto.CompactTextString(m) }
+func (*ContractReceipt) ProtoMessage()    {}
+
 var (
 	ErrInvalidLengthContractsQuery        = fmt.Errorf("proto: negative length found during unmarshaling")
 	ErrIntOverflowContractsQuery          = fmt.Errorf("proto: integer overflow")

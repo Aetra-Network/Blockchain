@@ -223,23 +223,40 @@ type MsgDisableContractUpgrades struct {
 }
 
 type MsgTopUpContract struct {
-	Sender          string
-	ContractAddress string
-	Amount          uint64
-	Height          uint64
+	Sender          string `protobuf:"bytes,1,opt,name=sender,proto3" json:"sender,omitempty"`
+	ContractAddress string `protobuf:"bytes,2,opt,name=contract_address,json=contractAddress,proto3" json:"contract_address,omitempty"`
+	Amount          uint64 `protobuf:"varint,3,opt,name=amount,proto3" json:"amount,omitempty"`
+	Height          uint64 `protobuf:"varint,4,opt,name=height,proto3" json:"height,omitempty"`
+}
+
+// MsgTopUpContractResponse wraps Contract (defined in query.proto) rather
+// than declaring its own field set in tx.proto's hand-built descriptor: see
+// the comment on its MessageType entry in buildContractsTxFileDescriptor for
+// why (query.proto already imports tx.proto, so tx.proto cannot import
+// query.proto back).
+type MsgTopUpContractResponse struct {
+	Contract Contract `protobuf:"bytes,1,opt,name=contract,proto3" json:"contract"`
 }
 
 type MsgPayContractStorageDebt struct {
-	Sender          string
-	ContractAddress string
-	Amount          uint64
-	Height          uint64
+	Sender          string `protobuf:"bytes,1,opt,name=sender,proto3" json:"sender,omitempty"`
+	ContractAddress string `protobuf:"bytes,2,opt,name=contract_address,json=contractAddress,proto3" json:"contract_address,omitempty"`
+	Amount          uint64 `protobuf:"varint,3,opt,name=amount,proto3" json:"amount,omitempty"`
+	Height          uint64 `protobuf:"varint,4,opt,name=height,proto3" json:"height,omitempty"`
+}
+
+type MsgPayContractStorageDebtResponse struct {
+	Contract Contract `protobuf:"bytes,1,opt,name=contract,proto3" json:"contract"`
 }
 
 type MsgUnfreezeContract struct {
-	Sender          string
-	ContractAddress string
-	Height          uint64
+	Sender          string `protobuf:"bytes,1,opt,name=sender,proto3" json:"sender,omitempty"`
+	ContractAddress string `protobuf:"bytes,2,opt,name=contract_address,json=contractAddress,proto3" json:"contract_address,omitempty"`
+	Height          uint64 `protobuf:"varint,3,opt,name=height,proto3" json:"height,omitempty"`
+}
+
+type MsgUnfreezeContractResponse struct {
+	Contract Contract `protobuf:"bytes,1,opt,name=contract,proto3" json:"contract"`
 }
 
 type MsgGrantNativeStakingCapability struct {

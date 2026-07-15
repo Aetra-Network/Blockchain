@@ -16,6 +16,9 @@ func RegisterLegacyAminoCodec(cdc *codec.LegacyAmino) {
 	cdc.RegisterConcrete(&MsgUpdateContractParams{}, "l1/contracts/MsgUpdateContractParams", nil)
 	cdc.RegisterConcrete(&MsgSubmitSecurityAttestation{}, "l1/contracts/MsgSubmitSecurityAttestation", nil)
 	cdc.RegisterConcrete(&MsgRevokeSecurityAttestation{}, "l1/contracts/MsgRevokeSecurityAttestation", nil)
+	cdc.RegisterConcrete(&MsgTopUpContract{}, "l1/contracts/MsgTopUpContract", nil)
+	cdc.RegisterConcrete(&MsgPayContractStorageDebt{}, "l1/contracts/MsgPayContractStorageDebt", nil)
+	cdc.RegisterConcrete(&MsgUnfreezeContract{}, "l1/contracts/MsgUnfreezeContract", nil)
 }
 
 func RegisterInterfaces(registry codectypes.InterfaceRegistry) {
@@ -29,6 +32,9 @@ func RegisterInterfaces(registry codectypes.InterfaceRegistry) {
 		&MsgUpdateContractParams{},
 		&MsgSubmitSecurityAttestation{},
 		&MsgRevokeSecurityAttestation{},
+		&MsgTopUpContract{},
+		&MsgPayContractStorageDebt{},
+		&MsgUnfreezeContract{},
 	)
 	registry.RegisterImplementations(
 		(*txtypes.MsgResponse)(nil),
@@ -39,5 +45,8 @@ func RegisterInterfaces(registry codectypes.InterfaceRegistry) {
 		&MsgUpdateContractParamsResponse{},
 		&MsgSubmitSecurityAttestationResponse{},
 		&MsgRevokeSecurityAttestationResponse{},
+		&MsgTopUpContractResponse{},
+		&MsgPayContractStorageDebtResponse{},
+		&MsgUnfreezeContractResponse{},
 	)
 }

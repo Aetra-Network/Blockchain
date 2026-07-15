@@ -25,6 +25,9 @@ const (
 	MsgUpdateContractParamsTypeURL      = "/l1.contracts.v1.MsgUpdateContractParams"
 	MsgSubmitSecurityAttestationTypeURL = "/l1.contracts.v1.MsgSubmitSecurityAttestation"
 	MsgRevokeSecurityAttestationTypeURL = "/l1.contracts.v1.MsgRevokeSecurityAttestation"
+	MsgTopUpContractTypeURL             = "/l1.contracts.v1.MsgTopUpContract"
+	MsgPayContractStorageDebtTypeURL    = "/l1.contracts.v1.MsgPayContractStorageDebt"
+	MsgUnfreezeContractTypeURL          = "/l1.contracts.v1.MsgUnfreezeContract"
 )
 
 type GRPCMsgServer interface {
@@ -36,6 +39,9 @@ type GRPCMsgServer interface {
 	UpdateContractParams(context.Context, *MsgUpdateContractParams) (*MsgUpdateContractParamsResponse, error)
 	SubmitSecurityAttestation(context.Context, *MsgSubmitSecurityAttestation) (*MsgSubmitSecurityAttestationResponse, error)
 	RevokeSecurityAttestation(context.Context, *MsgRevokeSecurityAttestation) (*MsgRevokeSecurityAttestationResponse, error)
+	TopUpContract(context.Context, *MsgTopUpContract) (*MsgTopUpContractResponse, error)
+	PayContractStorageDebt(context.Context, *MsgPayContractStorageDebt) (*MsgPayContractStorageDebtResponse, error)
+	UnfreezeContract(context.Context, *MsgUnfreezeContract) (*MsgUnfreezeContractResponse, error)
 }
 
 type UnimplementedGRPCMsgServer struct{}
@@ -63,6 +69,15 @@ func (UnimplementedGRPCMsgServer) SubmitSecurityAttestation(context.Context, *Ms
 }
 func (UnimplementedGRPCMsgServer) RevokeSecurityAttestation(context.Context, *MsgRevokeSecurityAttestation) (*MsgRevokeSecurityAttestationResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RevokeSecurityAttestation not implemented")
+}
+func (UnimplementedGRPCMsgServer) TopUpContract(context.Context, *MsgTopUpContract) (*MsgTopUpContractResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method TopUpContract not implemented")
+}
+func (UnimplementedGRPCMsgServer) PayContractStorageDebt(context.Context, *MsgPayContractStorageDebt) (*MsgPayContractStorageDebtResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method PayContractStorageDebt not implemented")
+}
+func (UnimplementedGRPCMsgServer) UnfreezeContract(context.Context, *MsgUnfreezeContract) (*MsgUnfreezeContractResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method UnfreezeContract not implemented")
 }
 
 type GRPCQueryServer interface {
@@ -159,6 +174,15 @@ var Msg_serviceDesc = grpcgo.ServiceDesc{
 		{MethodName: "RevokeSecurityAttestation", Handler: msgHandler(func(s GRPCMsgServer, ctx context.Context, req any) (any, error) {
 			return s.RevokeSecurityAttestation(ctx, req.(*MsgRevokeSecurityAttestation))
 		}, newMsgRevokeSecurityAttestation)},
+		{MethodName: "TopUpContract", Handler: msgHandler(func(s GRPCMsgServer, ctx context.Context, req any) (any, error) {
+			return s.TopUpContract(ctx, req.(*MsgTopUpContract))
+		}, newMsgTopUpContract)},
+		{MethodName: "PayContractStorageDebt", Handler: msgHandler(func(s GRPCMsgServer, ctx context.Context, req any) (any, error) {
+			return s.PayContractStorageDebt(ctx, req.(*MsgPayContractStorageDebt))
+		}, newMsgPayContractStorageDebt)},
+		{MethodName: "UnfreezeContract", Handler: msgHandler(func(s GRPCMsgServer, ctx context.Context, req any) (any, error) {
+			return s.UnfreezeContract(ctx, req.(*MsgUnfreezeContract))
+		}, newMsgUnfreezeContract)},
 	},
 	Streams:  []grpcgo.StreamDesc{},
 	Metadata: "l1/contracts/v1/tx.proto",
@@ -256,6 +280,9 @@ func newMsgSendInternalMessage() any       { return new(MsgSendInternalMessage) 
 func newMsgUpdateContractParams() any      { return new(MsgUpdateContractParams) }
 func newMsgSubmitSecurityAttestation() any { return new(MsgSubmitSecurityAttestation) }
 func newMsgRevokeSecurityAttestation() any { return new(MsgRevokeSecurityAttestation) }
+func newMsgTopUpContract() any             { return new(MsgTopUpContract) }
+func newMsgPayContractStorageDebt() any    { return new(MsgPayContractStorageDebt) }
+func newMsgUnfreezeContract() any          { return new(MsgUnfreezeContract) }
 func newQueryParamsRequest() any           { return new(QueryParamsRequest) }
 func newQueryCodeRequest() any             { return new(QueryCodeRequest) }
 func newQueryCodesRequest() any            { return new(QueryCodesRequest) }
@@ -281,6 +308,9 @@ func init() {
 	gogoproto.RegisterType((*MsgUpdateContractParams)(nil), "l1.contracts.v1.MsgUpdateContractParams")
 	gogoproto.RegisterType((*MsgSubmitSecurityAttestation)(nil), "l1.contracts.v1.MsgSubmitSecurityAttestation")
 	gogoproto.RegisterType((*MsgRevokeSecurityAttestation)(nil), "l1.contracts.v1.MsgRevokeSecurityAttestation")
+	gogoproto.RegisterType((*MsgTopUpContract)(nil), "l1.contracts.v1.MsgTopUpContract")
+	gogoproto.RegisterType((*MsgPayContractStorageDebt)(nil), "l1.contracts.v1.MsgPayContractStorageDebt")
+	gogoproto.RegisterType((*MsgUnfreezeContract)(nil), "l1.contracts.v1.MsgUnfreezeContract")
 	gogoproto.RegisterType((*StoreCodeResponse)(nil), "l1.contracts.v1.MsgStoreCodeResponse")
 	gogoproto.RegisterType((*InstantiateContractResponse)(nil), "l1.contracts.v1.MsgDeployContractResponse")
 	gogoproto.RegisterType((*ExecuteContractResponse)(nil), "l1.contracts.v1.MsgExecuteExternalResponse")
@@ -288,6 +318,9 @@ func init() {
 	gogoproto.RegisterType((*MsgUpdateContractParamsResponse)(nil), "l1.contracts.v1.MsgUpdateContractParamsResponse")
 	gogoproto.RegisterType((*MsgSubmitSecurityAttestationResponse)(nil), "l1.contracts.v1.MsgSubmitSecurityAttestationResponse")
 	gogoproto.RegisterType((*MsgRevokeSecurityAttestationResponse)(nil), "l1.contracts.v1.MsgRevokeSecurityAttestationResponse")
+	gogoproto.RegisterType((*MsgTopUpContractResponse)(nil), "l1.contracts.v1.MsgTopUpContractResponse")
+	gogoproto.RegisterType((*MsgPayContractStorageDebtResponse)(nil), "l1.contracts.v1.MsgPayContractStorageDebtResponse")
+	gogoproto.RegisterType((*MsgUnfreezeContractResponse)(nil), "l1.contracts.v1.MsgUnfreezeContractResponse")
 	gogoproto.RegisterType((*QueryParamsRequest)(nil), "l1.contracts.v1.QueryParamsRequest")
 	gogoproto.RegisterType((*QueryParamsResponse)(nil), "l1.contracts.v1.QueryParamsResponse")
 	gogoproto.RegisterType((*QueryCodeRequest)(nil), "l1.contracts.v1.QueryCodeRequest")
@@ -592,6 +625,53 @@ func (m *QuerySecurityBadgeResponse) Reset()         { *m = QuerySecurityBadgeRe
 func (m *QuerySecurityBadgeResponse) String() string { return gogoproto.CompactTextString(m) }
 func (*QuerySecurityBadgeResponse) ProtoMessage()    {}
 
+func (m *MsgTopUpContract) Reset()                { *m = MsgTopUpContract{} }
+func (m *MsgTopUpContract) String() string        { return gogoproto.CompactTextString(m) }
+func (*MsgTopUpContract) ProtoMessage()           {}
+func (*MsgTopUpContract) XXX_MessageName() string { return "l1.contracts.v1.MsgTopUpContract" }
+func (*MsgTopUpContract) Descriptor() ([]byte, []int) {
+	return fileDescriptorContractsTx, []int{21}
+}
+
+func (m *MsgTopUpContractResponse) Reset()         { *m = MsgTopUpContractResponse{} }
+func (m *MsgTopUpContractResponse) String() string { return gogoproto.CompactTextString(m) }
+func (*MsgTopUpContractResponse) ProtoMessage()    {}
+func (*MsgTopUpContractResponse) XXX_MessageName() string {
+	return "l1.contracts.v1.MsgTopUpContractResponse"
+}
+
+func (m *MsgPayContractStorageDebt) Reset()         { *m = MsgPayContractStorageDebt{} }
+func (m *MsgPayContractStorageDebt) String() string { return gogoproto.CompactTextString(m) }
+func (*MsgPayContractStorageDebt) ProtoMessage()    {}
+func (*MsgPayContractStorageDebt) XXX_MessageName() string {
+	return "l1.contracts.v1.MsgPayContractStorageDebt"
+}
+func (*MsgPayContractStorageDebt) Descriptor() ([]byte, []int) {
+	return fileDescriptorContractsTx, []int{23}
+}
+
+func (m *MsgPayContractStorageDebtResponse) Reset()         { *m = MsgPayContractStorageDebtResponse{} }
+func (m *MsgPayContractStorageDebtResponse) String() string { return gogoproto.CompactTextString(m) }
+func (*MsgPayContractStorageDebtResponse) ProtoMessage()    {}
+func (*MsgPayContractStorageDebtResponse) XXX_MessageName() string {
+	return "l1.contracts.v1.MsgPayContractStorageDebtResponse"
+}
+
+func (m *MsgUnfreezeContract) Reset()                { *m = MsgUnfreezeContract{} }
+func (m *MsgUnfreezeContract) String() string        { return gogoproto.CompactTextString(m) }
+func (*MsgUnfreezeContract) ProtoMessage()           {}
+func (*MsgUnfreezeContract) XXX_MessageName() string { return "l1.contracts.v1.MsgUnfreezeContract" }
+func (*MsgUnfreezeContract) Descriptor() ([]byte, []int) {
+	return fileDescriptorContractsTx, []int{25}
+}
+
+func (m *MsgUnfreezeContractResponse) Reset()         { *m = MsgUnfreezeContractResponse{} }
+func (m *MsgUnfreezeContractResponse) String() string { return gogoproto.CompactTextString(m) }
+func (*MsgUnfreezeContractResponse) ProtoMessage()    {}
+func (*MsgUnfreezeContractResponse) XXX_MessageName() string {
+	return "l1.contracts.v1.MsgUnfreezeContractResponse"
+}
+
 var fileDescriptorContractsTx = buildContractsTxFileDescriptor()
 var fileDescriptorContractsQuery = buildContractsQueryFileDescriptor()
 
@@ -775,6 +855,37 @@ func buildContractsTxFileDescriptor() []byte {
 				stringField("revoked_reason", 17),
 				stringField("signed_by", 18),
 			),
+			withSigner(messageDescriptorFields("MsgTopUpContract",
+				stringField("sender", 1),
+				stringField("contract_address", 2),
+				uint64Field("amount", 3),
+				uint64Field("height", 4),
+			), "sender"),
+			// MsgTopUpContractResponse wraps Contract, which is defined in
+			// query.proto; tx.proto cannot import query.proto back (query.proto
+			// already depends on tx.proto, and proto imports cannot be
+			// circular -- see the Dependency comment in
+			// buildContractsQueryFileDescriptor), so the field is left
+			// undeclared here. This descriptor is registry metadata only: Msg
+			// wire encoding for hand-written types in this package uses the Go
+			// struct's protobuf tags via gogoproto's reflection-based Marshal
+			// fallback, not this descriptor (see query_marshal.go's doc comment
+			// for why only the query-side types need genuine hand-rolled
+			// Marshal/Unmarshal methods).
+			messageDescriptor("MsgTopUpContractResponse"),
+			withSigner(messageDescriptorFields("MsgPayContractStorageDebt",
+				stringField("sender", 1),
+				stringField("contract_address", 2),
+				uint64Field("amount", 3),
+				uint64Field("height", 4),
+			), "sender"),
+			messageDescriptor("MsgPayContractStorageDebtResponse"),
+			withSigner(messageDescriptorFields("MsgUnfreezeContract",
+				stringField("sender", 1),
+				stringField("contract_address", 2),
+				uint64Field("height", 3),
+			), "sender"),
+			messageDescriptor("MsgUnfreezeContractResponse"),
 		},
 		Service: []*descriptorpb.ServiceDescriptorProto{
 			{
@@ -788,6 +899,9 @@ func buildContractsTxFileDescriptor() []byte {
 					serviceMethodDescriptor("UpdateContractParams", "MsgUpdateContractParams", "MsgUpdateContractParamsResponse"),
 					serviceMethodDescriptor("SubmitSecurityAttestation", "MsgSubmitSecurityAttestation", "MsgSubmitSecurityAttestationResponse"),
 					serviceMethodDescriptor("RevokeSecurityAttestation", "MsgRevokeSecurityAttestation", "MsgRevokeSecurityAttestationResponse"),
+					serviceMethodDescriptor("TopUpContract", "MsgTopUpContract", "MsgTopUpContractResponse"),
+					serviceMethodDescriptor("PayContractStorageDebt", "MsgPayContractStorageDebt", "MsgPayContractStorageDebtResponse"),
+					serviceMethodDescriptor("UnfreezeContract", "MsgUnfreezeContract", "MsgUnfreezeContractResponse"),
 				},
 				Options: &descriptorpb.ServiceOptions{
 					UninterpretedOption: []*descriptorpb.UninterpretedOption{{

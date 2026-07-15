@@ -2398,7 +2398,11 @@ func (k *Keeper) ensureActiveWallet(ctx context.Context, address string, operati
 	if k.accountStatusReader == nil {
 		return nil
 	}
-	status, found, err := k.accountStatusReader.AccountStatus(ctx, address)
+	identity, err := normalizeAccountIdentity(address)
+	if err != nil {
+		return fmt.Errorf("%s: %w", operation, err)
+	}
+	status, found, err := k.accountStatusReader.AccountStatus(ctx, identity)
 	if err != nil {
 		return err
 	}
@@ -2412,6 +2416,34 @@ func (k *Keeper) ensureActiveWallet(ctx context.Context, address string, operati
 		return fmt.Errorf("%s: unsupported account status %q", operation, status)
 	}
 	return nil
+}
+
+// normalizeAccountIdentity maps a caller's plain wallet address -- the
+// "AE..." address a bank send / signature verifies against, and what
+// MsgStoreCode/MsgDeployContract/MsgExecuteContract/MsgUnfreezeContract carry
+// in their Authority/Creator/Sender fields, since those fields are each
+// message's cosmos.msg.v1.signer field (see x/contracts/types/service.go's
+// withSigner calls) and so must match what --from's keyring key signs with --
+// to the account's canonical v2 identity: the identity
+// addressing.DeriveAccountAddress derives from a pubkey and the one
+// native-account records activation under. Mirrors
+// x/nominator-pool/keeper.normalizeAccountIdentity, the same plain-address
+// vs. v2-identity split solved there first.
+//
+// It is idempotent: an address that is already a v2 identity is returned
+// unchanged (NormalizeV2RawAddress passes v2/system-class addresses through
+// unchanged), so callers and tests that already pass the v2 identity keep
+// working untouched.
+func normalizeAccountIdentity(userAddress string) (string, error) {
+	seed, err := aetraaddress.Parse(userAddress)
+	if err != nil {
+		return "", err
+	}
+	identity, err := aetraaddress.NormalizeToAccountIdentity(seed)
+	if err != nil {
+		return "", err
+	}
+	return aetraaddress.FormatUserFriendly(identity)
 }
 
 func (k *Keeper) chargeContractRentAt(ctx context.Context, idx int, contract types.Contract, height uint64) (types.Contract, uint64, error) {

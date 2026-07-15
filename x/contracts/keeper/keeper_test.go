@@ -1821,9 +1821,21 @@ func TestAVMContractLifecycleStateMachineEnforced(t *testing.T) {
 
 type testAccountStatus map[string]string
 
+// AccountStatus matches address either directly or via its normalized v2
+// identity, since production callers now look accounts up by
+// normalizeAccountIdentity(address) (see keeper.go's ensureActiveWallet)
+// while fixtures configure this map keyed by the plain "AE..." address most
+// tests build with aeAddress(...).
 func (s testAccountStatus) AccountStatus(_ context.Context, address string) (string, bool, error) {
-	status, found := s[address]
-	return status, found, nil
+	if status, found := s[address]; found {
+		return status, true, nil
+	}
+	for plain, status := range s {
+		if identity, err := normalizeAccountIdentity(plain); err == nil && identity == address {
+			return status, true, nil
+		}
+	}
+	return "", false, nil
 }
 
 func storeContractCode(t *testing.T, k *Keeper, owner string) string {

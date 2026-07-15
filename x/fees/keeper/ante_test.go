@@ -1,7 +1,9 @@
 package keeper_test
 
 import (
+	"bytes"
 	"errors"
+	"strings"
 	"testing"
 
 	sdkmath "cosmossdk.io/math"
@@ -613,6 +615,52 @@ func TestAnteHandlerDecoratorAcceptsLargeTxPayingExactlyHardCap(t *testing.T) {
 	tx := feeTx{fees: sdk.NewCoins(sdk.NewCoin(types.BondDenom, maxFee))}
 	_, err = app.FeesKeeper.AnteHandlerDecorator(next)(ctx, tx, false)
 	require.NoError(t, err, "a tx paying the maximum legal fee must never be rejected as unpayable")
+	require.True(t, called)
+}
+
+// TestAnteHandlerDecoratorAcceptsBech32BankSendAddresses is the regression
+// test for a bug found while live-testing (not this session's earlier
+// findings): validateNoZeroMsgAddresses validated bank.MsgSend's
+// FromAddress/ToAddress with aetraaddress.ValidateUserAddress, which only
+// accepts the "AE…" user-friendly form -- but MsgSend.FromAddress/ToAddress
+// are always populated with the SDK's native "ae1…" bech32 form by any real
+// client (that's what sdk.AccAddress.String() produces, and there is no way
+// to make the stock bank module emit the "AE…" form instead). Every
+// legitimate bank send was rejected. Confirmed live: `tx bank send` against
+// a fresh localnet failed with "bank send sender must use AE user-facing
+// address format" before the fix, succeeded (code=0, balance credited)
+// after. The existing test suite never caught this because its own
+// validSender/reservedAddress test helpers build "AE…" form addresses, not
+// genuine bech32 ones -- this test deliberately uses sdk.AccAddress.String()
+// to match what a real signed transaction actually contains.
+func TestAnteHandlerDecoratorAcceptsBech32BankSendAddresses(t *testing.T) {
+	app := l1app.Setup(t, false)
+	ctx := app.NewContext(false).WithBlockHeight(1)
+
+	sender := sdk.AccAddress(bytes.Repeat([]byte{0x21}, 20))
+	recipient := sdk.AccAddress(bytes.Repeat([]byte{0x22}, 20))
+	require.True(t, strings.HasPrefix(sender.String(), "ae1"), "sender.String() must be the native bech32 form")
+	require.True(t, strings.HasPrefix(recipient.String(), "ae1"), "recipient.String() must be the native bech32 form")
+
+	called := false
+	next := func(ctx sdk.Context, tx sdk.Tx, _ bool) (sdk.Context, error) {
+		called = true
+		feeTx := tx.(sdk.FeeTx)
+		require.NoError(t, app.BankKeeper.MintCoins(ctx, minttypes.ModuleName, feeTx.GetFee()))
+		require.NoError(t, app.BankKeeper.SendCoinsFromModuleToModule(ctx, minttypes.ModuleName, authtypes.FeeCollectorName, feeTx.GetFee()))
+		return ctx, nil
+	}
+
+	tx := feeTx{
+		fees: sdk.NewCoins(sdk.NewCoin(types.BondDenom, requiredFullFee(t, 100_000, 1))),
+		msgs: []sdk.Msg{&banktypes.MsgSend{
+			FromAddress:	sender.String(),
+			ToAddress:	recipient.String(),
+			Amount:		sdk.NewCoins(sdk.NewInt64Coin(types.BondDenom, 1000)),
+		}},
+	}
+	_, err := app.FeesKeeper.AnteHandlerDecorator(next)(ctx, tx, false)
+	require.NoError(t, err, "a bank send using genuine SDK bech32 addresses must not be rejected")
 	require.True(t, called)
 }
 
