@@ -22,6 +22,9 @@
 | #8 kill-switch not enforced on top-up / pay-storage-debt / unfreeze | add the `Enabled` guard to all three | `156f5b6d` |
 | **C-1 (CRITICAL)** + #25 | election override emits a per-block DELTA (imposed-set history in state), never re-removing an already-removed validator; validators keyed on the full pubkey. **New 2-block test proves no re-removal on block 2.** | `fc6394cb` |
 | #5 (HIGH) AVM operand-gas counted only top-level fan-out (FINDING-001 bypass) | recursive value-size counting; nested-value test | `6c8a69dc` |
+| #15 (LOW) determinism gate missed `time.Since`/`After`/`Tick`/`NewTimer`/`NewTicker` | added those package-qualified timer funcs; gate still green | `<gate>` |
+
+**Validation:** the full test suite for every touched package (`x/validator-election`, `x/native-account`, `x/contracts`, `x/aetravm`, `x/nominator-pool`, `x/evidence`, `x/emissions`, `x/fees`, `app/...`, `cmd/l1d/...`) passes (exit 0), and `go build ./...` is green — all fixes integrate with no regression.
 
 (Earlier Pass-2 fixes SA2-S02/S03/S04/S05/S06/S07/S08/I02 remain committed; see `SECOND-AUDIT-REPORT.md`.)
 
