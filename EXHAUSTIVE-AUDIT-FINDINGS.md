@@ -20,6 +20,7 @@
 | #26 evidence proof hash uses a NUL separator (non-injective) | length-prefix framing (matches FINDING-016) | `94075f71` |
 | #20 `messageBeaconHash` concatenates variable-length fields without framing | length-prefix Source/Destination/Body | `0c11a618` |
 | #8 kill-switch not enforced on top-up / pay-storage-debt / unfreeze | add the `Enabled` guard to all three | `156f5b6d` |
+| **C-1 (CRITICAL)** + #25 | election override emits a per-block DELTA (imposed-set history in state), never re-removing an already-removed validator; validators keyed on the full pubkey. **New 2-block test proves no re-removal on block 2.** | `fc6394cb` |
 
 (Earlier Pass-2 fixes SA2-S02/S03/S04/S05/S06/S07/S08/I02 remain committed; see `SECOND-AUDIT-REPORT.md`.)
 
@@ -27,9 +28,11 @@
 
 ---
 
-## OPEN — CRITICAL
+## RESOLVED — CRITICAL ✅
 
 ### C-1 · Election override re-emits stale validator removals every block → permanent CometBFT halt
+
+**STATUS: FIXED in `fc6394cb`** (per-block delta + AppliedValidatorSet/PreviousAppliedValidatorSet history, validated by a 2-block test). The analysis below is what was built.
 **`app/elector_validator_updates.go`** (confirmed 3/3 against vendored CometBFT v0.39.3).
 `applyElectionValidatorUpdates` (called unconditionally from `FinalizeBlock`) rebuilds the **complete** removal set every block from stable sources — `addStakingValidatorRemovals` (all `GetAllValidators`) and `addElectionSetRemovals` (all `PreviousValidatorSet`) — emitting `Power:0` for the same non-elected validators on consecutive blocks. CometBFT rejects removing an already-removed validator (`validator_set.go` `verifyRemovals` / empty-set guard) → `updateState` errors → `consensus/state.go` `panic("failed to apply block")`. Deterministic → whole network halts on the block after any set change (a validator not re-applying, an exit, a second validator — normal operation, not just the repo's own single-genesis-validator test).
 
@@ -77,7 +80,12 @@
 | #26 | FINDING-016 hash-separator class still present in x/evidence | `x/evidence/keeper/keeper.go:779` |
 | #27 | Stake-weighted tx priority (`PriorityScore`) is dead code, never applied to mempool | `x/fees/keeper/fee_policy.go:179` |
 
-## Inaccuracies (severity=info; user asked these be fixed)
+## Inaccuracies (severity=info)
+
+**Resolution decision:** #29/#30/#33/#34 are NOT bugs but two coexisting economic models — `x/aetra-economics` is a self-contained, tested model (3.5% inflation midpoint, block-based epochs, 35% share, with tests asserting `midpoint=350`, `APR(400,6000)=667`) that intentionally differs from the live `x/emissions`/`fee-collector` drivers (3%, daily epochs, 70%, 50/35/15). Force-aligning would break a coherent tested module and is an economic-model decision, not a patch. **Canonical = `x/emissions` + `x/fee-collector`** (the live drivers); reconciling `x/aetra-economics`/residual `x/fees` accounting to them should be a deliberate, coordinated change with its tests updated. Documented, not force-patched.
+
+**#5/#12/#13/#21/#23 + gate hardening (#9/#15/#16/#17):** dedicated passes — #5 (recursive AVM gas) and #23 (mint signer-binding) are real fixes with real test surface; #12 (VRF) and #13 (per-entity KV) are larger; making the determinism gate stricter may surface existing code and needs a controlled run. All latent (AVM off) or non-consensus. **#7/#2 (contract/pool custody):** feature work (which module account backs balances) — SA2-F01, not a patch.
+
 
 | ID | Inaccuracy | Location |
 |---|---|---|
