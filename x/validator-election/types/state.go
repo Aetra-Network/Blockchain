@@ -3,6 +3,7 @@ package types
 import (
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 
@@ -29,6 +30,12 @@ const (
 	DefaultMaxPower        = uint64(1_000_000)
 	DefaultMaxTotalPower   = uint64(100_000_000)
 )
+
+// MaxAllowedTotalVotingPower mirrors CometBFT's types.MaxTotalVotingPower
+// (math.MaxInt64 / 8). Bounding the election power params at or below it means
+// no governance param update can express a validator set CometBFT rejects at
+// FinalizeBlock (which would halt the chain permanently). SA2-S04.
+const MaxAllowedTotalVotingPower = uint64(math.MaxInt64) / 8
 
 type Params struct {
 	Authority               string
@@ -197,6 +204,14 @@ func (p Params) Validate() error {
 	}
 	if p.MaxTotalVotingPower == 0 || p.MaxTotalVotingPower < p.MaxValidatorPower {
 		return errors.New("validator election max total voting power must be positive and >= max validator power")
+	}
+	// Upper bound (SA2-S04): CometBFT rejects a validator set whose summed power
+	// exceeds MaxTotalVotingPower (math.MaxInt64/8). MaxValidatorPower <=
+	// MaxTotalVotingPower is enforced above, so bounding the total also bounds
+	// per-validator power — a single ceiling check stops a governance-settable,
+	// CometBFT-invalid (chain-halting) set.
+	if p.MaxTotalVotingPower > MaxAllowedTotalVotingPower {
+		return fmt.Errorf("validator election max total voting power must not exceed CometBFT limit %d", MaxAllowedTotalVotingPower)
 	}
 	if p.ElectionWindowBlocks == 0 {
 		return errors.New("validator election window must be positive")
