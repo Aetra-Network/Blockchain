@@ -31,3 +31,20 @@ func TestInternalMessageRejectedWhenModuleDisabled(t *testing.T) {
 	_, err = k.ExecuteInternal(types.MsgExecuteInternal{Height: 5, Message: msg.Message})
 	require.ErrorContains(t, err, "module disabled")
 }
+
+// TestContractLifecycleOpsRejectedWhenModuleDisabled covers SA2 #8: the newer
+// top-up / pay-storage-debt / unfreeze entry points must also honor the
+// kill-switch, matching the other mutating handlers.
+func TestContractLifecycleOpsRejectedWhenModuleDisabled(t *testing.T) {
+	k := NewKeeper()
+	k.genesis.Params.Enabled = false
+
+	_, err := k.TopUpContract(types.MsgTopUpContract{Sender: aeAddress("11"), ContractAddress: aeAddress("22"), Amount: 1, Height: 5})
+	require.ErrorContains(t, err, "module disabled")
+
+	_, err = k.PayContractStorageDebt(types.MsgPayContractStorageDebt{Sender: aeAddress("11"), ContractAddress: aeAddress("22"), Amount: 1, Height: 5})
+	require.ErrorContains(t, err, "module disabled")
+
+	_, err = k.UnfreezeContract(types.MsgUnfreezeContract{Sender: aeAddress("11"), ContractAddress: aeAddress("22"), Height: 5})
+	require.ErrorContains(t, err, "module disabled")
+}

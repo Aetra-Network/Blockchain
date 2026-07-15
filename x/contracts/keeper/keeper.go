@@ -1600,6 +1600,9 @@ func (k *Keeper) ExecuteContractState(ctx context.Context, msg types.MsgExecuteC
 }
 
 func (k *Keeper) TopUpContract(msg types.MsgTopUpContract) (types.Contract, error) {
+	if !k.genesis.Params.Enabled { // SA2 #8: honor the AVM kill-switch
+		return types.Contract{}, errors.New(types.ErrExecutionFailed + ": module disabled")
+	}
 	if err := types.ValidateUserFacingAEAddress("contract top-up sender", msg.Sender); err != nil {
 		return types.Contract{}, err
 	}
@@ -1640,6 +1643,9 @@ func (k *Keeper) TopUpContractState(ctx context.Context, msg types.MsgTopUpContr
 }
 
 func (k *Keeper) PayContractStorageDebt(msg types.MsgPayContractStorageDebt) (types.Contract, error) {
+	if !k.genesis.Params.Enabled { // SA2 #8: honor the AVM kill-switch
+		return types.Contract{}, errors.New(types.ErrExecutionFailed + ": module disabled")
+	}
 	if err := types.ValidateUserFacingAEAddress("contract rent payer", msg.Sender); err != nil {
 		return types.Contract{}, err
 	}
@@ -1700,6 +1706,9 @@ func (k *Keeper) UnfreezeContractState(ctx context.Context, msg types.MsgUnfreez
 }
 
 func (k *Keeper) unfreezeContract(ctx context.Context, msg types.MsgUnfreezeContract) (types.Contract, error) {
+	if !k.genesis.Params.Enabled { // SA2 #8: honor the AVM kill-switch
+		return types.Contract{}, errors.New(types.ErrExecutionFailed + ": module disabled")
+	}
 	if err := types.ValidateUserFacingAEAddress("contract unfreeze sender", msg.Sender); err != nil {
 		return types.Contract{}, err
 	}
