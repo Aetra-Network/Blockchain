@@ -10,7 +10,6 @@ import (
 	abci "github.com/cometbft/cometbft/abci/types"
 	cmtcrypto "github.com/cometbft/cometbft/proto/tendermint/crypto"
 	cmtproto "github.com/cometbft/cometbft/proto/tendermint/types"
-	sdk "github.com/cosmos/cosmos-sdk/types"
 
 	"github.com/sovereign-l1/l1/x/validator-election/types"
 	validatorregistrytypes "github.com/sovereign-l1/l1/x/validator-registry/types"
@@ -39,56 +38,52 @@ func (app *L1App) applyElectionValidatorUpdates(req *abci.RequestFinalizeBlock, 
 		electedByKey[validatorUpdateKey(update)] = update
 	}
 
+	// Baseline = the set currently live in CometBFT = the set imposed on the
+	// PREVIOUS block (PreviousAppliedValidatorSet, maintained by the election
+	// EndBlocker and read here from this block's in-flight state). On the very
+	// first override it is empty, so fall back to the staking genesis set plus
+	// staking's in-flight additions this block. Removals are emitted ONLY for
+	// baseline members no longer elected — never re-derived from the full
+	// staking/previous set every block, which re-removes already-removed
+	// validators and halts CometBFT (SA2-CRIT C-1).
+	baseline := map[string]abci.ValidatorUpdate{}
+	if prev := electionGenesis.State.PreviousAppliedValidatorSet; len(prev) > 0 {
+		for _, validator := range types.SortValidatorSet(prev) {
+			update, err := electionValidatorPowerToABCIUpdate(validator)
+			if err != nil {
+				return err
+			}
+			baseline[validatorUpdateKey(update)] = update
+		}
+	} else {
+		validators, err := app.StakingKeeper.GetAllValidators(ctx)
+		if err != nil {
+			return err
+		}
+		for _, validator := range validators {
+			pubKey, err := validator.TmConsPublicKey()
+			if err != nil {
+				return err
+			}
+			update := abci.ValidatorUpdate{PubKey: pubKey}
+			baseline[validatorUpdateKey(update)] = update
+		}
+		for _, update := range res.ValidatorUpdates {
+			if update.Power > 0 {
+				baseline[validatorUpdateKey(update)] = update
+			}
+		}
+	}
+
 	zeroUpdates := make(map[string]abci.ValidatorUpdate)
-	for _, update := range res.ValidatorUpdates {
-		key := validatorUpdateKey(update)
-		if _, elected := electedByKey[key]; !elected {
-			update.Power = 0
-			zeroUpdates[key] = update
+	for key, update := range baseline {
+		if _, elected := electedByKey[key]; elected {
+			continue
 		}
+		update.Power = 0
+		zeroUpdates[key] = update
 	}
-	if err := app.addStakingValidatorRemovals(ctx, electedByKey, zeroUpdates); err != nil {
-		return err
-	}
-	if err := addElectionSetRemovals(electionGenesis.State.PreviousValidatorSet, electedByKey, zeroUpdates); err != nil {
-		return err
-	}
-
 	res.ValidatorUpdates = sortedValidatorUpdates(zeroUpdates, electedByKey)
-	return nil
-}
-
-func (app *L1App) addStakingValidatorRemovals(ctx sdk.Context, electedByKey map[string]abci.ValidatorUpdate, zeroUpdates map[string]abci.ValidatorUpdate) error {
-	validators, err := app.StakingKeeper.GetAllValidators(ctx)
-	if err != nil {
-		return err
-	}
-	for _, validator := range validators {
-		pubKey, err := validator.TmConsPublicKey()
-		if err != nil {
-			return err
-		}
-		update := abci.ValidatorUpdate{PubKey: pubKey, Power: 0}
-		key := validatorUpdateKey(update)
-		if _, elected := electedByKey[key]; !elected {
-			zeroUpdates[key] = update
-		}
-	}
-	return nil
-}
-
-func addElectionSetRemovals(previous []types.ValidatorPower, electedByKey map[string]abci.ValidatorUpdate, zeroUpdates map[string]abci.ValidatorUpdate) error {
-	for _, validator := range types.SortValidatorSet(previous) {
-		update, err := electionValidatorPowerToABCIUpdate(validator)
-		if err != nil {
-			return err
-		}
-		key := validatorUpdateKey(update)
-		if _, elected := electedByKey[key]; !elected {
-			update.Power = 0
-			zeroUpdates[key] = update
-		}
-	}
 	return nil
 }
 
@@ -115,7 +110,14 @@ func parseElectionConsensusPublicKey(text string) ([]byte, error) {
 }
 
 func validatorUpdateKey(update abci.ValidatorUpdate) string {
-	return hex.EncodeToString(update.PubKey.GetEd25519())
+	// Key on the full proto-encoded public key (type + bytes), not just the
+	// Ed25519 bytes: GetEd25519 returns nil for non-ed25519 keys, collapsing all
+	// of them into one bucket and silently dropping validators (SA2 #25).
+	bz, err := update.PubKey.Marshal()
+	if err != nil {
+		return update.PubKey.String()
+	}
+	return hex.EncodeToString(bz)
 }
 
 func sortedValidatorUpdates(zeroUpdates, electedByKey map[string]abci.ValidatorUpdate) []abci.ValidatorUpdate {

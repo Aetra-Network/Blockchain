@@ -131,6 +131,60 @@ func TestValidatorElectionCurrentSetControlsFinalizeBlockValidatorUpdates(t *tes
 	require.True(t, hasStakingRemoval, "staking validator must be removed when absent from elector current set")
 }
 
+// TestValidatorElectionOverrideEmitsRemovalOnceNotEveryBlock covers SA2-CRIT
+// (C-1): the override must remove a non-elected staking validator on the FIRST
+// block only. On the next block it must emit NO further removal for it —
+// re-removing an already-removed validator makes CometBFT panic and halts the
+// whole network.
+func TestValidatorElectionOverrideEmitsRemovalOnceNotEveryBlock(t *testing.T) {
+	db := dbm.NewMemDB()
+	appOptions := sims.AppOptionsMap{flags.FlagHome: DefaultNodeHome}
+	app := NewL1App(log.NewNopLogger(), db, true, appOptions)
+	genesis := GenesisStateWithSingleValidator(t, app)
+
+	electionGenesis := validatorelectionkeeper.DefaultGenesis()
+	electionGenesis.State.CurrentValidatorSet = []validatorelectiontypes.ValidatorPower{{
+		OperatorAddress:    rawElectionAddress("42"),
+		ConsensusPublicKey: electionConsensusKeyHex(0x42),
+		VotingPower:        77,
+		ValidatorStatus:    validatorregistrytypes.StatusActive,
+	}}
+	electionGenesis.State = electionGenesis.State.Normalize(electionGenesis.Params)
+	require.NoError(t, electionGenesis.Validate())
+	electionGenesisBytes, err := json.Marshal(electionGenesis)
+	require.NoError(t, err)
+	genesis[validatorelectiontypes.ModuleName] = electionGenesisBytes
+	stateBytes, err := json.MarshalIndent(genesis, "", " ")
+	require.NoError(t, err)
+
+	_, err = app.InitChain(&abci.RequestInitChain{
+		Validators:      []abci.ValidatorUpdate{},
+		ConsensusParams: sims.DefaultConsensusParams,
+		AppStateBytes:   stateBytes,
+	})
+	require.NoError(t, err)
+
+	countZeroPower := func(updates []abci.ValidatorUpdate) int {
+		n := 0
+		for _, u := range updates {
+			if u.Power == 0 {
+				n++
+			}
+		}
+		return n
+	}
+
+	res1, err := app.FinalizeBlock(&abci.RequestFinalizeBlock{Height: 1, Hash: app.LastCommitID().Hash})
+	require.NoError(t, err)
+	require.Positive(t, countZeroPower(res1.ValidatorUpdates), "block 1 must remove the non-elected staking validator")
+	_, err = app.Commit()
+	require.NoError(t, err)
+
+	res2, err := app.FinalizeBlock(&abci.RequestFinalizeBlock{Height: 2, Hash: app.LastCommitID().Hash})
+	require.NoError(t, err)
+	require.Zero(t, countZeroPower(res2.ValidatorUpdates), "block 2 must not re-remove an already-removed validator (SA2-CRIT halt)")
+}
+
 func TestValidatorElectionMalformedConsensusKeyRejectedAtAdmission(t *testing.T) {
 	db := dbm.NewMemDB()
 	appOptions := sims.AppOptionsMap{flags.FlagHome: DefaultNodeHome}

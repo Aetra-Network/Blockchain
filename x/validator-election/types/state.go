@@ -119,8 +119,16 @@ type ValidatorSetTransition struct {
 }
 
 type State struct {
-	PreviousValidatorSet        []ValidatorPower
-	CurrentValidatorSet         []ValidatorPower
+	PreviousValidatorSet []ValidatorPower
+	CurrentValidatorSet  []ValidatorPower
+	// AppliedValidatorSet is the set the app-level override imposes on CometBFT
+	// as of this block; PreviousAppliedValidatorSet is the set imposed on the
+	// PRIOR block. The override reads PreviousApplied as the removal baseline so
+	// it emits only the per-block delta and never re-removes an already-removed
+	// validator (which halts CometBFT). Both are maintained by the EndBlocker.
+	// SA2-CRIT (C-1).
+	AppliedValidatorSet         []ValidatorPower
+	PreviousAppliedValidatorSet []ValidatorPower
 	NextValidatorSet            []ValidatorPower
 	ElectionEpoch               uint64
 	ElectionWindow              ElectionWindow
@@ -367,6 +375,8 @@ func (a CandidateApplication) Validate() error {
 func (s State) Normalize(params Params) State {
 	s.PreviousValidatorSet = SortValidatorSet(s.PreviousValidatorSet)
 	s.CurrentValidatorSet = SortValidatorSet(s.CurrentValidatorSet)
+	s.AppliedValidatorSet = SortValidatorSet(s.AppliedValidatorSet)
+	s.PreviousAppliedValidatorSet = SortValidatorSet(s.PreviousAppliedValidatorSet)
 	s.NextValidatorSet = SortValidatorSet(s.NextValidatorSet)
 	s.CandidateApplications = SortApplications(normalizeApplications(s.CandidateApplications))
 	// SA2 #14: drop released stakes AND hard-cap the slice (keep the most recent

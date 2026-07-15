@@ -455,7 +455,40 @@ func (k *Keeper) EndBlocker(ctx sdk.Context) error {
 			}
 		}
 	}
+	// SA2-CRIT (C-1): maintain the imposed-set history AFTER any finalize above,
+	// so the app-level override can emit only the per-block removal delta. Shift
+	// the prior imposed set into PreviousAppliedValidatorSet and record the set
+	// imposed THIS block (CurrentValidatorSet). The override reads
+	// PreviousAppliedValidatorSet as its removal baseline. Save only on change.
+	prevApplied := k.genesis.State.AppliedValidatorSet
+	newApplied := k.genesis.State.CurrentValidatorSet
+	if !validatorSetsEqual(k.genesis.State.PreviousAppliedValidatorSet, prevApplied) ||
+		!validatorSetsEqual(k.genesis.State.AppliedValidatorSet, newApplied) {
+		next := cloneGenesis(k.genesis)
+		next.State.PreviousAppliedValidatorSet = append([]types.ValidatorPower(nil), prevApplied...)
+		next.State.AppliedValidatorSet = append([]types.ValidatorPower(nil), newApplied...)
+		next.State = next.State.Normalize(next.Params)
+		if err := k.saveGenesis(next); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// validatorSetsEqual reports whether two (Normalize-sorted) validator sets have
+// identical membership and power.
+func validatorSetsEqual(a, b []types.ValidatorPower) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].OperatorAddress != b[i].OperatorAddress ||
+			a[i].ConsensusPublicKey != b[i].ConsensusPublicKey ||
+			a[i].VotingPower != b[i].VotingPower {
+			return false
+		}
+	}
+	return true
 }
 
 func (k Keeper) computeNextSet() []types.ValidatorPower {
