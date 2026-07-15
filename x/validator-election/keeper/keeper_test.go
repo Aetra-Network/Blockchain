@@ -42,6 +42,31 @@ func TestValidatorSetTransitionAcrossEpochs(t *testing.T) {
 	require.Equal(t, transition, stored)
 }
 
+// TestFinalizeElectionDoesNotHaltOnCommittedEmptySet covers SA2-S03: when the
+// sole pending candidate is also a pending exit, computeNextSet returns nothing
+// and CommitElection commits an empty NextValidatorSet. FinalizeElection must
+// still finalize that committed-but-empty election instead of erroring every
+// block ("must be committed before finalization"), which would halt the chain.
+func TestFinalizeElectionDoesNotHaltOnCommittedEmptySet(t *testing.T) {
+	k := NewKeeper()
+	applyCandidate(t, &k, 0x11, 100, 100, 2)
+	_, err := k.RequestValidatorExit(types.MsgRequestValidatorExit{
+		Authority:       prototype.DefaultAuthority,
+		OperatorAddress: testAddress(0x11),
+		Height:          3,
+	})
+	require.NoError(t, err)
+
+	result, err := k.CommitElection(types.MsgCommitElection{Authority: prototype.DefaultAuthority, Height: 90})
+	require.NoError(t, err)
+	require.Empty(t, result.NextSet) // the exiting sole candidate yields an empty commit
+
+	_, err = k.FinalizeElection(types.MsgFinalizeElection{Authority: prototype.DefaultAuthority, Height: 101})
+	require.NoError(t, err) // previously errored and halted every block
+	require.Empty(t, k.CurrentValidatorSet())
+	require.Equal(t, uint64(2), k.Election().ElectionEpoch)
+}
+
 func TestExportImportDuringActiveElection(t *testing.T) {
 	source := NewKeeper()
 	applyCandidate(t, &source, 0x11, 100, 100, 2)

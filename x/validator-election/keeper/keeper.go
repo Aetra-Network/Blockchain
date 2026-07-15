@@ -216,7 +216,22 @@ func (k *Keeper) FinalizeElection(msg types.MsgFinalizeElection) (types.Validato
 	if msg.Height == 0 || msg.Height < k.genesis.State.ElectionWindow.EndHeight {
 		return types.ValidatorSetTransition{}, errors.New("validator election cannot finalize before window end")
 	}
-	if len(k.genesis.State.NextValidatorSet) == 0 && len(k.genesis.State.CandidateApplications) > 0 {
+	// SA2-S03: gate finalization on whether the epoch's election was actually
+	// committed (a committed ElectionResult exists), not on NextValidatorSet
+	// being non-empty. A committed-but-empty election — every pending candidate
+	// was also a pending exit, so computeNextSet returned nothing — is
+	// legitimate; finalizing it clears the set and lets the CometBFT override
+	// fall back to the staking set. Inferring "not committed" from an empty
+	// NextValidatorSet made FinalizeElection error every block after such a
+	// commit, halting the chain permanently.
+	committed := false
+	for _, result := range k.genesis.State.ElectionResults {
+		if result.Epoch == k.genesis.State.ElectionEpoch && result.Committed {
+			committed = true
+			break
+		}
+	}
+	if !committed && len(k.genesis.State.CandidateApplications) > 0 {
 		return types.ValidatorSetTransition{}, errors.New("validator election must be committed before finalization")
 	}
 	transition := types.ValidatorSetTransition{
