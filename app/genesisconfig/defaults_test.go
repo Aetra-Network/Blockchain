@@ -11,6 +11,7 @@ import (
 	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
 	distrtypes "github.com/cosmos/cosmos-sdk/x/distribution/types"
 	govtypes "github.com/cosmos/cosmos-sdk/x/gov/types"
+	govv1 "github.com/cosmos/cosmos-sdk/x/gov/types/v1"
 	minttypes "github.com/cosmos/cosmos-sdk/x/mint/types"
 	protocolpooltypes "github.com/cosmos/cosmos-sdk/x/protocolpool/types"
 	slashingtypes "github.com/cosmos/cosmos-sdk/x/slashing/types"
@@ -35,6 +36,19 @@ func TestApplyCoreModuleDefaultsSetsExpectedModules(t *testing.T) {
 	var slashingGenesis slashingtypes.GenesisState
 	cdc.MustUnmarshalJSON(genesis[slashingtypes.ModuleName], &slashingGenesis)
 	require.Equal(t, appparams.AetraSlashingParams(), slashingGenesis.Params)
+}
+
+// TestApplyCoreModuleDefaultsSetsGovMinInitialDepositRatio covers SA2-S07: the
+// gov genesis must require a non-zero up-front deposit ratio so proposals cannot
+// enter the deposit period with nothing at stake (spam / state-bloat).
+func TestApplyCoreModuleDefaultsSetsGovMinInitialDepositRatio(t *testing.T) {
+	cdc := testCodec()
+	genesis := ApplyCoreModuleDefaults(cdc, map[string]json.RawMessage{})
+
+	var govGenesis govv1.GenesisState
+	cdc.MustUnmarshalJSON(genesis[govtypes.ModuleName], &govGenesis)
+	require.NotNil(t, govGenesis.Params)
+	require.Equal(t, "0.250000000000000000", govGenesis.Params.MinInitialDepositRatio)
 }
 
 func TestApplyNativeTokenMetadataIsIdempotent(t *testing.T) {
