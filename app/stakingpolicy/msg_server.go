@@ -6,6 +6,7 @@ import (
 	"errors"
 
 	sdkmath "cosmossdk.io/math"
+	sdk "github.com/cosmos/cosmos-sdk/types"
 	stakingtypes "github.com/cosmos/cosmos-sdk/x/staking/types"
 
 	"github.com/sovereign-l1/l1/app/addressing"
@@ -136,8 +137,10 @@ func directUserDelegationDisabled(policy DirectDelegationPolicy) bool {
 
 // ErrSelfBondBelowFloor is returned when a MsgCreateValidator's self-delegation
 // is below the network's minimum self-bond. Genesis validators (created via
-// gentx/InitGenesis) bypass this message server entirely and are unaffected;
-// this only gates new validators joining after genesis via a live tx.
+// gentx/InitGenesis) are exempt -- see the BlockHeight guard below -- since a
+// testnet's bootstrap self-bond (e.g. testnet init-files' 100 AET default) is
+// a separate, deliberate decision from the live-join floor; this only gates
+// new validators joining after genesis via a live tx.
 var ErrSelfBondBelowFloor = errors.New("validator self-delegation is below the minimum required self-bond")
 
 func (s PoolOnlyMsgServer) CreateValidator(ctx context.Context, msg *stakingtypes.MsgCreateValidator) (*stakingtypes.MsgCreateValidatorResponse, error) {
@@ -149,7 +152,14 @@ func (s PoolOnlyMsgServer) CreateValidator(ctx context.Context, msg *stakingtype
 	// is later enforced) mean something: without a real entry cost, a single
 	// actor can always defeat a cap by splitting into arbitrarily many
 	// validators for near-zero additional capital.
-	if msg != nil && msg.Value.Denom == appparams.BaseDenom && msg.Value.Amount.LT(minSelfBondNaet) {
+	//
+	// x/genutil.DeliverGenTxs routes gentx MsgCreateValidators through this
+	// SAME message server during InitChain (confirmed live: an unguarded
+	// floor here made every genesis panic with "failed to execute DeliverTx"
+	// on the first gentx) -- InitChain processes gentxs at BlockHeight() <= 0,
+	// before the chain's initial height, so that is the exemption signal.
+	genesis := sdk.UnwrapSDKContext(ctx).BlockHeight() <= 0
+	if !genesis && msg != nil && msg.Value.Denom == appparams.BaseDenom && msg.Value.Amount.LT(minSelfBondNaet) {
 		return nil, ErrSelfBondBelowFloor
 	}
 	return s.inner.CreateValidator(ctx, msg)
