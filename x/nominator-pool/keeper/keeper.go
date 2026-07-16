@@ -713,6 +713,12 @@ func (k *Keeper) CreateOfficialLiquidStakingPool(msg types.MsgCreateOfficialLiqu
 	if _, _, found := findPool(k.genesis.State.Pools, msg.PoolID); found {
 		return types.NominatorPool{}, errors.New("official liquid staking pool already exists")
 	}
+	// An official pool must name the validator it delegates to. Without it the
+	// pool can accept deposits it can never stake -- depositCustody rejects an
+	// empty target -- so it would hand out shares backed by nothing.
+	if strings.TrimSpace(msg.ValidatorTarget) == "" {
+		return types.NominatorPool{}, errors.New("official liquid staking pool requires a validator target to delegate to")
+	}
 	pool := types.NominatorPool{
 		PoolID:                msg.PoolID,
 		ContractAddressUser:   msg.ContractAddressUser,
@@ -720,6 +726,7 @@ func (k *Keeper) CreateOfficialLiquidStakingPool(msg types.MsgCreateOfficialLiqu
 		OfficialLiquidStaking: true,
 		PoolOperator:          msg.PoolOperator,
 		PoolCommissionBps:     msg.PoolCommissionBps,
+		ValidatorTarget:       msg.ValidatorTarget,
 		Status:                types.PoolStatusActive,
 	}
 	if err := pool.Validate(k.genesis.Params); err != nil {
@@ -842,6 +849,19 @@ func (k *Keeper) depositToOfficialLiquidStakingLocked(msg types.MsgDepositToOffi
 	}
 	shareAmount, err := types.SharesForDepositChecked(pool, msg.Amount)
 	if err != nil {
+		return types.DelegatorShare{}, err
+	}
+	// Collect the real deposit and delegate it to the pool's validator target
+	// before crediting any ledger share, exactly as DepositToPool does.
+	//
+	// This is the path an ordinary wallet actually uses: MsgDepositToStakingPool
+	// lands here, and direct x/staking delegation is disabled for users
+	// (app/stakingpolicy/msg_server.go), so this is the ONLY way user funds can
+	// become real stake. It previously credited shares and TotalBondedStake
+	// without moving a coin or delegating anything -- the custody wiring only
+	// ever covered the authority-signed DepositToPool, so liquid staking looked
+	// funded while no stake existed behind it.
+	if err := k.depositCustody(rawUserAddress, pool.ValidatorTarget, msg.Amount); err != nil {
 		return types.DelegatorShare{}, err
 	}
 	delegatorIdx, delegator, found := findDelegator(pool.DelegatorShares, rawUserAddress)
@@ -1239,15 +1259,17 @@ func (k *Keeper) requestPoolWithdrawalLocked(msg types.MsgRequestPoolWithdrawal)
 		return types.PendingWithdrawal{}, errors.New("nominator pool withdrawal amount exceeds bonded stake")
 	}
 	// #2/SA2-N01: start the real unbonding before touching the ledger, same
-	// collect/undelegate-before-mutate ordering as depositCustody. Skipped
-	// for an OfficialLiquidStaking pool -- see the matching guard in
-	// claimPoolRewardsLocked: only the plain DepositToPool flow actually
-	// delegated real funds in this pass, so there is nothing real to
-	// undelegate for an official pool's withdrawal.
-	if !pool.OfficialLiquidStaking {
-		if err := k.withdrawalCustody(pool.ValidatorTarget, amount); err != nil {
-			return types.PendingWithdrawal{}, err
-		}
+	// collect/undelegate-before-mutate ordering as depositCustody.
+	//
+	// This must stay symmetric with depositCustody for EVERY pool kind. It
+	// used to be skipped for an OfficialLiquidStaking pool on the grounds that
+	// only DepositToPool delegated real funds, so there was "nothing real to
+	// undelegate". Official deposits now delegate for real, so skipping here
+	// would burn the depositor: the ledger drops their shares, no undelegation
+	// starts, settleWithdrawal finds no spendable coins and EndBlocker leaves
+	// the withdrawal Pending forever -- money in, nothing out.
+	if err := k.withdrawalCustody(pool.ValidatorTarget, amount); err != nil {
+		return types.PendingWithdrawal{}, err
 	}
 	delegator.Shares -= msg.Shares
 	delegator.PendingRewards = reward
@@ -1620,14 +1642,26 @@ func (k *Keeper) claimPoolRewardsLocked(msg types.MsgClaimPoolRewards) (uint64, 
 	// (best-effort -- there may be nothing to pull if SyncPoolRewards' own
 	// externally-injected reward numbers are running ahead of real
 	// distribution income), then pays out only if the pool account actually
-	// has the funds. A no-op when custody isn't wired (see hasCustody) OR
-	// for an OfficialLiquidStaking pool: only the plain DepositToPool flow
-	// collects and delegates real funds in this pass (DepositToStakingPool /
-	// DepositToOfficialLiquidStaking remain ledger-only, a deliberately
-	// scoped follow-up), so requiring real settlement here for an official
-	// pool would reject every claim against a deposit that was never
-	// actually custodied.
-	if reward > 0 && !pool.OfficialLiquidStaking {
+	// has the funds. A no-op when custody isn't wired (see hasCustody).
+	//
+	// This used to be skipped for an OfficialLiquidStaking pool because
+	// DepositToStakingPool was ledger-only, so there was no real income to pay
+	// a claim from. Official deposits now delegate for real and earn real
+	// distribution rewards, so skipping here would zero the depositor's
+	// PendingRewards without ever paying them.
+	//
+	// The pool's ledger reward and its real income are still two different
+	// numbers: SyncPoolRewards injects the ledger number externally rather than
+	// deriving it from x/distribution accrual. Where they disagree this
+	// deliberately FAILS the claim rather than reconciling it. Failing is the
+	// safe half of the trade -- it errors before PendingRewards is zeroed, so
+	// the claim stays on the ledger and succeeds later once real income catches
+	// up, costing liveness and nothing else. Paying regardless is the unsafe
+	// half: the pool's spendable balance is other people's un-delegated money,
+	// so an over-stated reward would be paid out of the next depositor's
+	// principal. Deriving the ledger number from real accrual is the actual fix
+	// and a separate change.
+	if reward > 0 {
 		if err := k.claimRewardCustody(delegator, pool.ValidatorTarget, reward); err != nil {
 			return 0, err
 		}
@@ -1922,21 +1956,34 @@ func (k *Keeper) ApplyPoolSlash(poolID string, slashAmount uint64) (types.Nomina
 // ApplyValidatorSlash reduces pooled stake and advances the pool slash index
 // when a validator a pool delegates to is slashed.
 //
-// It is intentionally not yet reachable in production: it has no msg-server
-// route and no caller, because the nominator-pool liquid-staking subsystem is
-// not economically live. Deposits are pure keeper accounting — no module
-// account, no real token custody or cosmos delegation (see
-// DepositToStakingPool, which only mutates in-memory share/stake fields) — so
-// there is currently no real pooled stake for a validator fault to slash. The
-// real consensus slashing path is cosmos x/slashing plus the x/evidence
-// pipeline (runSlashingHooks), which bridges faults to validator-registry,
-// reputation, and validator-insurance but deliberately NOT to nominator-pool.
+// It is intentionally not reachable in production: it has no msg-server route
+// and no caller. It is exercised only by tests. Do not delete it as dead code,
+// and do not wire it into consensus slashing on its own.
 //
-// When the liquid-staking subsystem is made economically live (real delegation
-// custody), this is the intended bridge to wire into that evidence slashing
-// pipeline. Until then it is exercised only by tests. Do not delete it as dead
-// code, and do not wire it into consensus slashing on its own — it is coherent
-// only together with the rest of the not-yet-live liquid-staking machinery.
+// This used to be justified by there being no real pooled stake to slash --
+// deposits were pure keeper accounting with no module account, no token custody
+// and no cosmos delegation. That is no longer true: both DepositToPool and
+// DepositToStakingPool now collect real coins into the pool module account and
+// delegate them to the pool's ValidatorTarget (see depositCustody).
+//
+// So the gap this comment describes has inverted, and is worth stating plainly:
+// pooled stake is now REAL and can really be slashed by cosmos x/slashing, but
+// the pool's own ledger is not told. A fault burns the pool module account's
+// delegation in x/staking while pool.TotalBondedStake and every delegator's
+// share value keep their pre-slash numbers, so the ledger over-states what the
+// pool can actually pay. The loss surfaces at the exit: withdrawalCustody's
+// ValidateUnbondAmount reads real delegation tokens, so once slashing has eaten
+// enough of them, unbonding the ledger's stated amount fails -- and the last
+// delegators out cannot withdraw. Nothing over-pays (settleWithdrawal only pays
+// what the pool really holds), but the shortfall lands on whoever exits last
+// instead of being shared pro-rata at slash time, which is what this function
+// exists to do.
+//
+// Wiring it into the x/evidence pipeline (runSlashingHooks, which today bridges
+// faults to validator-registry, reputation and validator-insurance but
+// deliberately NOT to nominator-pool) is the intended fix. It is a real change
+// with real consensus consequences, not a comment edit, so it is deliberately
+// left out of the custody pass that made pooled stake real.
 func (k *Keeper) ApplyValidatorSlash(msg types.MsgApplyValidatorSlash) ([]types.ValidatorSlashEvent, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()

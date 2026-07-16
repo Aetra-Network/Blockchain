@@ -437,6 +437,11 @@ type MsgCreateOfficialLiquidStakingPool struct {
 	PoolOperator		string	`protobuf:"bytes,5,opt,name=pool_operator,json=poolOperator,proto3" json:"pool_operator,omitempty"`
 	PoolCommissionBps	uint32	`protobuf:"varint,6,opt,name=pool_commission_bps,json=poolCommissionBps,proto3" json:"pool_commission_bps,omitempty"`
 	Height			uint64	`protobuf:"varint,7,opt,name=height,proto3" json:"height,omitempty"`
+	// ValidatorTarget is the x/staking validator this pool delegates its
+	// deposits to. Without it an official pool could take deposits it can never
+	// stake: depositCustody rejects an empty target (keeper.go), so the pool
+	// would only ever track numbers with no real stake behind them.
+	ValidatorTarget		string	`protobuf:"bytes,8,opt,name=validator_target,json=validatorTarget,proto3" json:"validator_target,omitempty"`
 }
 
 type MsgDepositToOfficialLiquidStaking struct {

@@ -8,6 +8,7 @@ import (
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/stretchr/testify/require"
 
+	"github.com/sovereign-l1/l1/app/addressing"
 	appparams "github.com/sovereign-l1/l1/app/params"
 	nominatorpoolkeeper "github.com/sovereign-l1/l1/x/nominator-pool/keeper"
 	nominatorpooltypes "github.com/sovereign-l1/l1/x/nominator-pool/types"
@@ -161,4 +162,156 @@ func TestNominatorPoolCustodyEndToEndDepositDelegatesAndWithdrawalPaysOutReal(t 
 		}
 	}
 	require.Equal(t, nominatorpooltypes.WithdrawalStatusCompleted, settledStatus)
+}
+
+// TestNominatorPoolCustodyEndToEndOfficialPoolDepositWithdrawsAndPaysOutReal is
+// the official-liquid-staking twin of the plain-pool test above, and it drives
+// the two messages an ordinary wallet actually sends: MsgDepositToStakingPool
+// and MsgRequestPoolUnbond.
+//
+// This is the path that carries real user money. Direct x/staking delegation is
+// disabled for users (app/stakingpolicy/msg_server.go), so MsgDepositToStakingPool
+// is the ONLY way a wallet's coins become real stake -- which makes its reverse
+// leg exactly as load-bearing as the deposit.
+//
+// Both legs were exempted from custody while the official deposit was
+// ledger-only. Once the deposit started really delegating, that exemption became
+// a fund-loss bug rather than a scoping decision: the unbond decremented the
+// depositor's shares and TotalBondedStake and queued a PendingWithdrawal, but
+// never called x/staking's Undelegate -- so the coins stayed delegated,
+// settleWithdrawal found a spendable balance of 0, EndBlocker's `if !paid`
+// skipped it every block, and the withdrawal stayed Pending forever. Shares
+// gone, coins locked, no payout. This test is what fails if either leg is
+// exempted again: the final balance assertion is the whole point.
+func TestNominatorPoolCustodyEndToEndOfficialPoolDepositWithdrawsAndPaysOutReal(t *testing.T) {
+	app := Setup(t, false)
+	ctx := app.NewContext(false)
+
+	validator := GetBondedTestValidator(t, app, ctx)
+	valAddr := parseValidatorAddress(t, app, validator.OperatorAddress)
+
+	poolGenesis, err := app.NominatorPoolKeeper.ExportGenesisState(ctx)
+	require.NoError(t, err)
+	authority := poolGenesis.Params.Authority
+
+	// The wallet signs with (and carries in wallet_address/owner_address) its
+	// PLAIN address; msgServer resolves it to the account's v2 identity before
+	// any keeper bookkeeping. That identity is the balance the deposit is really
+	// collected from and the withdrawal is really paid back to, so it is what
+	// gets funded and asserted against here.
+	userAddress, _ := nominatorPoolAddressPair(t, "51")
+	identityUser, _ := normalizeToV2AccountIdentity(t, userAddress)
+	depositor, err := addressing.ParseAccAddress(identityUser)
+	require.NoError(t, err)
+
+	const depositAmount = 2 * nominatorpooltypes.DefaultMinPoolDeposit
+	FundTestAddr(t, app, ctx, depositor, sdk.NewCoins(sdk.NewCoin(appparams.BaseDenom, sdkmath.NewIntFromUint64(4*depositAmount))))
+	beforeDeposit := app.BankKeeper.GetBalance(ctx, depositor, appparams.BaseDenom)
+
+	srv := nominatorpoolkeeper.NewMsgServerImpl(&app.NominatorPoolKeeper)
+	contractUser, contractRaw := nominatorPoolAddressPair(t, "52")
+	poolID := "custody-e2e-official-pool"
+
+	_, err = srv.CreateOfficialLiquidStakingPool(ctx, &nominatorpooltypes.MsgCreateOfficialLiquidStakingPool{
+		Authority:		authority,
+		PoolID:			poolID,
+		ContractAddressUser:	contractUser,
+		ContractAddressRaw:	contractRaw,
+		PoolOperator:		nominatorPoolRawAddress("53"),
+		PoolCommissionBps:	100,
+		Height:			2,
+		ValidatorTarget:	validator.OperatorAddress,
+	})
+	require.NoError(t, err)
+
+	_, err = srv.DepositToStakingPool(ctx, &nominatorpooltypes.MsgDepositToStakingPool{
+		PoolID:		poolID,
+		WalletAddress:	userAddress,
+		Amount:		depositAmount,
+		Height:		3,
+	})
+	require.NoError(t, err)
+
+	// The deposit must really have left the wallet...
+	require.Equal(t, beforeDeposit.Amount.SubRaw(int64(depositAmount)), app.BankKeeper.GetBalance(ctx, depositor, appparams.BaseDenom).Amount,
+		"the deposit must actually leave the depositor's spendable balance")
+
+	// ... and become a REAL x/staking delegation held by the pool's own module
+	// account, worth exactly the deposit. (Genesis validators bond at a
+	// 1,000,000:1 token/share rate, hence TokensFromShares.)
+	poolModuleAddr := nominatorpoolkeeper.PoolModuleAddress()
+	delegation, err := app.StakingKeeper.GetDelegation(ctx, poolModuleAddr, valAddr)
+	require.NoError(t, err, "the pool must hold a real delegation for the deposit it credited")
+	validatorAfterDeposit, err := app.StakingKeeper.GetValidator(ctx, valAddr)
+	require.NoError(t, err)
+	require.Equal(t, sdkmath.NewIntFromUint64(depositAmount), validatorAfterDeposit.TokensFromShares(delegation.Shares).TruncateInt(),
+		"the deposit must become real bonded stake, not a ledger entry")
+
+	// Unbond every share, so a correct payout restores the original balance
+	// exactly and any shortfall shows up as a plain number mismatch.
+	const unbondID = "custody-e2e-official-wd-1"
+	_, err = srv.RequestPoolUnbond(ctx, &nominatorpooltypes.MsgRequestPoolUnbond{
+		PoolID:		poolID,
+		OwnerAddress:	userAddress,
+		RequestID:	unbondID,
+		Shares:		depositAmount,
+		Height:		4,
+	})
+	require.NoError(t, err)
+
+	// The real delegation must be gone, replaced by a real unbonding entry --
+	// this is the assertion that fails if the official pool is exempted from
+	// withdrawalCustody again.
+	_, err = app.StakingKeeper.GetDelegation(ctx, poolModuleAddr, valAddr)
+	require.Error(t, err, "the unbond must really undelegate, not just drop ledger shares")
+	ubd, err := app.StakingKeeper.GetUnbondingDelegation(ctx, poolModuleAddr, valAddr)
+	require.NoError(t, err, "the unbond must start a real x/staking unbonding")
+	require.Len(t, ubd.Entries, 1)
+
+	afterUnbondRequest, err := app.NominatorPoolKeeper.ExportGenesisState(ctx)
+	require.NoError(t, err)
+	var completeHeight uint64
+	for _, pool := range afterUnbondRequest.State.Pools {
+		if pool.PoolID != poolID {
+			continue
+		}
+		for _, wd := range pool.PendingWithdrawals {
+			if wd.WithdrawalID == unbondID {
+				completeHeight = wd.CompleteHeight
+			}
+		}
+	}
+	require.NotZero(t, completeHeight)
+
+	unbondingTime, err := app.StakingKeeper.UnbondingTime(ctx)
+	require.NoError(t, err)
+
+	// Fast-forward both clocks the two independent maturity gates read:
+	// x/staking's unbonding completion keys off BlockTime, the pool's own
+	// settlement keys off BlockHeight.
+	futureCtx := ctx.WithBlockHeight(int64(completeHeight)).WithBlockTime(ctx.BlockTime().Add(unbondingTime + time.Minute))
+
+	_, err = app.StakingKeeper.EndBlocker(futureCtx)
+	require.NoError(t, err)
+	require.NoError(t, app.NominatorPoolKeeper.EndBlocker(futureCtx))
+
+	// The point of the whole exercise: the depositor's real coins came back.
+	require.Equal(t, beforeDeposit.Amount, app.BankKeeper.GetBalance(futureCtx, depositor, appparams.BaseDenom).Amount,
+		"the official-pool depositor must get their real principal back once both maturity windows pass")
+
+	poolFinal, err := app.NominatorPoolKeeper.ExportGenesisState(futureCtx)
+	require.NoError(t, err)
+	var settled string
+	for _, pool := range poolFinal.State.Pools {
+		if pool.PoolID != poolID {
+			continue
+		}
+		for _, wd := range pool.PendingWithdrawals {
+			if wd.WithdrawalID == unbondID {
+				settled = wd.Status
+			}
+		}
+	}
+	require.Equal(t, nominatorpooltypes.WithdrawalStatusCompleted, settled,
+		"the withdrawal must settle, not sit Pending forever behind a pool balance that never arrives")
 }

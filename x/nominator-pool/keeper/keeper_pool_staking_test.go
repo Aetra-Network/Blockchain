@@ -281,6 +281,7 @@ func TestFailedTxLeavesPhantomInMemoryStateThatNextWriteResurrects(t *testing.T)
 		PoolOperator:		rawPoolAddress("82"),
 		PoolCommissionBps:	100,
 		Height:			2,
+		ValidatorTarget:	rawPoolAddress("85"),
 	})
 	require.NoError(t, err)
 	require.Equal(t, "pool-a-reverted-tx", poolA.PoolID)
@@ -314,6 +315,7 @@ func TestFailedTxLeavesPhantomInMemoryStateThatNextWriteResurrects(t *testing.T)
 		PoolOperator:		rawPoolAddress("92"),
 		PoolCommissionBps:	100,
 		Height:			3,
+		ValidatorTarget:	rawPoolAddress("95"),
 	})
 	require.NoError(t, err)
 	require.Equal(t, "pool-b-unrelated-tx", poolB.PoolID)
@@ -360,6 +362,7 @@ func TestPhantomStateCannotResurrectThroughMsgServer(t *testing.T) {
 		PoolOperator:		rawPoolAddress("84"),
 		PoolCommissionBps:	100,
 		Height:			2,
+		ValidatorTarget:	rawPoolAddress("85"),
 	})
 	require.NoError(t, err)
 
@@ -382,6 +385,7 @@ func TestPhantomStateCannotResurrectThroughMsgServer(t *testing.T) {
 		PoolOperator:		rawPoolAddress("94"),
 		PoolCommissionBps:	100,
 		Height:			3,
+		ValidatorTarget:	rawPoolAddress("95"),
 	})
 	require.NoError(t, err)
 

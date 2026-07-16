@@ -17,6 +17,7 @@ import (
 	economicstypes "github.com/sovereign-l1/l1/x/aetra-economics/types"
 	contractstypes "github.com/sovereign-l1/l1/x/contracts/types"
 	nativeaccounttypes "github.com/sovereign-l1/l1/x/native-account/types"
+	nominatorpoolkeeper "github.com/sovereign-l1/l1/x/nominator-pool/keeper"
 	nominatorpooltypes "github.com/sovereign-l1/l1/x/nominator-pool/types"
 	storagerenttypes "github.com/sovereign-l1/l1/x/storage-rent/types"
 	validatorinsurancetypes "github.com/sovereign-l1/l1/x/validator-insurance/types"
@@ -106,7 +107,24 @@ func TestAppRuntimeInvariantsPassAfterCoreFlows(t *testing.T) {
 	initial, err := app.NominatorPoolKeeper.ExportGenesisState(ctx)
 	require.NoError(t, err)
 	contractUser, contractRaw := nominatorPoolAddressPair(t, "71")
+
+	// The pool custodies deposits for real now, so it must delegate to a REAL
+	// bonded validator rather than a synthetic address.
+	validator := GetBondedTestValidator(t, app, ctx)
+	valAddr := parseValidatorAddress(t, app, validator.OperatorAddress)
+
+	// ... and the depositor must actually hold what it deposits. This flow
+	// drives the keeper API directly rather than the msg route, so the
+	// plain->v2-identity normalization msgServer.DepositToStakingPool applies
+	// does not run here: the keeper custodies from the plain address exactly as
+	// passed, which is the address funded below.
+	const depositAmount = 2 * nominatorpooltypes.DefaultMinPoolDeposit
 	userAddress, _ := nominatorPoolAddressPair(t, "72")
+	depositor, err := addressing.ParseAccAddress(userAddress)
+	require.NoError(t, err)
+	FundTestAddr(t, app, ctx, depositor, sdk.NewCoins(sdk.NewCoin(appparams.BaseDenom, sdkmath.NewIntFromUint64(4*depositAmount))))
+	balanceBeforeDeposit := app.BankKeeper.GetBalance(ctx, depositor, appparams.BaseDenom)
+
 	pool, err := app.NominatorPoolKeeper.CreateOfficialLiquidStakingPool(nominatorpooltypes.MsgCreateOfficialLiquidStakingPool{
 		Authority:		initial.Params.Authority,
 		PoolID:			"invariant-flow-pool",
@@ -115,16 +133,47 @@ func TestAppRuntimeInvariantsPassAfterCoreFlows(t *testing.T) {
 		PoolOperator:		nominatorPoolRawAddress("73"),
 		PoolCommissionBps:	100,
 		Height:			2,
+		ValidatorTarget:	validator.OperatorAddress,
 	})
 	require.NoError(t, err)
 	_, err = app.NominatorPoolKeeper.DepositToStakingPool(nominatorpooltypes.MsgDepositToStakingPool{
 		PoolID:		pool.PoolID,
 		WalletAddress:	userAddress,
-		Amount:		2 * nominatorpooltypes.DefaultMinPoolDeposit,
+		Amount:		depositAmount,
 		Height:		3,
 	})
 	require.NoError(t, err)
-	_, err = app.NominatorPoolKeeper.ApplyPoolReward(pool.PoolID, 100)
+
+	// The credited shares must be backed by money that really moved: the
+	// depositor's spendable balance must have dropped...
+	require.Equal(t, balanceBeforeDeposit.Amount.SubRaw(int64(depositAmount)), app.BankKeeper.GetBalance(ctx, depositor, appparams.BaseDenom).Amount,
+		"the deposit must actually leave the depositor's spendable balance")
+
+	// ... and it must exist as a REAL x/staking delegation held by the pool's
+	// own module account, worth exactly the deposited amount. Genesis
+	// validators bond at a 1,000,000:1 token/share rate, so this compares
+	// through TokensFromShares rather than Shares directly.
+	delegation, err := app.StakingKeeper.GetDelegation(ctx, nominatorpoolkeeper.PoolModuleAddress(), valAddr)
+	require.NoError(t, err, "the pool must hold a real delegation for the deposit it credited")
+	validatorAfterDeposit, err := app.StakingKeeper.GetValidator(ctx, valAddr)
+	require.NoError(t, err)
+	require.Equal(t, sdkmath.NewIntFromUint64(depositAmount), validatorAfterDeposit.TokensFromShares(delegation.Shares).TruncateInt(),
+		"the pool deposit must become real bonded stake, not a ledger entry")
+
+	// ApplyPoolReward only writes a reward onto the pool's ledger; it moves no
+	// coins. A claim now pays that reward out of the pool module account for
+	// real, and the account holds nothing spendable -- the deposit above was
+	// delegated straight through -- so the injected reward has to be backed by
+	// real income before it can be paid. On a live chain that income is the pool
+	// delegation's own x/distribution accrual, which claimRewardCustody pulls in;
+	// no blocks elapse here, so stand it in directly.
+	//
+	// Without this backing the claim FAILS, which is the intended behavior: a
+	// reward the pool cannot actually pay must not be zeroed off the depositor's
+	// ledger as though it had been paid.
+	const injectedReward = 100
+	FundTestAddr(t, app, ctx, nominatorpoolkeeper.PoolModuleAddress(), sdk.NewCoins(sdk.NewCoin(appparams.BaseDenom, sdkmath.NewInt(injectedReward))))
+	_, err = app.NominatorPoolKeeper.ApplyPoolReward(pool.PoolID, injectedReward)
 	require.NoError(t, err)
 	_, err = app.NominatorPoolKeeper.ClaimPoolRewardsWithReceipt(nominatorpooltypes.MsgClaimPoolRewards{PoolID: pool.PoolID, OwnerAddress: userAddress, Height: 4})
 	require.NoError(t, err)

@@ -541,6 +541,7 @@ func nominatorPoolMessageFields() map[string][]*descriptorpb.FieldDescriptorProt
 			txDescriptorField("pool_operator", 5, str),
 			txDescriptorField("pool_commission_bps", 6, u32),
 			txDescriptorField("height", 7, u64),
+			txDescriptorField("validator_target", 8, str),
 		},
 	}
 }

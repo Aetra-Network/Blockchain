@@ -243,6 +243,7 @@ func createServiceOfficialPool(t *testing.T, k *keeper.Keeper) types.NominatorPo
 		PoolOperator:		serviceRawAddress("11"),
 		PoolCommissionBps:	100,
 		Height:			1,
+		ValidatorTarget:	serviceRawAddress("22"),
 	})
 	require.NoError(t, err)
 	return pool

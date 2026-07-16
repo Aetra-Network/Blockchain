@@ -247,8 +247,18 @@ func (p LiquidStakingPool) Validate(params Params) error {
 	if p.TotalActiveStake+p.TotalUnbonding > p.TotalDeposited {
 		return errors.New("liquid staking pool active plus unbonding stake exceeds deposits")
 	}
-	if p.TotalShares == 0 && p.TotalDeposited > 0 {
-		return errors.New("liquid staking pool deposited funds require shares")
+	// Only funds still backed by shares require shares. TotalDeposited counts
+	// bonded stake PLUS funds already unbonded and queued for payout
+	// (keeper.upsertLiquidPoolAfterPoolMutation), and queued funds are owed to a
+	// specific delegator rather than owned via shares -- so requiring shares
+	// against the whole of TotalDeposited made the last exit from a pool
+	// impossible. Unbonding every remaining share leaves TotalShares 0 while the
+	// pending withdrawal still sits in TotalDeposited, which failed validation
+	// and rejected the unbond request outright. That was not an edge case: the
+	// final tranche trips it however the exit is sliced, so the last delegator
+	// in a pool could never withdraw their last share.
+	if p.TotalShares == 0 && p.TotalDeposited > p.TotalUnbonding {
+		return errors.New("liquid staking pool bonded funds require shares")
 	}
 	if p.RentPayerPolicy == "" {
 		return errors.New("liquid staking pool rent payer policy is required")

@@ -9,7 +9,16 @@ import (
 	"github.com/sovereign-l1/l1/x/nominator-pool/types"
 )
 
-func TestPhase31UserDepositToPoolWithoutValidatorAtTenAET(t *testing.T) {
+// An official pool always names the validator it delegates to, so a deposit
+// credits stake that is really bonded.
+//
+// This test used to assert the opposite -- that a 10 AET deposit credited
+// TotalBondedStake while ValidatorTarget stayed empty. That is a contradiction
+// in terms: TotalBondedStake claims bonded stake, and stake cannot be bonded
+// without a validator. It locked in the defect that made liquid staking look
+// funded while no real stake existed behind it, which is why three rounds of
+// fixes kept passing their tests and failing on a live chain.
+func TestPhase31UserDepositToPoolCreditsStakeAgainstItsValidator(t *testing.T) {
 	user := aePoolAddress(t, "61")
 	k := NewKeeperWithAccountStatus(accountStatusFixture{user: accountStatusActive})
 	pool := createOfficialLiquidStakingPool(t, &k, "phase31-official")
@@ -30,7 +39,7 @@ func TestPhase31UserDepositToPoolWithoutValidatorAtTenAET(t *testing.T) {
 	require.True(t, found)
 	require.Equal(t, 10*types.DefaultAETBaseUnits, stored.TotalBondedStake)
 	require.Equal(t, 10*types.DefaultAETBaseUnits, stored.TotalShares)
-	require.Empty(t, stored.ValidatorTarget)
+	require.Equal(t, rawPoolAddress("22"), stored.ValidatorTarget)
 	require.Empty(t, stored.PendingValidatorTarget)
 }
 

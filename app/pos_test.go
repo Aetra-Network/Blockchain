@@ -19,6 +19,7 @@ import (
 	"github.com/sovereign-l1/l1/app/addressing"
 	appparams "github.com/sovereign-l1/l1/app/params"
 	"github.com/sovereign-l1/l1/app/stakingpolicy"
+	nominatorpoolkeeper "github.com/sovereign-l1/l1/x/nominator-pool/keeper"
 	nominatorpooltypes "github.com/sovereign-l1/l1/x/nominator-pool/types"
 )
 
@@ -109,6 +110,13 @@ func TestPoSOfficialPoolDepositPathWorksWhileDirectDelegationDisabled(t *testing
 	ctx := app.NewContext(false).WithBlockTime(time.Now().UTC())
 	require.Equal(t, appparams.DirectUserDelegationDisabled, directUserDelegationGovernanceValue(t))
 
+	// Direct delegation being disabled makes the official pool the ONLY way
+	// user funds can become real stake, so the pool has to name a REAL bonded
+	// validator: the deposit below actually collects the coins and opens an
+	// x/staking delegation against this target.
+	validator := GetBondedTestValidator(t, app, ctx)
+	valAddr := parseValidatorAddress(t, app, validator.OperatorAddress)
+
 	poolID := "pos-official-pool"
 	contractRaw := posRawAddress("66")
 	pool, err := app.NominatorPoolKeeper.CreateOfficialLiquidStakingPool(nominatorpooltypes.MsgCreateOfficialLiquidStakingPool{
@@ -119,18 +127,34 @@ func TestPoSOfficialPoolDepositPathWorksWhileDirectDelegationDisabled(t *testing
 		PoolOperator:		posRawAddress("11"),
 		PoolCommissionBps:	100,
 		Height:			1,
+		ValidatorTarget:	validator.OperatorAddress,
 	})
 	require.NoError(t, err)
+
 	// The deposit is routed through the msg server with the caller's PLAIN
 	// address; share ownership is recorded under the account's normalized v2
 	// identity, so the share is queried by that identity's raw form.
+	//
+	// That same normalization decides whose coins are custodied: msgServer.
+	// DepositToStakingPool rewrites wallet_address to the v2 identity before
+	// the keeper runs, and the identity is the address a native account is
+	// actually activated under and holds its balance at (see
+	// addressing.NormalizeToAccountIdentity and nativeAccountActivateViaRoute).
+	// So the identity -- not the plain address -- is the balance a real deposit
+	// has to come out of.
+	const depositAmount = nominatorpooltypes.DefaultMinPoolDeposit
 	user := aeFromRawForPoSTest(t, posRawAddress("22"))
-	_, identityRaw := normalizeToV2AccountIdentity(t, user)
+	identityUser, identityRaw := normalizeToV2AccountIdentity(t, user)
+	depositor, err := addressing.ParseAccAddress(identityUser)
+	require.NoError(t, err)
+	FundTestAddr(t, app, ctx, depositor, sdk.NewCoins(sdk.NewCoin(BondDenom, sdkmath.NewIntFromUint64(4*depositAmount))))
+	balanceBefore := app.BankKeeper.GetBalance(ctx, depositor, BondDenom)
+	require.Equal(t, sdkmath.NewIntFromUint64(4*depositAmount), balanceBefore.Amount)
 
 	msg := &nominatorpooltypes.MsgDepositToStakingPool{
 		PoolID:		pool.PoolID,
 		WalletAddress:	user,
-		Amount:		nominatorpooltypes.DefaultMinPoolDeposit,
+		Amount:		depositAmount,
 		Height:		2,
 	}
 	handler := app.MsgServiceRouter().Handler(msg)
@@ -145,6 +169,25 @@ func TestPoSOfficialPoolDepositPathWorksWhileDirectDelegationDisabled(t *testing
 	require.True(t, found)
 	require.Equal(t, nominatorpooltypes.DefaultMinPoolDeposit, query.Share.Shares)
 	require.Zero(t, query.PendingRewards)
+
+	// Those shares must be backed by money that actually moved, not by a
+	// ledger entry: the depositor's spendable balance must have really
+	// dropped...
+	balanceAfter := app.BankKeeper.GetBalance(ctx, depositor, BondDenom)
+	require.Equal(t, balanceBefore.Amount.SubRaw(int64(depositAmount)), balanceAfter.Amount,
+		"the deposit must actually leave the depositor's spendable balance")
+
+	// ... and it must have landed as a REAL x/staking delegation from the
+	// pool's own module account to the target validator, worth exactly the
+	// deposited amount. This genesis validator is bonded at a 1,000,000:1
+	// token/share exchange rate, not 1:1, so the assertion goes through
+	// TokensFromShares rather than comparing Shares directly.
+	delegation, err := app.StakingKeeper.GetDelegation(ctx, nominatorpoolkeeper.PoolModuleAddress(), valAddr)
+	require.NoError(t, err, "the pool must hold a real delegation for the deposit it credited")
+	validatorAfterDeposit, err := app.StakingKeeper.GetValidator(ctx, valAddr)
+	require.NoError(t, err)
+	require.Equal(t, sdkmath.NewIntFromUint64(depositAmount), validatorAfterDeposit.TokensFromShares(delegation.Shares).TruncateInt(),
+		"the official pool deposit must become real bonded stake while direct delegation is disabled")
 }
 
 func TestPoSDirectUserUnbondingMsgRouteRejected(t *testing.T) {

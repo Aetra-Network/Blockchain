@@ -1011,6 +1011,7 @@ func createOfficialLiquidStakingPool(t *testing.T, k *Keeper, poolID string) typ
 		PoolOperator:        rawPoolAddress("11"),
 		PoolCommissionBps:   100,
 		Height:              1,
+		ValidatorTarget:     rawPoolAddress("22"),
 	})
 	require.NoError(t, err)
 	return pool
