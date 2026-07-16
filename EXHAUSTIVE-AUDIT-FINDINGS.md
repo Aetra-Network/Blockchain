@@ -55,14 +55,12 @@
 | ID | Finding | Location | Fix |
 |---|---|---|---|
 | #2 (SA2-N01) | Nominator-pool is a no-bank-custody ledger: deposits credit shares/stake with no debit; claims/withdrawals move no coins | `x/nominator-pool/keeper/keeper.go:575` | Wire a BankKeeper; move real coins to/from a module account on every value path + per-pool balance invariant. Interim: gate the deposit/claim Msgs. (= SA2-F01) |
-| #5 | FINDING-001 gas bypass: AVM operand-gas meter counts only top-level fan-out, not recursive node/byte count | `x/aetravm/avm/value.go:187` | Charge by recursive total node-count/bytes, or hard-cap total in-stack value size on every push/clone. (Latent: AVM off on testnet.) |
 
 ## OPEN — MEDIUM
 
 | ID | Finding | Location | Fix |
 |---|---|---|---|
-| #7 | `MsgTopUpContract` credits `contract.Balance` with no bank collection (free value) | `x/contracts/keeper/keeper.go:1616` | Collect `msg.Amount` from `msg.Sender` before crediting (mirror `PayContractStorageDebt`). *(parallel-session code)* |
-| #8 | Kill-switch (`contracts.Params.Enabled`) not enforced on `TopUpContract`/`PayContractStorageDebt`/`unfreezeContract` | `x/contracts/keeper/keeper.go:1602,1642,1702` | Add the `!Enabled → disabled` guard at the top of each. *(parallel-session code)* |
+| #7 | `MsgTopUpContract` credits `contract.Balance` with no bank collection (free value) | `x/contracts/keeper/keeper.go:1616` | Collect `msg.Amount` from `msg.Sender` before crediting. Blocked on the same custody decision as #2 (which module account backs `contract.Balance`; `collectRentPayment` routes only to the rent reserve). |
 | #9 | Determinism gate can't detect map-iteration order (the primary consensus-fork class) | `app/security_attack_audit_test.go:18` | AST pass flagging `range <mapTyped>` on the write path. |
 | #10 | `x/stake-concentration` limits are advisory-only (never enforced on deposits/rewards) | `x/stake-concentration/keeper/keeper.go:119` | Consult `CanAcceptDelegation`/`RewardModifierBps` in the pool deposit/reward paths. (= SA2-F03) |
 | #11 | delegator-protection compensation uncallable; real emission AET stranded | `x/delegator-protection/types/protection.go:491` | Back `Fund.Balance` with the real `protection` module account. |
@@ -73,16 +71,12 @@
 
 | ID | Finding | Location |
 |---|---|---|
-| #15/#16/#17 | Determinism gate misses `time.Since`/`time.Unix`, named-func goroutines, and client/cli dirs | `app/security_attack_audit_test.go` |
+| #16/#17 | Determinism gate misses named-func goroutines and skips client/cli dirs (needs AST pass / scope enumeration; #15 timer funcs now fixed) | `app/security_attack_audit_test.go` |
 | #18 | dynamic-commission effective rate computed but never applied to reward distribution | `x/dynamic-commission/keeper/keeper.go:121` |
-| #20 | `messageBeaconHash` concatenates variable-length fields without length framing (collision) | `x/aetravm/avm/host.go:332` |
-| #21 | Stake-weighted per-sender admission limit inert: `SenderStake` hardcoded to 0 | `x/fees/keeper/fee_policy.go:64` |
-| #22 | native-account auth policy accepts multiple AuthKeys sharing one public key | `x/native-account/types/auth_policy_authorize.go:135` |
-| #23 (I01) | Emergency protocol-mint authorization is self-certified, never checked vs `x/constitution` state | `x/mint-authority/types/authority.go:635` |
+| #21 | Stake-weighted per-sender admission limit inert: `SenderStake` hardcoded to 0 (needs a stake source injected into the fees keeper; changes admission) | `x/fees/keeper/fee_policy.go:64` |
+| #23 (I01) | Emergency protocol-mint authorization is self-certified, never checked vs `x/constitution` state (latent: mint msg unreachable) | `x/mint-authority/types/authority.go:635` |
 | #24 | SA2-S08 clamps the response but still copies+sorts the whole store per query | `x/nominator-pool/keeper/query_server.go:36` |
-| #25 | Override keys removals on `GetEd25519()`, collapsing non-ed25519 keys (fold into C-1 fix) | `app/elector_validator_updates.go:118` |
-| #26 | FINDING-016 hash-separator class still present in x/evidence | `x/evidence/keeper/keeper.go:779` |
-| #27 | Stake-weighted tx priority (`PriorityScore`) is dead code, never applied to mempool | `x/fees/keeper/fee_policy.go:179` |
+| #27 | Stake-weighted tx priority (`PriorityScore`) is dead code, never applied to mempool (wire vs delete = decision) | `x/fees/keeper/fee_policy.go:179` |
 
 ## Inaccuracies (severity=info)
 
@@ -93,14 +87,11 @@
 **#5/#12/#13/#21/#23 + gate hardening (#9/#15/#16/#17):** dedicated passes — #5 (recursive AVM gas) and #23 (mint signer-binding) are real fixes with real test surface; #12 (VRF) and #13 (per-entity KV) are larger; making the determinism gate stricter may surface existing code and needs a controlled run. All latent (AVM off) or non-consensus. **#7/#2 (contract/pool custody):** feature work (which module account backs balances) — SA2-F01, not a patch.
 
 
-| ID | Inaccuracy | Location |
+| ID | Inaccuracy | Status |
 |---|---|---|
-| #29 | Dual inflation defaults: x/emissions 3.0% target vs x/aetra-economics 3.5% midpoint | `x/aetra-economics/types/state.go:169` |
-| #30 | Dual fee-split: x/fees 98/2 accounting vs fee-collector 50/35/15 | `x/fees/keeper/keeper.go:239` |
-| #31 | Uncalibrated `AnnualReferenceSupply = 365 AET` makes emission negligible | `app/params/mint.go:15` |
-| #32 | Localnet/testnet gentx sets validator commission to 100% | `cmd/l1d/cmd/testnet.go:493` |
-| #33 | `EstimateAPRBps` overstates APR by ignoring the 70% validator/delegator share | `x/aetra-economics/types/state.go:218` |
-| #34 | Dual `EpochsPerYear` constants: 365 (emissions) vs 6,307,200 (aetra-economics) | `x/aetra-economics/types/state.go:160` |
+| #29 / #30 / #33 / #34 | dual inflation / fee-split / APR / epoch constants | ✅ RESOLVED `e129f0c3` — canonical source pinned in code (rationale above) |
+| #32 | Localnet/testnet gentx commission 100% | ✅ FIXED `22df43c1` (5% / 20% / 1%) |
+| **#31** | **Uncalibrated `AnnualReferenceSupply = 365 AET`** (`app/params/mint.go:15`). Emission is a FIXED **10.95 AET/yr** at the 3% target regardless of real supply, because 3% is applied to a 365-AET constant, not circulating supply. Real inflation on a 100k-AET network ≈ **0.011%**, on 1M AET ≈ **0.001%** — not 3%. The mechanism works (epoch-boundary mint/burn test passes); only the anchor is a placeholder. | ❗ **OPEN — needs the real circulating-supply anchor (economic decision)** |
 
 ## Verified genuinely fixed (no action)
 Pass-1 findings **002–008, 010, 011** re-verified fixed in the current working tree (#28). Prototype gate (#35): dormant zones/routing/mesh/sharding-coordinator/networking/load modules cannot be triggered — no live Msg/Query/EndBlock surface; gate off by default (negative result confirmed).
