@@ -14,6 +14,8 @@ import (
 
 	"cosmossdk.io/math"
 	"cosmossdk.io/math/unsafe"
+
+	mathrand "math/rand"
 	l1app "github.com/sovereign-l1/l1/app"
 	appparams "github.com/sovereign-l1/l1/app/params"
 
@@ -81,7 +83,43 @@ var (
 	flagStakingDenom	= "staking-denom"
 	flagCommitTimeout	= "commit-timeout"
 	flagSingleHost		= "single-host"
+
+	// Genesis sizing. The defaults below reproduce the historical hardcoded
+	// figures exactly (1,000 AET funded, 100 AET self-bonded, no extra
+	// accounts), so an unflagged init-files is byte-identical to before.
+	//
+	// They exist because those figures are far too small to test economics on:
+	// a 4-validator net genesis-mints 4,000 AET total, and at the 0.5 AET
+	// average fee with a 50% burn that supply measurably collapses under load
+	// (third audit 2.2 -- 1.48% of all money burned in 22 minutes). The audit's
+	// conclusion was that genesis supply has to be 10^4-10^6 times larger to
+	// measure inflation against burn honestly.
+	flagValidatorStakeMinAet	= "validator-stake-aet-min"
+	flagValidatorStakeMaxAet	= "validator-stake-aet-max"
+	flagValidatorExtraAet		= "validator-extra-aet"
+	flagExtraAccounts		= "extra-accounts"
+	flagExtraAccountMinAet		= "extra-account-aet-min"
+	flagExtraAccountMaxAet		= "extra-account-aet-max"
+	flagSimSeed			= "sim-seed"
 )
+
+// naetPerAet is the base-unit scale: 1 AET = 1e9 naet (app/params/token.go).
+const naetPerAet = int64(1_000_000_000)
+
+// aetToNaet converts a whole-AET figure to base units.
+func aetToNaet(aet int64) math.Int {
+	return math.NewInt(aet).MulRaw(naetPerAet)
+}
+
+// pickAet returns a deterministic pseudo-random whole-AET amount in
+// [minAet, maxAet]. maxAet <= minAet pins it to minAet, which is what keeps the
+// default flag values reproducing the old fixed behaviour.
+func pickAet(rng *mathrand.Rand, minAet, maxAet int64) int64 {
+	if maxAet <= minAet {
+		return minAet
+	}
+	return minAet + rng.Int63n(maxAet-minAet+1)
+}
 
 type initArgs struct {
 	algo			string
@@ -96,6 +134,14 @@ type initArgs struct {
 	listenIPAddress		string
 	singleMachine		bool
 	bondTokenDenom		string
+
+	valStakeMinAet		int64
+	valStakeMaxAet		int64
+	valExtraAet		int64
+	extraAccounts		int
+	extraAccountMinAet	int64
+	extraAccountMaxAet	int64
+	simSeed			int64
 }
 
 type startArgs struct {
@@ -251,6 +297,25 @@ Example:
 			args.algo, _ = cmd.Flags().GetString(flags.FlagKeyType)
 			args.bondTokenDenom, _ = cmd.Flags().GetString(flagStakingDenom)
 			args.singleMachine, _ = cmd.Flags().GetBool(flagSingleHost)
+			args.valStakeMinAet, _ = cmd.Flags().GetInt64(flagValidatorStakeMinAet)
+			args.valStakeMaxAet, _ = cmd.Flags().GetInt64(flagValidatorStakeMaxAet)
+			args.valExtraAet, _ = cmd.Flags().GetInt64(flagValidatorExtraAet)
+			args.extraAccounts, _ = cmd.Flags().GetInt(flagExtraAccounts)
+			args.extraAccountMinAet, _ = cmd.Flags().GetInt64(flagExtraAccountMinAet)
+			args.extraAccountMaxAet, _ = cmd.Flags().GetInt64(flagExtraAccountMaxAet)
+			args.simSeed, _ = cmd.Flags().GetInt64(flagSimSeed)
+			if args.valStakeMinAet <= 0 {
+				return fmt.Errorf("--%s must be positive", flagValidatorStakeMinAet)
+			}
+			if args.valExtraAet < 0 {
+				return fmt.Errorf("--%s cannot be negative", flagValidatorExtraAet)
+			}
+			if args.extraAccounts < 0 {
+				return fmt.Errorf("--%s cannot be negative", flagExtraAccounts)
+			}
+			if args.extraAccounts > 0 && args.extraAccountMinAet <= 0 {
+				return fmt.Errorf("--%s must be positive", flagExtraAccountMinAet)
+			}
 			config.Consensus.TimeoutCommit, err = cmd.Flags().GetDuration(flagCommitTimeout)
 			if err != nil {
 				return err
@@ -274,6 +339,13 @@ Example:
 	cmd.Flags().Duration(flagCommitTimeout, 5*time.Second, "Time to wait after a block commit before starting on the new height")
 	cmd.Flags().Bool(flagSingleHost, false, "Cluster runs on a single host machine with different ports")
 	cmd.Flags().String(flagStakingDenom, sdk.DefaultBondDenom, "Default staking token denominator")
+	cmd.Flags().Int64(flagValidatorStakeMinAet, 100, "Minimum whole-AET self-bond per validator")
+	cmd.Flags().Int64(flagValidatorStakeMaxAet, 0, "Maximum whole-AET self-bond per validator; <= min pins every validator to min (uniform, the historical behaviour)")
+	cmd.Flags().Int64(flagValidatorExtraAet, 900, "Whole AET funded to each validator on top of its self-bond, to pay fees")
+	cmd.Flags().Int(flagExtraAccounts, 0, "Number of extra funded genesis wallets to create beyond the validators (keys land in <output-dir>/wallets)")
+	cmd.Flags().Int64(flagExtraAccountMinAet, 20_000, "Minimum whole-AET balance per extra wallet")
+	cmd.Flags().Int64(flagExtraAccountMaxAet, 220_000, "Maximum whole-AET balance per extra wallet; <= min pins every wallet to min")
+	cmd.Flags().Int64(flagSimSeed, 1, "Seed for the stake/balance randomisation, so a given genesis is reproducible")
 
 	return cmd
 }
@@ -365,6 +437,11 @@ func initTestnetFiles(
 	p2pPortStart := 26656
 
 	inBuf := bufio.NewReader(cmd.InOrStdin())
+
+	// Seeded so a given (--sim-seed, --validator-count, --extra-accounts) always
+	// produces the same genesis: a load run whose supply distribution shifts
+	// between runs cannot be compared against a previous one.
+	rng := mathrand.New(mathrand.NewSource(args.simSeed))
 
 	for i := 0; i < args.numValidators; i++ {
 		var portOffset int
@@ -465,15 +542,19 @@ func initTestnetFiles(
 			return err
 		}
 
-		// One consensus-power unit is 1e6 naet (0.001 AET), so fund each
-		// bootstrap account with 1,000 AET and self-bond 100 AET below: with
-		// the 0.5 AET average transfer fee, the old 500-power (0.5 AET)
-		// funding could not pay for even a single transaction.
+		// Self-bond is drawn per validator from [--validator-stake-aet-min,
+		// --validator-stake-aet-max] and the account is funded with that plus
+		// --validator-extra-aet to pay fees; at the 0.5 AET average transfer fee
+		// a validator funded only to its self-bond could not send a single
+		// transaction. One consensus-power unit is 1e6 naet (0.001 AET).
+		// Defaults (100 / 100 / 900) reproduce the historical fixed 100 AET
+		// self-bond funded with 1,000 AET exactly.
+		stakeAet := pickAet(rng, args.valStakeMinAet, args.valStakeMaxAet)
+		valTokens := aetToNaet(stakeAet)
 		accTokens := sdk.TokensFromConsensusPower(1000, sdk.DefaultPowerReduction)
-		accStakingTokens := sdk.TokensFromConsensusPower(1_000_000, sdk.DefaultPowerReduction)
 		coins := sdk.Coins{
 			sdk.NewCoin(bootstrapTestAssetDenom, accTokens),
-			sdk.NewCoin(args.bondTokenDenom, accStakingTokens),
+			sdk.NewCoin(args.bondTokenDenom, aetToNaet(stakeAet+args.valExtraAet)),
 		}
 
 		genBalances = append(genBalances, banktypes.Balance{Address: addr.String(), Coins: coins.Sort()})
@@ -484,7 +565,6 @@ func initTestnetFiles(
 		if err != nil {
 			return err
 		}
-		valTokens := sdk.TokensFromConsensusPower(100_000, sdk.DefaultPowerReduction)
 		createValMsg, err := stakingtypes.NewMsgCreateValidator(
 			valStr,
 			valPubKeys[i],
@@ -530,6 +610,63 @@ func initTestnetFiles(
 		srvconfig.SetConfigTemplate(srvconfig.DefaultConfigTemplate)
 
 		srvconfig.WriteConfigFile(filepath.Join(nodeDir, "config", "app.toml"), appConfig)
+	}
+
+	// Ordinary funded wallets beyond the validator set, keyed into
+	// <output-dir>/wallets. A load run needs users who are not also the block
+	// producers: a validator's balance moves with rewards and its own fees, so
+	// measuring transfer/staking behaviour on validator accounts confounds the
+	// two.
+	//
+	// Each wallet also gets an active native-account record, for the same reason
+	// the validators do (see bootstrapNativeAccount): MsgActivateAccount derives
+	// a domain-hashed v2 address that never equals the funded bootstrap address,
+	// so a wallet without a pre-seeded record can never call an AVM entrypoint
+	// under the identity it was actually funded at.
+	if args.extraAccounts > 0 {
+		walletDir := filepath.Join(args.outputDir, "wallets")
+		if err := os.MkdirAll(walletDir, nodeDirPerm); err != nil {
+			_ = os.RemoveAll(args.outputDir)
+			return err
+		}
+
+		walletKb, err := keyring.New(sdk.KeyringServiceName(), args.keyringBackend, walletDir, inBuf, clientCtx.Codec)
+		if err != nil {
+			return err
+		}
+		walletAlgos, _ := walletKb.SupportedAlgorithms()
+		walletAlgo, err := keyring.NewSigningAlgoFromString(args.algo, walletAlgos)
+		if err != nil {
+			return err
+		}
+
+		for i := 0; i < args.extraAccounts; i++ {
+			walletName := fmt.Sprintf("wallet%d", i)
+			walletAddr, _, err := testutil.GenerateSaveCoinKey(walletKb, walletName, "", true, walletAlgo)
+			if err != nil {
+				_ = os.RemoveAll(args.outputDir)
+				return err
+			}
+
+			balanceAet := pickAet(rng, args.extraAccountMinAet, args.extraAccountMaxAet)
+			genBalances = append(genBalances, banktypes.Balance{
+				Address:	walletAddr.String(),
+				Coins:		sdk.Coins{sdk.NewCoin(args.bondTokenDenom, aetToNaet(balanceAet))}.Sort(),
+			})
+			genAccounts = append(genAccounts, authtypes.NewBaseAccount(walletAddr, nil, 0, 0))
+
+			walletRecord, err := walletKb.Key(walletName)
+			if err != nil {
+				_ = os.RemoveAll(args.outputDir)
+				return err
+			}
+			walletPubKey, err := walletRecord.GetPubKey()
+			if err != nil {
+				_ = os.RemoveAll(args.outputDir)
+				return err
+			}
+			nativeAccounts = append(nativeAccounts, bootstrapNativeAccount(walletPubKey, uint64(args.numValidators+i+1)))
+		}
 	}
 
 	if err := initGenFiles(clientCtx, mm, args.chainID, genAccounts, genBalances, nativeAccounts, genFiles, args.numValidators); err != nil {
