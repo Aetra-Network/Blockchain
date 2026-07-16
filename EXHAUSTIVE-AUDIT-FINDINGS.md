@@ -86,6 +86,8 @@
 
 ## Inaccuracies (severity=info)
 
+**RESOLVED ✅ in `e129f0c3`** — canonical source pinned in code at both sites (`x/aetra-economics/types/state.go` DefaultParams, `x/fees/types/genesis.go`): `x/emissions`+`app/params` and `x/fee-collector` are declared AUTHORITATIVE; `x/aetra-economics` is declared ADVISORY/self-contained. The numbers were never broken — the defect was ambiguity about which source is real, and that is now unambiguous. Rationale below.
+
 **Resolution decision:** #29/#30/#33/#34 are NOT bugs but two coexisting economic models — `x/aetra-economics` is a self-contained, tested model (3.5% inflation midpoint, block-based epochs, 35% share, with tests asserting `midpoint=350`, `APR(400,6000)=667`) that intentionally differs from the live `x/emissions`/`fee-collector` drivers (3%, daily epochs, 70%, 50/35/15). Force-aligning would break a coherent tested module and is an economic-model decision, not a patch. **Canonical = `x/emissions` + `x/fee-collector`** (the live drivers); reconciling `x/aetra-economics`/residual `x/fees` accounting to them should be a deliberate, coordinated change with its tests updated. Documented, not force-patched.
 
 **#5/#12/#13/#21/#23 + gate hardening (#9/#15/#16/#17):** dedicated passes — #5 (recursive AVM gas) and #23 (mint signer-binding) are real fixes with real test surface; #12 (VRF) and #13 (per-entity KV) are larger; making the determinism gate stricter may surface existing code and needs a controlled run. All latent (AVM off) or non-consensus. **#7/#2 (contract/pool custody):** feature work (which module account backs balances) — SA2-F01, not a patch.
