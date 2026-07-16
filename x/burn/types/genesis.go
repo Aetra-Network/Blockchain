@@ -87,6 +87,19 @@ func (p Params) Validate() error {
 			}
 		}
 	}
+	// fee_collector must always retain burn permission: app/native_economy.go's
+	// EndBlock-driven native-emission distribution calls
+	// BurnProtocolCoins(ctx, authtypes.FeeCollectorName, ...) every emission
+	// epoch. NormalizeParams only backfills the default permission set when
+	// ProtocolBurnPermissions is empty, so a governance proposal that submits
+	// a non-empty list which simply omits fee_collector (e.g. a "tighten burn
+	// permissions" proposal) would otherwise pass Validate() cleanly and then
+	// deterministically halt the chain at the next emission epoch, since an
+	// EndBlocker returning a non-nil error halts the chain. Reject that shape
+	// outright here instead of letting it commit.
+	if _, ok := seenModules[authtypes.FeeCollectorName]; !ok {
+		return fmt.Errorf("protocol_burn_permissions must include %s: app/native_economy.go burns emission proceeds from it every epoch, and omitting it halts the chain at the next emission epoch", authtypes.FeeCollectorName)
+	}
 	return nil
 }
 

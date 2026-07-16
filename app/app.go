@@ -66,6 +66,14 @@ func NewL1App(
 	std.RegisterInterfaces(interfaceRegistry)
 
 	baseAppOptions = append(baseAppOptions, baseapp.SetOptimisticExecution())
+	// F-02: SDK v0.54.3 defaults disableBlockGasMeter to true, which makes
+	// ctx.BlockGasMeter() a no-op (GasConsumed() always 0). That silently
+	// degrades x/fees' cumulative block-gas check (fee_model.go
+	// ValidateAdmission) into a per-tx check and pins the congestion state
+	// (congestion.go) at 0 forever. Enable the real meter. Safe here: this
+	// app does not call SetBlockSTMTxRunner (Block-STM parallel runner),
+	// which panics if constructed with the block gas meter enabled.
+	baseAppOptions = append(baseAppOptions, baseapp.EnableBlockGasMeter())
 
 	bApp := baseapp.NewBaseApp(appName, logger, db, txConfig.TxDecoder(), baseAppOptions...)
 	bApp.SetVersion(version.Version)

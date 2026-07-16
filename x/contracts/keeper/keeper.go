@@ -1442,6 +1442,16 @@ func (k *Keeper) executeContract(ctx context.Context, msg types.MsgExecuteContra
 	if err != nil {
 		return types.ExecuteContractResponse{}, errors.New(types.ErrStorageRent + ": contract has storage rent debt")
 	}
+	// F-06: collect the attached funds from the sender into the storage-rent
+	// reserve BEFORE crediting contract.Balance, mirroring
+	// PayContractStorageDebt's collect-before-mutate ordering below (so
+	// balance cannot be inflated for free). Skip the bank call when no
+	// funds are attached.
+	if msg.Funds > 0 {
+		if err := k.collectRentPayment(ctx, msg.Sender, msg.Funds); err != nil {
+			return types.ExecuteContractResponse{}, err
+		}
+	}
 	balance, err := checkedAdd(contract.Balance, msg.Funds, "contract balance overflow")
 	if err != nil {
 		return types.ExecuteContractResponse{}, err
@@ -1615,6 +1625,17 @@ func (k *Keeper) TopUpContract(msg types.MsgTopUpContract) (types.Contract, erro
 	}
 	if err := types.EnsureContractLifecycleAction(contract, types.ContractLifecycleActionReceiveTopUp); err != nil {
 		return types.Contract{}, err
+	}
+	// F-06: collect the top-up amount from the sender into the storage-rent
+	// reserve BEFORE crediting contract.Balance, mirroring
+	// PayContractStorageDebt's collect-before-mutate ordering (so balance
+	// cannot be inflated for free). msg.Amount is already guaranteed > 0 by
+	// the check above, but guard anyway to skip the bank call on a zero
+	// amount rather than error.
+	if msg.Amount > 0 {
+		if err := k.collectRentPayment(k.runtimeCtx, msg.Sender, msg.Amount); err != nil {
+			return types.Contract{}, err
+		}
 	}
 	balance, err := checkedAdd(contract.Balance, msg.Amount, "contract top-up balance overflow")
 	if err != nil {
@@ -2160,23 +2181,32 @@ func (k *Keeper) ReceiveInternalMessage(msg types.MsgReceiveInternalMessage) (ty
 // queued and retried on a later block; it is never dropped or double-charged,
 // since ReceiveInternalMessage only mutates k.genesis on its success path.
 //
-// The budget check runs on the in-memory k.genesis.Params BEFORE
-// loadForBlock, so a disabled drain (the default) never touches the store
-// and never overwrites k.genesis with the persisted snapshot. That reload
-// would otherwise clobber any change a caller applied directly to the
-// in-memory keeper without going through the persist-on-write msg-server
-// wrapper (writeGenesis) -- exactly what every EndBlock invocation used to
-// never do before this hook existed. The narrow cost is that a governance
-// param update raising the budget from a genesis restored from disk (not
-// yet reflected in a freshly-constructed keeper's in-memory default) only
-// takes effect once some other tx first refreshes k.genesis; that is a
-// one-tx delay, not a correctness or consensus-safety gap.
+// F-17: loadForBlock runs FIRST, before the budget check reads
+// k.genesis.Params. A version that checked the in-memory param first (as
+// this method used to) is consensus-unsafe: NewPersistentKeeper seeds
+// k.genesis to DefaultGenesis() (budget 0), and a node that just
+// restarted/state-synced holds that zero value -- and would take the
+// early-return, skipping the drain -- until some unrelated tx happened to
+// call loadForBlock first. A continuously-running node's k.genesis, by
+// contrast, already reflects a governance-raised budget. Two nodes at the
+// same height would then disagree on whether the queue drains, producing
+// different AppHashes -- an actual fork, not a cosmetic one-tx delay.
+// Loading unconditionally does mean a disabled drain (the default) still
+// touches the store every block; that store read is the price of reading
+// committed, not stale, state.
 func (k *Keeper) EndBlocker(ctx sdk.Context) error {
-	if k.genesis.Params.MaxInternalMessageGasPerBlock == 0 {
-		return nil
-	}
+	// F-17: load the committed genesis state BEFORE reading any param. A
+	// restarted/state-synced node seeds k.genesis to DefaultGenesis() (zero
+	// value) until some handler calls loadForBlock; reading
+	// MaxInternalMessageGasPerBlock off that stale in-memory value here would
+	// let a restarted node diverge from one that has been running
+	// continuously (and already has the governance-updated param loaded),
+	// producing a different AppHash and forking the chain.
 	if err := k.loadForBlock(ctx); err != nil {
 		return err
+	}
+	if k.genesis.Params.MaxInternalMessageGasPerBlock == 0 {
+		return nil
 	}
 	budget := k.genesis.Params.MaxInternalMessageGasPerBlock
 	if budget == 0 || len(k.genesis.State.InternalMessages) == 0 {

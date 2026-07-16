@@ -91,6 +91,14 @@ func (am AppModule) ExportGenesis(ctx sdk.Context, cdc codec.JSONCodec) json.Raw
 	return cdc.MustMarshalJSON(gs)
 }
 
+// EventTypeFeeDistributionSkipped is emitted when the automatic per-block
+// fee distribution fails and is skipped instead of propagating the error.
+// Skipping (rather than erroring) keeps a poisoned or colliding FeeHistory
+// entry -- e.g. one planted at a future height by a governance-submitted
+// MsgDistributeFees -- from halting the chain in EndBlock. See security
+// audit finding F-15: MsgDistributeFees epoch/height collision chain halt.
+const EventTypeFeeDistributionSkipped = "fee_distribution_skipped"
+
 func (am AppModule) EndBlock(ctx context.Context) error {
 	sdkCtx := sdk.UnwrapSDKContext(ctx)
 	pending, err := am.keeper.GetPendingDistribution(ctx)
@@ -100,8 +108,23 @@ func (am AppModule) EndBlock(ctx context.Context) error {
 	if pending.Total().Empty() {
 		return nil
 	}
-	_, err = am.keeper.DistributeFees(ctx, uint64(sdkCtx.BlockHeight()))
-	return err
+	height := uint64(sdkCtx.BlockHeight())
+	if _, err := am.keeper.DistributeFees(ctx, height); err != nil {
+		// Any failure here (duplicate history from a colliding epoch,
+		// accounting invariant, etc.) must not propagate out of EndBlock --
+		// doing so would deterministically halt every validator. Log and
+		// emit an event instead so the skip is observable, and let the
+		// pending fees carry over to the next block's attempt.
+		sdkCtx.Logger().Error("fee distribution skipped: automatic distribution failed",
+			"height", height, "err", err.Error())
+		sdkCtx.EventManager().EmitEvent(sdk.NewEvent(
+			EventTypeFeeDistributionSkipped,
+			sdk.NewAttribute(types.AttributeKeyEpoch, fmt.Sprintf("%d", height)),
+			sdk.NewAttribute("reason", err.Error()),
+		))
+		return nil
+	}
+	return nil
 }
 
 func (am AppModule) ConsensusVersion() uint64		{ return ConsensusVersion }

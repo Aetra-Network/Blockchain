@@ -6,6 +6,7 @@ import (
 	"errors"
 	"math"
 	"math/big"
+	"sync"
 
 	corestore "cosmossdk.io/core/store"
 
@@ -53,10 +54,63 @@ type Keeper struct {
 	accountStatusReader AccountStatusReader
 	indexes             map[string]poolIndexEntry
 	counters            OperationCounters
+	// mu guards genesis, indexes, and counters against the concurrent
+	// gRPC/REST query goroutines AND the Simulate RPC path racing the
+	// (single-threaded, ABCI-serialized) msg-handler write path. baseapp
+	// runs message execution for execModeSimulate (the
+	// /cosmos.tx.v1beta1.Service/Simulate endpoint, served on a query
+	// goroutine) through the SAME msg-handler code that execModeFinalize
+	// uses. That means a client hammering the public Simulate RPC with
+	// nominator-pool messages runs rebuildIndexes() (which reassigns
+	// k.indexes -- a WRITE to a shared map) concurrently with a real
+	// block's FinalizeBlock executing the same code on the consensus
+	// goroutine. Without this lock that is a concurrent Go map
+	// read/write, which is an unrecoverable runtime.throw (recover()
+	// cannot catch it) and crashes the validator process outright. See
+	// F-14 / FINDING-014-nominator-pool-concurrent-map-crash.md.
+	//
+	// It is a *sync.RWMutex, not a value, deliberately -- mirroring the
+	// pattern x/contracts/keeper uses for the same class of bug
+	// (FINDING-008): several methods below are value receivers (pure
+	// read-only helpers invoked only while a caller already holds this
+	// lock) that operate on copies of Keeper, and a pointer field lets
+	// every copy keep sharing the SAME lock instead of `go vet` flagging
+	// a copied sync.Mutex, and instead of every value-receiver copy
+	// silently getting its own independent (i.e. useless) lock.
+	//
+	// Locking convention for this file: every EXPORTED method that reads
+	// or writes genesis/indexes/counters acquires mu itself (Lock for
+	// anything that mutates OR that can reach ensureIndexes/rebuildIndexes
+	// -- see below; RLock for the handful of pure getters that cannot)
+	// and holds it for the method's ENTIRE body, not just around
+	// individual field assignments -- a load-check-use sequence has to be
+	// atomic as a whole or a concurrent rebuildIndexes can still land
+	// in the middle of it. Every unexported (lowercase) helper --
+	// loadForBlock's callees, rebuildIndexes, ensureIndexes, lookupPool,
+	// lookupDelegator, saveGenesis, savePool(Only), the upsertXxx
+	// helpers, accrueOfficialPoolRent -- assumes the caller already
+	// holds the appropriate lock and never locks itself, to avoid
+	// non-reentrant self-deadlock. A handful of exported methods call
+	// another exported method internally (e.g. DepositToStakingPool ->
+	// DepositToOfficialLiquidStaking); those inner methods are split into
+	// a thin locking wrapper plus an unexported *Locked implementation,
+	// and the outer caller invokes the *Locked form directly so the lock
+	// is only ever acquired once per external entry point.
+	//
+	// ensureIndexes conditionally calls rebuildIndexes (a write) even
+	// from what looks like a pure lookup, so every path that can reach
+	// lookupPool/lookupDelegator -- including the read-only NominatorPool/
+	// PoolDelegator/PoolRewards/PoolShare/PoolAllocations queries and
+	// StakingProof/ClaimPoolRewards/SyncPoolRewards -- takes the WRITE
+	// lock, not RLock: two callers each holding only RLock could both
+	// decide a rebuild is needed and both call rebuildIndexes
+	// concurrently, reproducing the exact crash this field exists to
+	// prevent.
+	mu *sync.RWMutex
 }
 
 func NewKeeper() Keeper {
-	k := Keeper{genesis: DefaultGenesis()}
+	k := Keeper{genesis: DefaultGenesis(), mu: &sync.RWMutex{}}
 	k.rebuildIndexes()
 	return k
 }
@@ -68,7 +122,7 @@ func NewKeeperWithAccountStatus(reader AccountStatusReader) Keeper {
 }
 
 func NewPersistentKeeper(storeService corestore.KVStoreService) Keeper {
-	k := Keeper{genesis: DefaultGenesis(), storeService: storeService}
+	k := Keeper{genesis: DefaultGenesis(), storeService: storeService, mu: &sync.RWMutex{}}
 	k.rebuildIndexes()
 	return k
 }
@@ -86,6 +140,8 @@ func (gs GenesisState) Validate() error {
 }
 
 func (k *Keeper) InitGenesis(gs GenesisState) error {
+	k.mu.Lock()
+	defer k.mu.Unlock()
 	if err := gs.Validate(); err != nil {
 		return err
 	}
@@ -95,6 +151,8 @@ func (k *Keeper) InitGenesis(gs GenesisState) error {
 }
 
 func (k *Keeper) InitGenesisState(ctx context.Context, gs GenesisState) error {
+	k.mu.Lock()
+	defer k.mu.Unlock()
 	if err := gs.Validate(); err != nil {
 		return err
 	}
@@ -135,7 +193,12 @@ func (k Keeper) ExportGenesisState(ctx context.Context) (GenesisState, error) {
 // made earlier in the same block. Mirrors the fix applied to
 // x/validator-election (SEC-HIGH). See security-audit/05-findings/
 // FINDING-006-inmemory-genesis-not-rehydrated-consensus-halt.md.
+// loadForBlock is called directly (never nested inside another locking
+// keeper method) from msg_server.go at the top of every Msg handler, so it
+// takes the write lock itself and holds it for its whole body.
 func (k *Keeper) loadForBlock(ctx context.Context) error {
+	k.mu.Lock()
+	defer k.mu.Unlock()
 	k.runtimeCtx = ctx
 	if k.storeService == nil {
 		return nil
@@ -152,6 +215,9 @@ func (k *Keeper) loadForBlock(ctx context.Context) error {
 	return nil
 }
 
+// saveGenesis is an internal helper invoked from many exported methods that
+// already hold k.mu (write-locked) by the time they call it. It deliberately
+// does NOT lock -- see the Keeper.mu doc comment.
 func (k *Keeper) saveGenesis(next GenesisState) error {
 	next.State = next.State.Normalize(next.Params)
 	if err := next.Validate(); err != nil {
@@ -184,15 +250,27 @@ func (k Keeper) writeGenesisState(ctx context.Context, gs GenesisState) error {
 	return prefixgenesis.Save(ctx, k.storeService, genesisKey, cloneGenesis(gs))
 }
 
-func (k Keeper) OperationCounters() OperationCounters {
+func (k *Keeper) OperationCounters() OperationCounters {
+	k.mu.RLock()
+	defer k.mu.RUnlock()
 	return k.counters
 }
 
 func (k *Keeper) ResetOperationCounters() {
+	k.mu.Lock()
+	defer k.mu.Unlock()
 	k.counters = OperationCounters{}
 }
 
 func (k *Keeper) UpdateParams(msg types.MsgUpdateParams) (types.Params, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return k.updateParamsLocked(msg)
+}
+
+// updateParamsLocked assumes k.mu is already held (write) by the caller. Do
+// not call this from outside the package or without holding the lock.
+func (k *Keeper) updateParamsLocked(msg types.MsgUpdateParams) (types.Params, error) {
 	if msg.Height == 0 {
 		return types.Params{}, errors.New("nominator pool params update height must be positive")
 	}
@@ -210,7 +288,9 @@ func (k *Keeper) UpdateParams(msg types.MsgUpdateParams) (types.Params, error) {
 }
 
 func (k *Keeper) UpdateStakingParams(msg types.MsgUpdateStakingParams) (types.Params, error) {
-	return k.UpdateParams(types.MsgUpdateParams{
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return k.updateParamsLocked(types.MsgUpdateParams{
 		Authority: msg.Authority,
 		Params:    msg.Params,
 		Height:    msg.Height,
@@ -218,6 +298,8 @@ func (k *Keeper) UpdateStakingParams(msg types.MsgUpdateStakingParams) (types.Pa
 }
 
 func (k *Keeper) RegisterValidator(msg types.MsgRegisterValidator) (types.ValidatorRegistrationReceipt, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
 	if err := types.ValidateUserFacingAEAddress("validator registration signer", msg.SignerAddress); err != nil {
 		return types.ValidatorRegistrationReceipt{}, err
 	}
@@ -273,6 +355,8 @@ func (k *Keeper) RegisterValidator(msg types.MsgRegisterValidator) (types.Valida
 }
 
 func (k *Keeper) UpdateValidator(msg types.MsgUpdateValidator) (types.ValidatorRegistrationReceipt, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
 	if err := types.ValidateUserFacingAEAddress("validator update signer", msg.SignerAddress); err != nil {
 		return types.ValidatorRegistrationReceipt{}, err
 	}
@@ -345,6 +429,10 @@ func (k *Keeper) UpdateValidator(msg types.MsgUpdateValidator) (types.ValidatorR
 // DelegatorShares (SortDelegators orders by the address STRING, which for
 // bech32 raw addresses does not track insertion/numeric order the way the
 // legacy zero-padded-hex format coincidentally did).
+//
+// Assumes k.mu is already held (write) by the caller; it never locks itself.
+// This is the method whose unsynchronized k.indexes reassignment IS the F-14
+// crash (concurrent map read/write) when called without the lock.
 func (k *Keeper) rebuildIndexes() {
 	k.genesis.State = k.genesis.State.Normalize(k.genesis.Params)
 	k.indexes = make(map[string]poolIndexEntry, len(k.genesis.State.Pools))
@@ -360,12 +448,17 @@ func (k *Keeper) rebuildIndexes() {
 	}
 }
 
+// ensureIndexes assumes k.mu is already held (write) by the caller. It can
+// itself mutate k.indexes via rebuildIndexes, which is why every caller that
+// can reach it -- directly or via lookupPool/lookupDelegator -- must hold the
+// WRITE lock, never just RLock (see the Keeper.mu doc comment).
 func (k *Keeper) ensureIndexes() {
 	if k.indexes == nil || len(k.indexes) != len(k.genesis.State.Pools) {
 		k.rebuildIndexes()
 	}
 }
 
+// lookupPool assumes k.mu is already held (write) by the caller.
 func (k *Keeper) lookupPool(poolID string) (int, types.NominatorPool, bool) {
 	k.ensureIndexes()
 	k.counters.PoolLookups++
@@ -376,6 +469,7 @@ func (k *Keeper) lookupPool(poolID string) (int, types.NominatorPool, bool) {
 	return entry.index, k.genesis.State.Pools[entry.index], true
 }
 
+// lookupDelegator assumes k.mu is already held (write) by the caller.
 func (k *Keeper) lookupDelegator(poolID string, delegator string) (int, types.DelegatorShare, bool) {
 	k.ensureIndexes()
 	k.counters.DelegatorLookups++
@@ -392,6 +486,8 @@ func (k *Keeper) lookupDelegator(poolID string, delegator string) (int, types.De
 }
 
 func (k *Keeper) CreateNominatorPool(msg types.MsgCreateNominatorPool) (types.NominatorPool, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
 	if err := k.genesis.Params.Authorize(msg.Authority); err != nil {
 		return types.NominatorPool{}, err
 	}
@@ -427,6 +523,8 @@ func (k *Keeper) CreateNominatorPool(msg types.MsgCreateNominatorPool) (types.No
 }
 
 func (k *Keeper) CreateOfficialLiquidStakingPool(msg types.MsgCreateOfficialLiquidStakingPool) (types.NominatorPool, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
 	if err := k.genesis.Params.Authorize(msg.Authority); err != nil {
 		return types.NominatorPool{}, err
 	}
@@ -470,6 +568,8 @@ func (k *Keeper) CreateOfficialLiquidStakingPool(msg types.MsgCreateOfficialLiqu
 }
 
 func (k *Keeper) DepositToPool(msg types.MsgDepositToPool) (types.DelegatorShare, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
 	if err := k.genesis.Params.Authorize(msg.Authority); err != nil {
 		return types.DelegatorShare{}, err
 	}
@@ -514,6 +614,14 @@ func (k *Keeper) DepositToPool(msg types.MsgDepositToPool) (types.DelegatorShare
 }
 
 func (k *Keeper) DepositToOfficialLiquidStaking(msg types.MsgDepositToOfficialLiquidStaking) (types.DelegatorShare, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return k.depositToOfficialLiquidStakingLocked(msg)
+}
+
+// depositToOfficialLiquidStakingLocked assumes k.mu is already held (write)
+// by the caller.
+func (k *Keeper) depositToOfficialLiquidStakingLocked(msg types.MsgDepositToOfficialLiquidStaking) (types.DelegatorShare, error) {
 	if err := types.ValidateOfficialLiquidStakingDeposit(msg, k.genesis.Params); err != nil {
 		return types.DelegatorShare{}, err
 	}
@@ -562,6 +670,8 @@ func (k *Keeper) DepositToOfficialLiquidStaking(msg types.MsgDepositToOfficialLi
 }
 
 func (k *Keeper) DepositToStakingPool(msg types.MsgDepositToStakingPool) (types.StakingPoolDepositReceipt, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
 	if err := types.ValidateUserFacingAEAddress("staking pool depositor", msg.WalletAddress); err != nil {
 		return types.StakingPoolDepositReceipt{}, err
 	}
@@ -610,7 +720,7 @@ func (k *Keeper) DepositToStakingPool(msg types.MsgDepositToStakingPool) (types.
 		}
 		poolID = resolvedID
 	}
-	share, err := k.DepositToOfficialLiquidStaking(types.MsgDepositToOfficialLiquidStaking{
+	share, err := k.depositToOfficialLiquidStakingLocked(types.MsgDepositToOfficialLiquidStaking{
 		Authority:   k.genesis.Params.Authority,
 		PoolID:      poolID,
 		UserAddress: msg.WalletAddress,
@@ -654,10 +764,29 @@ func (k *Keeper) DepositToStakingPool(msg types.MsgDepositToStakingPool) (types.
 }
 
 func (k *Keeper) DelegateUserToValidator(msg types.MsgDelegateToValidator) error {
+	k.mu.RLock()
+	defer k.mu.RUnlock()
 	return types.ValidateDirectUserDelegation(msg, k.genesis.Params)
 }
 
+// ParamsAuthority returns the module's configured governance authority
+// address. It exists so callers outside this file (msg_server.go's
+// DelegateToValidator handler defaults an empty msg.Authority to it) never
+// need to read k.genesis directly and unsynchronized.
+func (k *Keeper) ParamsAuthority() string {
+	k.mu.RLock()
+	defer k.mu.RUnlock()
+	return k.genesis.Params.Authority
+}
+
 func (k *Keeper) InjectPooledStake(msg types.MsgInjectPooledStake) (types.NominatorPool, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return k.injectPooledStakeLocked(msg)
+}
+
+// injectPooledStakeLocked assumes k.mu is already held (write) by the caller.
+func (k *Keeper) injectPooledStakeLocked(msg types.MsgInjectPooledStake) (types.NominatorPool, error) {
 	if err := types.ValidateUserFacingAEAddress("pooled stake caller contract", msg.CallerContractUser); err != nil {
 		return types.NominatorPool{}, err
 	}
@@ -706,12 +835,14 @@ func (k *Keeper) InjectPooledStake(msg types.MsgInjectPooledStake) (types.Nomina
 }
 
 func (k *Keeper) InjectPoolStake(msg types.MsgInjectPoolStake) (types.PoolRebalanceReceipt, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
 	if len(msg.Allocations) == 0 {
 		return types.PoolRebalanceReceipt{}, errors.New("pool stake injection requires allocations")
 	}
 	var updated types.NominatorPool
 	for _, allocation := range types.SortAllocations(msg.Allocations) {
-		pool, err := k.InjectPooledStake(types.MsgInjectPooledStake{
+		pool, err := k.injectPooledStakeLocked(types.MsgInjectPooledStake{
 			CallerContractUser: msg.CallerContractUser,
 			PoolID:             msg.PoolID,
 			ValidatorAddress:   allocation.ValidatorAddress,
@@ -730,6 +861,8 @@ func (k *Keeper) InjectPoolStake(msg types.MsgInjectPoolStake) (types.PoolRebala
 }
 
 func (k *Keeper) RebalancePoolAllocations(msg types.MsgRebalancePoolAllocations) (types.PoolRebalanceReceipt, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
 	if err := types.ValidateUserFacingAEAddress("pool rebalance caller contract", msg.CallerContractUser); err != nil {
 		return types.PoolRebalanceReceipt{}, err
 	}
@@ -806,6 +939,8 @@ func (k *Keeper) RebalancePoolAllocations(msg types.MsgRebalancePoolAllocations)
 }
 
 func (k *Keeper) SetOfficialLiquidStakingContract(msg types.MsgSetOfficialLiquidStakingContract) (types.NominatorPool, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
 	if err := k.genesis.Params.Authorize(msg.Authority); err != nil {
 		return types.NominatorPool{}, err
 	}
@@ -851,6 +986,14 @@ func (k *Keeper) SetOfficialLiquidStakingContract(msg types.MsgSetOfficialLiquid
 }
 
 func (k *Keeper) RequestPoolWithdrawal(msg types.MsgRequestPoolWithdrawal) (types.PendingWithdrawal, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return k.requestPoolWithdrawalLocked(msg)
+}
+
+// requestPoolWithdrawalLocked assumes k.mu is already held (write) by the
+// caller.
+func (k *Keeper) requestPoolWithdrawalLocked(msg types.MsgRequestPoolWithdrawal) (types.PendingWithdrawal, error) {
 	if err := k.genesis.Params.Authorize(msg.Authority); err != nil {
 		return types.PendingWithdrawal{}, err
 	}
@@ -923,6 +1066,8 @@ func (k *Keeper) RequestPoolWithdrawal(msg types.MsgRequestPoolWithdrawal) (type
 }
 
 func (k *Keeper) RequestPoolUnbond(msg types.MsgRequestPoolUnbond) (types.PoolUnbondReceipt, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
 	if err := types.ValidateUserFacingAEAddress("pool unbond owner", msg.OwnerAddress); err != nil {
 		return types.PoolUnbondReceipt{}, err
 	}
@@ -933,7 +1078,7 @@ func (k *Keeper) RequestPoolUnbond(msg types.MsgRequestPoolUnbond) (types.PoolUn
 	if err != nil {
 		return types.PoolUnbondReceipt{}, err
 	}
-	withdrawal, err := k.RequestPoolWithdrawal(types.MsgRequestPoolWithdrawal{
+	withdrawal, err := k.requestPoolWithdrawalLocked(types.MsgRequestPoolWithdrawal{
 		Authority:    k.genesis.Params.Authority,
 		PoolID:       msg.PoolID,
 		WithdrawalID: msg.RequestID,
@@ -978,6 +1123,8 @@ func (k *Keeper) RequestPoolUnbond(msg types.MsgRequestPoolUnbond) (types.PoolUn
 }
 
 func (k *Keeper) WithdrawPoolStake(msg types.MsgWithdrawPoolStake) (types.PoolWithdrawalReceipt, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
 	if err := types.ValidateUserFacingAEAddress("pool withdrawal caller contract", msg.CallerContractUser); err != nil {
 		return types.PoolWithdrawalReceipt{}, err
 	}
@@ -1049,6 +1196,8 @@ func (k *Keeper) WithdrawPoolStake(msg types.MsgWithdrawPoolStake) (types.PoolWi
 }
 
 func (k *Keeper) TopUpPoolReserve(msg types.MsgTopUpPoolReserve) (types.PoolTopUpReceipt, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
 	if err := types.ValidateUserFacingAEAddress("pool top-up payer", msg.PayerAddress); err != nil {
 		return types.PoolTopUpReceipt{}, err
 	}
@@ -1117,6 +1266,8 @@ func (k *Keeper) TopUpPoolReserve(msg types.MsgTopUpPoolReserve) (types.PoolTopU
 }
 
 func (k *Keeper) CancelPoolWithdrawal(msg types.MsgCancelPoolWithdrawal) (types.PendingWithdrawal, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
 	if err := k.genesis.Params.Authorize(msg.Authority); err != nil {
 		return types.PendingWithdrawal{}, err
 	}
@@ -1182,6 +1333,13 @@ func (k *Keeper) CancelPoolWithdrawal(msg types.MsgCancelPoolWithdrawal) (types.
 }
 
 func (k *Keeper) ClaimPoolRewards(msg types.MsgClaimPoolRewards) (uint64, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return k.claimPoolRewardsLocked(msg)
+}
+
+// claimPoolRewardsLocked assumes k.mu is already held (write) by the caller.
+func (k *Keeper) claimPoolRewardsLocked(msg types.MsgClaimPoolRewards) (uint64, error) {
 	ownerAddress := msg.OwnerAddress
 	delegator := msg.Delegator
 	if ownerAddress != "" {
@@ -1248,10 +1406,12 @@ func (k *Keeper) ClaimPoolRewards(msg types.MsgClaimPoolRewards) (uint64, error)
 }
 
 func (k *Keeper) ClaimPoolRewardsWithReceipt(msg types.MsgClaimPoolRewards) (types.PoolRewardClaimReceipt, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
 	if msg.OwnerAddress == "" {
 		return types.PoolRewardClaimReceipt{}, errors.New("pool reward claim requires AE owner address")
 	}
-	amount, err := k.ClaimPoolRewards(msg)
+	amount, err := k.claimPoolRewardsLocked(msg)
 	if err != nil {
 		return types.PoolRewardClaimReceipt{}, err
 	}
@@ -1281,6 +1441,8 @@ func (k *Keeper) ClaimPoolRewardsWithReceipt(msg types.MsgClaimPoolRewards) (typ
 }
 
 func (k *Keeper) ClaimStakeReputation(msg types.MsgClaimStakeReputation) (types.StakeReputationClaimReceipt, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
 	if err := types.ValidateUserFacingAEAddress("stake reputation claim owner", msg.OwnerAddress); err != nil {
 		return types.StakeReputationClaimReceipt{}, err
 	}
@@ -1350,6 +1512,8 @@ func (k *Keeper) ClaimStakeReputation(msg types.MsgClaimStakeReputation) (types.
 }
 
 func (k *Keeper) SyncPoolRewards(msg types.MsgSyncPoolRewards) (types.PoolRewardSummary, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
 	idx, pool, found := k.lookupPool(msg.PoolID)
 	if !found {
 		return types.PoolRewardSummary{}, errors.New("nominator pool not found")
@@ -1373,6 +1537,8 @@ func (k *Keeper) SyncPoolRewards(msg types.MsgSyncPoolRewards) (types.PoolReward
 }
 
 func (k *Keeper) ClaimStakingRewards(msg types.MsgClaimStakingRewards) (uint64, error) {
+	k.mu.RLock()
+	defer k.mu.RUnlock()
 	if err := k.genesis.Params.Authorize(msg.Authority); err != nil {
 		return 0, err
 	}
@@ -1392,11 +1558,15 @@ func (k *Keeper) ClaimStakingRewards(msg types.MsgClaimStakingRewards) (uint64, 
 }
 
 func (k *Keeper) StakingProof(req types.StakingProofRequest) (types.StakingProofMetadata, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
 	k.counters.ProofQueries++
 	return types.BuildStakingProofMetadata(req)
 }
 
 func (k *Keeper) UpdatePoolCommission(msg types.MsgUpdatePoolCommission) (types.NominatorPool, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
 	if err := k.genesis.Params.Authorize(msg.Authority); err != nil {
 		return types.NominatorPool{}, err
 	}
@@ -1412,6 +1582,8 @@ func (k *Keeper) UpdatePoolCommission(msg types.MsgUpdatePoolCommission) (types.
 }
 
 func (k *Keeper) ChangePoolValidator(msg types.MsgChangePoolValidator) (types.NominatorPool, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
 	if err := k.genesis.Params.Authorize(msg.Authority); err != nil {
 		return types.NominatorPool{}, err
 	}
@@ -1442,6 +1614,8 @@ func (k *Keeper) ChangePoolValidator(msg types.MsgChangePoolValidator) (types.No
 }
 
 func (k *Keeper) ApplyPoolReward(poolID string, rewardAmount uint64) (types.NominatorPool, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
 	idx, pool, found := findPool(k.genesis.State.Pools, poolID)
 	if !found {
 		return types.NominatorPool{}, errors.New("nominator pool not found")
@@ -1470,6 +1644,8 @@ func (k *Keeper) ApplyPoolReward(poolID string, rewardAmount uint64) (types.Nomi
 }
 
 func (k *Keeper) ApplyPoolSlash(poolID string, slashAmount uint64) (types.NominatorPool, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
 	idx, pool, found := findPool(k.genesis.State.Pools, poolID)
 	if !found {
 		return types.NominatorPool{}, errors.New("nominator pool not found")
@@ -1508,6 +1684,8 @@ func (k *Keeper) ApplyPoolSlash(poolID string, slashAmount uint64) (types.Nomina
 // code, and do not wire it into consensus slashing on its own — it is coherent
 // only together with the rest of the not-yet-live liquid-staking machinery.
 func (k *Keeper) ApplyValidatorSlash(msg types.MsgApplyValidatorSlash) ([]types.ValidatorSlashEvent, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
 	if err := k.genesis.Params.Authorize(msg.Authority); err != nil {
 		return nil, err
 	}
@@ -1654,16 +1832,28 @@ func (k *Keeper) ApplyValidatorSlash(msg types.MsgApplyValidatorSlash) ([]types.
 	return events, nil
 }
 
+// NominatorPool and the other query-surface methods below are reachable
+// concurrently with block execution via the ordinary query_server.go gRPC
+// handlers (not just the Simulate abuse path), so they need the lock too.
+// They take the WRITE lock rather than RLock because they go through
+// lookupPool/lookupDelegator, which can themselves mutate k.indexes via
+// ensureIndexes -- see the Keeper.mu doc comment.
 func (k *Keeper) NominatorPool(poolID string) (types.NominatorPool, bool) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
 	_, pool, found := k.lookupPool(poolID)
 	return pool, found
 }
 
-func (k Keeper) NominatorPools() []types.NominatorPool {
+func (k *Keeper) NominatorPools() []types.NominatorPool {
+	k.mu.RLock()
+	defer k.mu.RUnlock()
 	return types.SortPools(k.genesis.State.Pools)
 }
 
 func (k *Keeper) PoolDelegator(poolID string, delegator string) (types.DelegatorShare, bool) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
 	_, _, found := k.lookupPool(poolID)
 	if !found {
 		return types.DelegatorShare{}, false
@@ -1673,6 +1863,8 @@ func (k *Keeper) PoolDelegator(poolID string, delegator string) (types.Delegator
 }
 
 func (k *Keeper) PoolRewards(poolID string, delegator string) (uint64, bool) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
 	_, pool, found := k.lookupPool(poolID)
 	if !found {
 		return 0, false
@@ -1689,6 +1881,8 @@ func (k *Keeper) PoolRewards(poolID string, delegator string) (uint64, bool) {
 }
 
 func (k *Keeper) PoolShare(req types.QueryPoolShareRequest) (types.QueryPoolShareResponse, bool) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
 	_, pool, found := k.lookupPool(req.PoolID)
 	if !found {
 		return types.QueryPoolShareResponse{}, false
@@ -1708,6 +1902,8 @@ func (k *Keeper) PoolShare(req types.QueryPoolShareRequest) (types.QueryPoolShar
 }
 
 func (k *Keeper) PoolAllocations(req types.QueryPoolAllocationsRequest) (types.QueryPoolAllocationsResponse, bool) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
 	_, pool, found := k.lookupPool(req.PoolID)
 	if !found {
 		return types.QueryPoolAllocationsResponse{}, false
@@ -1715,14 +1911,18 @@ func (k *Keeper) PoolAllocations(req types.QueryPoolAllocationsRequest) (types.Q
 	return types.QueryPoolAllocationsResponse{Allocations: types.SortValidatorRewardAllocations(pool.ValidatorAllocations)}, true
 }
 
-func (k Keeper) StakingRewards(req types.QueryStakingRewardsRequest) (types.QueryStakingRewardsResponse, error) {
+func (k *Keeper) StakingRewards(req types.QueryStakingRewardsRequest) (types.QueryStakingRewardsResponse, error) {
+	k.mu.RLock()
+	defer k.mu.RUnlock()
 	if !req.InternalMigration {
 		return types.QueryStakingRewardsResponse{}, errors.New("staking rewards query is internal migration only; use pool rewards")
 	}
 	return types.QueryStakingRewardsResponse{RewardAmount: 0}, nil
 }
 
-func (k Keeper) PoolUnbondingQueue(poolID string) []types.UnbondingEntry {
+func (k *Keeper) PoolUnbondingQueue(poolID string) []types.UnbondingEntry {
+	k.mu.RLock()
+	defer k.mu.RUnlock()
 	_, pool, found := findPool(k.genesis.State.Pools, poolID)
 	if !found {
 		return []types.UnbondingEntry{}

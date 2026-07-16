@@ -7,10 +7,20 @@ import (
 )
 
 func (app *L1App) setAnteHandler(txConfig client.TxConfig) {
-	anteHandler := txhandlers.NewAnteHandler(txConfig, app.AccountKeeper, app.BankKeeper, app.FeeGrantKeeper)
-	anteHandler = app.FeesKeeper.AnteHandlerDecorator(anteHandler)
-	anteHandler = txhandlers.RejectDirectUserStakingDecorator(anteHandler)
-	anteHandler = txhandlers.StorageRentDecorator(app.NativeAccountKeeper, anteHandler)
+	// NewAnteHandler assembles a single flat decorator chain with SetUpContext
+	// first, followed by StorageRentDecorator, RejectDirectUserStakingDecorator
+	// and FeesKeeper.AnteHandlerDecorator (in that relative order), followed by
+	// the rest of the standard SDK chain. See app/txhandlers/handlers.go for
+	// why these three must run after SetUpContext rather than wrapping the SDK
+	// ante handler from the outside.
+	anteHandler := txhandlers.NewAnteHandler(
+		txConfig,
+		app.AccountKeeper,
+		app.BankKeeper,
+		app.FeeGrantKeeper,
+		app.NativeAccountKeeper,
+		app.FeesKeeper.AnteHandlerDecorator,
+	)
 	app.SetAnteHandler(anteHandler)
 }
 

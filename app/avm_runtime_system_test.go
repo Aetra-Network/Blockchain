@@ -337,6 +337,14 @@ func TestAVMRuntimeAppLevelExportImportPreservesActiveContractsAndBehavior(t *te
 	})
 	require.NoError(t, err)
 	require.Equal(t, "migrate_state", receipt.Operation)
+	// MigrateContractState has no live Msg route (unlike TopUpContract's
+	// TopUpContractState wrapper) and only mutates the keeper's in-memory
+	// genesis -- it never calls writeGenesis. Persist that mutation into the
+	// store explicitly via the same ctx FinalizeBlock below will use, or the
+	// F-17 fix (EndBlocker's now-unconditional loadForBlock, which correctly
+	// reloads from committed state to avoid a restart-fork) reloads the
+	// pre-migration contract from the store and silently discards it here.
+	require.NoError(t, source.ContractsKeeper.InitGenesisState(ctx, source.ContractsKeeper.ExportGenesis()))
 
 	contractAfterMigration, err := source.ContractsKeeper.Contract(contractstypes.QueryContractRequest{ContractAddress: contract.AddressUser})
 	require.NoError(t, err)

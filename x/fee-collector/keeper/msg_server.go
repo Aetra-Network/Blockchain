@@ -26,6 +26,17 @@ func (m msgServer) DistributeFees(ctx context.Context, msg *types.MsgDistributeF
 	if err := m.requireAuthority(msg.Authority); err != nil {
 		return nil, err
 	}
+	// The FeeHistory store is keyed by block height for the automatic
+	// EndBlock distribution (see module.go). A caller-supplied epoch that
+	// does not match the current height could plant an entry at a future
+	// height; when the chain naturally reaches that height, the automatic
+	// distribution would collide with ErrDuplicateHistory. Reject any epoch
+	// that isn't the current height to keep the two write paths from ever
+	// targeting different keys for the same block.
+	height := uint64(sdk.UnwrapSDKContext(ctx).BlockHeight())
+	if msg.Epoch != height {
+		return nil, types.ErrInvalidParams.Wrapf("epoch must equal current height %d, got %d", height, msg.Epoch)
+	}
 	history, err := m.Keeper.DistributeFees(ctx, msg.Epoch)
 	if err != nil {
 		return nil, err

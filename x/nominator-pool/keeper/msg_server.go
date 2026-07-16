@@ -274,7 +274,7 @@ func (m msgServer) DelegateToValidator(ctx context.Context, msg *types.MsgDelega
 	}
 	msg.Height = defaultHeight(ctx, msg.Height)
 	if msg.Authority == "" {
-		msg.Authority = m.keeper.genesis.Params.Authority
+		msg.Authority = m.keeper.ParamsAuthority()
 	}
 	if err := m.keeper.DelegateUserToValidator(*msg); err != nil {
 		return nil, err
