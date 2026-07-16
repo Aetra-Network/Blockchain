@@ -1014,7 +1014,18 @@ func (app *L1App) assertEmissionCapInvariant(ctx sdk.Context) error {
 	if err != nil {
 		return err
 	}
-	maxAnnualSupply := emParams.AnnualReferenceSupply
+	// The cap this check enforces must be sized from the SAME anchor actual
+	// emission uses (see #31: FinalizeNativeEconomyEpoch anchors to real
+	// circulating supply, not the AnnualReferenceSupply param). Comparing
+	// totalMinted -- which now grows from the live anchor -- against a cap
+	// still sized from the static param would desync the two the moment real
+	// supply differs from the param, exactly the drift #31 fixed on the mint
+	// path.
+	referenceSupply, err := app.emissionReferenceSupply(ctx, emParams.BaseDenom)
+	if err != nil {
+		return err
+	}
+	maxAnnualSupply := sdk.NewCoin(emParams.BaseDenom, referenceSupply)
 	if maxAnnualSupply.IsZero() || emParams.EpochsPerYear == 0 {
 		return nil
 	}

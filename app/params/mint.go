@@ -61,23 +61,72 @@ func AetraMintGenesisState() *minttypes.GenesisState {
 // native emission schedule can produce, i.e. at the constitutional maximum
 // inflation. It is the reference figure the mint-authority safety caps are
 // sized against.
+//
+// This is the BOOTSTRAP figure, anchored to AnnualReferenceSupplyNaet and the
+// package-level defaults. A live chain sizes the same quantity against its
+// real circulating supply AND its actually-configured rate/cadence via
+// MaxScheduledEpochEmissionNaetFor -- using the package defaults there instead
+// would silently drift the cap out of sync with whatever x/emissions is really
+// configured to mint whenever a chain overrides MaxAnnualInflationBps or
+// EpochsPerYear away from the bootstrap values, i.e. the exact class of bug
+// SEC-CRIT (genesis emission vs mint-cap chain halt) was fixed to prevent.
 func MaxScheduledEpochEmissionNaet() sdkmath.Int {
-	return sdkmath.NewInt(AnnualReferenceSupplyNaet).
-		MulRaw(MaxInflationBps).
+	return MaxScheduledEpochEmissionNaetFor(sdkmath.NewInt(AnnualReferenceSupplyNaet), MaxInflationBps, EpochsPerYear)
+}
+
+// MaxScheduledEpochEmissionNaetFor sizes the maximum per-epoch emission against
+// a supply anchor, maximum inflation rate and epoch cadence supplied by the
+// caller. On a live chain the anchor is the real circulating supply and the
+// rate/cadence are x/emissions' own configured
+// ConstitutionalMaxInflationBps/EpochsPerYear, so the cap tracks the thing it
+// bounds instead of a set of genesis-time constants that can drift from it.
+//
+// Sizing the ceiling relative to supply is still a real bound: emission can
+// only ever be a fixed multiple of the maximum legitimate rate, and since
+// supply itself can only grow through emission, the cap cannot run away -- a
+// total minting bug is bounded at mintAuthorityEpochCapHeadroom x the
+// constitutional maximum, not at an unbounded amount.
+func MaxScheduledEpochEmissionNaetFor(referenceSupply sdkmath.Int, maxInflationBps, epochsPerYear int64) sdkmath.Int {
+	if referenceSupply.IsNil() || !referenceSupply.IsPositive() {
+		referenceSupply = sdkmath.NewInt(AnnualReferenceSupplyNaet)
+	}
+	if maxInflationBps <= 0 {
+		maxInflationBps = MaxInflationBps
+	}
+	if epochsPerYear <= 0 {
+		epochsPerYear = EpochsPerYear
+	}
+	return referenceSupply.
+		MulRaw(maxInflationBps).
 		QuoRaw(BasisPoints).
-		QuoRaw(EpochsPerYear)
+		QuoRaw(epochsPerYear)
 }
 
 // MintAuthorityEpochCapNaet is the per-epoch mint-authority safety ceiling,
 // sized with headroom above the maximum scheduled per-epoch emission.
 func MintAuthorityEpochCapNaet() sdkmath.Int {
-	return MaxScheduledEpochEmissionNaet().MulRaw(mintAuthorityEpochCapHeadroom)
+	return MintAuthorityEpochCapNaetFor(sdkmath.NewInt(AnnualReferenceSupplyNaet), MaxInflationBps, EpochsPerYear)
+}
+
+// MintAuthorityEpochCapNaetFor is MintAuthorityEpochCapNaet against a live
+// supply anchor, rate and cadence.
+func MintAuthorityEpochCapNaetFor(referenceSupply sdkmath.Int, maxInflationBps, epochsPerYear int64) sdkmath.Int {
+	return MaxScheduledEpochEmissionNaetFor(referenceSupply, maxInflationBps, epochsPerYear).MulRaw(mintAuthorityEpochCapHeadroom)
 }
 
 // MintAuthorityLifetimeCapNaet is the lifetime mint-authority safety ceiling,
 // sized for many years of maximum emission.
 func MintAuthorityLifetimeCapNaet() sdkmath.Int {
-	return MaxScheduledEpochEmissionNaet().
-		MulRaw(EpochsPerYear).
+	return MintAuthorityLifetimeCapNaetFor(sdkmath.NewInt(AnnualReferenceSupplyNaet), MaxInflationBps, EpochsPerYear)
+}
+
+// MintAuthorityLifetimeCapNaetFor is MintAuthorityLifetimeCapNaet against a
+// live supply anchor, rate and cadence.
+func MintAuthorityLifetimeCapNaetFor(referenceSupply sdkmath.Int, maxInflationBps, epochsPerYear int64) sdkmath.Int {
+	if epochsPerYear <= 0 {
+		epochsPerYear = EpochsPerYear
+	}
+	return MaxScheduledEpochEmissionNaetFor(referenceSupply, maxInflationBps, epochsPerYear).
+		MulRaw(epochsPerYear).
 		MulRaw(mintAuthorityLifetimeCapYears)
 }

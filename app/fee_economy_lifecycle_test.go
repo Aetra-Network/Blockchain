@@ -86,7 +86,13 @@ func TestGoldenNativeEconomyLoopCoversFeesEmissionsPoolRewardsAndStorageRent(t *
 	configureGoldenBurnParams(t, app, ctx)
 	configureGoldenEmissionParams(t, app, ctx)
 	ctx = ctx.WithBlockHeight(43)
-	emission, err := app.FinalizeNativeEconomyEpoch(ctx, 7, 5_000)
+	// Emission is anchored to the chain's real circulating supply in
+	// production (#31), not to the AnnualReferenceSupply param
+	// configureGoldenEmissionParams sets -- so this test drives the golden,
+	// hand-verifiable 10_000 anchor explicitly rather than depending on
+	// whatever this test genesis's real supply happens to be.
+	goldenAnchor := sdkmath.NewInt(10_000)
+	emission, err := app.FinalizeNativeEconomyEpochWithReferenceSupply(ctx, 7, 5_000, goldenAnchor)
 	require.NoError(t, err)
 	require.Equal(t, sdk.NewInt64Coin(appparams.BaseDenom, 1_000), emission.EmissionAmount)
 	require.Equal(t, sdk.NewInt64Coin(appparams.BaseDenom, 700), emission.ValidatorReward)

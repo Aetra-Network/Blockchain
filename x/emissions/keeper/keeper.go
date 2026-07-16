@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/binary"
 
+	sdkmath "cosmossdk.io/math"
+
 	corestore "cosmossdk.io/core/store"
 	storetypes "github.com/cosmos/cosmos-sdk/store/v2/types"
 
@@ -54,6 +56,17 @@ func (k Keeper) GetParams(ctx context.Context) (types.Params, error) {
 }
 
 func (k Keeper) FinalizeEmissionEpoch(ctx context.Context, epoch uint64, stakingRatioBps uint32) (types.EmissionEpoch, error) {
+	return k.finalizeEmissionEpoch(ctx, epoch, stakingRatioBps, nil)
+}
+
+// FinalizeEmissionEpochWithSupply is FinalizeEmissionEpoch anchored to a live
+// circulating-supply figure instead of the genesis-time
+// params.AnnualReferenceSupply constant. See ComputeEpochEmissionWithSupply.
+func (k Keeper) FinalizeEmissionEpochWithSupply(ctx context.Context, epoch uint64, stakingRatioBps uint32, referenceSupply sdkmath.Int) (types.EmissionEpoch, error) {
+	return k.finalizeEmissionEpoch(ctx, epoch, stakingRatioBps, &referenceSupply)
+}
+
+func (k Keeper) finalizeEmissionEpoch(ctx context.Context, epoch uint64, stakingRatioBps uint32, referenceSupply *sdkmath.Int) (types.EmissionEpoch, error) {
 	if epoch == 0 {
 		return types.EmissionEpoch{}, types.ErrInvalidEpoch.Wrap("epoch must be positive")
 	}
@@ -66,7 +79,11 @@ func (k Keeper) FinalizeEmissionEpoch(ctx context.Context, epoch uint64, staking
 	if err != nil {
 		return types.EmissionEpoch{}, err
 	}
-	record, err := types.ComputeEpochEmission(params, epoch, uint64(stakingRatioBps), sdk.UnwrapSDKContext(ctx).BlockHeight())
+	anchor := params.AnnualReferenceSupply.Amount
+	if referenceSupply != nil {
+		anchor = *referenceSupply
+	}
+	record, err := types.ComputeEpochEmissionWithSupply(params, epoch, uint64(stakingRatioBps), sdk.UnwrapSDKContext(ctx).BlockHeight(), anchor)
 	if err != nil {
 		return types.EmissionEpoch{}, err
 	}

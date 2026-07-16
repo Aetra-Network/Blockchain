@@ -63,6 +63,15 @@ func ValidateBeginRedelegate(policy DirectDelegationPolicy, msg *stakingtypes.Ms
 	if !directUserDelegationDisabled(policy) {
 		return nil
 	}
+	// Same exemptions as ValidateDelegate: whoever is allowed to bond must be
+	// allowed to move that bond. The source validator is what the delegation
+	// currently sits under, so that is what a self-bond is measured against.
+	if IsValidatorSelfBond(msg.DelegatorAddress, msg.ValidatorSrcAddress) {
+		return nil
+	}
+	if IsNominatorPoolControlledDelegator(msg.DelegatorAddress) {
+		return nil
+	}
 	return DirectUserDelegationDisabledError()
 }
 
@@ -71,6 +80,17 @@ func ValidateUndelegate(policy DirectDelegationPolicy, msg *stakingtypes.MsgUnde
 		return DirectUserDelegationDisabledError()
 	}
 	if !directUserDelegationDisabled(policy) {
+		return nil
+	}
+	// Mirror ValidateDelegate. Without these, the pool-only policy is not a
+	// delegation restriction but a one-way trap: a validator can create its
+	// self-bond and then never withdraw it, and the pool can never unwind a
+	// delegation it is allowed to make. Every bonded token on the chain would
+	// be permanently locked.
+	if IsValidatorSelfBond(msg.DelegatorAddress, msg.ValidatorAddress) {
+		return nil
+	}
+	if IsNominatorPoolControlledDelegator(msg.DelegatorAddress) {
 		return nil
 	}
 	return DirectUserDelegationDisabledError()

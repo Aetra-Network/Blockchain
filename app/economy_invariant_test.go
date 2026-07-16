@@ -27,7 +27,15 @@ func TestEmissionCapInvariantFailsOnExcessMinting(t *testing.T) {
 	emParams := emissionstypes.DefaultParams()
 	require.NoError(t, app.EmissionsKeeper.SetParams(ctx, emParams))
 
-	maxMintable := emParams.AnnualReferenceSupply.Amount.Mul(sdkmath.NewInt(int64(emParams.ConstitutionalMaxInflationBps))).Quo(sdkmath.NewInt(10_000))
+	importedApp := Setup(t, false)
+	importedCtx := importedApp.NewContext(false)
+	// The invariant sizes its cap from the chain's real circulating supply
+	// (#31), not the AnnualReferenceSupply param, so "excess" must be computed
+	// against that same live anchor -- the anchor of the app instance the
+	// invariant actually runs against.
+	anchor, err := importedApp.emissionReferenceSupply(importedCtx, emParams.BaseDenom)
+	require.NoError(t, err)
+	maxMintable := anchor.Mul(sdkmath.NewInt(int64(emParams.ConstitutionalMaxInflationBps))).Quo(sdkmath.NewInt(10_000))
 	excess := maxMintable.Add(sdkmath.NewInt(1))
 	excessCoin := sdk.NewCoin(emParams.BaseDenom, excess)
 	fakeGenesis := emissionstypes.DefaultGenesisState()
@@ -44,10 +52,8 @@ func TestEmissionCapInvariantFailsOnExcessMinting(t *testing.T) {
 			RoundingRemainder:	sdk.NewCoin(emParams.BaseDenom, sdkmath.ZeroInt()),
 		},
 	}
-	importedApp := Setup(t, false)
-	importedCtx := importedApp.NewContext(false)
 	require.NoError(t, importedApp.EmissionsKeeper.InitGenesis(importedCtx, *fakeGenesis))
-	err := importedApp.assertEmissionCapInvariant(importedCtx)
+	err = importedApp.assertEmissionCapInvariant(importedCtx)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "exceeds constitutional max")
 }
@@ -105,7 +111,13 @@ func TestEmissionCapInvariantStillFailsWhenExceedingMultiYearLifetimeCap(t *test
 	emParams := emissionstypes.DefaultParams()
 	require.NoError(t, app.EmissionsKeeper.SetParams(ctx, emParams))
 
-	maxMintable := emParams.AnnualReferenceSupply.Amount.Mul(sdkmath.NewInt(int64(emParams.ConstitutionalMaxInflationBps))).Quo(sdkmath.NewInt(10_000))
+	importedApp := Setup(t, false)
+	importedCtx := importedApp.NewContext(false)
+	// See TestEmissionCapInvariantFailsOnExcessMinting: the cap is sized from
+	// the live anchor, so "excess" must be computed against it too.
+	anchor, err := importedApp.emissionReferenceSupply(importedCtx, emParams.BaseDenom)
+	require.NoError(t, err)
+	maxMintable := anchor.Mul(sdkmath.NewInt(int64(emParams.ConstitutionalMaxInflationBps))).Quo(sdkmath.NewInt(10_000))
 	// Epoch 400 allows up to 2x maxMintable (year two, rounded up); one unit
 	// over that must still fail.
 	excess := maxMintable.MulRaw(2).Add(sdkmath.NewInt(1))
@@ -126,10 +138,8 @@ func TestEmissionCapInvariantStillFailsWhenExceedingMultiYearLifetimeCap(t *test
 			RoundingRemainder:	sdk.NewCoin(emParams.BaseDenom, sdkmath.ZeroInt()),
 		},
 	}
-	importedApp := Setup(t, false)
-	importedCtx := importedApp.NewContext(false)
 	require.NoError(t, importedApp.EmissionsKeeper.InitGenesis(importedCtx, *fakeGenesis))
-	err := importedApp.assertEmissionCapInvariant(importedCtx)
+	err = importedApp.assertEmissionCapInvariant(importedCtx)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "exceeds constitutional max")
 }
@@ -478,9 +488,20 @@ func TestGoldenEconomyFullCycleWithStepByStepInvariants(t *testing.T) {
 	configureGoldenBurnParams(t, app, ctx)
 	configureGoldenEmissionParams(t, app, ctx)
 	ctx = ctx.WithBlockHeight(43)
+	// Emission is anchored to the chain's real circulating supply (#31), not
+	// to the AnnualReferenceSupply param configureGoldenEmissionParams sets,
+	// so the expected amount is computed from that same live anchor rather
+	// than hardcoded.
+	emParamsForCycle, err := app.EmissionsKeeper.GetParams(ctx)
+	require.NoError(t, err)
+	anchorForCycle, err := app.emissionReferenceSupply(ctx, emParamsForCycle.BaseDenom)
+	require.NoError(t, err)
+	wantEmissionForCycle, err := emissionstypes.ComputeEpochEmissionWithSupply(
+		emParamsForCycle, 7, 5_000, ctx.BlockHeight(), anchorForCycle)
+	require.NoError(t, err)
 	emission, err := app.FinalizeNativeEconomyEpoch(ctx, 7, 5_000)
 	require.NoError(t, err)
-	require.Equal(t, sdk.NewInt64Coin(params.BaseDenom, 1_000), emission.EmissionAmount)
+	require.Equal(t, wantEmissionForCycle.EmissionAmount, emission.EmissionAmount)
 	require.Empty(t, app.RunAppInvariants(ctx))
 
 	rentPayer := AddTestAddrsWithCoins(t, app, ctx, 1, sdk.NewCoins(sdk.NewInt64Coin(params.BaseDenom, 1_000)))[0]

@@ -56,7 +56,15 @@ func (app *L1App) applyElectionValidatorUpdates(req *abci.RequestFinalizeBlock, 
 			baseline[validatorUpdateKey(update)] = update
 		}
 	} else {
-		validators, err := app.StakingKeeper.GetAllValidators(ctx)
+		// GetLastValidators, not GetAllValidators: the baseline must be the set
+		// CometBFT actually has, and CometBFT only ever received BONDED
+		// validators. GetAllValidators also returns unbonding, unbonded and
+		// jailed records -- emitting Power:0 for one of those makes
+		// verifyRemovals fail ("failed to find validator X to remove") and
+		// panics every node identically. A single downtime-jailed validator, or
+		// one below the MaxValidators cutoff, is enough to trigger it on the
+		// first election the chain ever runs.
+		validators, err := app.StakingKeeper.GetLastValidators(ctx)
 		if err != nil {
 			return err
 		}
@@ -68,9 +76,16 @@ func (app *L1App) applyElectionValidatorUpdates(req *abci.RequestFinalizeBlock, 
 			update := abci.ValidatorUpdate{PubKey: pubKey}
 			baseline[validatorUpdateKey(update)] = update
 		}
-		for _, update := range res.ValidatorUpdates {
-			if update.Power > 0 {
-				baseline[validatorUpdateKey(update)] = update
+		// This block's staking additions are not live in CometBFT yet, so they
+		// are not part of the baseline to remove from. They are only included
+		// because at genesis height the bonding happens in this same block and
+		// GetLastValidators is still empty; guard on that rather than adding
+		// every pending addition to a removal baseline.
+		if len(validators) == 0 {
+			for _, update := range res.ValidatorUpdates {
+				if update.Power > 0 {
+					baseline[validatorUpdateKey(update)] = update
+				}
 			}
 		}
 	}

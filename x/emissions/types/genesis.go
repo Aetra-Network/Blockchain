@@ -194,12 +194,28 @@ func ComputeInflationBps(params Params, stakingRatioBps uint32) uint32 {
 	return uint32(next)
 }
 
+// ComputeEpochEmission applies this epoch's inflation to params.AnnualReferenceSupply.
+//
+// That param is a genesis BOOTSTRAP anchor, not the live supply. A running
+// chain must use ComputeEpochEmissionWithSupply so inflation is a rate on the
+// real circulating supply rather than a fixed amount.
 func ComputeEpochEmission(params Params, epoch, stakingRatioBps uint64, height int64) (EmissionEpoch, error) {
+	return ComputeEpochEmissionWithSupply(params, epoch, stakingRatioBps, height, params.AnnualReferenceSupply.Amount)
+}
+
+// ComputeEpochEmissionWithSupply is ComputeEpochEmission against a caller-supplied
+// supply anchor. It stays a pure function: the caller reads the anchor from the
+// bank keeper and passes it in, so the same value can drive both the
+// mint-authority cap pre-check and the committed record.
+func ComputeEpochEmissionWithSupply(params Params, epoch, stakingRatioBps uint64, height int64, referenceSupply sdkmath.Int) (EmissionEpoch, error) {
 	if stakingRatioBps > uint64(BasisPoints) {
 		return EmissionEpoch{}, ErrInvalidEpoch.Wrap("staking_ratio_bps cannot exceed basis points")
 	}
+	if referenceSupply.IsNil() || !referenceSupply.IsPositive() {
+		referenceSupply = params.AnnualReferenceSupply.Amount
+	}
 	inflationBps := ComputeInflationBps(params, uint32(stakingRatioBps))
-	annual := params.AnnualReferenceSupply.Amount.MulRaw(int64(inflationBps)).QuoRaw(int64(BasisPoints))
+	annual := referenceSupply.MulRaw(int64(inflationBps)).QuoRaw(int64(BasisPoints))
 	amount := annual.QuoRaw(int64(params.EpochsPerYear))
 	emission := sdk.NewCoin(params.BaseDenom, amount)
 	epochRecord := EmissionEpoch{
