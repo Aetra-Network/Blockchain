@@ -6,6 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	feecollectortypes "github.com/sovereign-l1/l1/x/fee-collector/types"
 	storagerentkeeper "github.com/sovereign-l1/l1/x/storage-rent/keeper"
 	storagerenttypes "github.com/sovereign-l1/l1/x/storage-rent/types"
 )
@@ -18,8 +19,12 @@ func TestStorageRentPrototypeModuleWiringAndGenesis(t *testing.T) {
 	require.Contains(t, app.ModuleManager.Modules, storagerenttypes.ModuleName)
 	require.Contains(t, app.keys, storagerenttypes.StoreKey)
 	require.Contains(t, genesis, storagerenttypes.ModuleName)
-	require.Contains(t, GetMaccPerms(), storagerenttypes.ModuleName)
-	require.Nil(t, GetMaccPerms()[storagerenttypes.ModuleName])
+	// The module custodies nothing: it only ever moves rent from the payer to
+	// the feecollector_storage_rent_reserve bucket, which is what the
+	// AETStorageRent catalog entry names as its custodian. So it must have no
+	// module account of its own.
+	require.NotContains(t, GetMaccPerms(), storagerenttypes.ModuleName)
+	require.Contains(t, GetMaccPerms(), feecollectortypes.StorageRentReserveModuleName)
 
 	var gs storagerentkeeper.GenesisState
 	require.NoError(t, json.Unmarshal(genesis[storagerenttypes.ModuleName], &gs))

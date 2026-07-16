@@ -12,6 +12,7 @@ import (
 	sims "github.com/cosmos/cosmos-sdk/testutil/sims"
 	"github.com/stretchr/testify/require"
 
+	feecollectortypes "github.com/sovereign-l1/l1/x/fee-collector/types"
 	validatorinsurancekeeper "github.com/sovereign-l1/l1/x/validator-insurance/keeper"
 	validatorinsurancetypes "github.com/sovereign-l1/l1/x/validator-insurance/types"
 )
@@ -24,8 +25,13 @@ func TestValidatorInsuranceSystemModuleWiringAndGenesis(t *testing.T) {
 	require.Contains(t, app.ModuleManager.Modules, validatorinsurancetypes.ModuleName)
 	require.Contains(t, app.keys, validatorinsurancetypes.StoreKey)
 	require.Contains(t, genesis, validatorinsurancetypes.ModuleName)
-	require.Contains(t, GetMaccPerms(), validatorinsurancetypes.ModuleName)
-	require.Nil(t, GetMaccPerms()[validatorinsurancetypes.ModuleName])
+	// The module holds no bankKeeper and custodies nothing: the insurance
+	// reserve is the feecollector_validator_insurance bucket that
+	// DefaultProtocolIncomePolicy credits and that the AETValidatorInsurance
+	// catalog entry names as its custodian. So it must have no module account
+	// of its own.
+	require.NotContains(t, GetMaccPerms(), validatorinsurancetypes.ModuleName)
+	require.Contains(t, GetMaccPerms(), feecollectortypes.ValidatorInsuranceModuleName)
 
 	var insuranceGenesis validatorinsurancekeeper.GenesisState
 	require.NoError(t, json.Unmarshal(genesis[validatorinsurancetypes.ModuleName], &insuranceGenesis))

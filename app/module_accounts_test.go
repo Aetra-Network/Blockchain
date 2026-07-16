@@ -13,14 +13,11 @@ import (
 
 	burntypes "github.com/sovereign-l1/l1/x/burn/types"
 	configtypes "github.com/sovereign-l1/l1/x/config/types"
-	delegatorprotectiontypes "github.com/sovereign-l1/l1/x/delegator-protection/types"
 	feecollectortypes "github.com/sovereign-l1/l1/x/fee-collector/types"
 	feestypes "github.com/sovereign-l1/l1/x/fees/types"
 	mintauthoritytypes "github.com/sovereign-l1/l1/x/mint-authority/types"
-	storagerenttypes "github.com/sovereign-l1/l1/x/storage-rent/types"
 	systemregistrytypes "github.com/sovereign-l1/l1/x/system-registry/types"
 	validatorelectiontypes "github.com/sovereign-l1/l1/x/validator-election/types"
-	validatorinsurancetypes "github.com/sovereign-l1/l1/x/validator-insurance/types"
 )
 
 func TestPrototypeModuleAccountPermissionsAreNarrow(t *testing.T) {
@@ -43,9 +40,11 @@ func TestPrototypeModuleAccountPermissionsAreNarrow(t *testing.T) {
 		feecollectortypes.BurnModuleName:		nil,
 		feecollectortypes.ReporterRewardsModuleName:	nil,
 		mintauthoritytypes.ModuleName:			{authtypes.Minter},
-		storagerenttypes.ModuleName:			nil,
-		delegatorprotectiontypes.ModuleName:		nil,
-		validatorinsurancetypes.ModuleName:		nil,
+		// storage-rent, delegator-protection and validator-insurance
+		// intentionally have no module account: their reserves are the
+		// feecollector_* buckets listed above, exactly as the reporter module
+		// custodies via feecollector_reporter_rewards rather than an account of
+		// its own.
 		configtypes.ModuleName:				nil,
 		systemregistrytypes.ModuleName:			nil,
 		validatorelectiontypes.ModuleName:		nil,

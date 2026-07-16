@@ -20,7 +20,6 @@ import (
 	feecollectortypes "github.com/sovereign-l1/l1/x/fee-collector/types"
 	feestypes "github.com/sovereign-l1/l1/x/fees/types"
 	mintauthoritytypes "github.com/sovereign-l1/l1/x/mint-authority/types"
-	storagerenttypes "github.com/sovereign-l1/l1/x/storage-rent/types"
 	systemregistrytypes "github.com/sovereign-l1/l1/x/system-registry/types"
 	treasurytypes "github.com/sovereign-l1/l1/x/treasury/types"
 	validatorelectiontypes "github.com/sovereign-l1/l1/x/validator-election/types"
@@ -105,9 +104,17 @@ var moduleAccountPermissions = map[string][]string{
 	feecollectortypes.BurnModuleName:		nil,
 	feecollectortypes.ReporterRewardsModuleName:	nil,
 	mintauthoritytypes.ModuleName:			{authtypes.Minter},
-	storagerenttypes.ModuleName:			nil,
-	delegatorprotectiontypes.ModuleName:		nil,
-	validatorinsurancetypes.ModuleName:		nil,
+	// x/storage-rent, x/delegator-protection and x/validator-insurance
+	// deliberately have no module account of their own. None of them custodies
+	// coins: storage-rent only moves rent from the payer to the
+	// feecollector_storage_rent_reserve bucket above, and the other two hold no
+	// bankKeeper at all -- their reserves are the feecollector_protection and
+	// feecollector_validator_insurance buckets that
+	// DefaultProtocolIncomePolicy credits. Their accounts existed only because
+	// the reserved catalog used to name them as custodians; giving them one
+	// back now also trips the wiring gate in app/aetra_core_wiring.go, which
+	// forbids module account permissions for a prototype or system module that
+	// is not a reserved custodian.
 	configtypes.ModuleName:				nil,
 	systemregistrytypes.ModuleName:			nil,
 	validatorelectiontypes.ModuleName:		nil,
@@ -124,9 +131,18 @@ var reservedSystemModuleAccountSpecs = []struct {
 	{"AETFeeCollector", "fee-collector", feecollectortypes.CollectorModuleName, []string{authtypes.Burner}},
 	{"AETTreasury", treasurytypes.ModuleName, treasurytypes.TreasuryModuleName, nil},
 	{"AETBurn", burntypes.ModuleName, burntypes.ModuleName, []string{authtypes.Burner}},
-	{"AETStorageRent", "storage-rent", storagerenttypes.ModuleName, nil},
-	{"AETDelegatorProtection", delegatorprotectiontypes.ModuleName, delegatorprotectiontypes.ModuleName, nil},
-	{"AETValidatorInsurance", validatorinsurancetypes.ModuleName, validatorinsurancetypes.ModuleName, nil},
+	// The custodian of each reserve is the fee-collector bucket that
+	// DefaultProtocolIncomePolicy actually credits (x/fee-collector
+	// protocol_income.go), not the owning module's own account. x/storage-rent
+	// and x/contracts send rent to feecollector_storage_rent_reserve, and
+	// x/delegator-protection and x/validator-insurance hold no bankKeeper at
+	// all, so their own module accounts never custody a single coin. Naming
+	// the owning module here instead would have made CanHoldFunds=true point
+	// at a permanently empty account -- the same two-layer confusion as
+	// FINDING-017. AETReporterRewards below already follows this pattern.
+	{"AETStorageRent", "storage-rent", feecollectortypes.StorageRentReserveModuleName, nil},
+	{"AETDelegatorProtection", delegatorprotectiontypes.ModuleName, feecollectortypes.ProtectionModuleName, nil},
+	{"AETValidatorInsurance", validatorinsurancetypes.ModuleName, feecollectortypes.ValidatorInsuranceModuleName, nil},
 	{"AETReporterRewards", "reporter", feecollectortypes.ReporterRewardsModuleName, nil},
 	{"AETConfig", configtypes.ModuleName, configtypes.ModuleName, nil},
 	{"AETSystemRegistry", systemregistrytypes.ModuleName, systemregistrytypes.ModuleName, nil},
