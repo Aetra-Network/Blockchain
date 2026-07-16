@@ -1,6 +1,7 @@
 package nominatorpool
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 
@@ -23,10 +24,11 @@ import (
 const ConsensusVersion = prototype.NextMigrationVersion
 
 var (
-	_	module.AppModuleBasic	= AppModule{}
-	_	module.HasGenesis	= AppModule{}
-	_	module.HasServices	= AppModule{}
-	_	appmodule.AppModule	= AppModule{}
+	_	module.AppModuleBasic		= AppModule{}
+	_	module.HasGenesis		= AppModule{}
+	_	module.HasServices		= AppModule{}
+	_	appmodule.AppModule		= AppModule{}
+	_	appmodule.HasEndBlocker		= AppModule{}
 )
 
 type AppModule struct {
@@ -84,6 +86,14 @@ func (am AppModule) ExportGenesis(ctx sdk.Context, _ codec.JSONCodec) json.RawMe
 		panic(fmt.Errorf("failed to export %s genesis: %w", types.ModuleName, err))
 	}
 	return mustMarshalGenesis(types.ModuleName, gs)
+}
+
+// EndBlock settles matured pending withdrawals for real (#2/SA2-N01): pays
+// out from the pool's module account once the underlying x/staking
+// unbonding it triggered has actually completed and the funds have landed
+// back in the account. See keeper.Keeper.EndBlocker.
+func (am AppModule) EndBlock(ctx context.Context) error {
+	return am.keeper.EndBlocker(ctx)
 }
 
 func (AppModule) ConsensusVersion() uint64	{ return ConsensusVersion }

@@ -209,7 +209,16 @@ func (app *L1App) initKeepers(
 	app.SystemRegistryKeeper = persistentKeepers.SystemRegistryKeeper
 	app.NativeEvidenceKeeper = persistentKeepers.NativeEvidenceKeeper
 	app.ReporterKeeper = persistentKeepers.ReporterKeeper
-	app.NominatorPoolKeeper = persistentKeepers.NominatorPoolKeeper
+	// #2/SA2-N01: wire real bank+staking+distribution custody so deposits
+	// are genuinely collected and delegated to validators, withdrawals
+	// genuinely undelegate and pay out, and reward claims genuinely pull
+	// from the pool's real accrued distribution rewards -- previously a
+	// bookkeeping-only ledger with no bank custody at all. All three
+	// dependencies already exist by this point in the wiring sequence.
+	app.NominatorPoolKeeper = persistentKeepers.NominatorPoolKeeper.
+		WithBankKeeper(app.BankKeeper).
+		WithStakingKeeper(app.StakingKeeper).
+		WithDistrKeeper(app.DistrKeeper)
 	app.SingleNominatorPoolKeeper = persistentKeepers.SingleNominatorPoolKeeper
 	app.ValidatorElectionKeeper = persistentKeepers.ValidatorElectionKeeper
 	app.ValidatorInsuranceKeeper = persistentKeepers.ValidatorInsuranceKeeper

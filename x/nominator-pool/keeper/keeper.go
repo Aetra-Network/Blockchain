@@ -4,17 +4,61 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"math/big"
+	"strings"
 	"sync"
+	"time"
 
 	corestore "cosmossdk.io/core/store"
+	sdkmath "cosmossdk.io/math"
+	sdk "github.com/cosmos/cosmos-sdk/types"
+	authtypes "github.com/cosmos/cosmos-sdk/x/auth/types"
+	stakingtypes "github.com/cosmos/cosmos-sdk/x/staking/types"
 
 	"github.com/sovereign-l1/l1/app/addressing"
 	"github.com/sovereign-l1/l1/x/internal/prefixgenesis"
 	"github.com/sovereign-l1/l1/x/internal/prototype"
 	"github.com/sovereign-l1/l1/x/nominator-pool/types"
 )
+
+// BankKeeper is the narrow bank interface the pool needs to actually custody
+// deposits and pay out withdrawals/rewards -- see #2/SA2-N01: before this,
+// the module had no bankKeeper at all and every "deposit" was a pure ledger
+// entry with no matching bank debit.
+type BankKeeper interface {
+	SendCoinsFromAccountToModule(ctx context.Context, senderAddr sdk.AccAddress, recipientModule string, amt sdk.Coins) error
+	SendCoinsFromModuleToAccount(ctx context.Context, senderModule string, recipientAddr sdk.AccAddress, amt sdk.Coins) error
+	SpendableCoins(ctx context.Context, addr sdk.AccAddress) sdk.Coins
+}
+
+// StakingKeeper is the narrow x/staking interface the pool needs to actually
+// delegate deposited funds to pool.ValidatorTarget and undelegate on
+// withdrawal, instead of tracking TotalBondedStake as a number with no real
+// stake behind it.
+type StakingKeeper interface {
+	GetValidator(ctx context.Context, addr sdk.ValAddress) (stakingtypes.Validator, error)
+	Delegate(ctx context.Context, delAddr sdk.AccAddress, bondAmt sdkmath.Int, tokenSrc stakingtypes.BondStatus, validator stakingtypes.Validator, subtractAccount bool) (sdkmath.LegacyDec, error)
+	Undelegate(ctx context.Context, delAddr sdk.AccAddress, valAddr sdk.ValAddress, sharesAmount sdkmath.LegacyDec) (time.Time, sdkmath.Int, error)
+	ValidateUnbondAmount(ctx context.Context, delAddr sdk.AccAddress, valAddr sdk.ValAddress, amt sdkmath.Int) (sdkmath.LegacyDec, error)
+}
+
+// DistrKeeper is the narrow x/distribution interface the pool needs to pull
+// real staking rewards earned by its delegation into the pool's module
+// account before distributing them to depositors proportionally.
+type DistrKeeper interface {
+	WithdrawDelegationRewards(ctx context.Context, delAddr sdk.AccAddress, valAddr sdk.ValAddress) (sdk.Coins, error)
+}
+
+// PoolModuleAddress is the pool's real, bank-custodied cosmos module account
+// -- distinct from the reserved catalog ("vanity") address AETNominatorPool,
+// which stays unfunded per the two-layer address model (see
+// app/accounts/module_accounts.go). This is the address that actually holds
+// deposits and delegates to validators.
+func PoolModuleAddress() sdk.AccAddress {
+	return authtypes.NewModuleAddress(types.ModuleName)
+}
 
 var genesisKey = []byte{0x01}
 
@@ -52,6 +96,9 @@ type Keeper struct {
 	storeService        corestore.KVStoreService
 	runtimeCtx          context.Context
 	accountStatusReader AccountStatusReader
+	bankKeeper          BankKeeper
+	stakingKeeper       StakingKeeper
+	distrKeeper         DistrKeeper
 	indexes             map[string]poolIndexEntry
 	counters            OperationCounters
 	// mu guards genesis, indexes, and counters against the concurrent
@@ -119,6 +166,127 @@ func NewKeeperWithAccountStatus(reader AccountStatusReader) Keeper {
 	k := NewKeeper()
 	k.accountStatusReader = reader
 	return k
+}
+
+func (k Keeper) WithAccountStatusReader(reader AccountStatusReader) Keeper {
+	k.accountStatusReader = reader
+	return k
+}
+
+// WithBankKeeper wires real bank custody (#2/SA2-N01): without it, deposit
+// and withdrawal handlers below no-op the bank movement (see hasCustody)
+// and behave exactly as before -- a ledger-only pool, safe for tests that
+// don't construct one.
+func (k Keeper) WithBankKeeper(bk BankKeeper) Keeper {
+	k.bankKeeper = bk
+	return k
+}
+
+// WithStakingKeeper wires real delegation of pooled deposits to
+// pool.ValidatorTarget. Requires WithBankKeeper too -- see hasCustody.
+func (k Keeper) WithStakingKeeper(sk StakingKeeper) Keeper {
+	k.stakingKeeper = sk
+	return k
+}
+
+// WithDistrKeeper wires real reward withdrawal from the pool's actual
+// x/staking delegation. Requires WithBankKeeper and WithStakingKeeper too.
+func (k Keeper) WithDistrKeeper(dk DistrKeeper) Keeper {
+	k.distrKeeper = dk
+	return k
+}
+
+// hasCustody reports whether this keeper was wired with real
+// bank+staking+distribution custody. Every keeper constructed without
+// WithBankKeeper/WithStakingKeeper/WithDistrKeeper (every existing unit
+// test, and any future NewKeeper()-based caller) keeps the pre-custody,
+// ledger-only behavior instead of nil-pointer-panicking -- intentionally, so
+// this change doesn't force every test in this large existing suite to also
+// wire a bank+staking+distribution double. The three are always wired
+// together in production (app/keepers.go), so gating on all three keeps
+// claimRewardCustody's distrKeeper access safe without a separate check.
+func (k Keeper) hasCustody() bool {
+	return k.bankKeeper != nil && k.stakingKeeper != nil && k.distrKeeper != nil
+}
+
+// parsePoolAccAddress converts one of this module's raw address strings
+// (DelegatorShare.Delegator, NominatorPool.ValidatorTarget when used as an
+// account) into a real sdk.AccAddress.
+func parsePoolAccAddress(field, raw string) (sdk.AccAddress, error) {
+	bz, err := addressing.Parse(raw)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", field, err)
+	}
+	return sdk.AccAddress(bz), nil
+}
+
+// depositCustody collects a real deposit from the delegator into the pool's
+// module account and delegates it to the pool's validator target, so
+// TotalBondedStake is backed by an actual x/staking delegation instead of
+// being a number with no real stake behind it. A no-op when the keeper
+// wasn't wired with WithBankKeeper/WithStakingKeeper (see hasCustody), so
+// existing ledger-only tests are unaffected. Assumes k.mu is already held by
+// the caller.
+func (k *Keeper) depositCustody(rawDelegator, rawValidatorTarget string, amountNaet uint64) error {
+	if !k.hasCustody() {
+		return nil
+	}
+	if strings.TrimSpace(rawValidatorTarget) == "" {
+		return errors.New("nominator pool deposit requires a validator target to delegate to")
+	}
+	delegatorAddr, err := parsePoolAccAddress("nominator pool deposit delegator", rawDelegator)
+	if err != nil {
+		return err
+	}
+	validatorAddr, err := parsePoolAccAddress("nominator pool validator target", rawValidatorTarget)
+	if err != nil {
+		return err
+	}
+	valAddr := sdk.ValAddress(validatorAddr.Bytes())
+	coins := sdk.NewCoins(sdk.NewInt64Coin(k.genesis.Params.BaseDenom, int64(amountNaet)))
+	if err := k.bankKeeper.SendCoinsFromAccountToModule(k.runtimeCtx, delegatorAddr, types.ModuleName, coins); err != nil {
+		return fmt.Errorf("collecting nominator pool deposit: %w", err)
+	}
+	validator, err := k.stakingKeeper.GetValidator(k.runtimeCtx, valAddr)
+	if err != nil {
+		return fmt.Errorf("nominator pool validator target lookup: %w", err)
+	}
+	if _, err := k.stakingKeeper.Delegate(k.runtimeCtx, PoolModuleAddress(), sdkmath.NewIntFromUint64(amountNaet), stakingtypes.Unbonded, validator, true); err != nil {
+		return fmt.Errorf("delegating nominator pool deposit: %w", err)
+	}
+	return nil
+}
+
+// withdrawalCustody starts a real x/staking unbonding of amountNaet from the
+// pool's delegation to rawValidatorTarget. x/staking's own EndBlocker
+// completes the unbonding automatically after the real UnbondingTime elapses
+// and credits the pool module account's spendable balance -- no separate
+// pool-side completion call is needed for that half. The pool's own
+// settlePendingWithdrawals EndBlocker (below) later pays the depositor once
+// those tokens actually land back in the pool account. A no-op when custody
+// isn't wired (see hasCustody), matching depositCustody. Assumes k.mu is
+// already held by the caller.
+func (k *Keeper) withdrawalCustody(rawValidatorTarget string, amountNaet uint64) error {
+	if !k.hasCustody() {
+		return nil
+	}
+	if strings.TrimSpace(rawValidatorTarget) == "" {
+		return errors.New("nominator pool withdrawal requires a validator target to undelegate from")
+	}
+	validatorAddr, err := parsePoolAccAddress("nominator pool validator target", rawValidatorTarget)
+	if err != nil {
+		return err
+	}
+	valAddr := sdk.ValAddress(validatorAddr.Bytes())
+	poolAddr := PoolModuleAddress()
+	shares, err := k.stakingKeeper.ValidateUnbondAmount(k.runtimeCtx, poolAddr, valAddr, sdkmath.NewIntFromUint64(amountNaet))
+	if err != nil {
+		return fmt.Errorf("nominator pool withdrawal share conversion: %w", err)
+	}
+	if _, _, err := k.stakingKeeper.Undelegate(k.runtimeCtx, poolAddr, valAddr, shares); err != nil {
+		return fmt.Errorf("undelegating nominator pool withdrawal: %w", err)
+	}
+	return nil
 }
 
 func NewPersistentKeeper(storeService corestore.KVStoreService) Keeper {
@@ -587,6 +755,16 @@ func (k *Keeper) DepositToPool(msg types.MsgDepositToPool) (types.DelegatorShare
 	if err != nil {
 		return types.DelegatorShare{}, err
 	}
+	// #2/SA2-N01: collect the real deposit and delegate it to the pool's
+	// validator target BEFORE crediting any ledger share, mirroring
+	// x/contracts' PayContractStorageDebt collect-before-mutate ordering.
+	// All pure validation above already ran, so the only way this can fail
+	// after real money moves is the final Validate()/persist below finding
+	// something unexpected -- the same small residual risk every
+	// collect-then-mutate handler in this codebase already accepts.
+	if err := k.depositCustody(msg.Delegator, pool.ValidatorTarget, msg.Amount); err != nil {
+		return types.DelegatorShare{}, err
+	}
 	delegatorIdx, delegator, found := findDelegator(pool.DelegatorShares, msg.Delegator)
 	if found {
 		accrued, err := types.AccruedReward(delegator, pool.RewardIndex)
@@ -1049,6 +1227,17 @@ func (k *Keeper) requestPoolWithdrawalLocked(msg types.MsgRequestPoolWithdrawal)
 	if amount == 0 || amount > pool.TotalBondedStake {
 		return types.PendingWithdrawal{}, errors.New("nominator pool withdrawal amount exceeds bonded stake")
 	}
+	// #2/SA2-N01: start the real unbonding before touching the ledger, same
+	// collect/undelegate-before-mutate ordering as depositCustody. Skipped
+	// for an OfficialLiquidStaking pool -- see the matching guard in
+	// claimPoolRewardsLocked: only the plain DepositToPool flow actually
+	// delegated real funds in this pass, so there is nothing real to
+	// undelegate for an official pool's withdrawal.
+	if !pool.OfficialLiquidStaking {
+		if err := k.withdrawalCustody(pool.ValidatorTarget, amount); err != nil {
+			return types.PendingWithdrawal{}, err
+		}
+	}
 	delegator.Shares -= msg.Shares
 	delegator.PendingRewards = reward
 	delegator.RewardIndexCheckpoint = pool.RewardIndex
@@ -1413,6 +1602,24 @@ func (k *Keeper) claimPoolRewardsLocked(msg types.MsgClaimPoolRewards) (uint64, 
 	reward, err := types.AccruedReward(share, pool.RewardIndex)
 	if err != nil {
 		return 0, err
+	}
+	// #2/SA2-N01: pay the claimed reward for real before touching the
+	// ledger. claimRewardCustody opportunistically pulls the pool's actual
+	// accrued x/staking distribution rewards into the pool account first
+	// (best-effort -- there may be nothing to pull if SyncPoolRewards' own
+	// externally-injected reward numbers are running ahead of real
+	// distribution income), then pays out only if the pool account actually
+	// has the funds. A no-op when custody isn't wired (see hasCustody) OR
+	// for an OfficialLiquidStaking pool: only the plain DepositToPool flow
+	// collects and delegates real funds in this pass (DepositToStakingPool /
+	// DepositToOfficialLiquidStaking remain ledger-only, a deliberately
+	// scoped follow-up), so requiring real settlement here for an official
+	// pool would reject every claim against a deposit that was never
+	// actually custodied.
+	if reward > 0 && !pool.OfficialLiquidStaking {
+		if err := k.claimRewardCustody(delegator, pool.ValidatorTarget, reward); err != nil {
+			return 0, err
+		}
 	}
 	share.PendingRewards = 0
 	share.RewardIndexCheckpoint = pool.RewardIndex
@@ -2459,4 +2666,127 @@ func totalPendingWithdrawalAmount(withdrawals []types.PendingWithdrawal) uint64 
 		}
 	}
 	return total
+}
+
+// EndBlocker settles matured pending withdrawals: once a withdrawal's
+// CompleteHeight has passed AND the pool module account actually holds
+// enough spendable balance to cover it (i.e. the real x/staking unbonding
+// triggered by withdrawalCustody has genuinely finished and x/staking's own
+// EndBlocker has already credited the pool account this same block -- see
+// x/staking's Undelegate/CompleteUnbonding), it pays the depositor and marks
+// the withdrawal completed. If the real unbonding hasn't finished yet
+// (possible if governance ever shortens the pool's own UnbondingBlocks
+// below x/staking's real UnbondingTime), it is silently retried next block
+// rather than paying out money the pool doesn't have yet.
+//
+// A no-op when custody isn't wired (see hasCustody) -- there is nothing to
+// settle for a ledger-only pool, and every existing test constructs a keeper
+// this way.
+func (k *Keeper) EndBlocker(ctx context.Context) error {
+	if err := k.loadForBlock(ctx); err != nil {
+		return err
+	}
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if !k.hasCustody() {
+		return nil
+	}
+	height := uint64(sdk.UnwrapSDKContext(ctx).BlockHeight())
+	next := cloneGenesis(k.genesis)
+	changed := false
+	for poolIdx, pool := range next.State.Pools {
+		poolChanged := false
+		for wIdx, withdrawal := range pool.PendingWithdrawals {
+			if withdrawal.Status != types.WithdrawalStatusPending || height < withdrawal.CompleteHeight {
+				continue
+			}
+			paid, err := k.settleWithdrawal(next.Params.BaseDenom, withdrawal)
+			if err != nil {
+				return err
+			}
+			if !paid {
+				continue
+			}
+			withdrawal.Status = types.WithdrawalStatusCompleted
+			pool.PendingWithdrawals[wIdx] = withdrawal
+			for entryIdx, entry := range pool.UnbondingQueue {
+				if entry.WithdrawalID == withdrawal.WithdrawalID {
+					entry.Status = types.WithdrawalStatusCompleted
+					pool.UnbondingQueue[entryIdx] = entry
+				}
+			}
+			poolChanged = true
+		}
+		if poolChanged {
+			next.State.Pools[poolIdx] = pool
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	next.State = next.State.Normalize(next.Params)
+	if err := next.Validate(); err != nil {
+		return err
+	}
+	return k.saveGenesis(next)
+}
+
+// claimRewardCustody opportunistically pulls the pool's real, actually
+// accrued x/staking distribution rewards into the pool module account
+// (ignoring "nothing to withdraw" -- the pool's ledger-computed reward may be
+// smaller than, larger than, or claimed on a different cadence than what
+// x/distribution has accrued; reconciling SyncPoolRewards' external
+// injection with real distribution income exactly is a deliberate follow-up,
+// not attempted here), then pays the claimant their ledger-computed reward
+// ONLY if the pool account actually has the funds -- erroring cleanly rather
+// than silently paying a partial amount if it doesn't. A no-op when custody
+// isn't wired (see hasCustody). Assumes k.mu is already held by the caller.
+func (k *Keeper) claimRewardCustody(rawDelegator, rawValidatorTarget string, rewardNaet uint64) error {
+	if !k.hasCustody() {
+		return nil
+	}
+	recipient, err := parsePoolAccAddress("nominator pool reward claimant", rawDelegator)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(rawValidatorTarget) != "" {
+		if validatorAddr, err := parsePoolAccAddress("nominator pool validator target", rawValidatorTarget); err == nil {
+			valAddr := sdk.ValAddress(validatorAddr.Bytes())
+			// Best-effort: a pool with no live delegation yet, or with
+			// nothing currently accrued, returns an error here that we
+			// deliberately ignore -- the payout below still proceeds against
+			// whatever the pool account already holds.
+			_, _ = k.distrKeeper.WithdrawDelegationRewards(k.runtimeCtx, PoolModuleAddress(), valAddr)
+		}
+	}
+	coins := sdk.NewCoins(sdk.NewInt64Coin(k.genesis.Params.BaseDenom, int64(rewardNaet)))
+	spendable := k.bankKeeper.SpendableCoins(k.runtimeCtx, PoolModuleAddress())
+	if !spendable.IsAllGTE(coins) {
+		return fmt.Errorf("nominator pool account does not yet hold the claimed reward (has %s, needs %s) -- retry once real distribution income catches up", spendable.String(), coins.String())
+	}
+	if err := k.bankKeeper.SendCoinsFromModuleToAccount(k.runtimeCtx, types.ModuleName, recipient, coins); err != nil {
+		return fmt.Errorf("paying out nominator pool reward: %w", err)
+	}
+	return nil
+}
+
+// settleWithdrawal pays a single matured withdrawal from the pool module
+// account if it actually has the balance, and reports whether it paid.
+// Assumes k.mu is already held (write) by the caller.
+func (k *Keeper) settleWithdrawal(baseDenom string, withdrawal types.PendingWithdrawal) (bool, error) {
+	recipient, err := parsePoolAccAddress("nominator pool withdrawal recipient", withdrawal.Delegator)
+	if err != nil {
+		return false, err
+	}
+	coins := sdk.NewCoins(sdk.NewInt64Coin(baseDenom, int64(withdrawal.Amount)))
+	poolAddr := PoolModuleAddress()
+	spendable := k.bankKeeper.SpendableCoins(k.runtimeCtx, poolAddr)
+	if !spendable.IsAllGTE(coins) {
+		return false, nil
+	}
+	if err := k.bankKeeper.SendCoinsFromModuleToAccount(k.runtimeCtx, types.ModuleName, recipient, coins); err != nil {
+		return false, fmt.Errorf("paying out nominator pool withdrawal: %w", err)
+	}
+	return true, nil
 }
