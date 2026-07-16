@@ -5,11 +5,16 @@ import (
 	"context"
 	"errors"
 
+	sdkmath "cosmossdk.io/math"
 	stakingtypes "github.com/cosmos/cosmos-sdk/x/staking/types"
 
 	"github.com/sovereign-l1/l1/app/addressing"
 	appparams "github.com/sovereign-l1/l1/app/params"
 )
+
+// minSelfBondNaet is the network's minimum validator self-bond, computed once
+// from the app/params constant.
+var minSelfBondNaet = sdkmath.NewInt(appparams.StakingMinSelfBondNaet)
 
 const DirectUserDelegationDisabledMessage = "direct user delegation to validators is disabled; use official liquid staking pool deposit"
 
@@ -129,7 +134,24 @@ func directUserDelegationDisabled(policy DirectDelegationPolicy) bool {
 		policy.DirectUserValidatorDelegation == appparams.DirectUserDelegationDisabled
 }
 
+// ErrSelfBondBelowFloor is returned when a MsgCreateValidator's self-delegation
+// is below the network's minimum self-bond. Genesis validators (created via
+// gentx/InitGenesis) bypass this message server entirely and are unaffected;
+// this only gates new validators joining after genesis via a live tx.
+var ErrSelfBondBelowFloor = errors.New("validator self-delegation is below the minimum required self-bond")
+
 func (s PoolOnlyMsgServer) CreateValidator(ctx context.Context, msg *stakingtypes.MsgCreateValidator) (*stakingtypes.MsgCreateValidatorResponse, error) {
+	// Live-verified decentralization defect: this was previously an unchecked
+	// passthrough, so a validator could join with a self-bond as low as 1
+	// naet (10^-9 AET) -- StakingMinSelfBondNaet (app/params/staking_policy.go)
+	// was defined but never consulted anywhere on the live create-validator
+	// path. A minimum self-bond makes a per-address voting-power cap (if one
+	// is later enforced) mean something: without a real entry cost, a single
+	// actor can always defeat a cap by splitting into arbitrarily many
+	// validators for near-zero additional capital.
+	if msg != nil && msg.Value.Denom == appparams.BaseDenom && msg.Value.Amount.LT(minSelfBondNaet) {
+		return nil, ErrSelfBondBelowFloor
+	}
 	return s.inner.CreateValidator(ctx, msg)
 }
 

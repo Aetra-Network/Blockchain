@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	cmtconfig "github.com/cometbft/cometbft/config"
+	cmttypes "github.com/cometbft/cometbft/types"
 	cmttime "github.com/cometbft/cometbft/types/time"
 
 	"github.com/cosmos/cosmos-sdk/client"
@@ -19,9 +20,11 @@ import (
 	"github.com/cosmos/cosmos-sdk/x/genutil"
 	genutiltypes "github.com/cosmos/cosmos-sdk/x/genutil/types"
 	minttypes "github.com/cosmos/cosmos-sdk/x/mint/types"
+	slashingtypes "github.com/cosmos/cosmos-sdk/x/slashing/types"
 	stakingtypes "github.com/cosmos/cosmos-sdk/x/staking/types"
 	appparams "github.com/sovereign-l1/l1/app/params"
 	contractstypes "github.com/sovereign-l1/l1/x/contracts/types"
+	feestypes "github.com/sovereign-l1/l1/x/fees/types"
 	nativeaccounttypes "github.com/sovereign-l1/l1/x/native-account/types"
 )
 
@@ -60,10 +63,35 @@ func initGenFiles(
 	// growth plan (100/128 genesis -> 150/200 growth -> 250/300 mature; see
 	// app/params/network_profile.go). Genesis starts at the genesis-phase
 	// ceiling; later phases raise it via governance MsgUpdateParams.
+	//
+	// MinCommissionRate is left at the cosmos-sdk stock default of 0% by
+	// InitCmd/this codegen path, which permits a 0%-commission validator (a
+	// live-verified decentralization defect: nothing stops the race to the
+	// bottom that eventually starves smaller operators of any margin). Set
+	// the documented 3% floor (app/params StakingCommissionFloorBps) here so
+	// every genesis this codepath produces actually carries it, rather than
+	// leaving it to a policy struct (x/dynamic-commission,
+	// x/aetra-staking-policy) that nothing on the live create-validator path
+	// consults.
 	var stakingGenState stakingtypes.GenesisState
 	clientCtx.Codec.MustUnmarshalJSON(appGenState[stakingtypes.ModuleName], &stakingGenState)
 	stakingGenState.Params.MaxValidators = appparams.AetraValidatorSetGenesisMax
+	stakingGenState.Params.MinCommissionRate = appparams.BpsToLegacyDec(appparams.StakingCommissionFloorBps)
 	appGenState[stakingtypes.ModuleName] = clientCtx.Codec.MustMarshalJSON(&stakingGenState)
+
+	// The cosmos-sdk slashing stock defaults are NOT what Aetra's own policy
+	// constants specify (app/params AetraSlashingParams) -- and this codegen
+	// path is the one place slashing genesis is actually assembled for a real
+	// network (app.DefaultGenesis()/ApplyCoreModuleDefaults, which DOES apply
+	// AetraSlashingParams, is bypassed here in favor of mm.DefaultGenesis
+	// directly, mirroring how mint/MaxValidators above already have to be
+	// re-applied by hand). Live-verified drift before this fix: downtime slash
+	// 1% instead of the intended 0.05% (20x harsher than designed), downtime
+	// jail 10 minutes instead of 60.
+	var slashingGenState slashingtypes.GenesisState
+	clientCtx.Codec.MustUnmarshalJSON(appGenState[slashingtypes.ModuleName], &slashingGenState)
+	slashingGenState.Params = appparams.AetraSlashingParams()
+	appGenState[slashingtypes.ModuleName] = clientCtx.Codec.MustMarshalJSON(&slashingGenState)
 
 	// AVM smart-contract execution ships DISABLED for the public-testnet launch
 	// profile. The on-chain contract runtime (StoreCode bytecode verification,
@@ -121,6 +149,41 @@ func initGenFiles(
 	appGenesis := genutiltypes.NewAppGenesisWithVersion(chainID, appGenStateJSON)
 	for i := 0; i < numValidators; i++ {
 		if err := appGenesis.SaveAs(genFiles[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// applyConsensusBlockGasCap patches each already-written genesis file's
+// consensus_params.block.max_gas from CometBFT's stock -1 (unlimited) to
+// x/fees' own declared block gas budget, so there is a real, structural
+// ceiling at the consensus layer independent of the in-app (block-gas-meter
+// backed) admission check.
+//
+// This must run AFTER collectGenFiles, not as part of initGenFiles: the
+// "collect" step's genutil.ExportGenesisFileWithTime rebuilds each node's
+// AppGenesis from scratch via NewAppGenesisWithVersion (Consensus.Params
+// nil), discarding whatever consensus params an earlier write set. Live
+// symptom before this fix: a block was accepted carrying 21,014,289 gas
+// against x/fees' own MaxBlockGas of 20,000,000, because nothing at the
+// consensus layer enforced a cap at all.
+func applyConsensusBlockGasCap(genFiles []string) error {
+	for _, genFile := range genFiles {
+		appGenesis, err := genutiltypes.AppGenesisFromFile(genFile)
+		if err != nil {
+			return err
+		}
+		if appGenesis.Consensus == nil {
+			appGenesis.Consensus = &genutiltypes.ConsensusGenesis{}
+		}
+		consensusParams := appGenesis.Consensus.Params
+		if consensusParams == nil {
+			consensusParams = cmttypes.DefaultConsensusParams()
+		}
+		consensusParams.Block.MaxGas = int64(feestypes.DefaultMaxBlockGas)
+		appGenesis.Consensus.Params = consensusParams
+		if err := appGenesis.SaveAs(genFile); err != nil {
 			return err
 		}
 	}

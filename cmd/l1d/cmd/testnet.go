@@ -545,6 +545,10 @@ func initTestnetFiles(
 		return err
 	}
 
+	if err := applyConsensusBlockGasCap(genFiles); err != nil {
+		return err
+	}
+
 	cmd.PrintErrf("Successfully initialized %d node directories\n", args.numValidators)
 	return nil
 }

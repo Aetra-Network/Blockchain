@@ -3,6 +3,7 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	cmtcfg "github.com/cometbft/cometbft/config"
 	dbm "github.com/cosmos/cosmos-db"
@@ -36,6 +37,16 @@ import (
 // return cmtcfg.DefaultConfig if no custom configuration is required for the application.
 func initCometBFTConfig() *cmtcfg.Config {
 	cfg := cmtcfg.DefaultConfig()
+
+	// Live-verified decentralization gap: this function previously returned
+	// the stock config untouched, so `aetrad init` (the documented validator
+	// bootstrap path, scripts/validator/init.sh) shipped CometBFT's 1s
+	// timeout_commit -- contradicting this project's own documented 5-8s
+	// production target (docs/VALIDATOR.md) and `testnet init-files`'
+	// --commit-timeout default of 5s. A slower, more forgiving commit timeout
+	// is a deliberate trade favoring a wider set of validator hardware/network
+	// conditions (the operator's stated priority) over minimum latency.
+	cfg.Consensus.TimeoutCommit = 5 * time.Second
 
 	return cfg
 }

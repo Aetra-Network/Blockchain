@@ -52,14 +52,52 @@ func TestValidateDelegateRejectsOrdinaryUserWhenGovernanceParamDisabled(t *testi
 	require.ErrorContains(t, err, DirectUserDelegationDisabledMessage)
 }
 
+func TestCreateValidatorRejectsSelfBondBelowFloor(t *testing.T) {
+	inner := &recordingStakingMsgServer{}
+	server := NewPoolOnlyMsgServer(inner)
+	operator := aeFromBytesForPolicyTest(t, bytesOf(0x44))
+	// The testnet bootstrap gentx default (100 AET) is intentionally below the
+	// live-join floor (StakingMinSelfBondNaet, 10,000 AET): genesis validators
+	// are created via gentx/InitGenesis, which never goes through this message
+	// server, so this check cannot break testnet bootstrap.
+	belowFloor := sdk.NewInt64Coin(appparams.BaseDenom, 100*1_000_000_000)
+
+	_, err := server.CreateValidator(context.Background(), &stakingtypes.MsgCreateValidator{
+		ValidatorAddress: operator,
+		Value:            belowFloor,
+	})
+	require.ErrorIs(t, err, ErrSelfBondBelowFloor)
+	require.Nil(t, inner.createValidator, "the inner staking msg server must not be reached on a rejected self-bond")
+}
+
+func TestCreateValidatorAllowsSelfBondAtOrAboveFloor(t *testing.T) {
+	inner := &recordingStakingMsgServer{}
+	server := NewPoolOnlyMsgServer(inner)
+	operator := aeFromBytesForPolicyTest(t, bytesOf(0x55))
+	atFloor := sdk.NewCoin(appparams.BaseDenom, minSelfBondNaet)
+
+	_, err := server.CreateValidator(context.Background(), &stakingtypes.MsgCreateValidator{
+		ValidatorAddress: operator,
+		Value:            atFloor,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, inner.createValidator, "a self-bond at the floor must reach the inner staking msg server")
+}
+
 type recordingStakingMsgServer struct {
 	stakingtypes.UnimplementedMsgServer
-	delegate	*stakingtypes.MsgDelegate
+	delegate		*stakingtypes.MsgDelegate
+	createValidator		*stakingtypes.MsgCreateValidator
 }
 
 func (s *recordingStakingMsgServer) Delegate(_ context.Context, msg *stakingtypes.MsgDelegate) (*stakingtypes.MsgDelegateResponse, error) {
 	s.delegate = msg
 	return &stakingtypes.MsgDelegateResponse{}, nil
+}
+
+func (s *recordingStakingMsgServer) CreateValidator(_ context.Context, msg *stakingtypes.MsgCreateValidator) (*stakingtypes.MsgCreateValidatorResponse, error) {
+	s.createValidator = msg
+	return &stakingtypes.MsgCreateValidatorResponse{}, nil
 }
 
 func bytesOf(value byte) []byte {
