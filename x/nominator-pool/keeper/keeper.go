@@ -594,7 +594,11 @@ func (k *Keeper) DepositToPool(msg types.MsgDepositToPool) (types.DelegatorShare
 			return types.DelegatorShare{}, err
 		}
 		delegator.PendingRewards = accrued
-		delegator.Shares += shareAmount
+		newShares, err := types.CheckedAddUint64(delegator.Shares, shareAmount)
+		if err != nil {
+			return types.DelegatorShare{}, err
+		}
+		delegator.Shares = newShares
 		delegator.RewardIndexCheckpoint = pool.RewardIndex
 		delegator.SlashIndexCheckpoint = pool.SlashIndex
 		pool.DelegatorShares[delegatorIdx] = delegator
@@ -607,8 +611,16 @@ func (k *Keeper) DepositToPool(msg types.MsgDepositToPool) (types.DelegatorShare
 		}
 		pool.DelegatorShares = append(pool.DelegatorShares, delegator)
 	}
-	pool.TotalShares += shareAmount
-	pool.TotalBondedStake += msg.Amount
+	newTotalShares, err := types.CheckedAddUint64(pool.TotalShares, shareAmount)
+	if err != nil {
+		return types.DelegatorShare{}, err
+	}
+	newTotalBondedStake, err := types.CheckedAddUint64(pool.TotalBondedStake, msg.Amount)
+	if err != nil {
+		return types.DelegatorShare{}, err
+	}
+	pool.TotalShares = newTotalShares
+	pool.TotalBondedStake = newTotalBondedStake
 	pool.PendingDeposits = append(pool.PendingDeposits, types.PendingDeposit{Delegator: msg.Delegator, Amount: msg.Amount, Height: msg.Height})
 	return k.savePool(idx, pool, delegator)
 }
@@ -650,7 +662,11 @@ func (k *Keeper) depositToOfficialLiquidStakingLocked(msg types.MsgDepositToOffi
 			return types.DelegatorShare{}, err
 		}
 		delegator.PendingRewards = accrued
-		delegator.Shares += shareAmount
+		newShares, err := types.CheckedAddUint64(delegator.Shares, shareAmount)
+		if err != nil {
+			return types.DelegatorShare{}, err
+		}
+		delegator.Shares = newShares
 		delegator.RewardIndexCheckpoint = pool.RewardIndex
 		delegator.SlashIndexCheckpoint = pool.SlashIndex
 		pool.DelegatorShares[delegatorIdx] = delegator
@@ -663,8 +679,16 @@ func (k *Keeper) depositToOfficialLiquidStakingLocked(msg types.MsgDepositToOffi
 		}
 		pool.DelegatorShares = append(pool.DelegatorShares, delegator)
 	}
-	pool.TotalShares += shareAmount
-	pool.TotalBondedStake += msg.Amount
+	newTotalShares, err := types.CheckedAddUint64(pool.TotalShares, shareAmount)
+	if err != nil {
+		return types.DelegatorShare{}, err
+	}
+	newTotalBondedStake, err := types.CheckedAddUint64(pool.TotalBondedStake, msg.Amount)
+	if err != nil {
+		return types.DelegatorShare{}, err
+	}
+	pool.TotalShares = newTotalShares
+	pool.TotalBondedStake = newTotalBondedStake
 	pool.PendingDeposits = append(pool.PendingDeposits, types.PendingDeposit{Delegator: rawUserAddress, Amount: msg.Amount, Height: msg.Height})
 	return k.savePool(idx, pool, delegator)
 }
@@ -1307,7 +1331,11 @@ func (k *Keeper) CancelPoolWithdrawal(msg types.MsgCancelPoolWithdrawal) (types.
 			return types.PendingWithdrawal{}, err
 		}
 		delegator.PendingRewards = accrued
-		delegator.Shares += shares
+		newShares, err := types.CheckedAddUint64(delegator.Shares, shares)
+		if err != nil {
+			return types.PendingWithdrawal{}, err
+		}
+		delegator.Shares = newShares
 		delegator.RewardIndexCheckpoint = pool.RewardIndex
 		pool.DelegatorShares[delegatorIdx] = delegator
 	} else {
@@ -1318,8 +1346,16 @@ func (k *Keeper) CancelPoolWithdrawal(msg types.MsgCancelPoolWithdrawal) (types.
 			SlashIndexCheckpoint:  pool.SlashIndex,
 		})
 	}
-	pool.TotalShares += shares
-	pool.TotalBondedStake += withdrawal.Amount
+	newTotalShares, err := types.CheckedAddUint64(pool.TotalShares, shares)
+	if err != nil {
+		return types.PendingWithdrawal{}, err
+	}
+	newTotalBondedStake, err := types.CheckedAddUint64(pool.TotalBondedStake, withdrawal.Amount)
+	if err != nil {
+		return types.PendingWithdrawal{}, err
+	}
+	pool.TotalShares = newTotalShares
+	pool.TotalBondedStake = newTotalBondedStake
 	next := cloneGenesis(k.genesis)
 	next.State.Pools[idx] = pool
 	next.State = next.State.Normalize(next.Params)

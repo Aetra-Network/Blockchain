@@ -1377,7 +1377,11 @@ func (p NominatorPool) Validate(params Params) error {
 	if uint32(len(p.UnbondingQueue)) > params.MaxUnbondingEntries {
 		return errors.New("nominator pool unbonding queue limit exceeded")
 	}
-	if p.TotalShares != sumShares(p.DelegatorShares) {
+	delegatorShareSum, err := sumShares(p.DelegatorShares)
+	if err != nil {
+		return fmt.Errorf("nominator pool delegator shares: %w", err)
+	}
+	if p.TotalShares != delegatorShareSum {
 		return errors.New("nominator pool total shares do not match delegator shares")
 	}
 	if err := ValidateAllocations(p.Allocations, p.TotalBondedStake); err != nil {
@@ -2340,10 +2344,20 @@ func isWithdrawalStatus(status string) bool {
 	return status == WithdrawalStatusPending || status == WithdrawalStatusCancelled || status == WithdrawalStatusCompleted
 }
 
-func sumShares(values []DelegatorShare) uint64 {
+// sumShares uses the same checked accumulation as the deposit paths that
+// produce TotalShares. An unchecked sum here would wrap identically to an
+// unchecked TotalShares accumulation on corrupted input, so the invariant
+// check at Validate (p.TotalShares != sumShares(...)) would pass on wrapped
+// state instead of catching it -- modular arithmetic is associative, so both
+// sides would wrap the same way and silently agree.
+func sumShares(values []DelegatorShare) (uint64, error) {
 	total := uint64(0)
 	for _, value := range values {
-		total += value.Shares
+		next, err := CheckedAddUint64(total, value.Shares)
+		if err != nil {
+			return 0, err
+		}
+		total = next
 	}
-	return total
+	return total, nil
 }
