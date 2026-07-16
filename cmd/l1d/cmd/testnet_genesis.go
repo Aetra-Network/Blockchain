@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"time"
 
 	cmtconfig "github.com/cometbft/cometbft/config"
 	cmttypes "github.com/cometbft/cometbft/types"
@@ -26,13 +27,30 @@ import (
 	contractstypes "github.com/sovereign-l1/l1/x/contracts/types"
 	feestypes "github.com/sovereign-l1/l1/x/fees/types"
 	nativeaccounttypes "github.com/sovereign-l1/l1/x/native-account/types"
+	nominatorpooltypes "github.com/sovereign-l1/l1/x/nominator-pool/types"
 )
+
+// simGenesisOverrides are opt-in genesis changes a local load/simulation net
+// needs and a public testnet must not get. The zero value changes nothing, so
+// the public launch genesis keeps its exact shape.
+type simGenesisOverrides struct {
+	// enableContracts turns the AVM on. Off by default: the public testnet
+	// ships contracts disabled behind the keeper gate (see below).
+	enableContracts bool
+	// poolAuthority replaces x/nominator-pool's default all-zero authority
+	// address. Without it MsgCreateNominatorPool can never be authorized, so
+	// liquid staking cannot be exercised at all.
+	poolAuthority string
+	// unbondingTime shortens x/staking's 21-day default so a run can actually
+	// observe a pool withdrawal settle.
+	unbondingTime time.Duration
+}
 
 func initGenFiles(
 	clientCtx client.Context, mm module.BasicManager, chainID string,
 	genAccounts []authtypes.GenesisAccount, genBalances []banktypes.Balance,
 	nativeAccounts []nativeaccounttypes.Account,
-	genFiles []string, numValidators int,
+	genFiles []string, numValidators int, sim simGenesisOverrides,
 ) error {
 	appGenState := mm.DefaultGenesis(clientCtx.Codec)
 
@@ -77,6 +95,9 @@ func initGenFiles(
 	clientCtx.Codec.MustUnmarshalJSON(appGenState[stakingtypes.ModuleName], &stakingGenState)
 	stakingGenState.Params.MaxValidators = appparams.AetraValidatorSetGenesisMax
 	stakingGenState.Params.MinCommissionRate = appparams.BpsToLegacyDec(appparams.StakingCommissionFloorBps)
+	if sim.unbondingTime > 0 {
+		stakingGenState.Params.UnbondingTime = sim.unbondingTime
+	}
 	appGenState[stakingtypes.ModuleName] = clientCtx.Codec.MustMarshalJSON(&stakingGenState)
 
 	// The cosmos-sdk slashing stock defaults are NOT what Aetra's own policy
@@ -111,16 +132,57 @@ func initGenFiles(
 	if err := json.Unmarshal(appGenState[contractstypes.ModuleName], &contractsGenState); err != nil {
 		return fmt.Errorf("unmarshal contracts default genesis: %w", err)
 	}
-	contractsGenState.Params.Enabled = false
+	contractsGenState.Params.Enabled = sim.enableContracts
 	contractsGenState.StateRoot = contractstypes.ComputeContractsStateRoot(contractsGenState)
 	if err := contractsGenState.Validate(); err != nil {
-		return fmt.Errorf("invalid disabled-contracts launch genesis: %w", err)
+		return fmt.Errorf("invalid contracts launch genesis (enabled=%t): %w", sim.enableContracts, err)
 	}
 	contractsGenStateJSON, err := json.Marshal(contractsGenState)
 	if err != nil {
 		return fmt.Errorf("marshal contracts genesis: %w", err)
 	}
 	appGenState[contractstypes.ModuleName] = contractsGenStateJSON
+
+	// x/nominator-pool ships with Params.Authority set to prototype's all-zero
+	// address, which nobody holds a key for, so MsgCreateNominatorPool always
+	// fails Params.Authorize and the official liquid-staking pool can never be
+	// registered. On a real network that authority is the gov module account;
+	// on a localnet it has to be an operator key that can actually sign (see
+	// x/nominator-pool/types/signing.go:92-97).
+	//
+	// Patched as raw JSON on purpose: the module marshals its genesis with plain
+	// encoding/json and untagged Go field names (Version/Params/State), not the
+	// proto codec, and commits no state root -- so a keyed edit is both correct
+	// and cheaper than pulling the keeper's GenesisState type into cmd.
+	if sim.poolAuthority != "" {
+		poolRaw, ok := appGenState[nominatorpooltypes.ModuleName]
+		if !ok {
+			return fmt.Errorf("nominator-pool default genesis missing")
+		}
+		var poolGen map[string]json.RawMessage
+		if err := json.Unmarshal(poolRaw, &poolGen); err != nil {
+			return fmt.Errorf("unmarshal nominator-pool genesis: %w", err)
+		}
+		var poolParams map[string]json.RawMessage
+		if err := json.Unmarshal(poolGen["Params"], &poolParams); err != nil {
+			return fmt.Errorf("unmarshal nominator-pool params: %w", err)
+		}
+		authorityJSON, err := json.Marshal(sim.poolAuthority)
+		if err != nil {
+			return err
+		}
+		poolParams["Authority"] = authorityJSON
+		poolParamsJSON, err := json.Marshal(poolParams)
+		if err != nil {
+			return err
+		}
+		poolGen["Params"] = poolParamsJSON
+		poolGenJSON, err := json.Marshal(poolGen)
+		if err != nil {
+			return err
+		}
+		appGenState[nominatorpooltypes.ModuleName] = poolGenJSON
+	}
 
 	// x/native-account uses plain encoding/json for its genesis (see
 	// x/native-account/module.go mustMarshalGenesis/unmarshalGenesis), not

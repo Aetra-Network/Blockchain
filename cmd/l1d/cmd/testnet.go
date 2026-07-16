@@ -101,6 +101,9 @@ var (
 	flagExtraAccountMinAet		= "extra-account-aet-min"
 	flagExtraAccountMaxAet		= "extra-account-aet-max"
 	flagSimSeed			= "sim-seed"
+	flagEnableContracts		= "enable-contracts"
+	flagPoolAuthority		= "nominator-pool-authority"
+	flagUnbondingTime		= "unbonding-time"
 )
 
 // naetPerAet is the base-unit scale: 1 AET = 1e9 naet (app/params/token.go).
@@ -142,6 +145,9 @@ type initArgs struct {
 	extraAccountMinAet	int64
 	extraAccountMaxAet	int64
 	simSeed			int64
+	enableContracts		bool
+	poolAuthority		string
+	unbondingTime		time.Duration
 }
 
 type startArgs struct {
@@ -304,6 +310,12 @@ Example:
 			args.extraAccountMinAet, _ = cmd.Flags().GetInt64(flagExtraAccountMinAet)
 			args.extraAccountMaxAet, _ = cmd.Flags().GetInt64(flagExtraAccountMaxAet)
 			args.simSeed, _ = cmd.Flags().GetInt64(flagSimSeed)
+			args.enableContracts, _ = cmd.Flags().GetBool(flagEnableContracts)
+			args.poolAuthority, _ = cmd.Flags().GetString(flagPoolAuthority)
+			args.unbondingTime, err = cmd.Flags().GetDuration(flagUnbondingTime)
+			if err != nil {
+				return err
+			}
 			if args.valStakeMinAet <= 0 {
 				return fmt.Errorf("--%s must be positive", flagValidatorStakeMinAet)
 			}
@@ -346,6 +358,9 @@ Example:
 	cmd.Flags().Int64(flagExtraAccountMinAet, 20_000, "Minimum whole-AET balance per extra wallet")
 	cmd.Flags().Int64(flagExtraAccountMaxAet, 220_000, "Maximum whole-AET balance per extra wallet; <= min pins every wallet to min")
 	cmd.Flags().Int64(flagSimSeed, 1, "Seed for the stake/balance randomisation, so a given genesis is reproducible")
+	cmd.Flags().Bool(flagEnableContracts, false, "Enable x/contracts (the AVM) in genesis; off by default because the public testnet ships it gated behind governance")
+	cmd.Flags().String(flagPoolAuthority, "", "Address to install as x/nominator-pool Params.Authority; empty keeps the default all-zero address, which no key can sign for so no liquid-staking pool can ever be created")
+	cmd.Flags().Duration(flagUnbondingTime, 0, "Override x/staking unbonding time; 0 keeps the 21-day default, which is far too long for a load run to observe a pool withdrawal settle")
 
 	return cmd
 }
@@ -442,6 +457,11 @@ func initTestnetFiles(
 	// produces the same genesis: a load run whose supply distribution shifts
 	// between runs cannot be compared against a previous one.
 	rng := mathrand.New(mathrand.NewSource(args.simSeed))
+
+	// Validator key name -> funded address, so --nominator-pool-authority can
+	// name a node ("node0") instead of an address: the keys are generated in
+	// this loop, so a caller cannot know the address beforehand.
+	nodeAddrs := make(map[string]string, args.numValidators)
 
 	for i := 0; i < args.numValidators; i++ {
 		var portOffset int
@@ -559,6 +579,7 @@ func initTestnetFiles(
 
 		genBalances = append(genBalances, banktypes.Balance{Address: addr.String(), Coins: coins.Sort()})
 		genAccounts = append(genAccounts, authtypes.NewBaseAccount(addr, nil, 0, 0))
+		nodeAddrs[nodeDirName] = addr.String()
 
 		valAddr := sdk.ValAddress(addr)
 		valStr, err := clientCtx.TxConfig.SigningContext().ValidatorAddressCodec().BytesToString(valAddr)
@@ -669,7 +690,19 @@ func initTestnetFiles(
 		}
 	}
 
-	if err := initGenFiles(clientCtx, mm, args.chainID, genAccounts, genBalances, nativeAccounts, genFiles, args.numValidators); err != nil {
+	// A validator name resolves to that validator's address; anything else is
+	// passed through as a literal address. Node names are never valid addresses,
+	// so this cannot be ambiguous.
+	poolAuthority := args.poolAuthority
+	if resolved, ok := nodeAddrs[poolAuthority]; ok {
+		poolAuthority = resolved
+	}
+
+	if err := initGenFiles(clientCtx, mm, args.chainID, genAccounts, genBalances, nativeAccounts, genFiles, args.numValidators, simGenesisOverrides{
+		enableContracts:	args.enableContracts,
+		poolAuthority:		poolAuthority,
+		unbondingTime:		args.unbondingTime,
+	}); err != nil {
 		return err
 	}
 
