@@ -127,7 +127,7 @@ var reservedSystemModuleAccountSpecs = []struct {
 	{"AETStorageRent", "storage-rent", storagerenttypes.ModuleName, nil},
 	{"AETDelegatorProtection", delegatorprotectiontypes.ModuleName, delegatorprotectiontypes.ModuleName, nil},
 	{"AETValidatorInsurance", validatorinsurancetypes.ModuleName, validatorinsurancetypes.ModuleName, nil},
-	{"AETReporterRewards", "reporter-rewards", feecollectortypes.ReporterRewardsModuleName, nil},
+	{"AETReporterRewards", "reporter", feecollectortypes.ReporterRewardsModuleName, nil},
 	{"AETConfig", configtypes.ModuleName, configtypes.ModuleName, nil},
 	{"AETSystemRegistry", systemregistrytypes.ModuleName, systemregistrytypes.ModuleName, nil},
 	{"AETElector", validatorelectiontypes.ModuleName, validatorelectiontypes.ModuleName, nil},
@@ -245,6 +245,14 @@ func ValidateReservedSystemModuleAccountWiring(blocked map[string]bool) error {
 		}
 		if account.Raw != address.Raw || account.UserFriendly != address.UserFriendly {
 			return fmt.Errorf("reserved module account %s address mismatch", account.Name)
+		}
+		// SA2: the spec's owning-module name must match the catalog too, otherwise
+		// the two layers can drift invisibly (AETReporterRewards read "reporter"
+		// in the catalog but "reporter-rewards" in the spec). Harmless today only
+		// because nothing consumes ModuleName — exactly the two-layer confusion
+		// class that produced FINDING-017.
+		if account.ModuleName != address.ModuleName {
+			return fmt.Errorf("reserved module account %s module-name mismatch: spec %q vs catalog %q", account.Name, account.ModuleName, address.ModuleName)
 		}
 		if account.Core != address.Core || account.CanHoldFunds != address.CanHoldFunds ||
 			account.CanReceiveUserFunds != address.CanReceiveUserFunds || account.CanSendFunds != address.CanSendFunds {
