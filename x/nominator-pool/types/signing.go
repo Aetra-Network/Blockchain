@@ -49,6 +49,27 @@ func msgSignerFromAddressField(msg proto.Message, fieldName string) ([][]byte, e
 	return [][]byte{bz}, nil
 }
 
+// MsgCreateNominatorPoolSigners resolves the signer to the pool's governance
+// authority address, matching MsgCreateOfficialLiquidStakingPoolSigners.
+func MsgCreateNominatorPoolSigners(msg proto.Message) ([][]byte, error) {
+	return msgSignerFromAddressField(msg, "authority")
+}
+
+// MsgDepositToPoolSigners resolves the signer to the pool's governance
+// authority -- deposits are authority-mediated (the Delegator field names
+// who is credited, a separate concern from who signs), matching this
+// module's existing MsgClaimPoolRewards / MsgCreateOfficialLiquidStakingPool
+// authority-signed pattern.
+func MsgDepositToPoolSigners(msg proto.Message) ([][]byte, error) {
+	return msgSignerFromAddressField(msg, "authority")
+}
+
+// MsgRequestPoolWithdrawalSigners resolves the signer to the pool's
+// governance authority, same rationale as MsgDepositToPoolSigners.
+func MsgRequestPoolWithdrawalSigners(msg proto.Message) ([][]byte, error) {
+	return msgSignerFromAddressField(msg, "authority")
+}
+
 // MsgDepositToStakingPoolSigners resolves the signer to the depositor's plain
 // wallet address.
 func MsgDepositToStakingPoolSigners(msg proto.Message) ([][]byte, error) {

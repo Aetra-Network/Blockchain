@@ -399,22 +399,34 @@ type PoolRewardSummary struct {
 	AllocationsTouched		uint64
 }
 
+// Field tags below were added alongside real bank+staking custody
+// (#2/SA2-N01): without them, this hand-rolled type has no protobuf wire
+// encoding at all -- live-verified: broadcasting a real transaction
+// containing this message crashed gogoproto's reflection-based Unmarshal on
+// every receiving node with "protobuf tag not enough fields" (recovered by
+// baseapp's panic-recovery middleware, so not a fatal node crash, but the tx
+// can never be delivered). See the matching descriptor entry in
+// nominatorPoolMessageFields() (tx.go) and the CustomGetSigners registration
+// in app/keeperconfig/tx.go -- both are required together, same pattern
+// signing.go already documents for MsgClaimPoolRewards and friends.
 type MsgCreateNominatorPool struct {
-	Authority		string
-	PoolID			string
-	PoolOperator		string
-	ValidatorTarget		string
-	PoolCommissionBps	uint32
-	Height			uint64
-	ValidatorStatus		string
+	Authority		string	`protobuf:"bytes,1,opt,name=authority,proto3" json:"authority,omitempty"`
+	PoolID			string	`protobuf:"bytes,2,opt,name=pool_id,json=poolId,proto3" json:"pool_id,omitempty"`
+	PoolOperator		string	`protobuf:"bytes,3,opt,name=pool_operator,json=poolOperator,proto3" json:"pool_operator,omitempty"`
+	ValidatorTarget		string	`protobuf:"bytes,4,opt,name=validator_target,json=validatorTarget,proto3" json:"validator_target,omitempty"`
+	PoolCommissionBps	uint32	`protobuf:"varint,5,opt,name=pool_commission_bps,json=poolCommissionBps,proto3" json:"pool_commission_bps,omitempty"`
+	Height			uint64	`protobuf:"varint,6,opt,name=height,proto3" json:"height,omitempty"`
+	ValidatorStatus		string	`protobuf:"bytes,7,opt,name=validator_status,json=validatorStatus,proto3" json:"validator_status,omitempty"`
 }
 
+// See MsgCreateNominatorPool's doc comment: same wire-marshal-panic bug,
+// fixed the same way.
 type MsgDepositToPool struct {
-	Authority	string
-	PoolID		string
-	Delegator	string
-	Amount		uint64
-	Height		uint64
+	Authority	string	`protobuf:"bytes,1,opt,name=authority,proto3" json:"authority,omitempty"`
+	PoolID		string	`protobuf:"bytes,2,opt,name=pool_id,json=poolId,proto3" json:"pool_id,omitempty"`
+	Delegator	string	`protobuf:"bytes,3,opt,name=delegator,proto3" json:"delegator,omitempty"`
+	Amount		uint64	`protobuf:"varint,4,opt,name=amount,proto3" json:"amount,omitempty"`
+	Height		uint64	`protobuf:"varint,5,opt,name=height,proto3" json:"height,omitempty"`
 }
 
 type MsgCreateOfficialLiquidStakingPool struct {
@@ -506,13 +518,15 @@ type MsgApplyValidatorSlash struct {
 	Height			uint64
 }
 
+// See MsgCreateNominatorPool's doc comment: same wire-marshal-panic bug,
+// fixed the same way.
 type MsgRequestPoolWithdrawal struct {
-	Authority	string
-	PoolID		string
-	WithdrawalID	string
-	Delegator	string
-	Shares		uint64
-	Height		uint64
+	Authority	string	`protobuf:"bytes,1,opt,name=authority,proto3" json:"authority,omitempty"`
+	PoolID		string	`protobuf:"bytes,2,opt,name=pool_id,json=poolId,proto3" json:"pool_id,omitempty"`
+	WithdrawalID	string	`protobuf:"bytes,3,opt,name=withdrawal_id,json=withdrawalId,proto3" json:"withdrawal_id,omitempty"`
+	Delegator	string	`protobuf:"bytes,4,opt,name=delegator,proto3" json:"delegator,omitempty"`
+	Shares		uint64	`protobuf:"varint,5,opt,name=shares,proto3" json:"shares,omitempty"`
+	Height		uint64	`protobuf:"varint,6,opt,name=height,proto3" json:"height,omitempty"`
 }
 
 type MsgRequestPoolUnbond struct {

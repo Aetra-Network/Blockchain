@@ -60,7 +60,18 @@ func TestPrototypeModuleAccountPermissionsAreNarrow(t *testing.T) {
 	blocked := BlockedAddresses()
 	for moduleName := range expected {
 		addr := authtypes.NewModuleAddress(moduleName).String()
-		if moduleName == govtypes.ModuleName {
+		switch moduleName {
+		case govtypes.ModuleName:
+			require.False(t, blocked[addr])
+			continue
+		case nominatorpooltypes.ModuleName:
+			// nominator-pool's real module account is a genuine x/staking
+			// delegator (see PoolModuleAddress in x/nominator-pool/keeper).
+			// x/staking's BeforeDelegationSharesModified hook and
+			// CompleteUnbonding both pay straight into the delegator address
+			// via bankKeeper.SendCoinsFromModuleToAccount, which errors on a
+			// blocked recipient -- live-verified broadcasting a real
+			// withdrawal against a testnet build that still blocked it.
 			require.False(t, blocked[addr])
 			continue
 		}

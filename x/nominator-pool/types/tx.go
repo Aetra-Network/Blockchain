@@ -480,6 +480,37 @@ func nominatorPoolMessageFields() map[string][]*descriptorpb.FieldDescriptorProt
 	u64 := descriptorpb.FieldDescriptorProto_TYPE_UINT64
 	u32 := descriptorpb.FieldDescriptorProto_TYPE_UINT32
 	return map[string][]*descriptorpb.FieldDescriptorProto{
+		// #2/SA2-N01: field descriptors for the three plain-pool messages
+		// bank+staking custody depends on being reachable. Field numbers
+		// match the protobuf struct tags added to these types (state.go);
+		// nothing pre-existing claimed these numbers (both were previously
+		// undeclared here, which is what made every real transaction
+		// carrying one of them crash on decode -- see the struct doc
+		// comments in state.go for the live-verified failure mode).
+		"MsgCreateNominatorPool": {
+			txDescriptorField("authority", 1, str),
+			txDescriptorField("pool_id", 2, str),
+			txDescriptorField("pool_operator", 3, str),
+			txDescriptorField("validator_target", 4, str),
+			txDescriptorField("pool_commission_bps", 5, u32),
+			txDescriptorField("height", 6, u64),
+			txDescriptorField("validator_status", 7, str),
+		},
+		"MsgDepositToPool": {
+			txDescriptorField("authority", 1, str),
+			txDescriptorField("pool_id", 2, str),
+			txDescriptorField("delegator", 3, str),
+			txDescriptorField("amount", 4, u64),
+			txDescriptorField("height", 5, u64),
+		},
+		"MsgRequestPoolWithdrawal": {
+			txDescriptorField("authority", 1, str),
+			txDescriptorField("pool_id", 2, str),
+			txDescriptorField("withdrawal_id", 3, str),
+			txDescriptorField("delegator", 4, str),
+			txDescriptorField("shares", 5, u64),
+			txDescriptorField("height", 6, u64),
+		},
 		"MsgDepositToStakingPool": {
 			txDescriptorField("pool_id", 1, str),
 			txDescriptorField("wallet_address", 2, str),

@@ -188,6 +188,19 @@ func BlockedAddresses() map[string]bool {
 
 	delete(modAccAddrs, authtypes.NewModuleAddress(govtypes.ModuleName).String())
 
+	// nominator-pool delegates deposits to validators under its own real
+	// module account (see PoolModuleAddress in x/nominator-pool/keeper), so
+	// x/staking treats that account as an ordinary delegator. x/staking's
+	// BeforeDelegationSharesModified hook auto-withdraws any pending
+	// distribution reward straight to the delegator on every
+	// delegate/undelegate, and CompleteUnbonding pays out matured unbonding
+	// funds the same way -- both via bankKeeper.SendCoinsFromModuleToAccount
+	// targeting the delegator address directly. Unlike every other module
+	// account here, the pool's real module account must be able to receive
+	// those payouts, or every delegation/undelegation on its behalf fails
+	// with "not allowed to receive funds" (live-verified).
+	delete(modAccAddrs, authtypes.NewModuleAddress(nominatorpooltypes.ModuleName).String())
+
 	return modAccAddrs
 }
 

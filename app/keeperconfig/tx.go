@@ -35,6 +35,14 @@ func CustomGetSigners() map[protoreflect.FullName]signing.GetSignersFunc {
 		"l1.nominatorpool.v1.MsgRequestPoolUnbond":            nominatorpooltypes.MsgRequestPoolUnbondSigners,
 		"l1.nominatorpool.v1.MsgClaimPoolRewards":             nominatorpooltypes.MsgClaimPoolRewardsSigners,
 		"l1.nominatorpool.v1.MsgCreateOfficialLiquidStakingPool": nominatorpooltypes.MsgCreateOfficialLiquidStakingPoolSigners,
+		// #2/SA2-N01: the three plain-pool messages real bank+staking custody
+		// depends on had the identical missing-descriptor bug as the four
+		// above (live-verified: broadcasting one crashed gogoproto's
+		// Unmarshal on every receiving node) -- see the struct doc comments
+		// on these types in x/nominator-pool/types/state.go.
+		"l1.nominatorpool.v1.MsgCreateNominatorPool":    nominatorpooltypes.MsgCreateNominatorPoolSigners,
+		"l1.nominatorpool.v1.MsgDepositToPool":          nominatorpooltypes.MsgDepositToPoolSigners,
+		"l1.nominatorpool.v1.MsgRequestPoolWithdrawal":  nominatorpooltypes.MsgRequestPoolWithdrawalSigners,
 	}
 }
 
