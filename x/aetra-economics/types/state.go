@@ -138,6 +138,20 @@ type QueryTreasuryBalanceResponse struct{ TreasuryBalance uint64 }
 type QueryEpochRewardSummaryRequest struct{ Epoch uint64 }
 type QueryEpochRewardSummaryResponse struct{ Summary EpochRewardSummary }
 
+// DefaultParams returns the x/aetra-economics parameter set.
+//
+// CANONICAL-SOURCE NOTE (SA2 #29/#33/#34): x/aetra-economics is an ADVISORY,
+// self-contained economic model. Its invariants validate only its own internal
+// consistency, and it does NOT drive protocol emission or the fee split. The
+// AUTHORITATIVE live drivers are:
+//   - x/emissions + app/params — 3% target inflation (1.5–5% band), 365 daily
+//     epochs, 70% validator/delegator share — minted by app/native_economy.go;
+//   - x/fee-collector — the 50% burn / 35% validators / 15% treasury fee split.
+//
+// The values below (3.5% midpoint, block-based EpochsPerYear, 35% share) and
+// EstimateAPRBps intentionally describe THIS separate model and must not be read
+// as the chain's real inflation / APR / epoch parameters. Reconciling or
+// retiring this module is a deliberate economic-model decision, not a bug fix.
 func DefaultParams(authority string) Params {
 	return Params{
 		Authority:		authority,

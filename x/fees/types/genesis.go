@@ -22,6 +22,11 @@ const (
 func DefaultParams() Params {
 	return Params{
 		AllowedFeeDenoms:		[]string{BondDenom},
+		// CANONICAL-SOURCE NOTE (SA2 #30): this 98/2 pair is SECONDARY accounting
+		// only. The AUTHORITATIVE runtime fee split is x/fee-collector's
+		// 50% burn / 35% validators / 15% treasury, applied by DistributeFees —
+		// x/fees forwards 100% of collected fees to that module. Do not read these
+		// ratios as the live fee routing.
 		ValidatorRewardsRatio:		"0.98",
 		CommunityPoolRatio:		"0.02",
 		MinFeeAmount:			MinDefaultFeeAmount,
