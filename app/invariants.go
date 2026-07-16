@@ -458,10 +458,51 @@ func (app *L1App) nativeInvariantInput(ctx sdk.Context) (nativeaccounttypes.Nati
 	minValidatorStake := uint64(0)
 
 	emissionParams, emissionErr := app.EmissionsKeeper.GetParams(ctx)
-	var rewardBudget uint64
+	var rewardBudget, rewardsAccrued uint64
 	if emissionErr == nil && emissionParams.MaxAnnualInflationBps > 0 && emissionParams.EpochsPerYear > 0 {
-		refSupply := safeUint64(emissionParams.AnnualReferenceSupply.Amount, 0)
-		rewardBudget = (refSupply * uint64(emissionParams.MaxAnnualInflationBps) / 10000) / emissionParams.EpochsPerYear
+		// Size the budget from the SAME anchor emission actually uses.
+		// FinalizeNativeEconomyEpoch anchors to live circulating supply (#31);
+		// AnnualReferenceSupply is still the 365 AET bootstrap placeholder, so
+		// sizing the budget from the param yields 0.05 AET/epoch against a real
+		// emission of thousands of AET/epoch -- the same param-vs-live drift #31
+		// fixed on the mint path, and why assertEmissionCapInvariant below
+		// already reads the live anchor.
+		referenceSupply, err := app.emissionReferenceSupply(ctx, emissionParams.BaseDenom)
+		if err != nil {
+			return nativeaccounttypes.NativeAccountInvariantInput{}, err
+		}
+		// This must stay in Int. The live anchor overflows uint64 in the
+		// pre-divide product: at 80M AET (8e16 naet) and MaxAnnualInflationBps
+		// 500, refSupply*bps is 4e19 against a MaxUint64 of ~1.8e19. It wraps
+		// to a plausible-looking budget ~13x too small, which would fire this
+		// check against entirely honest rewards. Anything above ~36.9M AET
+		// wraps at 500bps.
+		epochBudget := referenceSupply.
+			Mul(sdkmath.NewInt(int64(emissionParams.MaxAnnualInflationBps))).
+			Quo(sdkmath.NewInt(10_000)).
+			Quo(sdkmath.NewIntFromUint64(emissionParams.EpochsPerYear))
+		// A budget too large to represent is a param absurdity, not a reward
+		// overrun: stay permissive rather than fail a real chain.
+		rewardBudget = safeUint64(epochBudget, math.MaxUint64)
+
+		// The rewards this budget bounds are the staking-reward slice of the
+		// most recently finalized epoch: distributeNativeEmission pays out
+		// Treasury/Protection/Ecosystem/Burn and deliberately leaves
+		// ValidatorReward in the fee collector for x/distribution to sweep, so
+		// it -- not EmissionAmount -- is what actually accrues as rewards.
+		// Per-epoch, to match a per-epoch budget: GetTotalMintedAccounting is a
+		// monotonic lifetime counter and would drift past any single-epoch
+		// budget by construction (FINDING-003, documented below).
+		epochHistory, err := app.EmissionsKeeper.GetAllEmissionEpochs(ctx)
+		if err != nil {
+			return nativeaccounttypes.NativeAccountInvariantInput{}, err
+		}
+		if n := len(epochHistory); n > 0 {
+			// A capped epoch records nothing (native_economy.go skips it), so a
+			// missing record is absent rather than zero; safeUint64 also guards
+			// the nil Int a zero-value Coin would carry.
+			rewardsAccrued = safeUint64(epochHistory[n-1].ValidatorReward.Amount, 0)
+		}
 	}
 
 	srGenesis, srErr := app.StorageRentKeeper.ExportGenesisState(ctx)
@@ -488,6 +529,7 @@ func (app *L1App) nativeInvariantInput(ctx sdk.Context) (nativeaccounttypes.Nati
 		RawAddressRoundtripStable:	rawRoundtripStable,
 		ActivationAttempts:		map[string]uint64{},
 		TotalSupply:			totalSupply,
+		RewardsAccrued:			rewardsAccrued,
 		RewardBudget:			rewardBudget,
 		ActiveValidatorCount:		activeValidators,
 		MaxValidatorCount:		uint64(params.MaxValidators),
