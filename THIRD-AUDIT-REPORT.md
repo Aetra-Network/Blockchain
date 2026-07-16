@@ -37,17 +37,53 @@ Every finding below marked **FIXED** was fixed, built, unit-tested, and where no
 | Genesis defaults (R1/R5/R7, part of decentralization) | ✅ FIXED, live-verified | `testnet init-files` now applies `AetraSlashingParams()` and a 3% `MinCommissionRate` floor (was 0%); `aetrad init`'s CometBFT config now sets `timeout_commit=5s` (was 1s); `consensus_params.block.max_gas` now pinned to 20,000,000 (was unlimited). Live-verified via a fresh genesis + running network. |
 | Real minimum validator self-bond | ✅ FIXED, live-verified | `PoolOnlyMsgServer.CreateValidator` now enforces `StakingMinSelfBondNaet` (10,000 AET) on live joins, exempting InitChain/gentx (`BlockHeight() <= 0`) so testnet bootstrap's 100 AET default keeps working. **This one broke chain startup on the first attempt** (gentx routes through the same message server as live txs) — caught by live verification, not unit tests, and fixed same-session (commit `023f261d`). Left in as a cautionary note: unit tests alone did not catch a genesis-breaking regression here; only booting a real network did. |
 | **F-11** nominator-pool share overflow | ✅ FIXED | `CheckedAddUint64` on all three deposit/cancel accumulation sites, `sumShares` now propagates overflow instead of wrapping. New regression test. |
+| **#2/F-04** nominator-pool bank + staking custody | ✅ FIXED, live-verified + E2E-tested | See "F-04 closed" below — this was reclassified mid-session from "deliberately not attempted" after explicit direction to finish it. |
 
-### Deliberately NOT attempted this session — with reasons
+### F-04 closed: nominator-pool deposits now really reach a validator
 
-- **#2/F-04 nominator-pool bank + staking custody.** The pool still holds no bank custody and
-  never bridges to `x/staking` — pooled AET cannot reach a validator regardless of whether
-  bank custody is wired, because the staking bridge doesn't exist. Building both correctly
-  (19 message types, real money, no margin for error) is a properly-scoped feature project,
-  not a same-session security fix — especially after the self-bond-floor genesis near-miss
-  above demonstrated how easily a seemingly-small, seemingly-safe change in this codebase can
-  break chain startup in a way only live verification catches. F-11 (overflow) is fixed so
-  the ledger arithmetic itself is safe whenever custody is eventually wired.
+The plain-pool flow (`CreateNominatorPool` / `DepositToPool` / `RequestPoolWithdrawal`) now has
+real bank + `x/staking` + `x/distribution` custody, not just a ledger entry:
+
+- `DepositToPool` pulls real coins from the delegator into the pool's own module account
+  (`authtypes.NewModuleAddress("nominator-pool")`, distinct from the reserved catalog address)
+  and calls `x/staking`'s `Delegate` for real, so `TotalBondedStake` is backed by an actual
+  delegation instead of a number nobody put behind it.
+- `RequestPoolWithdrawal` calls real `Undelegate`; a new pool-side `EndBlocker` settles the
+  payout to the depositor once the pool's own module account actually holds the matured funds.
+- `ClaimPoolRewardsWithReceipt` pulls real accrued `x/distribution` income into the pool account
+  before paying the claimant, for the plain-pool path (the official/contract-mediated pool keeps
+  its existing synthetic-reward path unchanged — deliberately not touched).
+
+Two bugs surfaced only by driving real transactions against a live 4-node testnet, both now fixed:
+
+1. **Wire-marshal panic.** The three plain-pool message types had zero `protobuf` struct tags and
+   zero signer resolution — broadcasting one crashed gogoproto's reflection-based `Unmarshal` on
+   every receiving node (recovered by baseapp's panic middleware, so not a fatal crash, but the
+   tx could never be delivered). This made the custody wiring above completely unreachable from
+   any real transaction despite passing every unit test. Fixed the same way four sibling message
+   types were already fixed in an earlier pass: struct tags, a `nominatorPoolMessageFields()`
+   descriptor entry, and a `CustomGetSigners` registration each.
+2. **Blocked recipient.** Once real transactions could land, `RequestPoolWithdrawal` still failed
+   live with `"... is not allowed to receive funds: unauthorized"`. The pool's module account is a
+   genuine `x/staking` delegator once it holds a live delegation, and `x/staking`'s
+   `BeforeDelegationSharesModified` hook (plus `CompleteUnbonding`) both pay straight into the
+   delegator address via `bankKeeper.SendCoinsFromModuleToAccount` — which always errors on a
+   bank-blocked recipient, and every module account is blocked by default. Fixed by adding the
+   pool's real module account to `BlockedAddresses()`'s explicit unblock list, the same exception
+   already carved out for `gov`.
+
+**Verification:** deposit → real delegation → withdrawal request → real undelegation were all
+live-broadcast against a fresh 4-validator testnet and confirmed via `cosmos/staking` queries
+(`tools/poolcheck`, new). The final matured-payout leg could **not** be observed live — this
+module's own `UnbondingBlocks` parameter is genesis-floored to 14–21 days
+(`appparams.ValidateStakingUnbondingBlocks`) for the same reason `x/staking`'s real
+`unbonding_time` is, and neither can be shortened even for a test genesis without failing that
+validation at chain start. Instead, `TestNominatorPoolCustodyEndToEndDepositDelegatesAndWithdrawalPaysOutReal`
+(new, `app/nominator_pool_custody_e2e_test.go`) drives the exact same msg-server + real-keeper
+code path in-process and advances `ctx` block time/height directly to the real maturity point —
+the same fast-forward technique `x/staking`'s own test suite uses for the identical problem — and
+asserts the delegator's real bank balance returns to their pre-deposit principal. Full round trip,
+real keepers, zero mocks; only the multi-day wall-clock wait is synthetic.
 - **R3/R4/R6 decentralization (real delegation, enforced power cap, neutralizing the dormant
   election override).** These touch the validator-set-formation path directly — the same class
   of code where the original C-1 CRITICAL (chain halt) lived, and where this session's own
