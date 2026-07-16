@@ -399,23 +399,34 @@ func (k *Keeper) saveGenesis(next GenesisState) error {
 	return k.writeGenesisState(k.runtimeCtx, k.genesis)
 }
 
-// writeGenesisState persists module state as the single genesis blob that
-// loadForBlock reads back.
-//
-// It deliberately does not mirror each pool/share into per-entity keys. Those
-// mirrors were write-only: nothing in the tree ever read them back (the read
-// path serves every query from the in-memory genesis), so each one cost a JSON
-// marshal plus an IAVL node update on every single write. That turned one
-// cheap, constant-gas deposit into O(number of pools + shares) IAVL writes and
-// made building up state quadratic — the write-amplification DoS in audit
-// finding 009 / SA2-F07. The PoolKey/PoolShareKey helpers are still used to
-// label TouchedKeys for conflict detection, which needs the key string only,
-// not a stored value.
 func (k Keeper) writeGenesisState(ctx context.Context, gs GenesisState) error {
 	if k.storeService == nil {
 		return nil
 	}
-	return prefixgenesis.Save(ctx, k.storeService, genesisKey, cloneGenesis(gs))
+	if err := prefixgenesis.Save(ctx, k.storeService, genesisKey, cloneGenesis(gs)); err != nil {
+		return err
+	}
+
+	store := k.storeService.OpenKVStore(ctx)
+	for _, pool := range gs.State.Pools {
+		bz, err := json.Marshal(pool)
+		if err != nil {
+			return err
+		}
+		if err := store.Set(types.PoolKey(pool.PoolID), bz); err != nil {
+			return err
+		}
+	}
+	for _, share := range gs.State.PoolShares {
+		bz, err := json.Marshal(share)
+		if err != nil {
+			return err
+		}
+		if err := store.Set(types.PoolShareKey(share.PoolID, share.Owner), bz); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (k *Keeper) OperationCounters() OperationCounters {
@@ -2069,6 +2080,26 @@ func (k *Keeper) ApplyValidatorSlash(msg types.MsgApplyValidatorSlash) ([]types.
 
 		if err := prefixgenesis.Save(k.runtimeCtx, k.storeService, genesisKey, cloneGenesis(k.genesis)); err != nil {
 			return nil, err
+		}
+
+		store := k.storeService.OpenKVStore(k.runtimeCtx)
+		for _, pool := range k.genesis.State.Pools {
+			bz, err := json.Marshal(pool)
+			if err != nil {
+				return nil, err
+			}
+			if err := store.Set(types.PoolKey(pool.PoolID), bz); err != nil {
+				return nil, err
+			}
+		}
+		for _, alloc := range k.genesis.State.PoolValidatorAllocations {
+			bz, err := json.Marshal(alloc)
+			if err != nil {
+				return nil, err
+			}
+			if err := store.Set(types.PoolAllocationKey(alloc.PoolID, alloc.Validator), bz); err != nil {
+				return nil, err
+			}
 		}
 	}
 
