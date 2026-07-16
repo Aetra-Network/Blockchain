@@ -16,6 +16,7 @@ import (
 	feecollectortypes "github.com/sovereign-l1/l1/x/fee-collector/types"
 	feestypes "github.com/sovereign-l1/l1/x/fees/types"
 	mintauthoritytypes "github.com/sovereign-l1/l1/x/mint-authority/types"
+	nominatorpooltypes "github.com/sovereign-l1/l1/x/nominator-pool/types"
 	systemregistrytypes "github.com/sovereign-l1/l1/x/system-registry/types"
 	validatorelectiontypes "github.com/sovereign-l1/l1/x/validator-election/types"
 )
@@ -49,6 +50,10 @@ func TestPrototypeModuleAccountPermissionsAreNarrow(t *testing.T) {
 		systemregistrytypes.ModuleName:			nil,
 		validatorelectiontypes.ModuleName:		nil,
 		feestypes.ModuleName:				nil,
+		// nominator-pool now custodies real deposits and delegates them to
+		// validators directly -- it is its own custodian, unlike
+		// storage-rent/delegator-protection/validator-insurance above.
+		nominatorpooltypes.ModuleName:			nil,
 	}
 	require.Equal(t, expected, GetMaccPerms())
 

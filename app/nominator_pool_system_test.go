@@ -26,7 +26,10 @@ func TestNominatorPoolSystemModuleWiringAndGenesis(t *testing.T) {
 	require.Contains(t, app.ModuleManager.Modules, nominatorpooltypes.ModuleName)
 	require.Contains(t, app.keys, nominatorpooltypes.StoreKey)
 	require.Contains(t, genesis, nominatorpooltypes.ModuleName)
-	require.NotContains(t, GetMaccPerms(), nominatorpooltypes.ModuleName)
+	// The pool now custodies real deposits and delegates them to validators
+	// directly (previously a bookkeeping-only ledger with no bank custody,
+	// #2/SA2-N01) -- it is registered as its own module account custodian.
+	require.Contains(t, GetMaccPerms(), nominatorpooltypes.ModuleName)
 
 	var poolGenesis nominatorpoolkeeper.GenesisState
 	require.NoError(t, json.Unmarshal(genesis[nominatorpooltypes.ModuleName], &poolGenesis))

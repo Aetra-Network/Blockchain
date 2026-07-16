@@ -101,7 +101,11 @@ var reservedSystemAddresses = []SystemAddress{
 	systemAddress(SystemAddressAETBurnName, "burn", SystemAddressAETBurnRaw, SystemAddressAETBurnUserFriendly, false, false, true, false),
 	systemAddress("AETEvidence", "evidence", "ae1qrpscvxrpscvxrpscvxrpscvxrpscvxrpscvxrpscvxrpscvxrpsa6rxg9", "AEAAAQDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD", false, false, false, false),
 	systemAddress("AETReporterRewards", "reporter", "ae1q08neu708neu708neu708neu708neu708neu708neu708neu708st94ymj", "AEAAAQPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP", false, true, false, false),
-	systemAddress("AETNominatorPool", "nominator-pool", "ae1qw8r3cuw8r3cuw8r3cuw8r3cuw8r3cuw8r3cuw8r3cuw8r3cuw8q7z2wpf", "AEAAAQOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO", false, false, false, false),
+	// CanHoldFunds=true (was false): the pool now custodies real deposits and
+	// real delegations via its cosmos module account (authtypes.NewModuleAddress
+	// of the module name below); the reserved catalog address stays distinct
+	// and unfunded per the two-layer model, same as AETTreasury/AETStorageRent.
+	systemAddress("AETNominatorPool", "nominator-pool", "ae1qw8r3cuw8r3cuw8r3cuw8r3cuw8r3cuw8r3cuw8r3cuw8r3cuw8q7z2wpf", "AEAAAQOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO", false, true, false, false),
 	systemAddress("AETSingleNominatorPool", "single-nominator-pool", "ae1qjfyjfyjfyjfyjfyjfyjfyjfyjfyjfyjfyjfyjfyjfyjfyjfyjfqku767e", "AEAAAQSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS", false, false, false, false),
 	systemAddress("AETValidatorInsurance", "validator-insurance", "ae1qgyzpqsgyzpqsgyzpqsgyzpqsgyzpqsgyzpqsgyzpqsgyzpqsgyq7uy08h", "AEAAAQIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII", false, true, false, false),
 	systemAddress("AETDelegatorProtection", "delegator-protection", "ae1qt9jevkt9jevkt9jevkt9jevkt9jevkt9jevkt9jevkt9jevkt9sd2f032", "AEAAAQLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL", false, true, false, false),

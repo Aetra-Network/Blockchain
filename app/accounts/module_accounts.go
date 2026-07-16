@@ -20,6 +20,7 @@ import (
 	feecollectortypes "github.com/sovereign-l1/l1/x/fee-collector/types"
 	feestypes "github.com/sovereign-l1/l1/x/fees/types"
 	mintauthoritytypes "github.com/sovereign-l1/l1/x/mint-authority/types"
+	nominatorpooltypes "github.com/sovereign-l1/l1/x/nominator-pool/types"
 	systemregistrytypes "github.com/sovereign-l1/l1/x/system-registry/types"
 	treasurytypes "github.com/sovereign-l1/l1/x/treasury/types"
 	validatorelectiontypes "github.com/sovereign-l1/l1/x/validator-election/types"
@@ -119,6 +120,14 @@ var moduleAccountPermissions = map[string][]string{
 	systemregistrytypes.ModuleName:			nil,
 	validatorelectiontypes.ModuleName:		nil,
 	feestypes.ModuleName:				nil,
+	// x/nominator-pool now custodies real deposits and delegates them to
+	// validators via x/staking (previously a bookkeeping-only ledger with no
+	// bank custody). No special permission is needed: x/staking's Delegate
+	// path debits the delegator's spendable balance directly
+	// (bankKeeper.DelegateCoinsFromAccountToModule targets the BONDED pool,
+	// which already holds authtypes.Staking -- the delegator side needs
+	// nothing special), and x/distribution reward withdrawal is the same.
+	nominatorpooltypes.ModuleName:			nil,
 }
 
 var reservedSystemModuleAccountSpecs = []struct {
@@ -147,6 +156,12 @@ var reservedSystemModuleAccountSpecs = []struct {
 	{"AETConfig", configtypes.ModuleName, configtypes.ModuleName, nil},
 	{"AETSystemRegistry", systemregistrytypes.ModuleName, systemregistrytypes.ModuleName, nil},
 	{"AETElector", validatorelectiontypes.ModuleName, validatorelectiontypes.ModuleName, nil},
+	// Unlike storage-rent/delegator-protection/validator-insurance above, the
+	// nominator-pool module now holds its own real bankKeeper and is its own
+	// custodian: deposits and delegation-derived stake live at
+	// authtypes.NewModuleAddress(nominatorpooltypes.ModuleName) directly, not
+	// in a fee-collector reserve bucket.
+	{"AETNominatorPool", nominatorpooltypes.ModuleName, nominatorpooltypes.ModuleName, nil},
 }
 
 func ModuleAccountPermissions() map[string][]string {
