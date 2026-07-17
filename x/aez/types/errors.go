@@ -37,4 +37,17 @@ var (
 
 	// ErrInvalidGenesis is returned for a genesis state that fails validation.
 	ErrInvalidGenesis	= errors.New("aez: invalid genesis")
+
+	// ErrInvalidMessage is returned for a ZoneMessage or marker that fails its
+	// structural invariants (Phase 4 message bus).
+	ErrInvalidMessage	= errors.New("aez: invalid cross-zone message")
+
+	// ErrQueueFull is returned when the inbox has reached
+	// MaxZoneMessageQueueDepth and a new message would exceed the bound (I-21).
+	ErrQueueFull	= errors.New("aez: cross-zone message queue is full")
+
+	// ErrValueTransferUnsupported is returned when an enqueue carries non-zero
+	// Funds. Phase 4a moves messages, never money: the value leg is Phase 4b
+	// (aez.md §4.5/§4.8, I-10).
+	ErrValueTransferUnsupported	= errors.New("aez: cross-zone value transfer is not supported in phase 4a")
 )

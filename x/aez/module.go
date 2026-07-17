@@ -35,16 +35,21 @@ const ConsensusVersion = prototype.CurrentGenesisVersion
 // What x/aez now has, and what it still does not:
 //
 //   - HasBeginBlocker: YES. It swaps a pending routing table into the active one
-//     at its ActivationHeight. With no pending table it is one store read and a
-//     nil return (I-23). See keeper/abci.go for why Begin and not End.
+//     at its ActivationHeight AND, immediately after, runs the Phase 4 message-bus
+//     drain. With no pending table and an empty inbox it is one store read plus
+//     one empty range scan and a nil return (I-23). See keeper/abci.go for why
+//     Begin and not End, and why the drain sits next to the swap.
 //   - Msg service: YES, exactly one -- MsgUpdateRoutingTable, gated on the gov
 //     module account. Phase 1's "no handler exists" is over; the guarantee is now
 //     "one handler, governance-only, and it cannot move a bucket off the Core
 //     Zone" (keeper.ValidateRoutingTableTransition).
-//   - HasEndBlocker: still NO. The Phase 4 message-bus drain does not exist yet.
+//   - HasEndBlocker: still NO. The Phase 4 drain landed in BeginBlock (keeper/
+//     drain.go), not a new EndBlocker -- BeginBlock is what makes H+1 structural
+//     (the inbox at BeginBlock of N holds only messages produced at heights <= N-1).
 //   - Module account: still NO, and never (I-10/I-11). The wiring gate enforces
 //     this for system modules with the identical rule it applied to prototypes,
-//     so the promotion bought no relief here.
+//     so the promotion bought no relief here. The bus moves messages, never money;
+//     the value leg (Phase 4b) needs a Core-Zone x/bank escrow x/aez must not hold.
 var (
 	_	module.AppModuleBasic		= AppModule{}
 	_	module.HasGenesis		= AppModule{}

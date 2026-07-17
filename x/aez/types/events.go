@@ -22,6 +22,19 @@ const (
 	// EventTypeActivateRoutingTable is emitted from the BeginBlocker at the
 	// exact height a pending table becomes current.
 	EventTypeActivateRoutingTable	= "aez_activate_routing_table"
+
+	// EventTypeDeliverZoneMessage is emitted when a cross-zone message reaches
+	// its destination zone successfully.
+	EventTypeDeliverZoneMessage	= "aez_deliver_zone_message"
+
+	// EventTypeBounceZoneMessage is emitted when a delivery fails and a
+	// compensating BOUNCE is produced back to the sender.
+	EventTypeBounceZoneMessage	= "aez_bounce_zone_message"
+
+	// EventTypeTerminalZoneMessage is emitted when a message reaches a terminal
+	// failure that is NOT compensated (a bounce of a bounce, or an
+	// un-producible compensation): the kind ladder ends here (I-14).
+	EventTypeTerminalZoneMessage	= "aez_terminal_zone_message"
 )
 
 const (
@@ -44,4 +57,19 @@ const (
 
 	// AttributeKeyAuthority is the authority that staged the table.
 	AttributeKeyAuthority	= "authority"
+
+	// AttributeKeyMessageID is the hex-encoded cross-zone message id.
+	AttributeKeyMessageID	= "message_id"
+
+	// AttributeKeySourceZone is the message's source zone.
+	AttributeKeySourceZone	= "source_zone"
+
+	// AttributeKeyDestZone is the message's (re-resolved) destination zone.
+	AttributeKeyDestZone	= "dest_zone"
+
+	// AttributeKeyStatus is the terminal ReceiptStatus.
+	AttributeKeyStatus	= "status"
+
+	// AttributeKeyReason is the terminal FailureReason.
+	AttributeKeyReason	= "reason"
 )

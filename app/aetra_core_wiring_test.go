@@ -101,11 +101,13 @@ func TestAetraCoreWiringGateRegistersPrototypeModulesDisabled(t *testing.T) {
 
 	// The BeginBlocker that swaps the routing table is the reason the
 	// promotion was necessary. Assert it exists, and that no EndBlocker
-	// snuck in with it (the Phase 4 drain does not exist yet).
+	// snuck in with it: the Phase 4 message-bus drain landed in BeginBlock
+	// (next to the swap), NOT as a new EndBlocker -- BeginBlock is what makes
+	// H+1 delivery structural (keeper/abci.go, keeper/drain.go).
 	_, aezHasBegin := app.ModuleManager.Modules[aeztypes.ModuleName].(appmodule.HasBeginBlocker)
 	_, aezHasEnd := app.ModuleManager.Modules[aeztypes.ModuleName].(appmodule.HasEndBlocker)
-	require.True(t, aezHasBegin, "x/aez must activate pending routing tables in BeginBlock")
-	require.False(t, aezHasEnd, "x/aez has no EndBlocker until the Phase 4 drain lands")
+	require.True(t, aezHasBegin, "x/aez must activate pending routing tables and drain the bus in BeginBlock")
+	require.False(t, aezHasEnd, "x/aez's Phase 4 drain is in BeginBlock, so it must still have no EndBlocker")
 	require.True(t, slices.Contains(app.ModuleManager.OrderBeginBlockers, aeztypes.ModuleName))
 
 	aetherCoreGenesis := decodeJSONGenesis[aetracorekeeper.GenesisState](t, genesis[aetracoretypes.ModuleName])

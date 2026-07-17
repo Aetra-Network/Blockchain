@@ -41,7 +41,23 @@ import (
 // (I-22). With no pending table it is one store read and a nil return, so a
 // chain that never touches the routing table pays a single Get per block and can
 // never fail one (I-23).
+//
+// Phase 4: the message-bus DRAIN joins the BeginBlocker, immediately AFTER the
+// table swap. The ordering is the point (aez.md §3): the swap is the producer of
+// the active table and the drain's re-resolution is its consumer, so keeping them
+// adjacent in ONE ABCI phase means the drain re-resolves against exactly the
+// table this whole block sees. And because BeginBlock at height N runs before any
+// of block N's transactions (app/block_lifecycle.go), the inbox holds only
+// messages produced at heights <= N-1 -- same-block delivery is structurally
+// impossible (I-12), closing the gap x/contracts leaves open by draining in
+// EndBlock after production without a height check.
+//
+// Under one zone the drain scans an empty inbox and returns, so this stays a
+// silent per-block no-op (I-23) -- the same shape as a swap with no pending
+// table.
 func (k Keeper) BeginBlocker(ctx context.Context) error {
-	_, err := k.MaybeActivatePendingRoutingTable(ctx)
-	return err
+	if _, err := k.MaybeActivatePendingRoutingTable(ctx); err != nil {
+		return err
+	}
+	return k.Drain(ctx)
 }
