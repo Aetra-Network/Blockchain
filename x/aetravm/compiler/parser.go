@@ -1848,7 +1848,7 @@ func (p *parser) parseTypeRef() (TypeRef, error) {
 				return TypeRef{}, err
 			}
 		}
-		if err := p.expect(tokenGreater); err != nil {
+		if err := p.expectTypeClose(); err != nil {
 			return TypeRef{}, err
 		}
 	}
@@ -1859,6 +1859,26 @@ func (p *parser) parseTypeRef() (TypeRef, error) {
 		typ.Optional = true
 	}
 	return typ, nil
+}
+
+// expectTypeClose consumes a single closing '>' of a generic type-argument
+// list. The lexer greedily merges two adjacent '>' into one tokenGreaterGreater
+// (the right-shift operator), so a nested generic whose brackets abut --
+// e.g. Chunk<Chunk<Leaf>> or Map<addr, Chunk<V>> -- would otherwise fail to
+// parse even though it is well-formed. When the current token is '>>', split
+// it: consume one '>' here and leave a synthetic '>' as the current token for
+// the enclosing type level to close. This affects type context ONLY; the '>>'
+// binary operator in expression context is parsed elsewhere and is untouched.
+func (p *parser) expectTypeClose() error {
+	switch p.cur.kind {
+	case tokenGreater:
+		return p.read()
+	case tokenGreaterGreater:
+		p.cur = token{kind: tokenGreater, text: ">", pos: p.cur.pos}
+		return nil
+	default:
+		return fmt.Errorf("expected %v at %s, got %q", tokenGreater, p.cur.pos, p.cur.text)
+	}
 }
 
 func (p *parser) expect(kind tokenKind) error {

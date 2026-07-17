@@ -600,17 +600,28 @@ func (r *Runner) Run(module Module, storage Storage, ctx RuntimeContext) (Execut
 		case OpReadStorage:
 			var value RuntimeValue
 			if len(ins.Data) == 0 {
-				// Whole-state snapshot: runtimeStorageSnapshotValue does
-				// O(len(state)) work (sort + clone every key/value) to
-				// build the map, so an already-large storage state must
-				// not be re-snapshotted at the same flat price as reading
-				// a single key. See FINDING-001.
-				if !chargeOperandUnits(&exec.GasUsed, gasLimit, r.params.GasPerOperandUnit, uint64(len(state))) {
+				// Whole-state snapshot: runtimeStorageSnapshotValue sorts
+				// the keys, clones the map, AND runs a CanonicalDecode on
+				// EVERY stored value (O(total stored bytes)), so charging
+				// only by key COUNT undercharges a state that holds a few
+				// large values. Bill both the per-entry map overhead and the
+				// total decoded bytes. See FINDING-001.
+				if !chargeOperandUnits(&exec.GasUsed, gasLimit, r.params.GasPerOperandUnit, StorageMemoryBytes(state)+uint64(len(state))) {
 					return rollback(async.ResultLimitExceeded, nil)
 				}
 				value = runtimeStorageSnapshotValue(state)
 			} else {
-				value = runtimeValueFromStorage(state[string(ins.Data)])
+				// Single-key read: runtimeValueFromStorage runs a
+				// CanonicalDecode over the stored bytes, O(len(value)), and a
+				// single key can hold up to MaxMemoryBytes. Charge for the
+				// decoded size so a large-valued key is not read at the same
+				// flat price as a small one. Sibling of the snapshot branch
+				// above / FINDING-001.
+				key := string(ins.Data)
+				if !chargeOperandUnits(&exec.GasUsed, gasLimit, r.params.GasPerOperandUnit, uint64(len(state[key]))) {
+					return rollback(async.ResultLimitExceeded, nil)
+				}
+				value = runtimeValueFromStorage(state[key])
 			}
 			if len(stack) >= int(r.params.MaxStackDepth) {
 				return rollback(async.ResultLimitExceeded, nil)
@@ -1053,6 +1064,12 @@ func (r *Runner) Run(module Module, storage Storage, ctx RuntimeContext) (Execut
 			value, ok := pop(&stack)
 			if !ok {
 				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on hash"))
+			}
+			// runtimeHashValue does O(value-size) work (chunk-tree build or
+			// CanonicalEncode, then sha256), so charge for the operand size
+			// rather than the flat OpHash price. See FINDING-001.
+			if !chargeOperandGas(&exec.GasUsed, gasLimit, r.params.GasPerOperandUnit, value) {
+				return rollback(async.ResultLimitExceeded, nil)
 			}
 			hash, err := runtimeHashValue(value)
 			if err != nil {

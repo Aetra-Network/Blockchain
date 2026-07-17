@@ -3860,12 +3860,35 @@ func (c *Compiler) lowerStatementsToIR(stmts []Statement, params []ParamDecl, re
 		case StatementRepeat:
 			count, ok := evalConstU64(stmt.Value, env, functions, map[string]bool{})
 			if ok && !statementContainsLoopControl(stmt.Then) {
+				// Eager unroll bound: a constant count may be as large as
+				// max-uint64, so re-lowering the body `count` times is an
+				// unbounded compile-time DoS. Cap total emitted instructions at
+				// a generous multiple of the code-size limit -- an unroll past
+				// that can never materialize within MaxCodeBytes (each emitted
+				// instruction lowers to >= 1 byte) and would be rejected by the
+				// post-materialization size check anyway, so reject it up front
+				// instead of doing all the work first. The multiplier keeps the
+				// cap safely above the IR any valid function (with its 0-byte
+				// labels) can hold, so no program that currently compiles
+				// changes its output.
+				maxUnroll := 8 * int(c.opts.MaxCodeBytes)
 				for i := uint64(0); i < count; i++ {
 					bodyIR, err := c.lowerStatementsToIR(stmt.Then, params, ret, readOnly, false, functions, structs, msgOpcodes, cloneLoweringEnv(env), map[string]struct{}{}, loops)
 					if err != nil {
 						return nil, err
 					}
+					if len(bodyIR) == 0 {
+						// Empty body emits nothing however many times it is
+						// repeated. The body IR is deterministic in the freshly
+						// cloned env, so an empty first iteration is empty for
+						// all iterations -- stop now rather than spinning `count`
+						// (up to max-uint64) times doing nothing.
+						break
+					}
 					out = append(out, bodyIR...)
+					if len(out) > maxUnroll {
+						return nil, fail("E_REPEAT_UNROLL", stmt.Pos, fmt.Sprintf("repeat unrolls past the %d-instruction limit; use a smaller constant count or a runtime-counted loop", maxUnroll))
+					}
 				}
 				break
 			}

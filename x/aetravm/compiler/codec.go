@@ -676,7 +676,35 @@ func assignDecodedValue(field reflect.Value, typ TypeRef, raw json.RawMessage) e
 			if err := json.Unmarshal(raw, &s); err != nil {
 				return err
 			}
-			field.SetBytes([]byte(s))
+			// bytes/hash/hash32 values are hex-encoded on the Encode side
+			// (canonicalCodecValue -> hex.EncodeToString), so decode
+			// symmetrically. Treating the hex text as raw bytes -- the prior
+			// behaviour -- doubled the length and reinterpreted the value as
+			// the ASCII of its own hex string, so the field did not round-trip.
+			decoded, err := hex.DecodeString(s)
+			if err != nil {
+				return fmt.Errorf("decode bytes field: %w", err)
+			}
+			field.SetBytes(decoded)
+			return nil
+		}
+	case reflect.Array:
+		if field.Type().Elem().Kind() == reflect.Uint8 {
+			var s string
+			if err := json.Unmarshal(raw, &s); err != nil {
+				return err
+			}
+			// Fixed-size byte arrays (e.g. hash32 -> [32]byte) are likewise
+			// hex-encoded on Encode; hex-decode and length-check so the value
+			// round-trips exactly.
+			decoded, err := hex.DecodeString(s)
+			if err != nil {
+				return fmt.Errorf("decode bytes field: %w", err)
+			}
+			if len(decoded) != field.Len() {
+				return fmt.Errorf("decode bytes field: expected %d bytes, got %d", field.Len(), len(decoded))
+			}
+			reflect.Copy(field, reflect.ValueOf(decoded))
 			return nil
 		}
 	}
