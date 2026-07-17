@@ -1,8 +1,9 @@
 # Native Account Identity
 
 User-facing account, validator, and consensus addresses are always `AE...`.
-The raw `4:...` format remains an internal/proof key format and is not accepted
-by user-facing message or query validation.
+The raw `ae1…` bech32 form is an internal/raw address form and is not accepted
+by user-facing message or query validation (the legacy `4:<hex>` / `-7:<hex>`
+raw strings are no longer produced or parsed).
 
 Examples:
 
@@ -10,10 +11,10 @@ Examples:
 account_address = AEAAAQAAAAAAAAAAAAAAAAAiIiIiIiIiIiIiIiIiIiIiIiIi
 validator_address = AEAAAQAAAAAAAAAAAAAAAAAzMzMzMzMzMzMzMzMzMzMzMzMz
 consensus_address = AEAAAQAAAAAAAAAAAAAAAAA0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0
-raw_internal_key = 4:0000000000000000000000002222222222222222222222222222222222222222
+raw_internal_key = ae1yg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3z8vrlgh
 ```
 
-Foreign Bech32, old raw prefixes, mixed-case
+Foreign Bech32 (non-`ae` HRP), old raw prefixes, mixed-case
 raw addresses, and malformed `AE...` strings are rejected at user-facing
 message and query boundaries.
 

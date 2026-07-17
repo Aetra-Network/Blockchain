@@ -72,6 +72,14 @@ The v1 split model records:
 - `98%` validator rewards target
 - `2%` community pool target
 
+This `98% / 2%` is a **secondary** sub-split of the validator share only
+(synchronized into `x/distribution` as `community_tax`), **not** the top-level
+fee split. The authoritative top-level split lives in `x/fee-collector`: `50%`
+burned, `35%` validators, `15%` treasury (`BurnBps 5000`, `ValidatorsBps 3500`,
+`TreasuryBps 1500`). After the `98/2` layer applies to the `35%` validator
+share, validators net about `35% × 0.98 ≈ 34.3%` and the community pool gets
+~0.7%.
+
 Integer truncation applies to the community share, and the remainder goes to
 validator rewards, so `total_collected == validator_rewards + community_pool`
 always holds. Accounting state only supports `naet` in v1.

@@ -47,7 +47,7 @@ unbondings, rewards, contract code, and contract data are preserved.
 `MsgActivateAccount` is the normal first persistent state creation path.
 Activation validates that the requested account address equals the address
 derived from the supplied public key, that the account is not already active,
-that the `AE...` and `4:...` pair roundtrips, and that account number and
+that the `AE...` and `ae1…` raw pair roundtrips, and that account number and
 sequence initialization are deterministic.
 
 Activation is idempotency-safe. A duplicate activation for the same account is
@@ -55,7 +55,7 @@ rejected before a second persistent account is created.
 
 ```text
 derive(pubkey) -> AE...
-format_raw(pubkey_hash) -> 4:...
+format_raw(pubkey_hash) -> ae1...
 MsgActivateAccount(AE..., pubkey)
 persist Account(version, address_user, address_raw, account_number, sequence)
 emit AccountActivated
@@ -68,17 +68,18 @@ terms `private-key exclusion` and `seed phrase exclusion` for this invariant.
 ## Address Model
 
 User-facing account, validator, consensus, pool, contract-owner, and API
-addresses are always `AE...`. The raw/internal address format is always
-`4:<64 lowercase hex>` for account-like proof keys and internal store keys.
+addresses are always `AE...`. The raw/internal address format is the standard
+bech32 `ae1…` form (the legacy `4:<64 lowercase hex>` raw string is no longer
+produced or parsed).
 
 Rules:
 
 - `AE...` is the only user-facing address family.
-- `4:...` is raw/internal and proof-oriented.
-- Only `AE...` and `4:...` address formats are used in user-facing APIs.
+- `ae1…` bech32 is the raw/internal, proof-oriented form.
+- Only `AE...` and `ae1…` address formats are used in user-facing APIs.
 - Address derivation does not change during account migration, auth policy
   update, recovery, multisig changes, metadata changes, or staking changes.
-- `AE...` address roundtrip and `4:...` raw roundtrip are invariant checks.
+- `AE...` address roundtrip and `ae1…` raw roundtrip are invariant checks.
 
 ## Official Liquid Staking Flow
 
@@ -307,7 +308,7 @@ System rent uses protocol-payer accounting:
 
 ## Auth Policy Modes
 
-Auth policy changes do not change `AE...` or `4:...` addresses. Public keys and
+Auth policy changes do not change `AE...` or `ae1…` addresses. Public keys and
 signature rules may change; private keys, seed phrases, SMS secrets, and TOTP
 secrets are never stored on-chain.
 
@@ -340,7 +341,7 @@ Compatibility cannot change without an explicit backward-compatibility plan:
 
 - address derivation;
 - `AE...` user-facing format;
-- `4:...` raw format;
+- `ae1…` bech32 raw format;
 - ownership keys;
 - staking ownership keys;
 - sequence semantics;

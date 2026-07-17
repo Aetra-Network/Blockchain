@@ -7,7 +7,7 @@ Required criteria:
 - validator set policy implemented and tested;
 - effective power cap implemented and tested;
 - anti-concentration rewards implemented and tested;
-- dynamic inflation implemented and tested;
+- emission inflation implemented and tested (emission-only, pinned 4% gross / net ~3.10%, band 1.5%–5%; adaptive bonded-ratio controller is design/spec, not the live driver);
 - fee burn/treasury/reward split implemented and tested;
 - slashing configured and tested;
 - AVM integrated and tested;

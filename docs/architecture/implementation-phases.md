@@ -69,8 +69,8 @@ Acceptance:
 
 Tasks:
 
-- implement dynamic inflation bounds;
-- implement target bonded ratio logic;
+- implement emission inflation bounds (live model: emission-only, pinned 400 bps / 4.00% gross, net ~3.10%, band 150–500 bps; the adaptive bonded-ratio controller is design/spec only);
+- implement target bonded ratio tracking (observability/metric, not the live inflation driver);
 - implement fee split to burn/rewards/treasury;
 - implement reward smoothing;
 - expose APR estimate query;

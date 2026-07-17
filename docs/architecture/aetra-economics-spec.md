@@ -4,6 +4,20 @@ Purpose: low/moderate inflation, fee burn, treasury allocation, reward smoothing
 
 This module is the economic-control module of Aetra. It must avoid high-APR inflation traps while keeping validator/delegator rewards understandable, bounded, and auditable.
 
+> **Live-chain note (read first).** This document specifies the *adaptive*
+> bonded-ratio inflation controller as a design contract. It is **not** the live
+> consensus inflation driver. On the running chain, protocol inflation is
+> **emission-only** (`x/emissions` → `x/mint-authority` → fee collector) and the
+> rate is **governance-pinned at 400 bps (4.00%) gross**, band **150–500 bps
+> (1.5%–5%)**, calibrated to **net ~3.10%** after the fee-burn cap
+> (`EmissionFeeBurnAnnualCapBps = 90`), on **6-hour epochs** (1460/year). See
+> `app/params/economy.go` and `app/params/mint.go`. `x/aetra-economics` is now a
+> launch-support KV policy/query surface (parameters, dashboards, invariants),
+> not the module that mints. The bonded-ratio `ComputeInflationBps` /
+> `ComputeNextInflationBps` controller below is retained as design/spec; the live
+> emission pipeline welds `MinAnnualInflationBps == MaxAnnualInflationBps == 400`,
+> so realized inflation does not steer with the staking ratio.
+
 ## Responsibilities
 
 The module must:

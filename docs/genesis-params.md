@@ -25,7 +25,7 @@ The governance parameter catalog is represented by `DefaultGovernanceParameterSp
 | `pool_backed_validator_pool_stake_naet` | staking policy | `600_000 AET` | Pool-backed pool/nominator side of the `400_000/600_000` split; split must sum to validator entry stake. |
 | `liquid_staking_pool_min_deposit_naet` | staking policy | `10 AET` | Small-user pool deposit floor; users do not need validator-sized stake. |
 | `direct_user_validator_delegation` | staking policy | `disabled` | Normal user delegation to validators is disabled; staking flows through official liquid staking pools. |
-| `staking_unbonding_blocks` | staking policy | `18 days` | Must equal the 18-day unbonding period in blocks. |
+| `staking_unbonding_blocks` | staking policy | `18 days` | Governance-catalog policy value, validated to equal 18 days in blocks. This is the policy-catalog expectation; the **actual** x/staking custody unbonding period is set separately at genesis via `--unbonding-time` and is network/genesis-dependent (mainnet ~1 week; local/testnet short). |
 | `commission_floor_bps` | staking policy | `500` | Bounded commission floor. |
 | `commission_max_bps` | staking policy | `2000` | Bounded validator commission ceiling. |
 | `commission_max_change_bps` | staking policy | `100` | Bounded daily commission change. |
@@ -74,6 +74,14 @@ Validation:
 - Validator rewards ratio and community pool ratio must be valid decimals between `0` and `1`.
 - Fee split ratios must sum exactly to `1`.
 - Prototype default params are `allowed_fee_denoms = ["naet"]`, `validator_rewards_ratio = "0.98"`, and `community_pool_ratio = "0.02"`.
+
+> The `x/fees` `0.98 / 0.02` ratios are a **secondary** sub-split of the
+> validator share only (synchronized into `x/distribution` as `community_tax`),
+> **not** the top-level fee split. The authoritative top-level split is the
+> `fee_burn_share_bps` / `fee_reward_share_bps` / `fee_treasury_share_bps`
+> economics params above — `5000 / 3500 / 1500` = 50% burn / 35% validators /
+> 15% treasury (`x/fee-collector`). After the `98/2` layer applies to the 35%
+> validator share, validators net about `35% × 0.98 ≈ 34.3%`.
 
 ## Local Bootstrap Profile
 

@@ -19,7 +19,7 @@ Global rules:
 
 - Do not start by editing `app.go` or global module wiring unless the selected
   workstream explicitly owns integration.
-- Do not change address derivation, `AE...` format, `4:...` format, sequence
+- Do not change address derivation, `AE...` format, `ae1…` bech32 raw format, sequence
   semantics, or signature domains outside the address/account workstream.
 - Sequence semantics and signature domains are address/account workstream only.
 - Do not reintroduce user direct delegation to validators.
@@ -53,8 +53,8 @@ Address contract:
 
 ```text
 user-facing account/validator/consensus/pool address = AE...
-internal raw address = 4:...
-AE... <-> 4:... roundtrip must be stable
+internal raw address = ae1... (standard bech32)
+AE... <-> ae1... roundtrip must be stable
 ```
 
 Validator entry contract:
@@ -317,12 +317,12 @@ W0 owns:
 
 W0 tasks:
 
-- Freeze `AE...` and `4:...` golden vectors.
+- Freeze `AE...` and `ae1…` golden vectors.
 - Add pool address helpers if missing: `FormatPoolAddress`,
   `ParsePoolAddress`, or explicit reuse of the account codec.
-- Ensure only `AE...` and `4:...` address formats are used in user-facing account, validator,
+- Ensure only `AE...` and `ae1…` address formats are used in user-facing account, validator,
   consensus, and pool APIs.
-- Add stable `AE... <-> 4:...` roundtrip tests for accounts, validators,
+- Add stable `AE... <-> ae1...` roundtrip tests for accounts, validators,
   consensus addresses, and pools.
 
 W0 must not touch staking keeper logic, storage rent accounting, or broad app
@@ -336,7 +336,7 @@ Required W0 tests:
 - validator `AE...` roundtrip;
 - consensus `AE...` roundtrip;
 - pool `AE...` roundtrip;
-- raw `4:...` roundtrip;
+- raw `ae1...` roundtrip;
 - malformed legacy prefixes rejected.
 
 ## Safety Rules

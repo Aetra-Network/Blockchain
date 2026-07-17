@@ -24,7 +24,7 @@ Responsibilities:
 Aetra policy:
 
 - account addresses are formatted through `app/addressing`;
-- valid public account formats are raw `4:` and userfriendly `AE...`;
+- valid public account formats are the raw bech32 `ae1…` and userfriendly `AE...` forms (the legacy `4:<hex>` raw string is no longer produced or parsed);
 - old public `0:`, `orb1`, and `ORB` formats are rejected outside explicit
   migration tooling;
 - identical signed tx bytes must not execute twice;
@@ -129,7 +129,7 @@ Aetra policy:
 
 The current regression surface includes:
 
-- address codec tests for `4:` and `AE...`;
+- address codec tests for the `ae1…` bech32 raw and `AE...` forms;
 - replay, wrong-chain, invalid signer, malformed tx, fee-denom, and insufficient
   funds integration tests;
 - deterministic bank transfer event test;

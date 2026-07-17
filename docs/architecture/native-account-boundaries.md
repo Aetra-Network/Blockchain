@@ -13,7 +13,7 @@ until an explicit migration replaces them with compatibility tests.
 
 | Area | Owner |
 | --- | --- |
-| `app/addressing` | `AE...` user-facing and `4:...` raw/internal formatting only; no state writes. |
+| `app/addressing` | `AE...` user-facing and `ae1…` bech32 raw/internal formatting only; no state writes. |
 | `x/native-account` | Versioned account state, activation, auth policy, status, sequence, account number, storage-rent references. |
 | `x/identity` | `.aet` domains, resolver records, ownership indexes, and optional domain NFT binding proofs. |
 | `x/reputation` | Deterministic account/contract reputation records and stake-time accumulators. |

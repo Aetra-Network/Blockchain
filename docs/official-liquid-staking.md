@@ -30,7 +30,7 @@ user reward share = user_pool_shares / total_pool_shares
 Addresses:
 
 - user-facing account, pool, and validator addresses are always `AE...`;
-- raw/internal addresses are `4:...`;
+- raw/internal addresses are the bech32 `ae1...` form;
 
 ## Wallet staking writes: signing model
 
@@ -51,8 +51,9 @@ bookkeeping. So:
   — that is what share ownership is recorded under. The wallet reads with
   `nativeIdentity.addressUser`.
 
-Delegator shares and unbonding entries are keyed by the `4:` **raw** form of the
-owner address (`types.RawAddressForUserAddress`); the explorer position endpoint
+Delegator shares and unbonding entries are keyed by the `ae1…` **bech32 raw**
+form of the owner address (`types.RawAddressForUserAddress`, which parses the
+address and re-emits it via `addressing.Format`); the explorer position endpoint
 queries and filters by that raw form (do not query by the `AE` form or the
 position comes back empty).
 
@@ -60,9 +61,10 @@ position comes back empty).
 
 `DefaultGenesis` ships **zero** pools. Pool creation
 (`MsgCreateOfficialLiquidStakingPool`) is gated on `Params.Authority`, which
-defaults to the keyless system constant
-`4:0000000000000000000000000000000000000000000000000000000000000001` — **no key
-signs for it**, and gov's default voting period is 48h. So a network must pick
+defaults to the keyless system constant `prototype.DefaultAuthority`
+(`ae1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqp8e93gq`, the bech32 raw form of a reserved
+system address) — **no key signs for it**, and gov's default voting period is
+48h. So a network must pick
 one of two paths.
 
 ### Path A — genesis injection (recommended for a new testnet/localnet)
@@ -82,8 +84,8 @@ no json tags):
 ```jsonc
 // app_state["nominator-pool"].State.Pools[]  and  .LiquidStakingPools[]
 { "PoolID": "official-liquid-staking",
-  "ContractAddressUser": "AE...", "ContractAddressRaw": "4:...",
-  "OfficialLiquidStaking": true, "PoolOperator": "4:...",
+  "ContractAddressUser": "AE...", "ContractAddressRaw": "ae1...",
+  "OfficialLiquidStaking": true, "PoolOperator": "ae1...",
   "PoolCommissionBps": 100, "Status": "active" }
 ```
 
@@ -102,7 +104,7 @@ For a running network where you control the authority key (or route via gov):
    l1d avm store-code --bytecode-file <compiled stake_pool> --from node0 \
        --keyring-backend test --chain-id aetra-local-1 --broadcast   # -> code-id
    l1d avm deploy <code-id> --from node0 --body-file <init-data> \
-       --keyring-backend test --chain-id aetra-local-1 --broadcast    # -> contract AE.../4:...
+       --keyring-backend test --chain-id aetra-local-1 --broadcast    # -> contract AE.../ae1...
    ```
 3. Submit `MsgCreateOfficialLiquidStakingPool` signed by the authority key
    (`Authority` = that key's `AE...`, `ContractAddressUser/Raw` = the deployed

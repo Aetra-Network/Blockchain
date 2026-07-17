@@ -121,7 +121,7 @@ write-shaped route relays already-signed bytes.
 
 ### `GET /address/{addr}` shape
 
-Accepts any form (AE / `4:` / `-7:` / hex), normalizes, classifies:
+Accepts any form (AE / `ae1…` bech32 / hex), normalizes, classifies:
 
 ```json
 {
@@ -134,8 +134,8 @@ Accepts any form (AE / `4:` / `-7:` / hex), normalizes, classifies:
     "user_friendly": "AEJk…",   // base64url; MAY contain - and _; always present
     "bech32": "ae1…",           // native bech32 form; always present
     "hex": "<hex>",             // the address's actual bytes: 20 (wallet) or 32 (contract) — no zero padding
-    "raw": "4:<64hex>",         // present ONLY for 32-byte addresses (contracts / v2)
-    "system_raw": "-7:<64hex>"  // present ONLY for system entities
+    "raw": "ae1…",              // bech32 raw form; present ONLY for 32-byte addresses (contracts / v2)
+    "system_raw": "ae1…"        // bech32 raw form; present ONLY for system entities
   },
   "wallet": {                          // present only when kind == wallet
     "type": "native_wallet",
@@ -240,11 +240,12 @@ in `app/addressing`. A given address exposes only the forms that apply to it:
 - **Native** `ae1…` — the standard bech32 form. Always present.
 - **Hex** — the address's actual bytes (20 for a native account, 32 for a
   contract / v2 address). No zero padding. Always present.
-- **Raw** `4:<64hex>` — the workchain-4 raw form. Present **only for 32-byte
-  addresses** (contracts / v2). A native 20-byte account has no meaningful
-  `4:` form (it would only zero-pad to fill the slot), so it is omitted.
-- **System raw** `-7:<64hex>` — the system workchain. Present **only for system
-  entities** that live in it.
+- **Raw** `ae1…` — the workchain-4 raw form, rendered as standard bech32.
+  Present **only for 32-byte addresses** (contracts / v2). A native 20-byte
+  account's raw form coincides with its `ae1…` bech32 form above, so it is
+  omitted.
+- **System raw** `ae1…` — the system-workchain raw form, rendered as bech32.
+  Present **only for system entities** that live in it.
 
 Reserved **system entities** (module accounts) live in either workchain `4`
 (mint, burn, treasury, fee-collector, …) or workchain `-7` (Elector, Config,

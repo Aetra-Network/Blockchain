@@ -82,7 +82,7 @@ private key — the only write-shaped route relays **already-signed** bytes.
 | Route | Returns |
 | --- | --- |
 | `GET /accounts/{addr}` | signing material: `account_number`, `sequence`, `exists` |
-| `GET /address/{addr}` | unified view for AE / `4:` / `-7:` forms: representations, balance, kind, contract bytecode + raw data |
+| `GET /address/{addr}` | unified view for AE / `ae1…` bech32 forms: representations, balance, kind, contract bytecode + raw data |
 | `GET /fees/estimate?gas=N` | deterministic fee quote (`required_fee` = the ante-handler minimum, base/max, congestion) |
 | `POST /tx/simulate` `{"tx_bytes":"<b64>"}` | dry-run gas usage |
 | `POST /tx/broadcast` `{"tx_bytes":"<b64>"}` | relays a signed tx; returns `hash`, CheckTx `code`, `accepted` |

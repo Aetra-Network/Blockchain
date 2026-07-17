@@ -17,10 +17,11 @@ Aetra uses two address families, and a wallet integration must never mix them:
 - `AE...` is the only user-facing account, validator-facing, pool, and
   contract-owner address format shown to end users, in APIs, and in
   transaction previews.
-- `4:<64 lowercase hex>` is the raw/internal address format used for
+- `ae1…` (standard bech32) is the raw/internal address format used for
   proof metadata and internal store keys. It is derived from the same public
   key as the `AE...` address, but it is not a user-facing or "primary"
-  address — wallets must not present it as the account's normal address.
+  address — wallets must not present it as the account's normal address. (The
+  legacy `4:<64 lowercase hex>` raw string is no longer produced or parsed.)
 
 The underlying Cosmos SDK bech32 prefix `ae` (`aevaloper...`, `aevalcons...`)
 exists only for SDK/tooling compatibility on the validator and consensus key
@@ -32,10 +33,10 @@ user account address, and normal users never hold or sign with them.
 
 ```text
 derive(pubkey) -> AE...            # user-facing account address
-format_raw(pubkey_hash) -> 4:...   # raw/internal address, same key
+format_raw(pubkey_hash) -> ae1...  # raw/internal bech32 address, same key
 ```
 
-- `AE...` and `4:...` are derived from the same public key and must round-trip
+- `AE...` and `ae1...` are derived from the same public key and must round-trip
   to each other; a wallet should treat a derivation mismatch as a fatal error,
   not a warning.
 - Address derivation does not change across account migration, auth-policy
@@ -46,7 +47,7 @@ format_raw(pubkey_hash) -> 4:...   # raw/internal address, same key
 ```text
 pubkey:      02a1...ef (secp256k1, compressed)
 AE address:  AE...            <- show this to the user everywhere
-raw address: 4:9f3c...a01b    <- proof/internal use only, never the primary label
+raw address: ae1...9x2        <- bech32 proof/internal use only, never the primary label
 ```
 
 ## Signing Scheme
@@ -108,7 +109,7 @@ logic, not by an individual `MsgDelegate`-style call from the wallet.
 ## Auth Policy System
 
 An account's authorization policy controls which keys and thresholds can
-authorize its actions; it never changes the account's `AE...`/`4:...`
+authorize its actions; it never changes the account's `AE...`/`ae1...`
 addresses. Supported modes:
 
 - `single_key` — one configured public key authorizes ordinary actions.
@@ -135,7 +136,7 @@ references.
   Aetra RPC, a block explorer, or any third party; key material stays inside
   the wallet's own signing boundary at all times.
 - `AE...` is the only address a wallet may present as the user's account
-  address; `4:...` and `aevaloper`/`aevalcons` values are internal/validator
+  address; `ae1...` and `aevaloper`/`aevalcons` values are internal/validator
   identifiers only and must be labeled as such if shown at all.
 - A wallet must not offer direct validator selection as the normal staking
   action; the default staking action is depositing into the official pool.
@@ -150,7 +151,7 @@ Wallets can detect AWCE-1 support from a descriptor shaped like this:
 {
   "standard": "AWCE-1",
   "canonical_user_address": "AE...",
-  "raw_address": "4:...",
+  "raw_address": "ae1...",
   "signing": "cosmos-signdoc-secp256k1",
   "default_hd_path": "m/44'/118'/0'/0/0",
   "features": [

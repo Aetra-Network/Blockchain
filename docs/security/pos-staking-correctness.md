@@ -108,7 +108,9 @@ low congestion -> low fees
 The controller inputs are staking ratio, block load, async queue depth, failed
 tx rate, annual mint, and annual burn. The deterministic outputs are:
 
-- adaptive inflation, clamped to `1%..5%`;
+- adaptive inflation, clamped to `1.5%..5%` (150–500 bps) — note the live chain
+  does not use this controller as its inflation driver: protocol inflation is
+  emission-only and governance-pinned at 4% gross / net ~3.10%;
 - burn ratio, clamped to `10%..50%`;
 - validator fee ratio after treasury and burn shares;
 - congestion, queue-limit, and rate-limit flags.

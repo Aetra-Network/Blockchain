@@ -4,7 +4,7 @@
 Aetra reserves the zero address as a protocol-invalid address:
 
 ```text
-raw:          4:0000000000000000000000000000000000000000000000000000000000000000
+raw:          ae1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq603y4j
 userfriendly: AEAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 ```
 

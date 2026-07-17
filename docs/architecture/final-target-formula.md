@@ -11,7 +11,7 @@ Aetra =
   + strict objective slashing
   + validator effective power cap
   + anti-concentration rewards
-  + dynamic low/moderate inflation
+  + pinned low/moderate emission inflation (4% gross / ~3.10% net)
   + fee burn
   + protocol treasury
   + mandatory tests for every feature
@@ -34,7 +34,7 @@ Required properties:
 - slashing is strict and objective;
 - validator effective power cap is required;
 - anti-concentration rewards are required;
-- inflation is dynamic and low/moderate;
+- inflation is low/moderate: emission-only, governance-pinned at 400 bps (4.00%) gross, calibrated to net ~3.10% after the fee-burn cap, band 150–500 bps (1.5%–5%) — the adaptive bonded-ratio controller in `aetra-economics-spec.md` is design/spec, not the live driver;
 - fee burn and protocol treasury are required;
 - every feature must have tests;
 - product direction prioritizes trust over speed-only or short-term APR positioning.
