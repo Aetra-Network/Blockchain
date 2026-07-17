@@ -23,6 +23,7 @@ import (
 	aetrastakingpolicytypes "github.com/sovereign-l1/l1/x/aetra-staking-policy/types"
 	aetravalidatorscoretypes "github.com/sovereign-l1/l1/x/aetra-validator-score/types"
 	aetracoretypes "github.com/sovereign-l1/l1/x/aetracore/types"
+	aeztypes "github.com/sovereign-l1/l1/x/aez/types"
 	avmschedulertypes "github.com/sovereign-l1/l1/x/avm-scheduler/types"
 	bridgehubtypes "github.com/sovereign-l1/l1/x/bridge-hub/types"
 	burntypes "github.com/sovereign-l1/l1/x/burn/types"
@@ -59,7 +60,6 @@ import (
 	validatorelectiontypes "github.com/sovereign-l1/l1/x/validator-election/types"
 	validatorinsurancetypes "github.com/sovereign-l1/l1/x/validator-insurance/types"
 	validatorregistrytypes "github.com/sovereign-l1/l1/x/validator-registry/types"
-	zonestypes "github.com/sovereign-l1/l1/x/zones/types"
 )
 
 func PreBlockerOrder() []string {
@@ -94,7 +94,7 @@ func BeginBlockerOrder() []string {
 		aetracoretypes.ModuleName,
 		loadtypes.ModuleName,
 		routingtypes.ModuleName,
-		zonestypes.ModuleName,
+		aeztypes.ModuleName,
 		meshtypes.ModuleName,
 		networkingtypes.ModuleName,
 		paymentstypes.ModuleName,
@@ -135,7 +135,7 @@ func EndBlockerOrder() []string {
 		aetracoretypes.ModuleName,
 		loadtypes.ModuleName,
 		routingtypes.ModuleName,
-		zonestypes.ModuleName,
+		aeztypes.ModuleName,
 		meshtypes.ModuleName,
 		networkingtypes.ModuleName,
 		paymentstypes.ModuleName,
@@ -189,7 +189,7 @@ func InitGenesisOrder() []string {
 		aetracoretypes.ModuleName,
 		loadtypes.ModuleName,
 		routingtypes.ModuleName,
-		zonestypes.ModuleName,
+		aeztypes.ModuleName,
 		meshtypes.ModuleName,
 		networkingtypes.ModuleName,
 		paymentstypes.ModuleName,
@@ -252,7 +252,7 @@ func ExportGenesisOrder() []string {
 		aetracoretypes.ModuleName,
 		loadtypes.ModuleName,
 		routingtypes.ModuleName,
-		zonestypes.ModuleName,
+		aeztypes.ModuleName,
 		meshtypes.ModuleName,
 		networkingtypes.ModuleName,
 		paymentstypes.ModuleName,

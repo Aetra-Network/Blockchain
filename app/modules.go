@@ -52,7 +52,7 @@ func (app *L1App) initModules(
 		AetraCoreKeeper:		&app.AetraCoreKeeper,
 		LoadKeeper:			&app.LoadKeeper,
 		RoutingKeeper:			&app.RoutingKeeper,
-		ZonesKeeper:			&app.ZonesKeeper,
+		AEZKeeper:			&app.AEZKeeper,
 		MeshKeeper:			&app.MeshKeeper,
 		NetworkingKeeper:		&app.NetworkingKeeper,
 		NativeAccountKeeper:		&app.NativeAccountKeeper,

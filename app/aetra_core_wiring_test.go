@@ -17,6 +17,7 @@ import (
 
 	aetracorekeeper "github.com/sovereign-l1/l1/x/aetracore/keeper"
 	aetracoretypes "github.com/sovereign-l1/l1/x/aetracore/types"
+	aeztypes "github.com/sovereign-l1/l1/x/aez/types"
 	contractskeeper "github.com/sovereign-l1/l1/x/contracts/keeper"
 	contractstypes "github.com/sovereign-l1/l1/x/contracts/types"
 	loadkeeper "github.com/sovereign-l1/l1/x/load/keeper"
@@ -31,8 +32,6 @@ import (
 	routingtypes "github.com/sovereign-l1/l1/x/routing/types"
 	schedulerkeeper "github.com/sovereign-l1/l1/x/scheduler/keeper"
 	schedulertypes "github.com/sovereign-l1/l1/x/scheduler/types"
-	zoneskeeper "github.com/sovereign-l1/l1/x/zones/keeper"
-	zonestypes "github.com/sovereign-l1/l1/x/zones/types"
 )
 
 func TestAetraCoreWiringGateRegistersPrototypeModulesDisabled(t *testing.T) {
@@ -77,10 +76,16 @@ func TestAetraCoreWiringGateRegistersPrototypeModulesDisabled(t *testing.T) {
 	require.False(t, routingGenesis.Params.Enabled)
 	require.Empty(t, routingGenesis.Shards)
 
-	zonesGenesis := decodeJSONGenesis[zoneskeeper.GenesisState](t, genesis[zonestypes.ModuleName])
-	require.False(t, zonesGenesis.Params.Enabled)
-	require.Empty(t, zonesGenesis.State.ActiveZones)
-	require.Empty(t, zonesGenesis.State.Commitments)
+	// x/aez replaces the deleted x/zones. Unlike the rest of the prototype
+	// set its default genesis is deliberately NON-empty: it ships the full
+	// 256-bucket routing table. That is what makes Phase 1 purely additive --
+	// with every bucket pinned to the core zone no entity can resolve
+	// anywhere else, so the assertion here is "core-only", not "empty".
+	aezGenesis := decodeJSONGenesis[aeztypes.GenesisState](t, genesis[aeztypes.ModuleName])
+	require.NoError(t, aezGenesis.Validate())
+	require.False(t, aezGenesis.Params.Prototype.Enabled)
+	require.True(t, aezGenesis.IsCoreOnly())
+	require.Equal(t, uint32(aeztypes.ZoneCount), uint32(len(aezGenesis.Zones)))
 
 	meshGenesis := decodeJSONGenesis[meshkeeper.GenesisState](t, genesis[meshtypes.ModuleName])
 	require.False(t, meshGenesis.Params.Enabled)
@@ -117,8 +122,11 @@ func TestFeatureDisabledMainnetProfileHasNoActiveProductionShardingBehavior(t *t
 	require.ErrorContains(t, err, "disabled")
 	err = app.RoutingKeeper.SetRoutingTable("ae1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqp8e93gq", 1, []routingkeeper.ShardConfig{{ZoneID: routingtypes.ZoneFinancial, ActiveShards: 1}})
 	require.ErrorContains(t, err, "disabled")
-	err = app.ZonesKeeper.RegisterZone(zonestypes.Zone{})
-	require.ErrorContains(t, err, "disabled")
+	// x/aez (which replaced x/zones) has no gated mutator to exercise here:
+	// it registers no Msg service at all, so there is no transaction that can
+	// move the routing table. "Inert" is enforced by the absence of a handler
+	// rather than by a handler that rejects -- a stronger property than the
+	// "disabled" errors asserted above.
 	err = app.MeshKeeper.RegisterDestination(meshtypes.MeshDestination{})
 	require.ErrorContains(t, err, "disabled")
 	err = app.NetworkingKeeper.RegisterNodeRecord(networkingtypes.NodeRecord{}, nil, 1)
@@ -190,7 +198,7 @@ func TestAetraCorePrototypeStateSurvivesRestartWhenDisabled(t *testing.T) {
 	require.NoError(t, err)
 	sourceRouting, err := source.RoutingKeeper.ExportGenesisState(sourceCtx)
 	require.NoError(t, err)
-	sourceZones, err := source.ZonesKeeper.ExportGenesisState(sourceCtx)
+	sourceAEZ, err := source.AEZKeeper.ExportGenesisState(sourceCtx)
 	require.NoError(t, err)
 	sourceMesh, err := source.MeshKeeper.ExportGenesisState(sourceCtx)
 	require.NoError(t, err)
@@ -209,7 +217,7 @@ func TestAetraCorePrototypeStateSurvivesRestartWhenDisabled(t *testing.T) {
 	require.NoError(t, err)
 	restartedRouting, err := restarted.RoutingKeeper.ExportGenesisState(restartedCtx)
 	require.NoError(t, err)
-	restartedZones, err := restarted.ZonesKeeper.ExportGenesisState(restartedCtx)
+	restartedAEZ, err := restarted.AEZKeeper.ExportGenesisState(restartedCtx)
 	require.NoError(t, err)
 	restartedMesh, err := restarted.MeshKeeper.ExportGenesisState(restartedCtx)
 	require.NoError(t, err)
@@ -225,7 +233,7 @@ func TestAetraCorePrototypeStateSurvivesRestartWhenDisabled(t *testing.T) {
 	require.Equal(t, sourceAetraCore, restartedAetraCore)
 	require.Equal(t, sourceLoad, restartedLoad)
 	require.Equal(t, sourceRouting, restartedRouting)
-	require.Equal(t, sourceZones, restartedZones)
+	require.Equal(t, sourceAEZ, restartedAEZ)
 	require.Equal(t, sourceMesh, restartedMesh)
 	require.Equal(t, sourceNetworking, restartedNetworking)
 	require.Equal(t, sourcePayments, restartedPayments)

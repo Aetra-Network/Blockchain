@@ -17,7 +17,6 @@ import (
 	loadtypes "github.com/sovereign-l1/l1/x/load/types"
 	meshtypes "github.com/sovereign-l1/l1/x/mesh/types"
 	routingtypes "github.com/sovereign-l1/l1/x/routing/types"
-	zonestypes "github.com/sovereign-l1/l1/x/zones/types"
 )
 
 func TestDefaultGenesisInitExportValidateAcceptanceChain(t *testing.T) {
@@ -130,7 +129,6 @@ func TestCustomModuleMigrationsFromV1ToCurrent(t *testing.T) {
 	fromVM[feestypes.ModuleName] = 1
 	fromVM[loadtypes.ModuleName] = 1
 	fromVM[routingtypes.ModuleName] = 1
-	fromVM[zonestypes.ModuleName] = 1
 	fromVM[meshtypes.ModuleName] = 1
 
 	updated, err := app.ModuleManager.RunMigrations(ctx, app.Configurator(), fromVM)
@@ -138,7 +136,6 @@ func TestCustomModuleMigrationsFromV1ToCurrent(t *testing.T) {
 	require.Equal(t, uint64(2), updated[feestypes.ModuleName])
 	require.Equal(t, uint64(2), updated[loadtypes.ModuleName])
 	require.Equal(t, uint64(2), updated[routingtypes.ModuleName])
-	require.Equal(t, uint64(2), updated[zonestypes.ModuleName])
 	require.Equal(t, uint64(2), updated[meshtypes.ModuleName])
 }
 

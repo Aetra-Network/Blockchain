@@ -18,6 +18,7 @@ import (
 
 	aetraaddress "github.com/sovereign-l1/l1/app/addressing"
 	appparams "github.com/sovereign-l1/l1/app/params"
+	aeztypes "github.com/sovereign-l1/l1/x/aez/types"
 	feestypes "github.com/sovereign-l1/l1/x/fees/types"
 	loadkeeper "github.com/sovereign-l1/l1/x/load/keeper"
 	loadtypes "github.com/sovereign-l1/l1/x/load/types"
@@ -25,8 +26,6 @@ import (
 	meshtypes "github.com/sovereign-l1/l1/x/mesh/types"
 	routingkeeper "github.com/sovereign-l1/l1/x/routing/keeper"
 	routingtypes "github.com/sovereign-l1/l1/x/routing/types"
-	zoneskeeper "github.com/sovereign-l1/l1/x/zones/keeper"
-	zonestypes "github.com/sovereign-l1/l1/x/zones/types"
 )
 
 func TestDefaultGenesisRejectsCorruptedPrototypeModuleState(t *testing.T) {
@@ -72,12 +71,25 @@ func TestDefaultGenesisRejectsCorruptedPrototypeModuleState(t *testing.T) {
 			genesis[routingtypes.ModuleName] = raw
 		},
 		"duplicate zone id": func(genesis GenesisState) {
-			zonesGenState := zoneskeeper.DefaultGenesis()
-			zone := zonestypes.Zone{ID: zonestypes.ZoneIDFinancial}
-			zonesGenState.State.Zones = []zonestypes.Zone{zone, zone}
-			raw, err := json.Marshal(zonesGenState)
+			// x/aez replaced x/zones. Keep the zone count at ZoneCount so
+			// this exercises the duplicate check specifically, not the
+			// arity check that precedes it.
+			aezGenState := aeztypes.DefaultGenesis()
+			duplicate := aeztypes.NewZone(aeztypes.ZoneIDCore)
+			aezGenState.Zones[1] = duplicate
+			raw, err := json.Marshal(aezGenState)
 			require.NoError(t, err)
-			genesis[zonestypes.ModuleName] = raw
+			genesis[aeztypes.ModuleName] = raw
+		},
+		"aez routing table hash mismatch": func(genesis GenesisState) {
+			// A table whose committed hash does not match its contents
+			// must be rejected: it is the only defence against a table
+			// being tampered with between export and import.
+			aezGenState := aeztypes.DefaultGenesis()
+			aezGenState.RoutingTable.Buckets[0] = aeztypes.ZoneID(4)
+			raw, err := json.Marshal(aezGenState)
+			require.NoError(t, err)
+			genesis[aeztypes.ModuleName] = raw
 		},
 		"duplicate mesh destination": func(genesis GenesisState) {
 			meshGenState := meshkeeper.DefaultGenesis()

@@ -226,7 +226,7 @@ func (app *L1App) initKeepers(
 	app.AetraCoreKeeper = persistentKeepers.AetraCoreKeeper
 	app.LoadKeeper = persistentKeepers.LoadKeeper
 	app.RoutingKeeper = persistentKeepers.RoutingKeeper
-	app.ZonesKeeper = persistentKeepers.ZonesKeeper
+	app.AEZKeeper = persistentKeepers.AEZKeeper
 	app.MeshKeeper = persistentKeepers.MeshKeeper
 	app.NetworkingKeeper = persistentKeepers.NetworkingKeeper
 	app.NativeAccountKeeper = persistentKeepers.NativeAccountKeeper

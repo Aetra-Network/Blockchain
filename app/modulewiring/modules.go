@@ -58,6 +58,8 @@ import (
 	aetravalidatorscorekeeper "github.com/sovereign-l1/l1/x/aetra-validator-score/keeper"
 	aetracoremodule "github.com/sovereign-l1/l1/x/aetracore"
 	aetracorekeeper "github.com/sovereign-l1/l1/x/aetracore/keeper"
+	aezmodule "github.com/sovereign-l1/l1/x/aez"
+	aezkeeper "github.com/sovereign-l1/l1/x/aez/keeper"
 	avmschedulermodule "github.com/sovereign-l1/l1/x/avm-scheduler"
 	avmschedulerkeeper "github.com/sovereign-l1/l1/x/avm-scheduler/keeper"
 	bridgehubmodule "github.com/sovereign-l1/l1/x/bridge-hub"
@@ -130,8 +132,6 @@ import (
 	validatorinsurancekeeper "github.com/sovereign-l1/l1/x/validator-insurance/keeper"
 	validatorregistrymodule "github.com/sovereign-l1/l1/x/validator-registry"
 	validatorregistrykeeper "github.com/sovereign-l1/l1/x/validator-registry/keeper"
-	zonesmodule "github.com/sovereign-l1/l1/x/zones"
-	zoneskeeper "github.com/sovereign-l1/l1/x/zones/keeper"
 )
 
 type ModuleDeps struct {
@@ -172,7 +172,7 @@ type ModuleDeps struct {
 	AetraCoreKeeper			*aetracorekeeper.Keeper
 	LoadKeeper			*loadkeeper.Keeper
 	RoutingKeeper			*routingkeeper.Keeper
-	ZonesKeeper			*zoneskeeper.Keeper
+	AEZKeeper			*aezkeeper.Keeper
 	MeshKeeper			*meshkeeper.Keeper
 	NetworkingKeeper		*networkingkeeper.Keeper
 	NativeAccountKeeper		*nativeaccountkeeper.Keeper
@@ -234,7 +234,7 @@ func NewModuleManager(deps ModuleDeps) *module.Manager {
 		aetracoremodule.NewAppModule(deps.AetraCoreKeeper),
 		loadmodule.NewAppModule(deps.LoadKeeper),
 		routingmodule.NewAppModule(deps.RoutingKeeper),
-		zonesmodule.NewAppModule(deps.ZonesKeeper),
+		aezmodule.NewAppModule(deps.AEZKeeper),
 		meshmodule.NewAppModule(deps.MeshKeeper),
 		networkingmodule.NewAppModule(deps.NetworkingKeeper),
 		nativeaccountmodule.NewAppModule(*deps.NativeAccountKeeper),

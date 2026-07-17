@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	appparams "github.com/sovereign-l1/l1/app/params"
+	aeztypes "github.com/sovereign-l1/l1/x/aez/types"
 	feestypes "github.com/sovereign-l1/l1/x/fees/types"
 	loadkeeper "github.com/sovereign-l1/l1/x/load/keeper"
 	loadtypes "github.com/sovereign-l1/l1/x/load/types"
@@ -20,8 +21,6 @@ import (
 	meshtypes "github.com/sovereign-l1/l1/x/mesh/types"
 	routingkeeper "github.com/sovereign-l1/l1/x/routing/keeper"
 	routingtypes "github.com/sovereign-l1/l1/x/routing/types"
-	zoneskeeper "github.com/sovereign-l1/l1/x/zones/keeper"
-	zonestypes "github.com/sovereign-l1/l1/x/zones/types"
 )
 
 const fixtureTestAssetDenom = "testtoken"
@@ -91,10 +90,10 @@ func TestDefaultGenesisValidatesAndSetsCustomModuleDefaults(t *testing.T) {
 	require.False(t, routingGenState.Params.Enabled)
 	require.Empty(t, routingGenState.Shards)
 
-	var zonesGenState zoneskeeper.GenesisState
-	require.NoError(t, json.Unmarshal(genesis[zonestypes.ModuleName], &zonesGenState))
-	require.False(t, zonesGenState.Params.Enabled)
-	require.Empty(t, zonesGenState.State.Zones)
+	var aezGenState aeztypes.GenesisState
+	require.NoError(t, json.Unmarshal(genesis[aeztypes.ModuleName], &aezGenState))
+	require.False(t, aezGenState.Params.Prototype.Enabled)
+	require.True(t, aezGenState.IsCoreOnly())
 
 	var meshGenState meshkeeper.GenesisState
 	require.NoError(t, json.Unmarshal(genesis[meshtypes.ModuleName], &meshGenState))
@@ -146,10 +145,11 @@ func TestCustomModuleGenesisInitExportRoundTrip(t *testing.T) {
 	require.NoError(t, routingGenState.Validate())
 	require.False(t, routingGenState.Params.Enabled)
 
-	var zonesGenState zoneskeeper.GenesisState
-	require.NoError(t, json.Unmarshal(exportedGenesis[zonestypes.ModuleName], &zonesGenState))
-	require.NoError(t, zonesGenState.Validate())
-	require.False(t, zonesGenState.Params.Enabled)
+	var aezGenState aeztypes.GenesisState
+	require.NoError(t, json.Unmarshal(exportedGenesis[aeztypes.ModuleName], &aezGenState))
+	require.NoError(t, aezGenState.Validate())
+	require.False(t, aezGenState.Params.Prototype.Enabled)
+	require.True(t, aezGenState.IsCoreOnly())
 
 	var meshGenState meshkeeper.GenesisState
 	require.NoError(t, json.Unmarshal(exportedGenesis[meshtypes.ModuleName], &meshGenState))

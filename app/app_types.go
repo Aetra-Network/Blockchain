@@ -29,6 +29,7 @@ import (
 	aetrastakingpolicykeeper "github.com/sovereign-l1/l1/x/aetra-staking-policy/keeper"
 	aetravalidatorscorekeeper "github.com/sovereign-l1/l1/x/aetra-validator-score/keeper"
 	aetracorekeeper "github.com/sovereign-l1/l1/x/aetracore/keeper"
+	aezkeeper "github.com/sovereign-l1/l1/x/aez/keeper"
 	avmschedulerkeeper "github.com/sovereign-l1/l1/x/avm-scheduler/keeper"
 	bridgehubkeeper "github.com/sovereign-l1/l1/x/bridge-hub/keeper"
 	burnkeeper "github.com/sovereign-l1/l1/x/burn/keeper"
@@ -65,7 +66,6 @@ import (
 	validatorelectionkeeper "github.com/sovereign-l1/l1/x/validator-election/keeper"
 	validatorinsurancekeeper "github.com/sovereign-l1/l1/x/validator-insurance/keeper"
 	validatorregistrykeeper "github.com/sovereign-l1/l1/x/validator-registry/keeper"
-	zoneskeeper "github.com/sovereign-l1/l1/x/zones/keeper"
 )
 
 var (
@@ -120,7 +120,7 @@ type L1App struct {
 	AetraCoreKeeper			aetracorekeeper.Keeper
 	LoadKeeper			loadkeeper.Keeper
 	RoutingKeeper			routingkeeper.Keeper
-	ZonesKeeper			zoneskeeper.Keeper
+	AEZKeeper			aezkeeper.Keeper
 	MeshKeeper			meshkeeper.Keeper
 	NetworkingKeeper		networkingkeeper.Keeper
 	NativeAccountKeeper		nativeaccountkeeper.Keeper

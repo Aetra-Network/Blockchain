@@ -8,6 +8,8 @@ import (
 	actorregistrytypes "github.com/sovereign-l1/l1/x/actor-registry/types"
 	aetracorekeeper "github.com/sovereign-l1/l1/x/aetracore/keeper"
 	aetracoretypes "github.com/sovereign-l1/l1/x/aetracore/types"
+	aezkeeper "github.com/sovereign-l1/l1/x/aez/keeper"
+	aeztypes "github.com/sovereign-l1/l1/x/aez/types"
 	avmschedulerkeeper "github.com/sovereign-l1/l1/x/avm-scheduler/keeper"
 	avmschedulertypes "github.com/sovereign-l1/l1/x/avm-scheduler/types"
 	bridgehubkeeper "github.com/sovereign-l1/l1/x/bridge-hub/keeper"
@@ -58,8 +60,6 @@ import (
 	validatorinsurancetypes "github.com/sovereign-l1/l1/x/validator-insurance/types"
 	validatorregistrykeeper "github.com/sovereign-l1/l1/x/validator-registry/keeper"
 	validatorregistrytypes "github.com/sovereign-l1/l1/x/validator-registry/types"
-	zoneskeeper "github.com/sovereign-l1/l1/x/zones/keeper"
-	zonestypes "github.com/sovereign-l1/l1/x/zones/types"
 )
 
 type PersistentKeepers struct {
@@ -77,7 +77,7 @@ type PersistentKeepers struct {
 	AetraCoreKeeper			aetracorekeeper.Keeper
 	LoadKeeper			loadkeeper.Keeper
 	RoutingKeeper			routingkeeper.Keeper
-	ZonesKeeper			zoneskeeper.Keeper
+	AEZKeeper			aezkeeper.Keeper
 	MeshKeeper			meshkeeper.Keeper
 	NetworkingKeeper		networkingkeeper.Keeper
 	NativeAccountKeeper		nativeaccountkeeper.Keeper
@@ -115,7 +115,10 @@ func NewPersistentKeepers(keys map[string]*storetypes.KVStoreKey, bankKeeper sto
 		AetraCoreKeeper:		aetracorekeeper.NewPersistentKeeper(runtime.NewKVStoreService(keys[aetracoretypes.StoreKey])),
 		LoadKeeper:			loadkeeper.NewPersistentKeeper(runtime.NewKVStoreService(keys[loadtypes.StoreKey])),
 		RoutingKeeper:			routingkeeper.NewPersistentKeeper(runtime.NewKVStoreService(keys[routingtypes.StoreKey])),
-		ZonesKeeper:			zoneskeeper.NewPersistentKeeper(runtime.NewKVStoreService(keys[zonestypes.StoreKey])),
+		// No .With*Keeper(...) chain: x/aez takes no bank or staking
+		// handle. It moves messages, never money (I-10), and holds no
+		// other module's store handle (I-11).
+		AEZKeeper:			aezkeeper.NewPersistentKeeper(runtime.NewKVStoreService(keys[aeztypes.StoreKey])),
 		MeshKeeper:			meshkeeper.NewPersistentKeeper(runtime.NewKVStoreService(keys[meshtypes.StoreKey])),
 		NetworkingKeeper:		networkingkeeper.NewPersistentKeeper(runtime.NewKVStoreService(keys[networkingtypes.StoreKey])),
 		NativeAccountKeeper:		nativeAccountKeeper,

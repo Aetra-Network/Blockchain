@@ -1,4 +1,4 @@
-package zones
+package aez
 
 import (
 	"encoding/json"
@@ -15,13 +15,26 @@ import (
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/cosmos/cosmos-sdk/types/module"
 
+	"github.com/sovereign-l1/l1/x/aez/keeper"
+	"github.com/sovereign-l1/l1/x/aez/types"
 	"github.com/sovereign-l1/l1/x/internal/prototype"
-	"github.com/sovereign-l1/l1/x/zones/keeper"
-	"github.com/sovereign-l1/l1/x/zones/types"
 )
 
-const ConsensusVersion = prototype.NextMigrationVersion
+const ConsensusVersion = prototype.CurrentGenesisVersion
 
+// x/aez is registered as a PROTOTYPE module (app/wiring/aetracore/modules.go).
+//
+// The interface list below is deliberately short, and every omission is load-
+// bearing. app/aetra_core_wiring_test.go:38-63 iterates EVERY prototype module
+// and asserts it implements NEITHER appmodule.HasBeginBlocker NOR
+// appmodule.HasEndBlocker, while still appearing in both order lists as a no-op
+// position. So:
+//
+//   - NO BeginBlock, NO EndBlock. Phase 1 is inert. The Phase 4 drain EndBlocker
+//     cannot land while x/aez is a prototype; it graduates into systemModules
+//     first, exactly as x/contracts did (modules.go:81-87).
+//   - NO module.HasServices Msg registration. Query only -- there is no
+//     transaction that can move the routing table.
 var (
 	_	module.AppModuleBasic	= AppModule{}
 	_	module.HasGenesis	= AppModule{}
@@ -33,23 +46,26 @@ type AppModule struct {
 	keeper *keeper.Keeper
 }
 
-func NewAppModule(k *keeper.Keeper) AppModule {
-	return AppModule{keeper: k}
-}
+func NewAppModule(k *keeper.Keeper) AppModule	{ return AppModule{keeper: k} }
 
-func (AppModule) IsOnePerModuleType()						{}
-func (AppModule) IsAppModule()							{}
-func (AppModule) Name() string							{ return types.ModuleName }
-func (AppModule) RegisterLegacyAminoCodec(*codec.LegacyAmino)			{}
-func (AppModule) RegisterInterfaces(codectypes.InterfaceRegistry)		{}
-func (AppModule) RegisterGRPCGatewayRoutes(client.Context, *runtime.ServeMux)	{}
+func (AppModule) IsOnePerModuleType()	{}
+func (AppModule) IsAppModule()		{}
+func (AppModule) Name() string		{ return types.ModuleName }
 
+// RegisterLegacyAminoCodec and RegisterInterfaces are no-ops: x/aez defines no
+// Msg types, so it has nothing to register into the interface registry.
+func (AppModule) RegisterLegacyAminoCodec(_ *codec.LegacyAmino)		{}
+func (AppModule) RegisterInterfaces(_ codectypes.InterfaceRegistry)	{}
+
+// RegisterGRPCGatewayRoutes is a no-op: the hand-written Query descriptors carry
+// no grpc-gateway annotations (see x/aez/types/service.go on why the descriptors
+// are hand-written rather than buf-generated).
+func (AppModule) RegisterGRPCGatewayRoutes(_ client.Context, _ *runtime.ServeMux)	{}
+
+// RegisterServices registers the Query service and NOTHING else. There is
+// deliberately no cfg.MsgServer() registration.
 func (am AppModule) RegisterServices(cfg module.Configurator) {
-	if err := cfg.RegisterMigration(types.ModuleName, 1, func(ctx sdk.Context) error {
-		return am.keeper.Migrate1to2State(ctx)
-	}); err != nil {
-		panic(fmt.Sprintf("failed to register x/%s migration from version 1 to 2: %v", types.ModuleName, err))
-	}
+	types.RegisterQueryServer(cfg.QueryServer(), keeper.NewQueryServerImpl(am.keeper))
 }
 
 func (AppModule) DefaultGenesis(codec.JSONCodec) json.RawMessage {
@@ -57,7 +73,7 @@ func (AppModule) DefaultGenesis(codec.JSONCodec) json.RawMessage {
 }
 
 func (AppModule) ValidateGenesis(_ codec.JSONCodec, _ client.TxEncodingConfig, bz json.RawMessage) error {
-	var gs keeper.GenesisState
+	var gs types.GenesisState
 	if err := unmarshalGenesis(types.ModuleName, bz, &gs); err != nil {
 		return err
 	}
@@ -65,7 +81,7 @@ func (AppModule) ValidateGenesis(_ codec.JSONCodec, _ client.TxEncodingConfig, b
 }
 
 func (am AppModule) InitGenesis(ctx sdk.Context, _ codec.JSONCodec, bz json.RawMessage) {
-	var gs keeper.GenesisState
+	var gs types.GenesisState
 	if err := unmarshalGenesis(types.ModuleName, bz, &gs); err != nil {
 		panic(err)
 	}
@@ -84,7 +100,9 @@ func (am AppModule) ExportGenesis(ctx sdk.Context, _ codec.JSONCodec) json.RawMe
 
 func (AppModule) ConsensusVersion() uint64	{ return ConsensusVersion }
 func (AppModule) GetTxCmd() *cobra.Command	{ return nil }
-func (AppModule) GetQueryCmd() *cobra.Command	{ return nil }
+func (AppModule) GetQueryCmd() *cobra.Command {
+	return nil
+}
 
 func mustMarshalGenesis(moduleName string, value any) json.RawMessage {
 	bz, err := json.Marshal(value)

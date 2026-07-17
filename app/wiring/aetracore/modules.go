@@ -8,6 +8,7 @@ import (
 	aetrastakingpolicytypes "github.com/sovereign-l1/l1/x/aetra-staking-policy/types"
 	aetravalidatorscoretypes "github.com/sovereign-l1/l1/x/aetra-validator-score/types"
 	aetracoretypes "github.com/sovereign-l1/l1/x/aetracore/types"
+	aeztypes "github.com/sovereign-l1/l1/x/aez/types"
 	avmschedulertypes "github.com/sovereign-l1/l1/x/avm-scheduler/types"
 	bridgehubtypes "github.com/sovereign-l1/l1/x/bridge-hub/types"
 	configvotingtypes "github.com/sovereign-l1/l1/x/config-voting/types"
@@ -33,7 +34,6 @@ import (
 	validatorelectiontypes "github.com/sovereign-l1/l1/x/validator-election/types"
 	validatorinsurancetypes "github.com/sovereign-l1/l1/x/validator-insurance/types"
 	validatorregistrytypes "github.com/sovereign-l1/l1/x/validator-registry/types"
-	zonestypes "github.com/sovereign-l1/l1/x/zones/types"
 )
 
 type RoutingExecutionPoint string
@@ -48,7 +48,13 @@ var prototypeModules = []string{
 	aetracoretypes.ModuleName,
 	loadtypes.ModuleName,
 	routingtypes.ModuleName,
-	zonestypes.ModuleName,
+	// x/aez replaces the deleted x/zones at this index. Both this list and
+	// PrototypeStoreKeys() below are paired POSITIONALLY by
+	// app/aetra_core_wiring.go:18-25, and their lengths are compared
+	// directly at :14-16 -- a mismatch is a startup panic, not a test
+	// failure. Keeping x/aez at the same index in both is what preserves
+	// that pairing.
+	aeztypes.ModuleName,
 	meshtypes.ModuleName,
 	networkingtypes.ModuleName,
 	paymentstypes.ModuleName,
@@ -100,7 +106,7 @@ func PrototypeStoreKeys() []string {
 		aetracoretypes.StoreKey,
 		loadtypes.StoreKey,
 		routingtypes.StoreKey,
-		zonestypes.StoreKey,
+		aeztypes.StoreKey,
 		meshtypes.StoreKey,
 		networkingtypes.StoreKey,
 		paymentstypes.StoreKey,
