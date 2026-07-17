@@ -15,6 +15,7 @@ import (
 	configtypes "github.com/sovereign-l1/l1/x/config/types"
 	feecollectortypes "github.com/sovereign-l1/l1/x/fee-collector/types"
 	feestypes "github.com/sovereign-l1/l1/x/fees/types"
+	identityroottypes "github.com/sovereign-l1/l1/x/identity-root/types"
 	mintauthoritytypes "github.com/sovereign-l1/l1/x/mint-authority/types"
 	nominatorpooltypes "github.com/sovereign-l1/l1/x/nominator-pool/types"
 	systemregistrytypes "github.com/sovereign-l1/l1/x/system-registry/types"
@@ -54,6 +55,11 @@ func TestPrototypeModuleAccountPermissionsAreNarrow(t *testing.T) {
 		// validators directly -- it is its own custodian, unlike
 		// storage-rent/delegator-protection/validator-insurance above.
 		nominatorpooltypes.ModuleName:			nil,
+		// ANS Phase A: identity-root (the .aet collection) custodies deposits
+		// and auction escrows at its own module account. Its catalog address
+		// stays unfunded (CanReceiveUserFunds=false), so unlike nominator-pool
+		// its module account stays blocked (default case below).
+		identityroottypes.ModuleName:			nil,
 	}
 	require.Equal(t, expected, GetMaccPerms())
 

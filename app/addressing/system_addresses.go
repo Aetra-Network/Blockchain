@@ -120,7 +120,12 @@ var reservedSystemAddresses = []SystemAddress{
 	systemAddress("AETAVMScheduler", "avm-scheduler", "ae1qkt9jevkt9jevkt9jevkt9jevkt9jevkt9jevkt9jevkt9jevktqsnz35p", "AEAAAQWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW", false, false, false, false),
 	systemAddress("AETActorRegistry", "actor-registry", "ae1qht46awht46awht46awht46awht46awht46awht46awht46awhts95amw6", "AEAAAQXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX", false, false, false, false),
 	systemAddress("AETStorageRent", "storage-rent", "ae1qevkt9jevkt9jevkt9jevkt9jevkt9jevkt9jevkt9jevkt9jevs46en3t", "AEAAAQZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ", false, true, false, false),
-	systemAddress("AETIdentityRoot", "identity-root", "ae1qggjzys3yyfpzggjzys3yyfpzggjzys3yyfpzggjzys3yyfpzggsc5rpwe", "AEAAAQIRIRIRIRIRIRIRIRIRIRIRIRIRIRIRIRIRIRIRIRIR", false, false, false, false),
+	// CanHoldFunds=true (was false): the collection now custodies real deposits
+	// and auction escrows via its cosmos module account
+	// (authtypes.NewModuleAddress of "identityroot"); the reserved catalog
+	// address stays distinct and unfunded per the two-layer model, same as
+	// AETNominatorPool/AETTreasury.
+	systemAddress("AETIdentityRoot", "identity-root", "ae1qggjzys3yyfpzggjzys3yyfpzggjzys3yyfpzggjzys3yyfpzggsc5rpwe", "AEAAAQIRIRIRIRIRIRIRIRIRIRIRIRIRIRIRIRIRIRIRIRIR", false, true, false, false),
 	systemAddress("AETBridgeHub", "bridge-hub", "ae1qprsguz8q3cywprsguz8q3cywprsguz8q3cywprsguz8q3cywprsmj8vve", "AEAAAQBHBHBHBHBHBHBHBHBHBHBHBHBHBHBHBHBHBHBHBHBH", false, false, false, false),
 	systemAddress("AETCrossChainRegistry", "cross-chain-registry", "ae1qzpqsgyzpqsgyzpqsgyzpqsgyzpqsgyzpqsgyzpqsgyzpqsgyzpqgauvj7", "AEAAAQCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC", false, false, false, false),
 	systemAddress("AETShardingCoordinator", "sharding-coordinator", "ae1qjr5say8fp6gwjr5say8fp6gwjr5say8fp6gwjr5say8fp6gwjrsxas8ts", "AEAAAQSHSHSHSHSHSHSHSHSHSHSHSHSHSHSHSHSHSHSHSHSH", false, false, false, false),

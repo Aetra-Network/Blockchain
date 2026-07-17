@@ -19,6 +19,7 @@ import (
 	delegatorprotectiontypes "github.com/sovereign-l1/l1/x/delegator-protection/types"
 	feecollectortypes "github.com/sovereign-l1/l1/x/fee-collector/types"
 	feestypes "github.com/sovereign-l1/l1/x/fees/types"
+	identityroottypes "github.com/sovereign-l1/l1/x/identity-root/types"
 	mintauthoritytypes "github.com/sovereign-l1/l1/x/mint-authority/types"
 	nominatorpooltypes "github.com/sovereign-l1/l1/x/nominator-pool/types"
 	systemregistrytypes "github.com/sovereign-l1/l1/x/system-registry/types"
@@ -128,6 +129,15 @@ var moduleAccountPermissions = map[string][]string{
 	// which already holds authtypes.Staking -- the delegator side needs
 	// nothing special), and x/distribution reward withdrawal is the same.
 	nominatorpooltypes.ModuleName:			nil,
+	// x/identity-root (the .aet collection) now custodies real deposits and
+	// auction escrows at its own module account. Funds enter only via
+	// SendCoinsFromAccountToModule; refunds/payouts target user/seller
+	// addresses; the treasury sweep is SendCoinsFromModuleToModule -- none of
+	// which needs a special permission (no mint/burn/stake). The catalog
+	// address stays unfunded (CanReceiveUserFunds=false), so this account stays
+	// blocked (unlike nominator-pool, it is never a SendCoinsFromModuleToAccount
+	// recipient).
+	identityroottypes.ModuleName:			nil,
 }
 
 var reservedSystemModuleAccountSpecs = []struct {
@@ -162,6 +172,12 @@ var reservedSystemModuleAccountSpecs = []struct {
 	// authtypes.NewModuleAddress(nominatorpooltypes.ModuleName) directly, not
 	// in a fee-collector reserve bucket.
 	{"AETNominatorPool", nominatorpooltypes.ModuleName, nominatorpooltypes.ModuleName, nil},
+	// The moduleName field is the catalog's hyphenated "identity-root" (the SA2
+	// check at ValidateReservedSystemModuleAccountWiring asserts spec.ModuleName
+	// == catalog.ModuleName); only the moduleAccountName is the cosmos account
+	// name identityroottypes.ModuleName ("identityroot"). Using the type
+	// constant for BOTH would panic the wiring gate at startup.
+	{"AETIdentityRoot", "identity-root", identityroottypes.ModuleName, nil},
 }
 
 func ModuleAccountPermissions() map[string][]string {

@@ -244,7 +244,11 @@ func (app *L1App) initKeepers(
 	app.ActorRegistryKeeper = persistentKeepers.ActorRegistryKeeper
 	app.ContractsKeeper = persistentKeepers.ContractsKeeper
 	app.StorageRentKeeper = persistentKeepers.StorageRentKeeper
-	app.IdentityRootKeeper = persistentKeepers.IdentityRootKeeper
+	// ANS Phase A: the .aet collection custodies real deposits and auction
+	// escrows via its own bank module account (SendCoinsFromAccountToModule /
+	// refunds / SendCoinsFromModuleToModule treasury sweep). app.BankKeeper
+	// satisfies the narrow identity-root BankKeeper interface.
+	app.IdentityRootKeeper = persistentKeepers.IdentityRootKeeper.WithBankKeeper(app.BankKeeper)
 	app.BridgeHubKeeper = persistentKeepers.BridgeHubKeeper
 	app.CrossChainRegistryKeeper = persistentKeepers.CrossChainRegistryKeeper
 	app.ShardingCoordinatorKeeper = persistentKeepers.ShardingCoordinatorKeeper

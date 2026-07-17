@@ -2,12 +2,13 @@ package keeper
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"math"
-	"reflect"
+	"sync"
 
 	corestore "cosmossdk.io/core/store"
+	sdk "github.com/cosmos/cosmos-sdk/types"
+	authtypes "github.com/cosmos/cosmos-sdk/x/auth/types"
 
 	"github.com/sovereign-l1/l1/x/identity-root/types"
 	"github.com/sovereign-l1/l1/x/internal/prototype"
@@ -22,17 +23,97 @@ type GenesisState struct {
 	State		types.IdentityRootState
 }
 
+// BankKeeper is the narrow bank interface the collection needs to custody
+// deposits (SendCoinsFromAccountToModule), refund losing/underfunded bids
+// (SendCoinsFromModuleToAccount), sweep to the treasury
+// (SendCoinsFromModuleToModule) and measure its own balance (SpendableCoins).
+// Funds enter ONLY via the message Amount -> SendCoinsFromAccountToModule; the
+// reserved catalog address stays unfunded (CanReceiveUserFunds=false), the
+// FINDING-017 stranding guard.
+type BankKeeper interface {
+	SendCoinsFromAccountToModule(ctx context.Context, senderAddr sdk.AccAddress, recipientModule string, amt sdk.Coins) error
+	SendCoinsFromModuleToAccount(ctx context.Context, senderModule string, recipientAddr sdk.AccAddress, amt sdk.Coins) error
+	SendCoinsFromModuleToModule(ctx context.Context, senderModule, recipientModule string, amt sdk.Coins) error
+	SpendableCoins(ctx context.Context, addr sdk.AccAddress) sdk.Coins
+}
+
 type Keeper struct {
 	genesis		GenesisState
 	storeService	corestore.KVStoreService
+	// written and writtenResidual are this keeper's model of what the store
+	// currently holds: the exact committed bytes of every per-record key, and
+	// of the residual blob. writeDiff writes only what differs from them. Both
+	// are re-established from the committed store by loadForBlock at the top of
+	// every consensus entry point. See persistence.go.
+	written		hotRecords
+	writtenResidual	[]byte
+	bankKeeper	BankKeeper
+	runtimeCtx	context.Context
+	// mu guards genesis (and the written baseline) against the concurrent
+	// gRPC/REST query goroutines AND the Simulate RPC path racing the
+	// single-threaded, ABCI-serialized msg-handler write path (FINDING-008).
+	// It is a *sync.RWMutex, not a value: several methods are value receivers
+	// that return a modified Keeper copy during wiring (WithBankKeeper), and a
+	// pointer field lets every copy keep sharing the SAME lock. Every exported
+	// mutator holds Lock for its whole body and persists inside it; every
+	// exported reader holds RLock. The lock helpers are nil-safe so a
+	// zero-value Keeper (var x Keeper) built by a test still works.
+	mu *sync.RWMutex
 }
 
 func NewKeeper() Keeper {
-	return Keeper{genesis: DefaultGenesis()}
+	return Keeper{genesis: DefaultGenesis(), mu: &sync.RWMutex{}}
 }
 
 func NewPersistentKeeper(storeService corestore.KVStoreService) Keeper {
-	return Keeper{genesis: DefaultGenesis(), storeService: storeService}
+	return Keeper{genesis: DefaultGenesis(), storeService: storeService, mu: &sync.RWMutex{}}
+}
+
+// WithBankKeeper wires real bank custody. Without it the collection handlers
+// and EndBlocker no-op every money movement (see hasCustody) and behave as a
+// pure ledger, safe for the existing unit tests that don't construct a bank.
+func (k Keeper) WithBankKeeper(bk BankKeeper) Keeper {
+	k.bankKeeper = bk
+	return k
+}
+
+// CollectionModuleAddress is the collection's real, bank-custodied cosmos
+// module account -- distinct from the reserved catalog ("vanity") address
+// AETIdentityRoot, which stays unfunded per the two-layer address model. This
+// is the address that actually holds deposits and auction escrows.
+func CollectionModuleAddress() sdk.AccAddress {
+	return authtypes.NewModuleAddress(types.ModuleName)
+}
+
+// hasCustody reports whether real bank custody is wired. A keeper built without
+// WithBankKeeper stays ledger-only (no bank movement, no sweep) -- every
+// existing unit test constructs one this way.
+func (k Keeper) hasCustody() bool {
+	return k.bankKeeper != nil
+}
+
+func (k *Keeper) lockW() {
+	if k.mu != nil {
+		k.mu.Lock()
+	}
+}
+
+func (k *Keeper) unlockW() {
+	if k.mu != nil {
+		k.mu.Unlock()
+	}
+}
+
+func (k *Keeper) lockR() {
+	if k.mu != nil {
+		k.mu.RLock()
+	}
+}
+
+func (k *Keeper) unlockR() {
+	if k.mu != nil {
+		k.mu.RUnlock()
+	}
 }
 
 func DefaultGenesis() GenesisState {
@@ -60,6 +141,11 @@ func (k *Keeper) InitGenesis(gs GenesisState) error {
 	if err := gs.Validate(); err != nil {
 		return err
 	}
+	if k.mu == nil {
+		k.mu = &sync.RWMutex{}
+	}
+	k.lockW()
+	defer k.unlockW()
 	k.genesis = cloneGenesis(gs)
 	return nil
 }
@@ -68,46 +154,89 @@ func (k *Keeper) InitGenesisState(ctx context.Context, gs GenesisState) error {
 	if err := gs.Validate(); err != nil {
 		return err
 	}
+	if k.mu == nil {
+		k.mu = &sync.RWMutex{}
+	}
+	k.lockW()
+	defer k.unlockW()
+	k.runtimeCtx = ctx
 	k.genesis = cloneGenesis(gs)
 	if k.storeService == nil {
 		return nil
 	}
-	bz, err := json.Marshal(cloneGenesis(gs))
-	if err != nil {
-		return err
-	}
-	return k.storeService.OpenKVStore(ctx).Set(genesisKey, bz)
+	// writeReplacingState makes the store hold exactly gs, removing any records a
+	// prior state held that this genesis does not mention. See persistence.go.
+	return k.writeReplacingState(ctx, cloneGenesis(gs))
 }
 
-func (k Keeper) ExportGenesis() GenesisState {
+func (k *Keeper) ExportGenesis() GenesisState {
+	k.lockR()
+	defer k.unlockR()
 	return cloneGenesis(k.genesis)
 }
 
-func (k Keeper) ExportGenesisState(ctx context.Context) (GenesisState, error) {
+func (k *Keeper) ExportGenesisState(ctx context.Context) (GenesisState, error) {
 	if k.storeService == nil {
 		return k.ExportGenesis(), nil
 	}
-	if !reflect.DeepEqual(k.genesis, DefaultGenesis()) {
-		return k.ExportGenesis(), nil
-	}
-	bz, err := k.storeService.OpenKVStore(ctx).Get(genesisKey)
+	gs, _, found, err := k.readGenesisState(ctx)
 	if err != nil {
 		return GenesisState{}, err
 	}
-	if len(bz) == 0 {
-		return DefaultGenesis(), nil
+	if !found {
+		return k.ExportGenesis(), nil
 	}
-	var gs GenesisState
-	if err := json.Unmarshal(bz, &gs); err != nil {
-		return GenesisState{}, err
-	}
+	gs = cloneGenesis(gs)
 	if err := gs.Validate(); err != nil {
 		return GenesisState{}, err
 	}
-	return cloneGenesis(gs), nil
+	return gs, nil
+}
+
+// loadForBlock rehydrates the in-memory genesis and the write baseline from the
+// committed store at the top of every consensus entry point (each Msg handler
+// and the EndBlocker), and points runtimeCtx at the live block context. It MUST
+// run before any mutation so a restarted or state-synced node -- where
+// InitGenesis is not re-run -- operates on committed state instead of the empty
+// default (the FINDING-006 consensus-halt class).
+func (k *Keeper) loadForBlock(ctx context.Context) error {
+	k.lockW()
+	defer k.unlockW()
+	k.runtimeCtx = ctx
+	if k.storeService == nil {
+		return nil
+	}
+	gs, baseline, found, err := k.readGenesisState(ctx)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return nil
+	}
+	k.written = baseline.records
+	k.writtenResidual = baseline.residual
+	gs = cloneGenesis(gs)
+	if err := gs.Validate(); err != nil {
+		return err
+	}
+	k.genesis = gs
+	return nil
+}
+
+// persistLocked assigns next as the new in-memory genesis and, when custody is
+// wired, writes the per-record diff to the store. Assumes k.mu is held (write)
+// by the caller.
+func (k *Keeper) persistLocked(next GenesisState) error {
+	k.genesis = next
+	if k.storeService == nil || k.runtimeCtx == nil {
+		return nil
+	}
+	return k.writeDiff(k.runtimeCtx, k.genesis)
 }
 
 func (k *Keeper) RegisterName(msg types.MsgRegisterName) (types.NameRecord, error) {
+	k.lockW()
+	defer k.unlockW()
 	if err := k.requireEnabled(); err != nil {
 		return types.NameRecord{}, err
 	}
@@ -166,11 +295,21 @@ func (k *Keeper) RegisterName(msg types.MsgRegisterName) (types.NameRecord, erro
 	if err := next.Validate(); err != nil {
 		return types.NameRecord{}, err
 	}
-	k.genesis = next
+	if err := k.persistLocked(next); err != nil {
+		return types.NameRecord{}, err
+	}
 	return record, nil
 }
 
+// RenewName extends a domain's term, but only inside the trailing renewal
+// window and only while it is still active. A PURCHASE (auction win) resets the
+// term to a fresh period elsewhere; renewal extends from the CURRENT
+// ExpiryHeight (not from height) by RegistrationPeriod, so an early-but-in-window
+// renewal loses no time. An expired domain cannot be renewed -- it must be
+// re-acquired via the collection auction (REGISTER).
 func (k *Keeper) RenewName(msg types.MsgRenewName) (types.NameRecord, error) {
+	k.lockW()
+	defer k.unlockW()
 	if err := k.requireEnabled(); err != nil {
 		return types.NameRecord{}, err
 	}
@@ -178,11 +317,13 @@ func (k *Keeper) RenewName(msg types.MsgRenewName) (types.NameRecord, error) {
 	if err != nil {
 		return types.NameRecord{}, err
 	}
-	base := record.ExpiryHeight
-	if msg.Height > base {
-		base = msg.Height
+	if msg.Height >= record.ExpiryHeight {
+		return types.NameRecord{}, errors.New("identity expired name cannot be renewed; re-acquire it via the collection auction")
 	}
-	expiry, err := addHeight(base, k.genesis.IdentityParams.RenewalPeriod)
+	if record.ExpiryHeight-msg.Height > k.genesis.IdentityParams.RenewalWindowBlocks {
+		return types.NameRecord{}, errors.New("identity name can only be renewed inside the renewal window before expiry")
+	}
+	expiry, err := addHeight(record.ExpiryHeight, k.genesis.IdentityParams.RegistrationPeriod)
 	if err != nil {
 		return types.NameRecord{}, err
 	}
@@ -199,11 +340,15 @@ func (k *Keeper) RenewName(msg types.MsgRenewName) (types.NameRecord, error) {
 	if err := next.Validate(); err != nil {
 		return types.NameRecord{}, err
 	}
-	k.genesis = next
-	return record.Normalize(k.genesis.IdentityParams), nil
+	if err := k.persistLocked(next); err != nil {
+		return types.NameRecord{}, err
+	}
+	return record.Normalize(next.IdentityParams), nil
 }
 
 func (k *Keeper) TransferName(msg types.MsgTransferName) (types.NameRecord, error) {
+	k.lockW()
+	defer k.unlockW()
 	if err := k.requireEnabled(); err != nil {
 		return types.NameRecord{}, err
 	}
@@ -232,11 +377,15 @@ func (k *Keeper) TransferName(msg types.MsgTransferName) (types.NameRecord, erro
 	if err := next.Validate(); err != nil {
 		return types.NameRecord{}, err
 	}
-	k.genesis = next
-	return record.Normalize(k.genesis.IdentityParams), nil
+	if err := k.persistLocked(next); err != nil {
+		return types.NameRecord{}, err
+	}
+	return record.Normalize(next.IdentityParams), nil
 }
 
 func (k *Keeper) SetResolver(msg types.MsgSetResolver) (types.ResolverRecord, error) {
+	k.lockW()
+	defer k.unlockW()
 	if err := k.requireEnabled(); err != nil {
 		return types.ResolverRecord{}, err
 	}
@@ -258,11 +407,15 @@ func (k *Keeper) SetResolver(msg types.MsgSetResolver) (types.ResolverRecord, er
 	if err := next.Validate(); err != nil {
 		return types.ResolverRecord{}, err
 	}
-	k.genesis = next
+	if err := k.persistLocked(next); err != nil {
+		return types.ResolverRecord{}, err
+	}
 	return resolver, nil
 }
 
 func (k *Keeper) SetReverseRecord(msg types.MsgSetReverseRecord) (types.ReverseRecord, error) {
+	k.lockW()
+	defer k.unlockW()
 	if err := k.requireEnabled(); err != nil {
 		return types.ReverseRecord{}, err
 	}
@@ -280,11 +433,15 @@ func (k *Keeper) SetReverseRecord(msg types.MsgSetReverseRecord) (types.ReverseR
 	if err := next.Validate(); err != nil {
 		return types.ReverseRecord{}, err
 	}
-	k.genesis = next
+	if err := k.persistLocked(next); err != nil {
+		return types.ReverseRecord{}, err
+	}
 	return reverse, nil
 }
 
 func (k *Keeper) CreateSubdomain(msg types.MsgCreateSubdomain) (types.NameRecord, error) {
+	k.lockW()
+	defer k.unlockW()
 	if err := k.requireEnabled(); err != nil {
 		return types.NameRecord{}, err
 	}
@@ -339,11 +496,15 @@ func (k *Keeper) CreateSubdomain(msg types.MsgCreateSubdomain) (types.NameRecord
 	if err := next.Validate(); err != nil {
 		return types.NameRecord{}, err
 	}
-	k.genesis = next
+	if err := k.persistLocked(next); err != nil {
+		return types.NameRecord{}, err
+	}
 	return record, nil
 }
 
 func (k *Keeper) ReserveName(msg types.MsgReserveName) (types.ReservedName, error) {
+	k.lockW()
+	defer k.unlockW()
 	if err := k.requireAuthority(msg.Authority); err != nil {
 		return types.ReservedName{}, err
 	}
@@ -357,11 +518,15 @@ func (k *Keeper) ReserveName(msg types.MsgReserveName) (types.ReservedName, erro
 	if err := next.Validate(); err != nil {
 		return types.ReservedName{}, err
 	}
-	k.genesis = next
+	if err := k.persistLocked(next); err != nil {
+		return types.ReservedName{}, err
+	}
 	return reserved, nil
 }
 
 func (k *Keeper) ReleaseReservedName(msg types.MsgReleaseReservedName) error {
+	k.lockW()
+	defer k.unlockW()
 	if err := k.requireAuthority(msg.Authority); err != nil {
 		return err
 	}
@@ -379,11 +544,15 @@ func (k *Keeper) ReleaseReservedName(msg types.MsgReleaseReservedName) error {
 	if err := next.Validate(); err != nil {
 		return err
 	}
-	k.genesis = next
+	if err := k.persistLocked(next); err != nil {
+		return err
+	}
 	return nil
 }
 
-func (k Keeper) NameRecord(name string) (types.NameRecord, bool, error) {
+func (k *Keeper) NameRecord(name string) (types.NameRecord, bool, error) {
+	k.lockR()
+	defer k.unlockR()
 	if err := k.genesis.Params.Validate(); err != nil {
 		return types.NameRecord{}, false, err
 	}
@@ -395,10 +564,19 @@ func (k Keeper) NameRecord(name string) (types.NameRecord, bool, error) {
 	return record, found, nil
 }
 
-func (k Keeper) ResolveName(name string, height uint64) (types.NameRecord, types.ResolverRecord, bool, error) {
-	record, found, err := k.NameRecord(name)
-	if err != nil || !found {
+func (k *Keeper) ResolveName(name string, height uint64) (types.NameRecord, types.ResolverRecord, bool, error) {
+	k.lockR()
+	defer k.unlockR()
+	if err := k.genesis.Params.Validate(); err != nil {
 		return types.NameRecord{}, types.ResolverRecord{}, false, err
+	}
+	normalized, err := types.NormalizeName(name, k.genesis.IdentityParams.RootNamespace)
+	if err != nil {
+		return types.NameRecord{}, types.ResolverRecord{}, false, err
+	}
+	_, record, found := recordIndex(k.genesis.State.Records, normalized)
+	if !found {
+		return types.NameRecord{}, types.ResolverRecord{}, false, nil
 	}
 	if !types.IsActive(record, height) {
 		return types.NameRecord{}, types.ResolverRecord{}, false, nil
@@ -410,7 +588,9 @@ func (k Keeper) ResolveName(name string, height uint64) (types.NameRecord, types
 	return record, resolver.Normalize(k.genesis.IdentityParams), true, nil
 }
 
-func (k Keeper) ReverseRecord(address string) (types.ReverseRecord, bool, error) {
+func (k *Keeper) ReverseRecord(address string) (types.ReverseRecord, bool, error) {
+	k.lockR()
+	defer k.unlockR()
 	if err := k.genesis.Params.Validate(); err != nil {
 		return types.ReverseRecord{}, false, err
 	}
@@ -418,7 +598,9 @@ func (k Keeper) ReverseRecord(address string) (types.ReverseRecord, bool, error)
 	return reverse, found, nil
 }
 
-func (k Keeper) Subdomains(parentName string) ([]types.NameRecord, error) {
+func (k *Keeper) Subdomains(parentName string) ([]types.NameRecord, error) {
+	k.lockR()
+	defer k.unlockR()
 	if err := k.genesis.Params.Validate(); err != nil {
 		return nil, err
 	}
@@ -436,7 +618,9 @@ func (k Keeper) Subdomains(parentName string) ([]types.NameRecord, error) {
 	return out, nil
 }
 
-func (k Keeper) IdentityRootParams() (types.IdentityRootParams, error) {
+func (k *Keeper) IdentityRootParams() (types.IdentityRootParams, error) {
+	k.lockR()
+	defer k.unlockR()
 	if err := k.genesis.IdentityParams.Validate(); err != nil {
 		return types.IdentityRootParams{}, err
 	}
@@ -455,9 +639,40 @@ func (m Migrator) Migrate1to2() error {
 	return m.keeper.ExportGenesis().Validate()
 }
 
-func (k Keeper) Migrate1to2State(ctx context.Context) error {
+func (k *Keeper) Migrate1to2State(ctx context.Context) error {
 	_, err := k.ExportGenesisState(ctx)
 	return err
+}
+
+// Migrate2to3State fans the whole-state genesis blob (the v2 layout) out into
+// the per-record KV keys the graduated module uses (see persistence.go).
+// readGenesisState prefers the blob's copy when no per-record keys exist yet,
+// so this eagerly rewrites the residual without the hot collections and Sets one
+// record per domain/resolver/reverse/auction. Idempotent: a store already in the
+// per-record layout reads back identically and writeReplacingState finds no diff.
+func (k *Keeper) Migrate2to3State(ctx context.Context) error {
+	if k.storeService == nil {
+		return nil
+	}
+	if k.mu == nil {
+		k.mu = &sync.RWMutex{}
+	}
+	k.lockW()
+	defer k.unlockW()
+	k.runtimeCtx = ctx
+	gs, _, found, err := k.readGenesisState(ctx)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return nil
+	}
+	gs = cloneGenesis(gs)
+	if err := gs.Validate(); err != nil {
+		return err
+	}
+	k.genesis = gs
+	return k.writeReplacingState(ctx, gs)
 }
 
 func (k Keeper) requireEnabled() error {

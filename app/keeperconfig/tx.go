@@ -12,6 +12,7 @@ import (
 
 	aetraaddress "github.com/sovereign-l1/l1/app/addressing"
 	aeztypes "github.com/sovereign-l1/l1/x/aez/types"
+	identityroottypes "github.com/sovereign-l1/l1/x/identity-root/types"
 	nativeaccounttypes "github.com/sovereign-l1/l1/x/native-account/types"
 	nominatorpooltypes "github.com/sovereign-l1/l1/x/nominator-pool/types"
 )
@@ -51,6 +52,15 @@ func CustomGetSigners() map[protoreflect.FullName]signing.GetSignersFunc {
 		// crash; see x/aez/types/tx.go. The signer is the governance
 		// authority (the gov module account on a real network).
 		"l1.aez.v1.MsgUpdateRoutingTable": aeztypes.MsgUpdateRoutingTableSigners,
+		// ANS Phase A. x/identity-root's hand-rolled collection messages carry no
+		// cosmos.msg.v1.signer option (same shape as the entries above), so each
+		// needs an explicit resolver. The first three resolve to the caller's
+		// plain wallet address; the price-table update resolves to the governance
+		// authority. See x/identity-root/types/signing.go.
+		"l1.identityroot.v1.MsgSendToNameCollection":	identityroottypes.MsgSendToNameCollectionSigners,
+		"l1.identityroot.v1.MsgPlaceBid":		identityroottypes.MsgPlaceBidSigners,
+		"l1.identityroot.v1.MsgStartAuction":		identityroottypes.MsgStartAuctionSigners,
+		"l1.identityroot.v1.MsgUpdatePriceTable":	identityroottypes.MsgUpdatePriceTableSigners,
 	}
 }
 

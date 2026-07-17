@@ -33,14 +33,51 @@ type IdentityRootParams struct {
 	DefaultDomainRentPayerPolicy	string
 	NFTBindingEnabled		bool
 	AllowPublicSubdomains		bool
-	Auction				AuctionParams
-}
 
-type AuctionParams struct {
-	Enabled			bool
-	CommitBlocks		uint64
-	RevealBlocks		uint64
-	MinimumBidAmount	uint64
+	// --- ANS Phase A pricing / auction / treasury (all block-height and
+	// sdkmath.Int-priced; NO wall clock, NO floats -- determinism gate). ---
+
+	// PriceTable is the start-of-auction price by label length, ascending by
+	// MinLabelLen. PriceForLabel selects the highest tier whose MinLabelLen is
+	// <= the label length. On mainnet these are the full prices; a testnet /
+	// localnet genesis divides every tier by 10 (a genesis choice, never a
+	// runtime chain-id branch). Governance adjusts the table via
+	// MsgUpdatePriceTable.
+	PriceTable			[]PriceTier
+	// MinLabelLen is the shortest registrable label (default 3). Shorter labels
+	// are rejected before any pricing lookup.
+	MinLabelLen			uint32
+	// CollectionFeeNaet is the non-refundable fee the collection keeps out of a
+	// rejected / underfunded REGISTER (~0.5 AET). The refund is always
+	// incoming - min(incoming, CollectionFeeNaet), so it can never go negative.
+	CollectionFeeNaet		uint64
+	// RenewalWindowBlocks is the trailing window before expiry inside which a
+	// domain may be renewed (60 days = 1036800 blocks at 5s). A renewal outside
+	// it is rejected.
+	RenewalWindowBlocks		uint64
+	// IssuanceAuctionDurationBlocks is the fixed lifetime of an auction opened
+	// by REGISTER on a free / expired label (mainnet 1440 ~2h; testnet 12 ~1min).
+	IssuanceAuctionDurationBlocks	uint64
+	// MinBidRaisePctBps is the minimum bid raise over the standing high bid, in
+	// basis points (500 = +5%).
+	MinBidRaisePctBps		uint64
+	// OwnerAuctionMinDurationBlocks / OwnerAuctionMaxDurationBlocks bound an
+	// owner-listed auction's duration (7 days .. 365 days).
+	OwnerAuctionMinDurationBlocks	uint64
+	OwnerAuctionMaxDurationBlocks	uint64
+	// BlocksPerDay converts an owner-listed auction's day count to blocks
+	// (17280 blocks/day at 5s).
+	BlocksPerDay			uint64
+	// SweepIntervalBlocks is how often the treasury sweep may run (17280 ~1 day).
+	SweepIntervalBlocks		uint64
+	// SweepFloorNaet is the balance the collection always retains after a sweep
+	// (100 AET). Everything above it (net of open-auction escrows) goes to the
+	// treasury module account.
+	SweepFloorNaet			uint64
+	// TreasuryModuleName is the cosmos module account the sweep credits
+	// ("feecollector_treasury"). A genesis string so the keeper needs no
+	// x/fee-collector import.
+	TreasuryModuleName		string
 }
 
 type IdentityRootState struct {
@@ -50,6 +87,13 @@ type IdentityRootState struct {
 	NFTBindings	[]IdentityNFTBindingReference
 	RootAuthorities	[]RootAuthority
 	ReservedNames	[]ReservedName
+	// Auctions are the open issuance / owner-listed auctions. One record per
+	// domain; a losing bid is refunded the moment it is outbid, so only the
+	// current high bid is escrowed and no separate Bid records exist.
+	Auctions	[]Auction
+	// SweepState carries the last treasury-sweep height so the daily sweep is
+	// gated on block height alone (residual blob, not a per-record key).
+	SweepState	SweepState
 }
 
 type NameRecord struct {
@@ -162,18 +206,25 @@ type MsgReleaseReservedName struct {
 func DefaultIdentityRootParams() IdentityRootParams {
 	return IdentityRootParams{
 		RootNamespace:			DefaultRootNamespace,
-		RegistrationPeriod:		1_000_000,
-		RenewalPeriod:			1_000_000,
+		RegistrationPeriod:		RegistrationPeriodBlocks,
+		RenewalPeriod:			RegistrationPeriodBlocks,
 		MaxNameBytes:			253,
 		MaxRecords:			100_000,
 		MaxReservedNames:		10_000,
 		DomainRentRatePerByteBlock:	1,
 		DefaultDomainRentPayerPolicy:	DomainRentPayerOwner,
-		Auction: AuctionParams{
-			CommitBlocks:		100,
-			RevealBlocks:		100,
-			MinimumBidAmount:	1,
-		},
+		PriceTable:			DefaultPriceTable(),
+		MinLabelLen:			MinRegistrableLabelLen,
+		CollectionFeeNaet:		CollectionFeeNaet,
+		RenewalWindowBlocks:		RenewalWindowBlocks,
+		IssuanceAuctionDurationBlocks:	MainnetIssuanceAuctionDurationBlocks,
+		MinBidRaisePctBps:		MinBidRaisePctBps,
+		OwnerAuctionMinDurationBlocks:	OwnerAuctionMinDays * BlocksPerDay,
+		OwnerAuctionMaxDurationBlocks:	OwnerAuctionMaxDays * BlocksPerDay,
+		BlocksPerDay:			BlocksPerDay,
+		SweepIntervalBlocks:		SweepIntervalBlocks,
+		SweepFloorNaet:			SweepFloorNaet,
+		TreasuryModuleName:		DefaultTreasuryModuleName,
 	}
 }
 
@@ -185,6 +236,7 @@ func EmptyIdentityRootState() IdentityRootState {
 		NFTBindings:		[]IdentityNFTBindingReference{},
 		RootAuthorities:	[]RootAuthority{},
 		ReservedNames:		[]ReservedName{},
+		Auctions:		[]Auction{},
 	}
 }
 
@@ -208,8 +260,8 @@ func (p IdentityRootParams) Validate() error {
 	if !IsDomainRentPayerPolicy(p.DefaultDomainRentPayerPolicy) {
 		return errors.New("identity domain rent payer policy is invalid")
 	}
-	if p.Auction.Enabled && (p.Auction.CommitBlocks == 0 || p.Auction.RevealBlocks == 0 || p.Auction.MinimumBidAmount == 0) {
-		return errors.New("identity root auction parameters must be positive when enabled")
+	if err := p.validateCollectionParams(); err != nil {
+		return err
 	}
 	return nil
 }
@@ -222,6 +274,8 @@ func (s IdentityRootState) Export() IdentityRootState {
 		NFTBindings:		cloneBindings(s.NFTBindings),
 		RootAuthorities:	cloneAuthorities(s.RootAuthorities),
 		ReservedNames:		cloneReserved(s.ReservedNames),
+		Auctions:		cloneAuctions(s.Auctions),
+		SweepState:		s.SweepState,
 	}
 	SortRecords(out.Records)
 	SortResolvers(out.Resolvers)
@@ -229,6 +283,7 @@ func (s IdentityRootState) Export() IdentityRootState {
 	SortBindings(out.NFTBindings)
 	SortAuthorities(out.RootAuthorities)
 	SortReserved(out.ReservedNames)
+	SortAuctions(out.Auctions)
 	return out
 }
 
@@ -329,6 +384,17 @@ func (s IdentityRootState) Validate(params IdentityRootParams) error {
 		if params.NFTBindingEnabled && binding.Owner != record.Owner {
 			return fmt.Errorf("identity NFT binding owner must match name owner for %q", binding.Name)
 		}
+	}
+	auctions := map[string]struct{}{}
+	for _, auction := range s.Auctions {
+		auction = auction.Normalize(params)
+		if err := auction.Validate(params); err != nil {
+			return err
+		}
+		if _, found := auctions[auction.Name]; found {
+			return fmt.Errorf("duplicate identity auction %q", auction.Name)
+		}
+		auctions[auction.Name] = struct{}{}
 	}
 	return nil
 }

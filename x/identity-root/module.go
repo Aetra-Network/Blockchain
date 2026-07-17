@@ -1,6 +1,7 @@
 package identityroot
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 
@@ -17,16 +18,21 @@ import (
 
 	"github.com/sovereign-l1/l1/x/identity-root/keeper"
 	"github.com/sovereign-l1/l1/x/identity-root/types"
-	"github.com/sovereign-l1/l1/x/internal/prototype"
 )
 
-const ConsensusVersion = prototype.NextMigrationVersion
+// ConsensusVersion is module-local (was prototype.NextMigrationVersion=2). The
+// blob->per-record storage change (persistence.go) is a consensus data
+// migration, so it bumps to 3 and registers a real 2->3 migration that fans the
+// whole-state blob out into per-record keys. A chain committed at v2 as a blob
+// upgrades cleanly; the shared prototype constant is deliberately not touched.
+const ConsensusVersion = 3
 
 var (
-	_	module.AppModuleBasic	= AppModule{}
-	_	module.HasGenesis	= AppModule{}
-	_	module.HasServices	= AppModule{}
-	_	appmodule.AppModule	= AppModule{}
+	_	module.AppModuleBasic		= AppModule{}
+	_	module.HasGenesis		= AppModule{}
+	_	module.HasServices		= AppModule{}
+	_	appmodule.AppModule		= AppModule{}
+	_	appmodule.HasEndBlocker		= AppModule{}
 )
 
 type AppModule struct {
@@ -38,16 +44,35 @@ func NewAppModule(k *keeper.Keeper) AppModule	{ return AppModule{keeper: k} }
 func (AppModule) IsOnePerModuleType()						{}
 func (AppModule) IsAppModule()							{}
 func (AppModule) Name() string							{ return types.ModuleName }
-func (AppModule) RegisterLegacyAminoCodec(*codec.LegacyAmino)			{}
-func (AppModule) RegisterInterfaces(codectypes.InterfaceRegistry)		{}
-func (AppModule) RegisterGRPCGatewayRoutes(client.Context, *runtime.ServeMux)	{}
+
+func (AppModule) RegisterLegacyAminoCodec(cdc *codec.LegacyAmino) {
+	types.RegisterLegacyAminoCodec(cdc)
+}
+
+func (AppModule) RegisterInterfaces(registry codectypes.InterfaceRegistry) {
+	types.RegisterInterfaces(registry)
+}
+
+func (AppModule) RegisterGRPCGatewayRoutes(client.Context, *runtime.ServeMux) {}
 
 func (am AppModule) RegisterServices(cfg module.Configurator) {
+	types.RegisterMsgServer(cfg.MsgServer(), keeper.NewGRPCMsgServer(am.keeper))
+	types.RegisterQueryServer(cfg.QueryServer(), keeper.NewGRPCQueryServer(am.keeper))
 	if err := cfg.RegisterMigration(types.ModuleName, 1, func(ctx sdk.Context) error {
 		return am.keeper.Migrate1to2State(ctx)
 	}); err != nil {
 		panic(fmt.Sprintf("failed to register x/%s migration from version 1 to 2: %v", types.ModuleName, err))
 	}
+	if err := cfg.RegisterMigration(types.ModuleName, 2, func(ctx sdk.Context) error {
+		return am.keeper.Migrate2to3State(ctx)
+	}); err != nil {
+		panic(fmt.Sprintf("failed to register x/%s migration from version 2 to 3: %v", types.ModuleName, err))
+	}
+}
+
+// EndBlock closes due auctions, handles expiry, and runs the treasury sweep.
+func (am AppModule) EndBlock(ctx context.Context) error {
+	return am.keeper.EndBlocker(ctx)
 }
 
 func (AppModule) DefaultGenesis(codec.JSONCodec) json.RawMessage {

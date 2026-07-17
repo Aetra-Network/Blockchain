@@ -56,7 +56,6 @@ var prototypeModules = []string{
 	avmschedulertypes.ModuleName,
 	actorregistrytypes.ModuleName,
 	storagerenttypes.ModuleName,
-	identityroottypes.ModuleName,
 	bridgehubtypes.ModuleName,
 	crosschainregistrytypes.ModuleName,
 	shardingcoordinatortypes.ModuleName,
@@ -101,6 +100,18 @@ var systemModules = []string{
 	// (I-10/I-11), and genesis still maps all 256 buckets to the core zone,
 	// so nothing routes anywhere.
 	aeztypes.ModuleName,
+	// ANS Phase A: x/identity-root graduated out of prototypeModules exactly as
+	// x/contracts and x/aez did. It now has a live Msg service (the .aet
+	// collection: SendToNameCollection/PlaceBid/StartAuction/UpdatePriceTable),
+	// a Query service, an EndBlocker (auction close + treasury sweep) and a real
+	// bank module account. The prototype family is defined by having none of
+	// these, so it no longer qualifies; app/aetra_core_wiring_test.go asserts
+	// that absence for every prototype module and would fail if it stayed.
+	//
+	// Paired POSITIONALLY with SystemStoreKeys() below (lengths are compared
+	// directly by app/aetra_core_wiring.go -- a mismatch is a startup panic), so
+	// it must occupy the same index in both.
+	identityroottypes.ModuleName,
 }
 
 func RoutingExecution() RoutingExecutionPoint {
@@ -124,7 +135,6 @@ func PrototypeStoreKeys() []string {
 		avmschedulertypes.StoreKey,
 		actorregistrytypes.StoreKey,
 		storagerenttypes.StoreKey,
-		identityroottypes.StoreKey,
 		bridgehubtypes.StoreKey,
 		crosschainregistrytypes.StoreKey,
 		shardingcoordinatortypes.StoreKey,
@@ -155,5 +165,8 @@ func SystemStoreKeys() []string {
 		// Paired positionally with aeztypes.ModuleName's index in
 		// systemModules above. Keep the two in lockstep.
 		aeztypes.StoreKey,
+		// Paired positionally with identityroottypes.ModuleName's index in
+		// systemModules above. Keep the two in lockstep.
+		identityroottypes.StoreKey,
 	}
 }

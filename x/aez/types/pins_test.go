@@ -22,7 +22,12 @@ import (
 // but confirm the entity is Core-pinned on purpose and then update these
 // constants deliberately, in the same commit.
 const (
-	goldenModuleAccountCount	= 23
+	// ANS Phase A added the identity-root (.aet collection) module account to
+	// moduleAccountPermissions: 23 -> 24. Its custodied deposits/escrows must
+	// live in the Core Zone, so it is core-pinned on purpose -- the pin set is
+	// computed from GetMaccPerms(), so this is automatic; only these golden
+	// constants (and the digest below) are updated deliberately.
+	goldenModuleAccountCount	= 24
 	goldenCatalogCount		= 29
 	goldenAuthorityCount		= 1
 	goldenPinCount			= goldenModuleAccountCount + goldenCatalogCount + goldenAuthorityCount
@@ -46,7 +51,7 @@ func TestSystemPinDigestIsFrozen(t *testing.T) {
 	digest, err := aeztypes.SystemPinDigest()
 	require.NoError(t, err)
 	require.Equal(t,
-		"9b52d527b4952a708d1730f49b7f3bb5e43724de963b7ba9071a62d3d77306bd",
+		"678d36b7d5c39a471e2554522b4fadb44382410e55b0755597aabb006409fa5a",
 		digest,
 		"the system pin set changed -- confirm every added entity must be core-pinned, then update this digest deliberately")
 }

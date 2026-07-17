@@ -120,14 +120,18 @@ func TestExpiryAndRenewal(t *testing.T) {
 	_, err := k.RegisterName(types.MsgRegisterName{Owner: ownerA, Name: "alice", Height: 10})
 	require.NoError(t, err)
 
+	// Past its expiry the name stops resolving.
 	_, _, active, err := k.ResolveName("alice", 110)
 	require.NoError(t, err)
 	require.False(t, active)
 
-	renewed, err := k.RenewName(types.MsgRenewName{Owner: ownerA, Name: "alice", Height: 111})
+	// Renewal is only valid inside the window and before expiry; it extends
+	// from the current ExpiryHeight by a full registration term (110 -> 210),
+	// not from the renewal height.
+	renewed, err := k.RenewName(types.MsgRenewName{Owner: ownerA, Name: "alice", Height: 90})
 	require.NoError(t, err)
-	require.Equal(t, uint64(161), renewed.ExpiryHeight)
-	_, _, active, err = k.ResolveName("alice", 120)
+	require.Equal(t, uint64(210), renewed.ExpiryHeight)
+	_, _, active, err = k.ResolveName("alice", 200)
 	require.NoError(t, err)
 	require.True(t, active)
 }

@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"net"
 	"os"
 	"path/filepath"
@@ -26,6 +27,7 @@ import (
 	appparams "github.com/sovereign-l1/l1/app/params"
 	contractstypes "github.com/sovereign-l1/l1/x/contracts/types"
 	feestypes "github.com/sovereign-l1/l1/x/fees/types"
+	identityroottypes "github.com/sovereign-l1/l1/x/identity-root/types"
 	nativeaccounttypes "github.com/sovereign-l1/l1/x/native-account/types"
 	nominatorpooltypes "github.com/sovereign-l1/l1/x/nominator-pool/types"
 )
@@ -201,6 +203,67 @@ func initGenFiles(
 			return fmt.Errorf("marshal native account genesis: %w", err)
 		}
 		appGenState[nativeaccounttypes.ModuleName] = nativeAccountGenStateJSON
+	}
+
+	// x/identity-root (the .aet collection) ships DISABLED with the full mainnet
+	// price table, exactly like x/contracts ships contracts-off. A testnet /
+	// localnet genesis turns it on with the TESTNET profile, divides every price
+	// tier by 10, and shortens the issuance auction to ~1 min (12 blocks). This
+	// is a GENESIS choice, never a runtime chain-id branch in consensus code
+	// (docs/architecture/ans.md): the keeper reads whatever the param says.
+	//
+	// Patched as raw JSON: the module marshals its genesis with plain
+	// encoding/json and untagged Go field names (Version/Params/IdentityParams/
+	// State), not the proto codec, and commits no state root.
+	if irRaw, ok := appGenState[identityroottypes.ModuleName]; ok {
+		var irGen map[string]json.RawMessage
+		if err := json.Unmarshal(irRaw, &irGen); err != nil {
+			return fmt.Errorf("unmarshal identity-root genesis: %w", err)
+		}
+		var params map[string]json.RawMessage
+		if err := json.Unmarshal(irGen["Params"], &params); err != nil {
+			return fmt.Errorf("unmarshal identity-root params: %w", err)
+		}
+		params["Enabled"] = json.RawMessage("true")
+		params["TestnetProfile"] = json.RawMessage("true")
+		paramsJSON, err := json.Marshal(params)
+		if err != nil {
+			return err
+		}
+		irGen["Params"] = paramsJSON
+
+		var identityParams map[string]json.RawMessage
+		if err := json.Unmarshal(irGen["IdentityParams"], &identityParams); err != nil {
+			return fmt.Errorf("unmarshal identity-root identity params: %w", err)
+		}
+		var tiers []identityroottypes.PriceTier
+		if err := json.Unmarshal(identityParams["PriceTable"], &tiers); err != nil {
+			return fmt.Errorf("unmarshal identity-root price table: %w", err)
+		}
+		for i := range tiers {
+			price, ok := new(big.Int).SetString(tiers[i].PriceNaet, 10)
+			if !ok {
+				return fmt.Errorf("invalid identity-root price %q", tiers[i].PriceNaet)
+			}
+			tiers[i].PriceNaet = price.Div(price, big.NewInt(10)).String()
+		}
+		tiersJSON, err := json.Marshal(tiers)
+		if err != nil {
+			return err
+		}
+		identityParams["PriceTable"] = tiersJSON
+		identityParams["IssuanceAuctionDurationBlocks"] = json.RawMessage(fmt.Sprintf("%d", identityroottypes.TestnetIssuanceAuctionDurationBlocks))
+		identityParamsJSON, err := json.Marshal(identityParams)
+		if err != nil {
+			return err
+		}
+		irGen["IdentityParams"] = identityParamsJSON
+
+		irGenJSON, err := json.Marshal(irGen)
+		if err != nil {
+			return err
+		}
+		appGenState[identityroottypes.ModuleName] = irGenJSON
 	}
 
 	appGenStateJSON, err := json.MarshalIndent(appGenState, "", "  ")
