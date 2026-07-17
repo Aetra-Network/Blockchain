@@ -25,19 +25,29 @@ func (q queryServer) Account(ctx context.Context, req *nativeaccount.QueryAccoun
 	}
 	if found {
 		resp := nativeaccount.NewQueryAccountResponse(account, true, false)
+		if err := q.tagZone(ctx, &resp, account.AddressUser); err != nil {
+			return nil, err
+		}
 		return &resp, nil
 	}
 	view, err := virtualAccountView(req.Address)
 	if err != nil {
 		return nil, err
 	}
-	return &nativeaccount.QueryAccountResponse{
+	resp := nativeaccount.QueryAccountResponse{
 		Found:		false,
 		Virtual:	true,
 		AddressUser:	view.AddressUser,
 		AddressRaw:	view.AddressRaw,
 		Status:		view.Status,
-	}, nil
+	}
+	// A virtual account has a home zone too. The zone is a pure function of
+	// the ADDRESS, not of the record, so it is well-defined before activation
+	// and does not change at activation.
+	if err := q.tagZone(ctx, &resp, view.AddressUser); err != nil {
+		return nil, err
+	}
+	return &resp, nil
 }
 
 func (q queryServer) AccountByRaw(ctx context.Context, req *nativeaccount.QueryAccountByRawRequest) (*nativeaccount.QueryAccountResponse, error) {
@@ -49,7 +59,34 @@ func (q queryServer) AccountByRaw(ctx context.Context, req *nativeaccount.QueryA
 		return nil, err
 	}
 	resp := nativeaccount.NewQueryAccountResponse(account, found, false)
+	if found {
+		if err := q.tagZone(ctx, &resp, account.AddressUser); err != nil {
+			return nil, err
+		}
+	}
 	return &resp, nil
+}
+
+// tagZone resolves the account's AEZ home zone onto the response.
+//
+// It resolves from the AddressUser, never from a key or a stored field: the zone
+// is derived, so there is nothing persisted that could disagree with it.
+//
+// An error is PROPAGATED rather than degraded to zone 0. That is safe precisely
+// because this is a query: queries are not consensus, so a failure here cannot
+// halt a block or reject a transaction. The consensus-side paths
+// (AccountByUser, AccountStatus, and the ante handler in
+// app/txhandlers/storage_rent.go) never resolve a zone at all, which is what
+// keeps I-23 intact. With no resolver wired, ZoneOf returns
+// (CoreZone, Resolved=false) and no error, so this is a silent no-op.
+func (q queryServer) tagZone(ctx context.Context, resp *nativeaccount.QueryAccountResponse, userAddress string) error {
+	zone, err := q.keeper.ZoneOf(ctx, userAddress)
+	if err != nil {
+		return err
+	}
+	resp.Zone = zone.Zone
+	resp.ZoneResolved = zone.Resolved
+	return nil
 }
 
 func (q queryServer) VirtualAccount(ctx context.Context, req *nativeaccount.QueryVirtualAccountRequest) (*nativeaccount.QueryVirtualAccountResponse, error) {

@@ -10,6 +10,16 @@ type QueryAccountRequest struct {
 	Address string `protobuf:"bytes,1,opt,name=address,proto3" json:"address,omitempty"`
 }
 
+// QueryAccountResponse carries the account plus its AEZ home zone.
+//
+// Zone/ZoneResolved are DERIVED at query time, never read from the account
+// record or from a key -- there is no zone stored anywhere to go stale. Fields
+// 7 and 8 are additive, so an older client that does not know them simply skips
+// two unknown fields (proto3), and the existing fields 1-6 are untouched.
+//
+// ZoneResolved must be read together with Zone: false means "no zone was
+// resolved and 0 is the fallback", NOT "the account is in the Core Zone". See
+// keeper.AccountZone.
 type QueryAccountResponse struct {
 	Found		bool	`protobuf:"varint,1,opt,name=found,proto3" json:"found,omitempty"`
 	Virtual		bool	`protobuf:"varint,2,opt,name=virtual,proto3" json:"virtual,omitempty"`
@@ -17,6 +27,8 @@ type QueryAccountResponse struct {
 	AddressRaw	string	`protobuf:"bytes,4,opt,name=address_raw,json=addressRaw,proto3" json:"address_raw,omitempty"`
 	Status		string	`protobuf:"bytes,5,opt,name=status,proto3" json:"status,omitempty"`
 	AccountJSON	string	`protobuf:"bytes,6,opt,name=account_json,json=accountJSON,proto3" json:"account_json,omitempty"`
+	Zone		uint32	`protobuf:"varint,7,opt,name=zone,proto3" json:"zone,omitempty"`
+	ZoneResolved	bool	`protobuf:"varint,8,opt,name=zone_resolved,json=zoneResolved,proto3" json:"zone_resolved,omitempty"`
 }
 
 type QueryAccountByRawRequest struct {

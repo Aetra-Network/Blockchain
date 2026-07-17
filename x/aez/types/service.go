@@ -12,12 +12,16 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 )
 
-// x/aez registers a Query service and NO Msg service.
+// x/aez's Query service.
 //
-// Phase 1 is inert: there is no way to mutate the routing table by transaction,
-// because there is no Msg service to carry the mutation. The table moves only
-// through genesis. That is the strongest possible statement of "purely additive"
-// -- not "the handler rejects everything", but "no handler exists".
+// Phase 2 note: the Msg service now exists and lives in tx.go. Phase 1's "no
+// handler exists" is gone -- MsgUpdateRoutingTable can move the table -- so
+// these queries are what make the resulting state auditable: the current table,
+// the pending table, and the zone any entity resolves to.
+//
+// The Msg descriptors could NOT reuse buildServiceFileDescriptor below: it emits
+// field-less messages and has no cosmos.msg.v1.service branch. See tx.go for why
+// both are mandatory there and why neither is needed here.
 //
 // The descriptors below are HAND-WRITTEN, following x/config/types/service.go
 // and x/contracts/types/service.go. The alternative in-tree pattern
@@ -45,6 +49,25 @@ type QueryRoutingTableResponse struct {
 	// Buckets is the full bucket->zone map, index-ordered.
 	Buckets		[]uint32	`protobuf:"varint,4,rep,packed,name=buckets,proto3" json:"buckets,omitempty"`
 	TableHash	string		`protobuf:"bytes,5,opt,name=table_hash,proto3" json:"table_hash,omitempty"`
+}
+
+// QueryPendingRoutingTableRequest asks for the table scheduled to activate.
+type QueryPendingRoutingTableRequest struct{}
+
+// QueryPendingRoutingTableResponse reports the pending table, if any.
+//
+// Found is an explicit field rather than a gRPC NotFound error because "no table
+// is pending" is the NORMAL state of the chain, not a failure. An error would
+// make every routine poll look like a fault in logs and force callers to
+// pattern-match on a status code to read a boolean.
+type QueryPendingRoutingTableResponse struct {
+	Found	bool	`protobuf:"varint,1,opt,name=found,proto3" json:"found,omitempty"`
+	Table	QueryRoutingTableResponse	`protobuf:"bytes,2,opt,name=table,proto3" json:"table"`
+	// BlocksUntilActivation is ActivationHeight - current height. It is
+	// derived, not stored: the swap is driven by the committed
+	// ActivationHeight alone, and this is a convenience for operators
+	// watching a scheduled swap approach.
+	BlocksUntilActivation	int64	`protobuf:"varint,3,opt,name=blocks_until_activation,proto3" json:"blocks_until_activation,omitempty"`
 }
 
 type QueryZonesRequest struct{}
@@ -79,6 +102,7 @@ type QueryZoneOfResponse struct {
 type QueryServer interface {
 	Params(context.Context, *QueryParamsRequest) (*QueryParamsResponse, error)
 	RoutingTable(context.Context, *QueryRoutingTableRequest) (*QueryRoutingTableResponse, error)
+	PendingRoutingTable(context.Context, *QueryPendingRoutingTableRequest) (*QueryPendingRoutingTableResponse, error)
 	Zones(context.Context, *QueryZonesRequest) (*QueryZonesResponse, error)
 	ZoneOf(context.Context, *QueryZoneOfRequest) (*QueryZoneOfResponse, error)
 }
@@ -98,6 +122,9 @@ var Query_serviceDesc = grpcgo.ServiceDesc{
 		})),
 		methodDesc("RoutingTable", serviceHandler("RoutingTable", func() interface{} { return new(QueryRoutingTableRequest) }, func(ctx context.Context, srv interface{}, req interface{}) (interface{}, error) {
 			return srv.(QueryServer).RoutingTable(ctx, req.(*QueryRoutingTableRequest))
+		})),
+		methodDesc("PendingRoutingTable", serviceHandler("PendingRoutingTable", func() interface{} { return new(QueryPendingRoutingTableRequest) }, func(ctx context.Context, srv interface{}, req interface{}) (interface{}, error) {
+			return srv.(QueryServer).PendingRoutingTable(ctx, req.(*QueryPendingRoutingTableRequest))
 		})),
 		methodDesc("Zones", serviceHandler("Zones", func() interface{} { return new(QueryZonesRequest) }, func(ctx context.Context, srv interface{}, req interface{}) (interface{}, error) {
 			return srv.(QueryServer).Zones(ctx, req.(*QueryZonesRequest))
@@ -134,12 +161,14 @@ func init() {
 		[]string{
 			"QueryParamsRequest", "QueryParamsResponse",
 			"QueryRoutingTableRequest", "QueryRoutingTableResponse",
+			"QueryPendingRoutingTableRequest", "QueryPendingRoutingTableResponse",
 			"QueryZonesRequest", "QueryZonesResponse", "QueryZone",
 			"QueryZoneOfRequest", "QueryZoneOfResponse",
 		},
 		[][3]string{
 			{"Params", "QueryParamsRequest", "QueryParamsResponse"},
 			{"RoutingTable", "QueryRoutingTableRequest", "QueryRoutingTableResponse"},
+			{"PendingRoutingTable", "QueryPendingRoutingTableRequest", "QueryPendingRoutingTableResponse"},
 			{"Zones", "QueryZonesRequest", "QueryZonesResponse"},
 			{"ZoneOf", "QueryZoneOfRequest", "QueryZoneOfResponse"},
 		}))
@@ -182,6 +211,8 @@ func registerServiceTypes() {
 		{(*QueryParamsResponse)(nil), "l1.aez.v1.QueryParamsResponse"},
 		{(*QueryRoutingTableRequest)(nil), "l1.aez.v1.QueryRoutingTableRequest"},
 		{(*QueryRoutingTableResponse)(nil), "l1.aez.v1.QueryRoutingTableResponse"},
+		{(*QueryPendingRoutingTableRequest)(nil), "l1.aez.v1.QueryPendingRoutingTableRequest"},
+		{(*QueryPendingRoutingTableResponse)(nil), "l1.aez.v1.QueryPendingRoutingTableResponse"},
 		{(*QueryZonesRequest)(nil), "l1.aez.v1.QueryZonesRequest"},
 		{(*QueryZonesResponse)(nil), "l1.aez.v1.QueryZonesResponse"},
 		{(*QueryZone)(nil), "l1.aez.v1.QueryZone"},
@@ -196,6 +227,12 @@ func (m *QueryParamsRequest) Reset()		{ *m = QueryParamsRequest{} }
 func (m *QueryParamsResponse) Reset()		{ *m = QueryParamsResponse{} }
 func (m *QueryRoutingTableRequest) Reset()	{ *m = QueryRoutingTableRequest{} }
 func (m *QueryRoutingTableResponse) Reset()	{ *m = QueryRoutingTableResponse{} }
+func (m *QueryPendingRoutingTableRequest) Reset() {
+	*m = QueryPendingRoutingTableRequest{}
+}
+func (m *QueryPendingRoutingTableResponse) Reset() {
+	*m = QueryPendingRoutingTableResponse{}
+}
 func (m *QueryZonesRequest) Reset()		{ *m = QueryZonesRequest{} }
 func (m *QueryZonesResponse) Reset()		{ *m = QueryZonesResponse{} }
 func (m *QueryZone) Reset()			{ *m = QueryZone{} }
@@ -206,6 +243,12 @@ func (m *QueryParamsRequest) String() string		{ return gogoproto.CompactTextStri
 func (m *QueryParamsResponse) String() string		{ return gogoproto.CompactTextString(m) }
 func (m *QueryRoutingTableRequest) String() string	{ return gogoproto.CompactTextString(m) }
 func (m *QueryRoutingTableResponse) String() string	{ return gogoproto.CompactTextString(m) }
+func (m *QueryPendingRoutingTableRequest) String() string {
+	return gogoproto.CompactTextString(m)
+}
+func (m *QueryPendingRoutingTableResponse) String() string {
+	return gogoproto.CompactTextString(m)
+}
 func (m *QueryZonesRequest) String() string		{ return gogoproto.CompactTextString(m) }
 func (m *QueryZonesResponse) String() string		{ return gogoproto.CompactTextString(m) }
 func (m *QueryZone) String() string			{ return gogoproto.CompactTextString(m) }
@@ -214,8 +257,10 @@ func (m *QueryZoneOfResponse) String() string		{ return gogoproto.CompactTextStr
 
 func (*QueryParamsRequest) ProtoMessage()		{}
 func (*QueryParamsResponse) ProtoMessage()		{}
-func (*QueryRoutingTableRequest) ProtoMessage()		{}
-func (*QueryRoutingTableResponse) ProtoMessage()	{}
+func (*QueryRoutingTableRequest) ProtoMessage()			{}
+func (*QueryRoutingTableResponse) ProtoMessage()		{}
+func (*QueryPendingRoutingTableRequest) ProtoMessage()		{}
+func (*QueryPendingRoutingTableResponse) ProtoMessage()	{}
 func (*QueryZonesRequest) ProtoMessage()		{}
 func (*QueryZonesResponse) ProtoMessage()		{}
 func (*QueryZone) ProtoMessage()			{}

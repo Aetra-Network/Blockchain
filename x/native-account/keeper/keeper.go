@@ -19,6 +19,7 @@ var nextAccountNumberKey = []byte("account/meta/next_account_number")
 type Keeper struct {
 	storeService	corestore.KVStoreService
 	feePolicy	nativeaccount.ActivationFeePolicy
+	zoneResolver	ZoneResolver
 }
 
 func NewPersistentKeeper(storeService corestore.KVStoreService) Keeper {
@@ -27,6 +28,17 @@ func NewPersistentKeeper(storeService corestore.KVStoreService) Keeper {
 
 func (k Keeper) WithActivationFeePolicy(policy nativeaccount.ActivationFeePolicy) Keeper {
 	k.feePolicy = policy
+	return k
+}
+
+// WithZoneResolver injects the AEZ zone resolver (Phase 3). It is OPTIONAL by
+// design: a keeper without one still reads, writes and exports every account
+// identically, and merely reports Resolved=false for the zone. See ZoneOf.
+//
+// The resolver is a read-only function of committed state, not cached state, so
+// it does not reintroduce the F-17 class the storeService-only keeper avoids.
+func (k Keeper) WithZoneResolver(resolver ZoneResolver) Keeper {
+	k.zoneResolver = resolver
 	return k
 }
 
@@ -43,7 +55,7 @@ func (k Keeper) ActivateAccount(ctx context.Context, msg nativeaccount.MsgActiva
 	if err != nil {
 		return nativeaccount.AccountActivationResult{}, err
 	}
-	emitAccountActivated(ctx, result.Event)
+	emitAccountActivated(ctx, result.Event, k.zoneTag(ctx, result.Event.AddressUser))
 	return result, nil
 }
 
@@ -479,7 +491,17 @@ func activationHeight(ctx context.Context) uint64 {
 	return uint64(height)
 }
 
-func emitAccountActivated(ctx context.Context, event nativeaccount.AccountActivatedEvent) {
+// emitAccountActivated emits the activation event, tagged with the account's
+// AEZ home zone.
+//
+// zone is passed in already resolved rather than resolved here, so that this
+// stays a pure formatting function and the (fallible) resolution happens at one
+// named place on the caller -- k.zoneTag, which documents why it cannot fail an
+// activation.
+//
+// zone_resolved is emitted ALONGSIDE zone and is not optional: an indexer that
+// reads zone without it cannot tell a real zone-0 answer from the fallback.
+func emitAccountActivated(ctx context.Context, event nativeaccount.AccountActivatedEvent, zone AccountZone) {
 	sdk.UnwrapSDKContext(ctx).EventManager().EmitEvent(sdk.NewEvent(
 		nativeaccount.EventTypeAccountActivated,
 		sdk.NewAttribute("address_user", event.AddressUser),
@@ -488,5 +510,7 @@ func emitAccountActivated(ctx context.Context, event nativeaccount.AccountActiva
 		sdk.NewAttribute("sequence", fmt.Sprintf("%d", event.Sequence)),
 		sdk.NewAttribute("pubkey_hash", event.PubKeyHash),
 		sdk.NewAttribute("fee_paid", fmt.Sprintf("%d", event.FeePaid)),
+		sdk.NewAttribute("zone", fmt.Sprintf("%d", zone.Zone)),
+		sdk.NewAttribute("zone_resolved", fmt.Sprintf("%t", zone.Resolved)),
 	))
 }

@@ -7,6 +7,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	sdk "github.com/cosmos/cosmos-sdk/types"
+
 	"github.com/sovereign-l1/l1/x/aez/types"
 )
 
@@ -16,8 +18,8 @@ type queryServer struct {
 
 // NewQueryServerImpl returns the x/aez Query service implementation.
 //
-// Query only: x/aez has no Msg service in Phase 1, so nothing here mutates
-// state. Every method is a pure read of committed state.
+// Every method is a pure read of committed state. The write surface is the Msg
+// service (keeper/msg_server.go); nothing here mutates anything.
 func NewQueryServerImpl(k *Keeper) types.QueryServer {
 	return queryServer{keeper: k}
 }
@@ -58,17 +60,53 @@ func (q queryServer) RoutingTable(ctx context.Context, req *types.QueryRoutingTa
 			return nil, status.Errorf(codes.NotFound, "routing table version %d not found", req.Version)
 		}
 	}
-	buckets := make([]uint32, 0, types.BucketCount)
-	for i := 0; i < types.BucketCount; i++ {
-		buckets = append(buckets, uint32(table.Buckets[i]))
+	return routingTableResponse(table), nil
+}
+
+// PendingRoutingTable reports the table scheduled to activate, if any.
+//
+// This is the query that makes a scheduled swap visible BEFORE it happens. The
+// current table alone cannot show it: a governance proposal that passes at
+// height H may not take effect for thousands of blocks, and during that whole
+// window RoutingTable() answers with the OLD table and nothing in its response
+// hints that a replacement is already committed and inevitable.
+func (q queryServer) PendingRoutingTable(ctx context.Context, req *types.QueryPendingRoutingTableRequest) (*types.QueryPendingRoutingTableResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "empty request")
 	}
+	version, found, err := q.keeper.GetPendingVersion(ctx)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	if !found {
+		return &types.QueryPendingRoutingTableResponse{Found: false}, nil
+	}
+	table, found, err := q.keeper.GetRoutingTableVersion(ctx, version)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	if !found {
+		// The pending pointer names a version whose table is missing. That
+		// is a corrupt store, not an empty result: report it rather than
+		// answering "nothing pending", which would hide the fault and is
+		// also the exact state that would make the next BeginBlocker fail.
+		return nil, status.Errorf(codes.Internal, "pending routing table version %d is missing", version)
+	}
+	return &types.QueryPendingRoutingTableResponse{
+		Found:			true,
+		Table:			*routingTableResponse(table),
+		BlocksUntilActivation:	table.ActivationHeight - sdk.UnwrapSDKContext(ctx).BlockHeight(),
+	}, nil
+}
+
+func routingTableResponse(table types.RoutingTable) *types.QueryRoutingTableResponse {
 	return &types.QueryRoutingTableResponse{
 		Version:		table.Version,
 		Epoch:			table.Epoch,
 		ActivationHeight:	table.ActivationHeight,
-		Buckets:		buckets,
+		Buckets:		types.BucketsFromTable(table),
 		TableHash:		hex.EncodeToString(table.TableHash),
-	}, nil
+	}
 }
 
 func (q queryServer) Zones(ctx context.Context, req *types.QueryZonesRequest) (*types.QueryZonesResponse, error) {

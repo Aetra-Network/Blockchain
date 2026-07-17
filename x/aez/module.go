@@ -1,6 +1,7 @@
 package aez
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 
@@ -22,24 +23,34 @@ import (
 
 const ConsensusVersion = prototype.CurrentGenesisVersion
 
-// x/aez is registered as a PROTOTYPE module (app/wiring/aetracore/modules.go).
+// x/aez is registered as a SYSTEM module (app/wiring/aetracore/modules.go).
 //
-// The interface list below is deliberately short, and every omission is load-
-// bearing. app/aetra_core_wiring_test.go:38-63 iterates EVERY prototype module
-// and asserts it implements NEITHER appmodule.HasBeginBlocker NOR
-// appmodule.HasEndBlocker, while still appearing in both order lists as a no-op
-// position. So:
+// Phase 2 graduated it out of prototypeModules, exactly as x/contracts did, and
+// the graduation is what unblocks the two additions below. The prototype family
+// is asserted to implement NEITHER appmodule.HasBeginBlocker NOR
+// appmodule.HasEndBlocker (app/aetra_core_wiring_test.go), so a BeginBlocker
+// could not have landed while x/aez was a prototype -- the promotion and the
+// BeginBlocker are necessarily one change.
 //
-//   - NO BeginBlock, NO EndBlock. Phase 1 is inert. The Phase 4 drain EndBlocker
-//     cannot land while x/aez is a prototype; it graduates into systemModules
-//     first, exactly as x/contracts did (modules.go:81-87).
-//   - NO module.HasServices Msg registration. Query only -- there is no
-//     transaction that can move the routing table.
+// What x/aez now has, and what it still does not:
+//
+//   - HasBeginBlocker: YES. It swaps a pending routing table into the active one
+//     at its ActivationHeight. With no pending table it is one store read and a
+//     nil return (I-23). See keeper/abci.go for why Begin and not End.
+//   - Msg service: YES, exactly one -- MsgUpdateRoutingTable, gated on the gov
+//     module account. Phase 1's "no handler exists" is over; the guarantee is now
+//     "one handler, governance-only, and it cannot move a bucket off the Core
+//     Zone" (keeper.ValidateRoutingTableTransition).
+//   - HasEndBlocker: still NO. The Phase 4 message-bus drain does not exist yet.
+//   - Module account: still NO, and never (I-10/I-11). The wiring gate enforces
+//     this for system modules with the identical rule it applied to prototypes,
+//     so the promotion bought no relief here.
 var (
-	_	module.AppModuleBasic	= AppModule{}
-	_	module.HasGenesis	= AppModule{}
-	_	module.HasServices	= AppModule{}
-	_	appmodule.AppModule	= AppModule{}
+	_	module.AppModuleBasic		= AppModule{}
+	_	module.HasGenesis		= AppModule{}
+	_	module.HasServices		= AppModule{}
+	_	appmodule.AppModule		= AppModule{}
+	_	appmodule.HasBeginBlocker	= AppModule{}
 )
 
 type AppModule struct {
@@ -52,20 +63,29 @@ func (AppModule) IsOnePerModuleType()	{}
 func (AppModule) IsAppModule()		{}
 func (AppModule) Name() string		{ return types.ModuleName }
 
-// RegisterLegacyAminoCodec and RegisterInterfaces are no-ops: x/aez defines no
-// Msg types, so it has nothing to register into the interface registry.
-func (AppModule) RegisterLegacyAminoCodec(_ *codec.LegacyAmino)		{}
-func (AppModule) RegisterInterfaces(_ codectypes.InterfaceRegistry)	{}
+func (AppModule) RegisterLegacyAminoCodec(cdc *codec.LegacyAmino) {
+	types.RegisterLegacyAminoCodec(cdc)
+}
+
+func (AppModule) RegisterInterfaces(registry codectypes.InterfaceRegistry) {
+	types.RegisterInterfaces(registry)
+}
 
 // RegisterGRPCGatewayRoutes is a no-op: the hand-written Query descriptors carry
 // no grpc-gateway annotations (see x/aez/types/service.go on why the descriptors
 // are hand-written rather than buf-generated).
 func (AppModule) RegisterGRPCGatewayRoutes(_ client.Context, _ *runtime.ServeMux)	{}
 
-// RegisterServices registers the Query service and NOTHING else. There is
-// deliberately no cfg.MsgServer() registration.
+// RegisterServices registers the Msg and Query services.
 func (am AppModule) RegisterServices(cfg module.Configurator) {
+	types.RegisterMsgServer(cfg.MsgServer(), keeper.NewMsgServerImpl(am.keeper))
 	types.RegisterQueryServer(cfg.QueryServer(), keeper.NewQueryServerImpl(am.keeper))
+}
+
+// BeginBlock activates a pending routing table at its ActivationHeight. See
+// keeper/abci.go for the placement rationale.
+func (am AppModule) BeginBlock(ctx context.Context) error {
+	return am.keeper.BeginBlocker(ctx)
 }
 
 func (AppModule) DefaultGenesis(codec.JSONCodec) json.RawMessage {

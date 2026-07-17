@@ -94,7 +94,23 @@ type PersistentKeepers struct {
 }
 
 func NewPersistentKeepers(keys map[string]*storetypes.KVStoreKey, bankKeeper storagerentkeeper.BankKeeper) PersistentKeepers {
-	nativeAccountKeeper := nativeaccountkeeper.NewPersistentKeeper(runtime.NewKVStoreService(keys[nativeaccounttypes.StoreKey]))
+	// x/aez is built BEFORE x/native-account because native-account consumes it
+	// (Phase 3 zone resolution). The dependency is one-way and read-only:
+	// x/aez takes no handle on native-account, and native-account holds x/aez
+	// only behind its own ZoneResolver interface, so neither package imports the
+	// other.
+	//
+	// No .With*Keeper(...) chain on x/aez itself: it takes no bank or staking
+	// handle. It moves messages, never money (I-10), and holds no other module's
+	// store handle (I-11).
+	aezKeeper := aezkeeper.NewPersistentKeeper(runtime.NewKVStoreService(keys[aeztypes.StoreKey]))
+
+	// WithZoneResolver makes each account's home zone RESOLVABLE and
+	// OBSERVABLE (query + activation event). It does not move any key: account
+	// records stay flat, so a routing-epoch rezone rewrites nothing and cannot
+	// strand an account. See x/native-account/keeper/zone.go.
+	nativeAccountKeeper := nativeaccountkeeper.NewPersistentKeeper(runtime.NewKVStoreService(keys[nativeaccounttypes.StoreKey])).
+		WithZoneResolver(aezKeeper)
 	storageRentKeeper := storagerentkeeper.NewPersistentKeeper(runtime.NewKVStoreService(keys[storagerenttypes.StoreKey])).WithBankKeeper(bankKeeper)
 
 	contractsKeeper := contractskeeper.NewPersistentKeeper(runtime.NewKVStoreService(keys[contractstypes.StoreKey]))
@@ -115,10 +131,7 @@ func NewPersistentKeepers(keys map[string]*storetypes.KVStoreKey, bankKeeper sto
 		AetraCoreKeeper:		aetracorekeeper.NewPersistentKeeper(runtime.NewKVStoreService(keys[aetracoretypes.StoreKey])),
 		LoadKeeper:			loadkeeper.NewPersistentKeeper(runtime.NewKVStoreService(keys[loadtypes.StoreKey])),
 		RoutingKeeper:			routingkeeper.NewPersistentKeeper(runtime.NewKVStoreService(keys[routingtypes.StoreKey])),
-		// No .With*Keeper(...) chain: x/aez takes no bank or staking
-		// handle. It moves messages, never money (I-10), and holds no
-		// other module's store handle (I-11).
-		AEZKeeper:			aezkeeper.NewPersistentKeeper(runtime.NewKVStoreService(keys[aeztypes.StoreKey])),
+		AEZKeeper:			aezKeeper,
 		MeshKeeper:			meshkeeper.NewPersistentKeeper(runtime.NewKVStoreService(keys[meshtypes.StoreKey])),
 		NetworkingKeeper:		networkingkeeper.NewPersistentKeeper(runtime.NewKVStoreService(keys[networkingtypes.StoreKey])),
 		NativeAccountKeeper:		nativeAccountKeeper,

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"slices"
 	"testing"
@@ -14,9 +15,11 @@ import (
 
 	"github.com/cosmos/cosmos-sdk/client/flags"
 	sims "github.com/cosmos/cosmos-sdk/testutil/sims"
+	sdk "github.com/cosmos/cosmos-sdk/types"
 
 	aetracorekeeper "github.com/sovereign-l1/l1/x/aetracore/keeper"
 	aetracoretypes "github.com/sovereign-l1/l1/x/aetracore/types"
+	aezkeeper "github.com/sovereign-l1/l1/x/aez/keeper"
 	aeztypes "github.com/sovereign-l1/l1/x/aez/types"
 	contractskeeper "github.com/sovereign-l1/l1/x/contracts/keeper"
 	contractstypes "github.com/sovereign-l1/l1/x/contracts/types"
@@ -33,6 +36,10 @@ import (
 	schedulerkeeper "github.com/sovereign-l1/l1/x/scheduler/keeper"
 	schedulertypes "github.com/sovereign-l1/l1/x/scheduler/types"
 )
+
+// keylessPrototypeAuthority is prototype.DefaultAuthority, the all-zero address
+// nobody can sign for. x/internal/prototype cannot be imported from app/.
+const keylessPrototypeAuthority = "ae1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqp8e93gq"
 
 func TestAetraCoreWiringGateRegistersPrototypeModulesDisabled(t *testing.T) {
 	app, genesis := setup(true, 5)
@@ -61,6 +68,46 @@ func TestAetraCoreWiringGateRegistersPrototypeModulesDisabled(t *testing.T) {
 		require.True(t, slices.Contains(app.ModuleManager.OrderEndBlockers, moduleName), moduleName)
 	}
 
+	// AEZ Phase 2: x/aez left the prototype family, so the loop above no
+	// longer covers it. Without this loop NOTHING in the test suite would
+	// assert that a system module is registered, store-mounted and
+	// custody-free -- the gate checks it at startup, but a gate that only
+	// runs in a panic path is not a test.
+	//
+	// The Begin/EndBlocker assertions are deliberately ABSENT here rather
+	// than forgotten: having a block-lifecycle hook is exactly what
+	// distinguishes the system family from the prototype family. x/contracts
+	// has an EndBlocker and x/aez now has a BeginBlocker.
+	systemModuleNames := AetraCoreSystemModuleNames()
+	systemStoreKeys := AetraCoreSystemStoreKeys()
+	require.Len(t, systemStoreKeys, len(systemModuleNames))
+	for i, moduleName := range systemModuleNames {
+		require.Contains(t, app.ModuleManager.Modules, moduleName)
+		require.Contains(t, app.keys, systemStoreKeys[i])
+		require.Contains(t, genesis, moduleName)
+		if IsReservedSystemModuleAccountName(moduleName) {
+			require.Contains(t, GetMaccPerms(), moduleName)
+			require.Nil(t, GetMaccPerms()[moduleName])
+		} else {
+			require.NotContains(t, GetMaccPerms(), moduleName)
+		}
+	}
+
+	// x/aez is a system module now, and must NOT be a prototype one. A
+	// module silently present in both lists would satisfy every loop above
+	// while making the prototype family's inertness claim false.
+	require.Contains(t, systemModuleNames, aeztypes.ModuleName)
+	require.NotContains(t, prototypeModuleNames, aeztypes.ModuleName)
+
+	// The BeginBlocker that swaps the routing table is the reason the
+	// promotion was necessary. Assert it exists, and that no EndBlocker
+	// snuck in with it (the Phase 4 drain does not exist yet).
+	_, aezHasBegin := app.ModuleManager.Modules[aeztypes.ModuleName].(appmodule.HasBeginBlocker)
+	_, aezHasEnd := app.ModuleManager.Modules[aeztypes.ModuleName].(appmodule.HasEndBlocker)
+	require.True(t, aezHasBegin, "x/aez must activate pending routing tables in BeginBlock")
+	require.False(t, aezHasEnd, "x/aez has no EndBlocker until the Phase 4 drain lands")
+	require.True(t, slices.Contains(app.ModuleManager.OrderBeginBlockers, aeztypes.ModuleName))
+
 	aetherCoreGenesis := decodeJSONGenesis[aetracorekeeper.GenesisState](t, genesis[aetracoretypes.ModuleName])
 	require.False(t, aetherCoreGenesis.Params.Enabled)
 	require.Empty(t, aetherCoreGenesis.State.ZoneDescriptors)
@@ -76,16 +123,24 @@ func TestAetraCoreWiringGateRegistersPrototypeModulesDisabled(t *testing.T) {
 	require.False(t, routingGenesis.Params.Enabled)
 	require.Empty(t, routingGenesis.Shards)
 
-	// x/aez replaces the deleted x/zones. Unlike the rest of the prototype
-	// set its default genesis is deliberately NON-empty: it ships the full
-	// 256-bucket routing table. That is what makes Phase 1 purely additive --
-	// with every bucket pinned to the core zone no entity can resolve
-	// anywhere else, so the assertion here is "core-only", not "empty".
+	// x/aez's default genesis is deliberately NON-empty: it ships the full
+	// 256-bucket routing table. Every bucket maps to the core zone, so no
+	// entity can resolve anywhere else and execution semantics are unchanged
+	// -- the assertion is "core-only", not "empty". Phase 2 made the table
+	// governable but did not move a single bucket.
 	aezGenesis := decodeJSONGenesis[aeztypes.GenesisState](t, genesis[aeztypes.ModuleName])
 	require.NoError(t, aezGenesis.Validate())
 	require.False(t, aezGenesis.Params.Prototype.Enabled)
 	require.True(t, aezGenesis.IsCoreOnly())
 	require.Equal(t, uint32(aeztypes.ZoneCount), uint32(len(aezGenesis.Zones)))
+	// AEZ Phase 2: the routing table is governance-owned. A keyless
+	// authority here would make MsgUpdateRoutingTable unreachable forever --
+	// the bug x/nominator-pool shipped and had to patch around in genesis.
+	require.Equal(t, aeztypes.GovAuthority(), aezGenesis.Params.Prototype.Authority)
+	// x/internal/prototype is not importable from app/, so the keyless
+	// sentinel is spelled out. It is the same literal the routing/scheduler
+	// assertions in this file already use.
+	require.NotEqual(t, keylessPrototypeAuthority, aezGenesis.Params.Prototype.Authority)
 
 	meshGenesis := decodeJSONGenesis[meshkeeper.GenesisState](t, genesis[meshtypes.ModuleName])
 	require.False(t, meshGenesis.Params.Enabled)
@@ -115,6 +170,59 @@ func TestAetraCoreWiringGateRegistersPrototypeModulesDisabled(t *testing.T) {
 	require.Equal(t, contractskeeper.DefaultGenesis().StateRoot, contractsGenesis.StateRoot)
 }
 
+// prototypeModuleWithBeginBlocker is a stand-in for a prototype module that grew
+// a block-lifecycle hook. It implements just enough of appmodule.AppModule to be
+// swapped into ModuleManager.Modules, which is a map[string]any.
+type prototypeModuleWithBeginBlocker struct{}
+
+func (prototypeModuleWithBeginBlocker) IsOnePerModuleType()			{}
+func (prototypeModuleWithBeginBlocker) IsAppModule()				{}
+func (prototypeModuleWithBeginBlocker) BeginBlock(context.Context) error	{ return nil }
+
+type prototypeModuleWithEndBlocker struct{}
+
+func (prototypeModuleWithEndBlocker) IsOnePerModuleType()		{}
+func (prototypeModuleWithEndBlocker) IsAppModule()			{}
+func (prototypeModuleWithEndBlocker) EndBlock(context.Context) error	{ return nil }
+
+// TestWiringGateRejectsPrototypeModuleWithBlockLifecycleHook proves the AEZ
+// Phase 2 gate check FIRES.
+//
+// Every prototype module in the tree already lacks a Begin/EndBlocker, so the
+// check passes on the real app whether or not it works -- which is exactly the
+// shape of a guard that quietly does nothing. Injecting a module that violates
+// the rule is the only way to show the gate would actually catch the mistake it
+// exists to catch: shipping a BeginBlocker on a prototype module instead of
+// promoting it to systemModules first, which is the step AEZ Phase 2 had to
+// take for x/aez.
+func TestWiringGateRejectsPrototypeModuleWithBlockLifecycleHook(t *testing.T) {
+	prototypeNames := AetraCorePrototypeModuleNames()
+	require.NotEmpty(t, prototypeNames)
+	victim := prototypeNames[0]
+
+	t.Run("BeginBlocker", func(t *testing.T) {
+		app, _ := setup(true, 5)
+		require.NoError(t, app.ValidateAetraCoreWiringGate(), "fixture: the unmodified app must pass")
+
+		app.ModuleManager.Modules[victim] = prototypeModuleWithBeginBlocker{}
+		err := app.ValidateAetraCoreWiringGate()
+		require.ErrorContains(t, err, "must not implement BeginBlocker")
+		require.ErrorContains(t, err, victim)
+	})
+
+	t.Run("EndBlocker", func(t *testing.T) {
+		app, _ := setup(true, 5)
+		app.ModuleManager.Modules[victim] = prototypeModuleWithEndBlocker{}
+		err := app.ValidateAetraCoreWiringGate()
+		require.ErrorContains(t, err, "must not implement EndBlocker")
+	})
+
+	// The rule is scoped to the prototype family: x/aez is a system module
+	// and has a BeginBlocker, and the real app passes the gate. If this rule
+	// ever leaked into the system loop, the assertion at the top of the
+	// BeginBlocker subtest would have failed.
+}
+
 func TestFeatureDisabledMainnetProfileHasNoActiveProductionShardingBehavior(t *testing.T) {
 	app := Setup(t, false)
 
@@ -122,11 +230,26 @@ func TestFeatureDisabledMainnetProfileHasNoActiveProductionShardingBehavior(t *t
 	require.ErrorContains(t, err, "disabled")
 	err = app.RoutingKeeper.SetRoutingTable("ae1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqp8e93gq", 1, []routingkeeper.ShardConfig{{ZoneID: routingtypes.ZoneFinancial, ActiveShards: 1}})
 	require.ErrorContains(t, err, "disabled")
-	// x/aez (which replaced x/zones) has no gated mutator to exercise here:
-	// it registers no Msg service at all, so there is no transaction that can
-	// move the routing table. "Inert" is enforced by the absence of a handler
-	// rather than by a handler that rejects -- a stronger property than the
-	// "disabled" errors asserted above.
+	// AEZ Phase 2: x/aez DOES have a mutator now -- MsgUpdateRoutingTable --
+	// so the old claim here ("no Msg service exists, so nothing can move the
+	// table") is dead and is replaced by the assertion it used to stand in
+	// for. Unlike the prototype modules above, x/aez's gate is the AUTHORITY,
+	// not a feature flag: an unauthorized caller is rejected on the
+	// mainnet profile, so the routing table is unreachable without gov.
+	aezTable, err := app.AEZKeeper.GetRoutingTable(sdk.UnwrapSDKContext(app.NewUncachedContext(false, cmtproto.Header{Height: 1})))
+	require.NoError(t, err)
+	_, err = aezkeeper.NewMsgServerImpl(&app.AEZKeeper).UpdateRoutingTable(
+		app.NewUncachedContext(false, cmtproto.Header{Height: 1}),
+		&aeztypes.MsgUpdateRoutingTable{
+			Authority:		keylessPrototypeAuthority,
+			Version:		aezTable.Version + 1,
+			Epoch:			1,
+			ActivationHeight:	int64(aeztypes.DefaultRoutingEpochLength),
+			Buckets:		aeztypes.BucketsFromTable(aezTable),
+		},
+	)
+	require.ErrorContains(t, err, "governance authority")
+
 	err = app.MeshKeeper.RegisterDestination(meshtypes.MeshDestination{})
 	require.ErrorContains(t, err, "disabled")
 	err = app.NetworkingKeeper.RegisterNodeRecord(networkingtypes.NodeRecord{}, nil, 1)

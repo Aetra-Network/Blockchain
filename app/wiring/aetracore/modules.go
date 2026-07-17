@@ -48,13 +48,6 @@ var prototypeModules = []string{
 	aetracoretypes.ModuleName,
 	loadtypes.ModuleName,
 	routingtypes.ModuleName,
-	// x/aez replaces the deleted x/zones at this index. Both this list and
-	// PrototypeStoreKeys() below are paired POSITIONALLY by
-	// app/aetra_core_wiring.go:18-25, and their lengths are compared
-	// directly at :14-16 -- a mismatch is a startup panic, not a test
-	// failure. Keeping x/aez at the same index in both is what preserves
-	// that pairing.
-	aeztypes.ModuleName,
 	meshtypes.ModuleName,
 	networkingtypes.ModuleName,
 	paymentstypes.ModuleName,
@@ -91,6 +84,23 @@ var systemModules = []string{
 	// Params.MaxInternalMessageGasPerBlock = 0, so autonomous delivery stays
 	// inert until governance explicitly raises the budget.
 	contractstypes.ModuleName,
+	// AEZ Phase 2: x/aez graduated out of prototypeModules for the same
+	// reason x/contracts did -- it now has a live Msg service
+	// (MsgUpdateRoutingTable, gov-only) and an audited BeginBlocker that
+	// swaps a pending routing table in at its activation height. The
+	// prototype family is defined by having neither, so it no longer
+	// qualifies; app/aetra_core_wiring_test.go asserts that absence for
+	// every prototype module and would fail if x/aez stayed.
+	//
+	// Both this list and SystemStoreKeys() below are paired POSITIONALLY by
+	// app/aetra_core_wiring.go, and their lengths are compared directly --
+	// a mismatch is a startup panic, not a test failure. x/aez must occupy
+	// the same index in both.
+	//
+	// It carries no module account and holds no other module's store handle
+	// (I-10/I-11), and genesis still maps all 256 buckets to the core zone,
+	// so nothing routes anywhere.
+	aeztypes.ModuleName,
 }
 
 func RoutingExecution() RoutingExecutionPoint {
@@ -106,7 +116,6 @@ func PrototypeStoreKeys() []string {
 		aetracoretypes.StoreKey,
 		loadtypes.StoreKey,
 		routingtypes.StoreKey,
-		aeztypes.StoreKey,
 		meshtypes.StoreKey,
 		networkingtypes.StoreKey,
 		paymentstypes.StoreKey,
@@ -143,5 +152,8 @@ func SystemStoreKeys() []string {
 		configtypes.StoreKey,
 		nativeaccounttypes.StoreKey,
 		contractstypes.StoreKey,
+		// Paired positionally with aeztypes.ModuleName's index in
+		// systemModules above. Keep the two in lockstep.
+		aeztypes.StoreKey,
 	}
 }

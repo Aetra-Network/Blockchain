@@ -92,3 +92,31 @@ func (k Keeper) ZoneOfEntity(ctx context.Context, kind types.EntityKind, entity 
 	}
 	return k.ResolveZone(ctx, ns, entityID)
 }
+
+// ZoneOfAddress resolves the home zone of an account-shaped address and returns
+// it as a plain uint32.
+//
+// The SIGNATURE is the point: it names no x/aez type. A consumer module
+// (x/native-account, Phase 3) declares a one-method interface of this exact
+// shape on its OWN side and this keeper satisfies it STRUCTURALLY -- so the
+// consumer imports x/aez not at all.
+//
+// That is not a stylistic nicety. types/pins.go records that the absence of an
+// import cycle between x/aez and x/native-account is CONDITIONAL: app/accounts
+// is not a leaf, and the day anything adds x/native-account/types to it, a
+// direct x/native-account -> x/aez import would close the cycle. A structural
+// interface makes that question UNREPRESENTABLE rather than merely
+// answered-for-now.
+//
+// Classification is deliberately owned here rather than by the caller.
+// CanonicalEntityID resolves system entities FIRST, on raw bytes, before any
+// normalization -- which is what keeps a module account pinned to zone 0 (I-10).
+// A caller that hard-coded "namespace = native-account" would silently break
+// that, so callers are not given the chance.
+func (k Keeper) ZoneOfAddress(ctx context.Context, address string) (uint32, error) {
+	resolution, err := k.ZoneOfEntity(ctx, types.EntityKindAddress, address)
+	if err != nil {
+		return uint32(types.ZoneIDCore), err
+	}
+	return uint32(resolution.Zone), nil
+}

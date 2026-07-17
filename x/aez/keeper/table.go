@@ -2,12 +2,36 @@ package keeper
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
+	"strconv"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
 
 	"github.com/sovereign-l1/l1/x/aez/types"
 )
+
+// emitRoutingTableEvent emits one routing-table event with the table's identity
+// plus any caller-supplied extra attributes.
+//
+// It tolerates a context with no EventManager (the keeper unit tests build an
+// sdk.Context directly) rather than panicking: an event is observability, and
+// failing a block over a missing event manager would trade a real consensus
+// property for a cosmetic one.
+func emitRoutingTableEvent(ctx context.Context, eventType string, table types.RoutingTable, extra []sdk.Attribute) {
+	sdkCtx := sdk.UnwrapSDKContext(ctx)
+	if sdkCtx.EventManager() == nil {
+		return
+	}
+	attributes := []sdk.Attribute{
+		sdk.NewAttribute(types.AttributeKeyVersion, strconv.FormatUint(table.Version, 10)),
+		sdk.NewAttribute(types.AttributeKeyEpoch, strconv.FormatUint(table.Epoch, 10)),
+		sdk.NewAttribute(types.AttributeKeyActivationHeight, strconv.FormatInt(table.ActivationHeight, 10)),
+		sdk.NewAttribute(types.AttributeKeyTableHash, hex.EncodeToString(table.TableHash)),
+	}
+	attributes = append(attributes, extra...)
+	sdkCtx.EventManager().EmitEvent(sdk.NewEvent(eventType, attributes...))
+}
 
 // SetRoutingTableVersion stores one routing table under its own per-version key.
 // It does not make it current.
@@ -149,6 +173,93 @@ func (k Keeper) SetPendingRoutingTable(ctx context.Context, table types.RoutingT
 	return store.Set(types.RoutingTablePendingKey, types.EncodeUint64(table.Version))
 }
 
+// StageRoutingTable is the GOVERNANCE path onto the routing table: it applies
+// the full Phase 2 policy and then schedules the table.
+//
+// It is deliberately a layer ABOVE SetPendingRoutingTable rather than a change
+// to it. SetPendingRoutingTable is the mechanism (validate, monotonic version,
+// epoch boundary, strictly future); StageRoutingTable is the policy (target
+// zones must exist, the Core Zone is a one-way trap). Keeping them apart is what
+// lets keeper_test.go's adversarial pin test still install a hostile
+// all-buckets-to-zone-4 table directly through the mechanism and prove that
+// CorePinned holds EVEN THEN -- an assertion that would become unwritable, and
+// the pin test vacuous, if policy were welded into the mechanism.
+//
+// The only consensus-reachable caller is the Msg handler (keeper/msg_server.go),
+// which calls this, never SetPendingRoutingTable.
+func (k Keeper) StageRoutingTable(ctx context.Context, table types.RoutingTable, authority string) error {
+	if err := k.ValidateRoutingTableTransition(ctx, table); err != nil {
+		return err
+	}
+	if err := k.SetPendingRoutingTable(ctx, table); err != nil {
+		return err
+	}
+	emitRoutingTableEvent(ctx, types.EventTypeStageRoutingTable, table, []sdk.Attribute{
+		sdk.NewAttribute(types.AttributeKeyAuthority, authority),
+	})
+	return nil
+}
+
+// ValidateRoutingTableTransition enforces the two policy rules that constrain
+// WHICH tables governance may stage, on top of the structural rules
+// RoutingTable.Validate already enforces.
+//
+//  1. Every zone a bucket targets must be a REGISTERED zone -- one with a stored
+//     descriptor. RoutingTable.Validate only range-checks the zone id against
+//     ZoneCount, which is a compile-time constant; this checks committed state,
+//     so a table cannot point a bucket at a zone the chain does not actually
+//     have.
+//
+//  2. A bucket currently mapped to the Core Zone may not be moved off it
+//     (I-9). The Core Zone is a ONE-WAY TRAP: buckets may move among elastic
+//     zones and may move INTO Core, never out.
+//
+// Rule 2 has a consequence worth stating plainly rather than discovering later:
+// genesis maps all 256 buckets to zone 0, so on this chain, today, EVERY bucket
+// is core and therefore frozen. The only table governance can currently stage is
+// one whose bucket map is identical to the current one -- a no-op that bumps
+// Version/Epoch/ActivationHeight and nothing else. That is intentional for Phase
+// 2 ("nothing routes on zones yet"): the governance surface, the epoch swap, and
+// the observability all ship and are exercised, while the ability to actually
+// relocate an entity waits for the phase that gives entities per-zone state to
+// be relocated INTO (x/native-account, Phase 3). Relaxing this rule is that
+// phase's deliberate decision, not an oversight here.
+func (k Keeper) ValidateRoutingTableTransition(ctx context.Context, table types.RoutingTable) error {
+	if err := table.Validate(); err != nil {
+		return err
+	}
+	// Validate range-checked every zone id, so each is < ZoneCount and this
+	// index cannot escape the slice.
+	used := make([]bool, types.ZoneCount)
+	for i := 0; i < types.BucketCount; i++ {
+		used[uint32(table.Buckets[i])] = true
+	}
+	// Iterate AllZoneIDs, not the bucket array: at most ZoneCount store reads
+	// instead of BucketCount, in an order fixed by the type.
+	for _, id := range types.AllZoneIDs() {
+		if !used[uint32(id)] {
+			continue
+		}
+		_, found, err := k.GetZone(ctx, id)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return fmt.Errorf("%w: table targets zone %d, which has no registered descriptor", types.ErrInvalidZone, uint32(id))
+		}
+	}
+	current, err := k.GetRoutingTable(ctx)
+	if err != nil {
+		return err
+	}
+	for i := 0; i < types.BucketCount; i++ {
+		if current.Buckets[i].IsCore() && !table.Buckets[i].IsCore() {
+			return fmt.Errorf("%w: bucket %d is mapped to the core zone and cannot be moved to zone %d", types.ErrCoreZoneImmutable, i, uint32(table.Buckets[i]))
+		}
+	}
+	return nil
+}
+
 // MaybeActivatePendingRoutingTable promotes a pending table to current when the
 // block height reaches its ActivationHeight exactly, and reports whether it did.
 //
@@ -160,12 +271,15 @@ func (k Keeper) SetPendingRoutingTable(ctx context.Context, table types.RoutingT
 // height -- and it activates at exactly its height on the happy path, which
 // table_test.go asserts block by block (not one early, not one late).
 //
-// Phase 1 note: nothing calls this on a block boundary. x/aez registers NO
-// BeginBlocker and NO EndBlocker (the wiring gate asserts their absence for
-// every prototype module, app/aetra_core_wiring_test.go:57-60), so Phase 1 is
-// inert by construction. The activation rule is implemented and tested here so
-// the semantics are frozen before anything depends on them; the caller arrives
-// when x/aez graduates to systemModules.
+// Phase 2 note: the caller has arrived. x/aez graduated into systemModules and
+// this now runs from the module's BeginBlocker (keeper/abci.go) on every block.
+// BeginBlock, not EndBlock, is the only placement that keeps ActivationHeight
+// honest -- see BeginBlocker's doc comment.
+//
+// With no pending table this is a single store read returning (false, nil): a
+// silent no-op, which is what a disabled x/aez owes every block (I-23). It reads
+// only committed state and ctx.BlockHeight() -- no wall clock, no map iteration
+// (I-22).
 func (k Keeper) MaybeActivatePendingRoutingTable(ctx context.Context) (bool, error) {
 	pending, found, err := k.GetPendingVersion(ctx)
 	if err != nil || !found {
@@ -181,12 +295,22 @@ func (k Keeper) MaybeActivatePendingRoutingTable(ctx context.Context) (bool, err
 	if sdk.UnwrapSDKContext(ctx).BlockHeight() < table.ActivationHeight {
 		return false, nil
 	}
+	// Read the outgoing version BEFORE the swap so the event can report what
+	// was replaced. A missing current pointer is not an error here: the swap
+	// is what establishes the new one.
+	previous, _, err := k.GetCurrentVersion(ctx)
+	if err != nil {
+		return false, err
+	}
 	if err := k.setCurrentVersion(ctx, table.Version); err != nil {
 		return false, err
 	}
 	if err := k.clearPendingVersion(ctx); err != nil {
 		return false, err
 	}
+	emitRoutingTableEvent(ctx, types.EventTypeActivateRoutingTable, table, []sdk.Attribute{
+		sdk.NewAttribute(types.AttributeKeyPreviousVersion, strconv.FormatUint(previous, 10)),
+	})
 	return true, nil
 }
 

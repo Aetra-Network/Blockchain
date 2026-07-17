@@ -28,6 +28,13 @@ func buildNativeAccountQueryFileDescriptor() []byte {
 				descriptorField("address_raw", 4, descriptorpb.FieldDescriptorProto_TYPE_STRING),
 				descriptorField("status", 5, descriptorpb.FieldDescriptorProto_TYPE_STRING),
 				descriptorField("account_json", 6, descriptorpb.FieldDescriptorProto_TYPE_STRING),
+				// Phase 3 (AEZ): derived home zone. Kept in lockstep with
+				// the QueryAccountResponse struct tags -- gogoproto
+				// marshals from the tags, so a field added to the struct
+				// but not here would still go on the wire while the
+				// reflected descriptor denied it existed.
+				descriptorField("zone", 7, descriptorpb.FieldDescriptorProto_TYPE_UINT32),
+				descriptorField("zone_resolved", 8, descriptorpb.FieldDescriptorProto_TYPE_BOOL),
 			}},
 			{Name: descriptorString("QueryAccountByRawRequest"), Field: []*descriptorpb.FieldDescriptorProto{descriptorField("address_raw", 1, descriptorpb.FieldDescriptorProto_TYPE_STRING)}},
 			{Name: descriptorString("QueryVirtualAccountRequest"), Field: []*descriptorpb.FieldDescriptorProto{descriptorField("address_user", 1, descriptorpb.FieldDescriptorProto_TYPE_STRING)}},
