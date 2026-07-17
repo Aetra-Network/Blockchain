@@ -10,6 +10,7 @@ import (
 
 	"github.com/sovereign-l1/l1/app/addressing"
 	appparams "github.com/sovereign-l1/l1/app/params"
+	nativeaccounttypes "github.com/sovereign-l1/l1/x/native-account/types"
 	nominatorpoolkeeper "github.com/sovereign-l1/l1/x/nominator-pool/keeper"
 	nominatorpooltypes "github.com/sovereign-l1/l1/x/nominator-pool/types"
 )
@@ -230,6 +231,12 @@ func TestNominatorPoolCustodyEndToEndOfficialPoolDepositWithdrawsAndPaysOutReal(
 	})
 	require.NoError(t, err)
 
+	// The pool's activation gate is live (D3), so the depositor must be an
+	// activated account -- as it would be on a real chain after `l1d tx
+	// native-account activate`. Keyed by the wallet's v2 identity, while the
+	// money above stays at its plain address; ensureActiveWallet bridges the two.
+	activatePoolWalletAE(t, app, ctx, userAddress, 5100, nativeaccounttypes.AccountStatusActive)
+
 	_, err = srv.DepositToStakingPool(ctx, &nominatorpooltypes.MsgDepositToStakingPool{
 		PoolID:		poolID,
 		WalletAddress:	userAddress,
@@ -406,6 +413,9 @@ func TestNominatorPoolMsgServerDepositDebitsSigningWalletNotDerivedIdentity(t *t
 	})
 	require.NoError(t, err)
 
+	// D3: the wallet must be an activated account for the gate to let it in.
+	activatePoolWalletAE(t, app, ctx, walletAE, 6100, nativeaccounttypes.AccountStatusActive)
+
 	// The deposit a wallet actually broadcasts: wallet_address is the plain
 	// address it signs with (MsgDepositToStakingPoolSigners resolves the signer
 	// from this very field, so the ante would reject anything else).
@@ -493,6 +503,9 @@ func TestNominatorPoolWithdrawPoolStakeActuallyPaysTheOwner(t *testing.T) {
 		ValidatorTarget:	validator.OperatorAddress,
 	})
 	require.NoError(t, err)
+
+	// D3: the wallet must be an activated account for the gate to let it in.
+	activatePoolWalletAE(t, app, ctx, walletAE, 7100, nativeaccounttypes.AccountStatusActive)
 
 	_, err = srv.DepositToStakingPool(ctx, &nominatorpooltypes.MsgDepositToStakingPool{
 		PoolID:		poolID,

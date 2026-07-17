@@ -7,10 +7,25 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// controllerFixtureInflationBps is a representative MID-BAND rate (150..500,
+// midpoint 325) for exercising the activity/adaptive inflation controllers.
+//
+// These controllers are unwired spec/projection code: they still operate over
+// the governance-legal outer band MinInflationBps..MaxInflationBps = 150..500,
+// which the emission calibration deliberately left alone. They are NOT the
+// pinned emission path, so their fixtures must not key off
+// DefaultTargetInflationBps -- that constant is now the 400 bps emission PIN
+// (x/emissions welds Min==Max==400), and it sits only 100 bps under the 500 rail.
+// At 400 the 4-sample smoothing window can pull the target up by at most
+// (500-400)/4 = 25 bps, exactly the per-window change limit, so a fixture at 400
+// cannot demonstrate the limiter engaging at all. 300 keeps the headroom these
+// mechanics tests need while staying inside the controllers' own band.
+const controllerFixtureInflationBps = int64(300)
+
 func TestActivityInflationControllerRaisesInflationWithExplainableInputs(t *testing.T) {
 	params := DefaultActivityInflationControllerParams()
 	out, err := ActivityInflationControllerWithParams(ActivityInflationControllerInput{
-		CurrentInflationBps:		DefaultTargetInflationBps,
+		CurrentInflationBps:		controllerFixtureInflationBps,
 		BondedStakeRatioBps:		5_000,
 		ValidatorOperatingCostIndexBps:	8_000,
 		FeeRevenueNaet:			sdkmath.NewInt(100_000_000),
@@ -18,10 +33,13 @@ func TestActivityInflationControllerRaisesInflationWithExplainableInputs(t *test
 		SlashingRiskEvents:		2,
 		NetworkActivityScoreBps:	3_000,
 		TreasuryReserveHealthBps:	7_000,
-		RecentInflationBps:		[]int64{290, 295, DefaultTargetInflationBps},
+		RecentInflationBps:		[]int64{290, 295, controllerFixtureInflationBps},
 	}, params)
 	require.NoError(t, err)
-	require.Equal(t, DefaultTargetInflationBps+params.PerWindowChangeLimitBps, out.InflationBps)
+	// Pressure is strongly positive, so rawTarget clamps to the 500 rail; the
+	// 4-sample smoothing window averages {290, 295, 300, 500} = 346, a +46 bps
+	// step that the per-window limiter cuts to +25 -> 325.
+	require.Equal(t, controllerFixtureInflationBps+params.PerWindowChangeLimitBps, out.InflationBps)
 	require.Equal(t, params.MaxInflationBps, out.RawTargetInflationBps)
 	require.True(t, out.ChangeLimited)
 	require.False(t, out.EmergencyFrozen)

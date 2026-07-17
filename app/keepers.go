@@ -215,10 +215,18 @@ func (app *L1App) initKeepers(
 	// from the pool's real accrued distribution rewards -- previously a
 	// bookkeeping-only ledger with no bank custody at all. All three
 	// dependencies already exist by this point in the wiring sequence.
+	// D3: and wire the activation gate it has always declared. Without this
+	// reader ensureActiveWallet returns nil unconditionally, so a frozen or
+	// never-activated wallet could deposit, unbond and claim. It was
+	// unwireable until the keeper's AccountStatusReader was corrected to
+	// native-account's real signature -- see that interface's doc comment.
+	// persistentKeepers.NativeAccountKeeper (not app.NativeAccountKeeper,
+	// which is assigned a few lines below this).
 	app.NominatorPoolKeeper = persistentKeepers.NominatorPoolKeeper.
 		WithBankKeeper(app.BankKeeper).
 		WithStakingKeeper(app.StakingKeeper).
-		WithDistrKeeper(app.DistrKeeper)
+		WithDistrKeeper(app.DistrKeeper).
+		WithAccountStatusReader(persistentKeepers.NativeAccountKeeper)
 	app.SingleNominatorPoolKeeper = persistentKeepers.SingleNominatorPoolKeeper
 	app.ValidatorElectionKeeper = persistentKeepers.ValidatorElectionKeeper
 	app.ValidatorInsuranceKeeper = persistentKeepers.ValidatorInsuranceKeeper

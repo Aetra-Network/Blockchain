@@ -25,7 +25,10 @@ func TestStakingRatioBelowTargetIncreasesRewardsWithinBounds(t *testing.T) {
 
 	require.Equal(t, uint32(400), record.InflationBps)
 	require.Equal(t, sdkmath.NewInt(400), record.EmissionAmount.Amount)
-	require.Equal(t, sdkmath.NewInt(280), record.ValidatorReward.Amount)
+	// 400 * ValidatorRewardBps/10^4 = 400 * 8500/10^4 = 340 (was 280 at the old
+	// 7000 bps weight; the split moved to 8500 to lift circulating growth into
+	// the 3-5% band -- see types.DefaultDistributionWeights).
+	require.Equal(t, sdkmath.NewInt(340), record.ValidatorReward.Amount)
 	stored, err := app.EmissionsKeeper.GetParams(ctx)
 	require.NoError(t, err)
 	require.Equal(t, uint32(400), stored.CurrentInflationBps)
@@ -41,7 +44,8 @@ func TestStakingRatioAboveTargetDecreasesRewardsWithinBounds(t *testing.T) {
 
 	require.Equal(t, uint32(100), record.InflationBps)
 	require.Equal(t, sdkmath.NewInt(100), record.EmissionAmount.Amount)
-	require.Equal(t, sdkmath.NewInt(70), record.ValidatorReward.Amount)
+	// 100 * 8500/10^4 = 85 (was 70 at the old 7000 bps validator weight).
+	require.Equal(t, sdkmath.NewInt(85), record.ValidatorReward.Amount)
 
 	// SA2-S06: the standalone Msg finalize path is rejected so it cannot record
 	// an epoch without minting and suppress the protocol EndBlocker's emission.

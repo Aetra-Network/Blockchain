@@ -24,6 +24,11 @@ var (
 	PendingDistributionKey	= []byte{0x03}
 	FeeHistoryPrefix	= []byte{0x04}
 	ProtocolIncomePolicyKey	= []byte{0x05}
+	// LastBurnCapTimeKey stores the consensus block time at which the fee burn
+	// cap was last accounted, as a big-endian int64 of Unix seconds. It is what
+	// gives the cap a time base: the cap is a RATE (fraction of supply per year),
+	// so it can only be enforced against an elapsed interval.
+	LastBurnCapTimeKey	= []byte{0x06}
 )
 
 const (

@@ -168,7 +168,10 @@ func baseAdaptiveInflationInput(params AdaptiveInflationParams, override Adaptiv
 		AccountingPeriod:		"epoch",
 		BlocksInEpoch:			100,
 		CurrentSupplyNaet:		sdkmath.NewInt(1_000_000),
-		CurrentInflationBps:		DefaultTargetInflationBps,
+		// Mid-band, deliberately NOT DefaultTargetInflationBps: this controller is
+		// unwired spec code over the 150..500 governance band, not the pinned
+		// emission path. See controllerFixtureInflationBps.
+		CurrentInflationBps:		controllerFixtureInflationBps,
 		BondedStakeRatioBps:		DefaultTargetStakeBps,
 		TargetStakeRatioBps:		params.TargetStakeRatioBps,
 		FeeRevenueNaet:			sdkmath.NewInt(DefaultFeeRevenueTargetNaet),
@@ -178,7 +181,7 @@ func baseAdaptiveInflationInput(params AdaptiveInflationParams, override Adaptiv
 		NetworkActivitySamplesBps:	[]int64{DefaultTargetLoadBps},
 		TreasuryReserveHealthBps:	BasisPoints,
 		SecurityReserveHealthBps:	BasisPoints,
-		RecentInflationBps:		[]int64{DefaultTargetInflationBps},
+		RecentInflationBps:		[]int64{controllerFixtureInflationBps},
 		Params:				params,
 	}
 	if override.EpochID != 0 {

@@ -93,7 +93,10 @@ func TestGovernanceParameterImpactProjectsBeforeActivation(t *testing.T) {
 	require.True(t, report.PreUpgradeSimulationIncluded)
 	require.Len(t, report.ProjectedReports, 3)
 	require.Len(t, report.DashboardRows, 4)
-	require.Equal(t, int64(-50), report.DeltaBps)
+	// DeltaBps is proposed - current. Kept symbolic so it tracks the emission pin
+	// (250 - 400 = -150 today) instead of re-breaking on every recalibration; the
+	// projection machinery, not the rate, is what this test covers.
+	require.Equal(t, int64(250)-DefaultTargetInflationBps, report.DeltaBps)
 
 	first := report.ProjectedReports[0]
 	require.Equal(t, sdkmath.NewInt(25_000), first.GrossIssuedNaet)

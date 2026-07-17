@@ -19,6 +19,7 @@ import (
 	"github.com/sovereign-l1/l1/app/addressing"
 	appparams "github.com/sovereign-l1/l1/app/params"
 	"github.com/sovereign-l1/l1/app/stakingpolicy"
+	nativeaccounttypes "github.com/sovereign-l1/l1/x/native-account/types"
 	nominatorpoolkeeper "github.com/sovereign-l1/l1/x/nominator-pool/keeper"
 	nominatorpooltypes "github.com/sovereign-l1/l1/x/nominator-pool/types"
 )
@@ -151,6 +152,12 @@ func TestPoSOfficialPoolDepositPathWorksWhileDirectDelegationDisabled(t *testing
 	FundTestAddr(t, app, ctx, depositor, sdk.NewCoins(sdk.NewCoin(BondDenom, sdkmath.NewIntFromUint64(4*depositAmount))))
 	balanceBefore := app.BankKeeper.GetBalance(ctx, depositor, BondDenom)
 	require.Equal(t, sdkmath.NewIntFromUint64(4*depositAmount), balanceBefore.Amount)
+
+	// D3: the pool's activation gate is wired now, so the depositor has to be
+	// an activated account -- filed under its v2 identity, while its coins stay
+	// at the plain address above. Before D3 this call was unnecessary because
+	// the gate was connected to nothing and accepted every wallet.
+	activatePoolWalletAE(t, app, ctx, user, 2200, nativeaccounttypes.AccountStatusActive)
 
 	msg := &nominatorpooltypes.MsgDepositToStakingPool{
 		PoolID:		pool.PoolID,

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"testing"
+	"time"
 
 	sdkmath "cosmossdk.io/math"
 	"github.com/stretchr/testify/require"
@@ -94,11 +95,25 @@ func TestGoldenNativeEconomyLoopCoversFeesEmissionsPoolRewardsAndStorageRent(t *
 	goldenAnchor := sdkmath.NewInt(10_000)
 	emission, err := app.FinalizeNativeEconomyEpochWithReferenceSupply(ctx, 7, 5_000, goldenAnchor)
 	require.NoError(t, err)
+	// Golden split of the 1_000 emission under the calibrated
+	// DefaultDistributionWeights (8500/1000/0/0/500 bps):
+	//   validators 1_000 * 8500/10^4 = 850   (was 700 at the old 7000 bps)
+	//   treasury   1_000 * 1000/10^4 = 100
+	//   protection 1_000 *    0/10^4 =   0   (was 100; the protection module has
+	//                                         no spend path, so minting into it
+	//                                         was phantom inflation)
+	//   burn       1_000 *    0/10^4 =   0   (was 50; burning freshly minted
+	//                                         coins only made the advertised rate
+	//                                         a lie -- the protocol burn now lives
+	//                                         on the fee side, capped and
+	//                                         supply-aware)
+	//   ecosystem  1_000 *  500/10^4 =  50
+	// 850 + 100 + 0 + 0 + 50 = 1_000 exactly, so the remainder stays zero.
 	require.Equal(t, sdk.NewInt64Coin(appparams.BaseDenom, 1_000), emission.EmissionAmount)
-	require.Equal(t, sdk.NewInt64Coin(appparams.BaseDenom, 700), emission.ValidatorReward)
+	require.Equal(t, sdk.NewInt64Coin(appparams.BaseDenom, 850), emission.ValidatorReward)
 	require.Equal(t, sdk.NewInt64Coin(appparams.BaseDenom, 100), emission.Treasury)
-	require.Equal(t, sdk.NewInt64Coin(appparams.BaseDenom, 100), emission.ProtectionFund)
-	require.Equal(t, sdk.NewInt64Coin(appparams.BaseDenom, 50), emission.Burn)
+	require.Equal(t, sdk.NewInt64Coin(appparams.BaseDenom, 0), emission.ProtectionFund)
+	require.Equal(t, sdk.NewInt64Coin(appparams.BaseDenom, 0), emission.Burn)
 	require.Equal(t, sdk.NewInt64Coin(appparams.BaseDenom, 50), emission.Ecosystem)
 	require.Equal(t, appparams.BaseDenom, emission.RoundingRemainder.Denom)
 	require.True(t, emission.RoundingRemainder.Amount.IsZero())
@@ -148,17 +163,34 @@ func TestGoldenNativeEconomyLoopCoversFeesEmissionsPoolRewardsAndStorageRent(t *
 	require.Equal(t, sdk.NewCoins(sdk.NewInt64Coin(appparams.BaseDenom, 2)), byBucket[feecollectortypes.BucketBurn])
 	require.Equal(t, sdk.NewCoins(), app.BankKeeper.GetAllBalances(ctx, app.AccountKeeper.GetModuleAddress(feecollectortypes.CollectorModuleName)))
 
-	require.Equal(t, validatorsBefore.Add(sdk.NewInt64Coin(appparams.BaseDenom, 7_000_738)), app.BankKeeper.GetBalance(ctx, app.AccountKeeper.GetModuleAddress(authtypes.FeeCollectorName), appparams.BaseDenom))
+	// validators: 7_000_000 fee share + 850 emission validator reward + 38
+	// protocol-income validator_rewards (3800 bps of the 100 rent) = 7_000_888.
+	require.Equal(t, validatorsBefore.Add(sdk.NewInt64Coin(appparams.BaseDenom, 7_000_888)), app.BankKeeper.GetBalance(ctx, app.AccountKeeper.GetModuleAddress(authtypes.FeeCollectorName), appparams.BaseDenom))
+	// treasury: 3_000_000 fee share + 100 emission treasury + 25 protocol-income
+	// treasury (2500 bps of 100) = 3_000_125. Unchanged by the calibration.
 	require.Equal(t, treasuryBefore.Add(sdk.NewInt64Coin(appparams.BaseDenom, 3_000_125)), app.BankKeeper.GetBalance(ctx, app.AccountKeeper.GetModuleAddress(feecollectortypes.TreasuryModuleName), appparams.BaseDenom))
-	require.Equal(t, protectionBefore.Add(sdk.NewInt64Coin(appparams.BaseDenom, 110)), app.BankKeeper.GetBalance(ctx, app.AccountKeeper.GetModuleAddress(feecollectortypes.ProtectionModuleName), appparams.BaseDenom))
+	// protection: 0 emission (weight is now 0) + 10 protocol-income
+	// delegator_protection (1000 bps of 100) = 10, down from 110.
+	require.Equal(t, protectionBefore.Add(sdk.NewInt64Coin(appparams.BaseDenom, 10)), app.BankKeeper.GetBalance(ctx, app.AccountKeeper.GetModuleAddress(feecollectortypes.ProtectionModuleName), appparams.BaseDenom))
+	// ecosystem: 50 emission + 12 protocol-income ecosystem_grants (1200 bps of
+	// 100) = 62. Unchanged.
 	require.Equal(t, ecosystemBefore.Add(sdk.NewInt64Coin(appparams.BaseDenom, 62)), app.BankKeeper.GetBalance(ctx, app.AccountKeeper.GetModuleAddress(feecollectortypes.EcosystemGrantsModuleName), appparams.BaseDenom))
 	require.Equal(t, storageReserveBefore.Add(sdk.NewInt64Coin(appparams.BaseDenom, 5)), app.BankKeeper.GetBalance(ctx, app.AccountKeeper.GetModuleAddress(feecollectortypes.StorageRentReserveModuleName), appparams.BaseDenom))
-	require.Equal(t, supplyBefore.Amount.Sub(sdkmath.NewInt(10_000_000)).Add(sdkmath.NewInt(950)).Sub(sdkmath.NewInt(2)), app.BankKeeper.GetSupply(ctx, appparams.BaseDenom).Amount)
+	// supply: -10_000_000 fee burn, +1_000 emission minted with NO emission burn
+	// withheld (was +950 = 1_000 - 50), -2 protocol-income burn bucket.
+	require.Equal(t, supplyBefore.Amount.Sub(sdkmath.NewInt(10_000_000)).Add(sdkmath.NewInt(1_000)).Sub(sdkmath.NewInt(2)), app.BankKeeper.GetSupply(ctx, appparams.BaseDenom).Amount)
 
-	burned, found, err := app.BurnKeeper.GetBurnedDenomEntry(ctx, burntypes.BaseDenom)
+	// The burn LEDGER (x/burn) only ever records the emission burn: the fee burn
+	// and the protocol-income burn bucket reduce supply through their own paths
+	// and never reached this entry (that is why the old golden value here was
+	// exactly 50 -- the emission burn -- and not 10_000_052). With the calibrated
+	// emission BurnBps = 0 there is no emission burn at all, and
+	// distributeNativeEmission's IsPositive() guard skips BurnProtocolCoins
+	// entirely, so the ledger stays empty for this epoch.
+	require.Equal(t, sdk.NewInt64Coin(appparams.BaseDenom, 0), emission.Burn)
+	_, burnLedgerFound, err := app.BurnKeeper.GetBurnedDenomEntry(ctx, burntypes.BaseDenom)
 	require.NoError(t, err)
-	require.True(t, found)
-	require.Equal(t, sdk.NewCoins(sdk.NewInt64Coin(appparams.BaseDenom, 50)), burned.Amount)
+	require.False(t, burnLedgerFound, "emission BurnBps is 0, so nothing may be recorded in the burn ledger")
 	emissionsGenesis, err := app.EmissionsKeeper.ExportGenesis(ctx)
 	require.NoError(t, err)
 	require.Equal(t, sdk.NewInt64Coin(appparams.BaseDenom, 1_000), emissionsGenesis.TotalMintedAccounting)
@@ -285,8 +317,8 @@ func TestEndBlockerFinalizesEmissionInflationAndBurnAtEpochBoundary(t *testing.T
 	configureGoldenBurnParams(t, app, ctx)
 	configureGoldenEmissionParams(t, app, ctx)
 
-	interval := int64(nominatorpooltypes.DefaultRewardEpochDurationBlocks)
-	require.Greater(t, interval, int64(1), "reward epoch must span multiple blocks")
+	start := time.Date(2026, 7, 17, 0, 0, 0, 0, time.UTC)
+	ctx = ctx.WithBlockHeight(1).WithBlockTime(start)
 
 	burnedBase := func(c sdk.Context) sdkmath.Int {
 		entry, found, err := app.BurnKeeper.GetBurnedDenomEntry(c, burntypes.BaseDenom)
@@ -300,19 +332,21 @@ func TestEndBlockerFinalizesEmissionInflationAndBurnAtEpochBoundary(t *testing.T
 		return app.BankKeeper.GetBalance(c, app.AccountKeeper.GetModuleAddress(feecollectortypes.TreasuryModuleName), appparams.BaseDenom).Amount
 	}
 
-	// Off a boundary (height 1, interval > 1), EndBlocker must not emit.
-	offBoundary := ctx.WithBlockHeight(1)
+	// Before EmissionEpochDuration has elapsed, EndBlocker must not emit. The
+	// first call also starts the emission clock.
+	offBoundary := ctx
 	supplyOffBefore := app.BankKeeper.GetSupply(offBoundary, appparams.BaseDenom).Amount
 	_, err := app.EndBlocker(offBoundary)
 	require.NoError(t, err)
 	require.Equal(t, supplyOffBefore, app.BankKeeper.GetSupply(offBoundary, appparams.BaseDenom).Amount,
-		"no emission may occur off a reward-epoch boundary")
+		"no emission may occur before an emission epoch has elapsed")
 	_, found, err := app.EmissionsKeeper.GetEmissionEpoch(offBoundary, 1)
 	require.NoError(t, err)
-	require.False(t, found, "no epoch may be finalized off a boundary")
+	require.False(t, found, "no epoch may be finalized before the interval elapses")
 
-	// At the boundary, the EndBlocker hook finalizes emission epoch 1.
-	boundary := ctx.WithBlockHeight(interval)
+	// Once EmissionEpochDuration of consensus time has passed, the EndBlocker
+	// hook finalizes emission epoch 1.
+	boundary := ctx.WithBlockHeight(2).WithBlockTime(start.Add(appparams.EmissionEpochDuration))
 	supplyBefore := app.BankKeeper.GetSupply(boundary, appparams.BaseDenom).Amount
 	burnBefore := burnedBase(boundary)
 	treasuryBefore := treasuryBalance(boundary)
@@ -386,51 +420,95 @@ func TestJailedValidatorProducesZeroPoolRewards(t *testing.T) {
 	require.Equal(t, uint64(0), rewardSummary.ValidatorGrossIncome)
 }
 
+// TestMaybeFinalizeNativeEmissionEpochAtEpochBoundary drives the emission epoch
+// on CONSENSUS TIME, which is what now triggers it: the epoch used to fire on
+// height % nominatorpooltypes.DefaultRewardEpochDurationBlocks == 0, which made
+// the realized inflation rate a function of the actual block time (and made a
+// nominator-pool constant control monetary policy). See
+// appparams.EmissionEpochDuration.
 func TestMaybeFinalizeNativeEmissionEpochAtEpochBoundary(t *testing.T) {
 	app := Setup(t, false)
 
-	epochBoundary := int64(nominatorpooltypes.DefaultRewardEpochDurationBlocks)
-	ctx := app.NewContext(false).WithBlockHeight(epochBoundary)
+	start := time.Date(2026, 7, 17, 0, 0, 0, 0, time.UTC)
+	ctx := app.NewContext(false).WithBlockHeight(1).WithBlockTime(start)
 	configureGoldenBurnParams(t, app, ctx)
 	configureGoldenEmissionParams(t, app, ctx)
 
-	err := app.maybeFinalizeNativeEmissionEpoch(ctx)
+	// First block ever only STARTS the emission clock. Without this the zero
+	// last-epoch time would read as decades overdue and mint at height 1.
+	require.NoError(t, app.maybeFinalizeNativeEmissionEpoch(ctx))
+	_, found, err := app.EmissionsKeeper.GetEmissionEpoch(ctx, 1)
 	require.NoError(t, err)
+	require.False(t, found, "the first block must start the clock, not finalize an epoch")
 
-	epoch1, found, err := app.EmissionsKeeper.GetEmissionEpoch(ctx, 1)
+	// One second short of the interval: still nothing.
+	early := ctx.WithBlockHeight(2).WithBlockTime(start.Add(appparams.EmissionEpochDuration - time.Second))
+	require.NoError(t, app.maybeFinalizeNativeEmissionEpoch(early))
+	_, found, err = app.EmissionsKeeper.GetEmissionEpoch(early, 1)
+	require.NoError(t, err)
+	require.False(t, found, "no epoch may finalize before EmissionEpochDuration has elapsed")
+
+	// Exactly at the interval: epoch 1 finalizes, regardless of block height.
+	boundary := ctx.WithBlockHeight(3).WithBlockTime(start.Add(appparams.EmissionEpochDuration))
+	require.NoError(t, app.maybeFinalizeNativeEmissionEpoch(boundary))
+	epoch1, found, err := app.EmissionsKeeper.GetEmissionEpoch(boundary, 1)
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Equal(t, uint64(1), epoch1.Epoch)
 
-	err = app.maybeFinalizeNativeEmissionEpoch(ctx)
+	// Idempotent: another call at the same block time must not mint epoch 2.
+	require.NoError(t, app.maybeFinalizeNativeEmissionEpoch(boundary))
+	_, found, err = app.EmissionsKeeper.GetEmissionEpoch(boundary, 2)
 	require.NoError(t, err)
+	require.False(t, found, "re-running at the same block time must not finalize a second epoch")
 }
 
 // TestEndBlockerBurnsFromFeeCollectorOnFreshChainDefaults reproduces, against
 // the real ABCI EndBlocker entrypoint (not just FinalizeNativeEconomyEpoch
-// directly), a chain-halt that a freshly launched chain running default
-// genesis params would hit deterministically at its first emission epoch:
-// native-emission distribution burns a portion of every epoch's emission
-// from authtypes.FeeCollectorName (x/emissions' default distribution
-// weights allocate a nonzero burn-bucket share), and an EndBlocker that
-// returns a non-nil error halts the chain. Deliberately does NOT call
-// configureGoldenBurnParams -- the whole point is that burn must work from
+// directly), a chain-halt that a freshly launched chain would hit
+// deterministically at its first emission epoch: native-emission distribution
+// burns the emission's burn-bucket share from authtypes.FeeCollectorName, and an
+// EndBlocker that returns a non-nil error halts the chain. Deliberately does NOT
+// call configureGoldenBurnParams -- the whole point is that burn must work from
 // x/burn's own DefaultParams() alone, with no test-only or operator-applied
 // permission grant required.
+//
+// The calibration set DefaultDistributionWeights' BurnBps to 0, so the default
+// economy no longer burns any emission at all and this regression would quietly
+// stop exercising the halt it was written for. Governance can still re-enable an
+// emission burn at any time, and the halt would come straight back, so the test
+// now sets a nonzero burn weight EXPLICITLY rather than leaning on the default.
 func TestEndBlockerBurnsFromFeeCollectorOnFreshChainDefaults(t *testing.T) {
 	app := Setup(t, false)
 
-	epochBoundary := int64(nominatorpooltypes.DefaultRewardEpochDurationBlocks)
-	ctx := app.NewContext(false).WithBlockHeight(epochBoundary)
+	start := time.Date(2026, 7, 17, 0, 0, 0, 0, time.UTC)
+	ctx := app.NewContext(false).WithBlockHeight(1).WithBlockTime(start)
 	configureGoldenEmissionParams(t, app, ctx)
 
-	_, err := app.EndBlocker(ctx)
+	params, err := app.EmissionsKeeper.GetParams(ctx)
+	require.NoError(t, err)
+	// 8000 + 1000 + 0 + 500 + 500 = 10000 bps.
+	params.DistributionWeights = emissionstypes.DistributionWeights{
+		ValidatorRewardBps:	8_000,
+		TreasuryBps:		1_000,
+		ProtectionBps:		0,
+		BurnBps:		500,
+		EcosystemBps:		500,
+	}
+	require.NoError(t, app.EmissionsKeeper.SetParams(ctx, params))
+
+	// First EndBlocker starts the emission clock; the epoch fires once
+	// EmissionEpochDuration of consensus time has elapsed.
+	_, err = app.EndBlocker(ctx)
+	require.NoError(t, err)
+	boundary := ctx.WithBlockHeight(2).WithBlockTime(start.Add(appparams.EmissionEpochDuration))
+	_, err = app.EndBlocker(boundary)
 	require.NoError(t, err)
 
-	entry, found, err := app.BurnKeeper.GetBurnedEpochEntry(ctx, 1)
+	entry, found, err := app.BurnKeeper.GetBurnedEpochEntry(boundary, 1)
 	require.NoError(t, err)
 	require.True(t, found, "epoch 1's native-emission burn should have been recorded, not silently skipped")
-	require.True(t, entry.Amount.IsAllPositive(), "burned amount should be positive given DefaultDistributionWeights' nonzero burn-bucket share")
+	require.True(t, entry.Amount.IsAllPositive(), "burned amount should be positive given the nonzero burn-bucket share set above")
 }
 
 func TestMintAuthorityRejectsNonCanonicalBaseDenomUpdateAndFinalizeStillWorks(t *testing.T) {

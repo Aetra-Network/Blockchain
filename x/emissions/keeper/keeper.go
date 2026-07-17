@@ -3,6 +3,7 @@ package keeper
 import (
 	"context"
 	"encoding/binary"
+	"time"
 
 	sdkmath "cosmossdk.io/math"
 
@@ -103,6 +104,30 @@ func (k Keeper) finalizeEmissionEpoch(ctx context.Context, epoch uint64, staking
 		return types.EmissionEpoch{}, err
 	}
 	return record, nil
+}
+
+// SetLastEpochTime records the consensus block time at which an emission epoch
+// was finalized. Stored as big-endian int64 Unix seconds.
+func (k Keeper) SetLastEpochTime(ctx context.Context, t time.Time) error {
+	bz := make([]byte, 8)
+	binary.BigEndian.PutUint64(bz, uint64(t.Unix()))
+	return k.storeService.OpenKVStore(ctx).Set(types.LastEpochTimeKey, bz)
+}
+
+// GetLastEpochTime returns the block time of the last finalized emission epoch.
+// found is false before the first epoch has ever run, which the caller treats as
+// "start the clock now" rather than "an epoch is overdue" -- otherwise a fresh
+// chain (whose lastEpochTime would default to the zero time) would read as
+// decades overdue and mint an epoch at height 1.
+func (k Keeper) GetLastEpochTime(ctx context.Context) (time.Time, bool, error) {
+	bz, err := k.storeService.OpenKVStore(ctx).Get(types.LastEpochTimeKey)
+	if err != nil || bz == nil {
+		return time.Time{}, false, err
+	}
+	if len(bz) != 8 {
+		return time.Time{}, false, types.ErrAccounting.Wrapf("last epoch time must be 8 bytes, got %d", len(bz))
+	}
+	return time.Unix(int64(binary.BigEndian.Uint64(bz)), 0).UTC(), true, nil
 }
 
 func (k Keeper) SetEmissionEpoch(ctx context.Context, record types.EmissionEpoch) error {

@@ -11,6 +11,8 @@ import (
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
+	distrtypes "github.com/cosmos/cosmos-sdk/x/distribution/types"
+	minttypes "github.com/cosmos/cosmos-sdk/x/mint/types"
 
 	"github.com/sovereign-l1/l1/app/addressing"
 	appparams "github.com/sovereign-l1/l1/app/params"
@@ -136,6 +138,9 @@ func TestAppRuntimeInvariantsPassAfterCoreFlows(t *testing.T) {
 		ValidatorTarget:	validator.OperatorAddress,
 	})
 	require.NoError(t, err)
+	// D3: the pool's activation gate is wired now, so the depositor must be an
+	// activated account.
+	activatePoolWalletAE(t, app, ctx, userAddress, 7200, nativeaccounttypes.AccountStatusActive)
 	_, err = app.NominatorPoolKeeper.DepositToStakingPool(nominatorpooltypes.MsgDepositToStakingPool{
 		PoolID:		pool.PoolID,
 		WalletAddress:	userAddress,
@@ -161,21 +166,46 @@ func TestAppRuntimeInvariantsPassAfterCoreFlows(t *testing.T) {
 		"the pool deposit must become real bonded stake, not a ledger entry")
 
 	// ApplyPoolReward only writes a reward onto the pool's ledger; it moves no
-	// coins. A claim now pays that reward out of the pool module account for
-	// real, and the account holds nothing spendable -- the deposit above was
-	// delegated straight through -- so the injected reward has to be backed by
-	// real income before it can be paid. On a live chain that income is the pool
-	// delegation's own x/distribution accrual, which claimRewardCustody pulls in;
-	// no blocks elapse here, so stand it in directly.
+	// coins. A claim pays that reward out for real, and the pool module account
+	// holds nothing spendable -- the deposit above was delegated straight
+	// through -- so the injected reward has to be backed by real income first.
 	//
-	// Without this backing the claim FAILS, which is the intended behavior: a
-	// reward the pool cannot actually pay must not be zeroed off the depositor's
-	// ledger as though it had been paid.
+	// That backing has to be REAL x/distribution accrual on the pool's own
+	// delegation, not coins dropped into the module account. This used to
+	// bank-send the reward straight to PoolModuleAddress() and the claim was
+	// paid out of it, which passed only because the pool spent whatever the
+	// shared account happened to hold. D2 made that impossible on purpose: the
+	// pool address is unblocked, so anyone can bank-send to it, and a bare
+	// balance is indistinguishable from a depositor's matured-but-unsettled
+	// principal sitting in the same account. Money nobody earned is now
+	// attributed to nobody and spendable by nobody -- so the stand-in has to
+	// earn it. AllocateTokensToValidator is how it is earned: the pool's
+	// delegation takes its share, claimRewardCustody pulls that share in via
+	// WithdrawDelegationRewards, and the pool's entitlement is credited from
+	// the amount that actually arrived.
+	//
+	// Allocated generously, because the pool's delegation is small next to the
+	// genesis validator's self-bond and only its own fraction accrues to it.
 	const injectedReward = 100
-	FundTestAddr(t, app, ctx, nominatorpoolkeeper.PoolModuleAddress(), sdk.NewCoins(sdk.NewCoin(appparams.BaseDenom, sdkmath.NewInt(injectedReward))))
+	// Minted module-to-module: the distribution account is blocked to ordinary
+	// bank sends, which is exactly the protection the pool account gives up in
+	// order to receive staking payouts at all.
+	rewardFunding := sdk.NewCoins(sdk.NewCoin(appparams.BaseDenom, sdkmath.NewInt(1_000_000_000_000)))
+	require.NoError(t, app.BankKeeper.MintCoins(ctx, minttypes.ModuleName, rewardFunding))
+	require.NoError(t, app.BankKeeper.SendCoinsFromModuleToModule(ctx, minttypes.ModuleName, distrtypes.ModuleName, rewardFunding))
+	require.NoError(t, app.DistrKeeper.AllocateTokensToValidator(ctx, validatorAfterDeposit, sdk.NewDecCoinsFromCoins(rewardFunding...)))
 	_, err = app.NominatorPoolKeeper.ApplyPoolReward(pool.PoolID, injectedReward)
 	require.NoError(t, err)
-	_, err = app.NominatorPoolKeeper.ClaimPoolRewardsWithReceipt(nominatorpooltypes.MsgClaimPoolRewards{PoolID: pool.PoolID, OwnerAddress: userAddress, Height: 4})
+	// Claimed through the msg server, not the direct keeper API, because only
+	// the msg server calls loadForBlock -- which is what points the keeper's
+	// runtimeCtx at THIS block. The direct API leaves it wherever InitGenesis
+	// left it (block 1), and x/distribution's reward math is height-relative,
+	// so a direct claim withdraws against the genesis context and finds 0naet
+	// accrued. That divergence is only reachable from Go; every live claim
+	// arrives through the msg route. It cost an hour to find here, so it is
+	// written down rather than worked around.
+	rewardSrv := nominatorpoolkeeper.NewMsgServerImpl(&app.NominatorPoolKeeper)
+	_, err = rewardSrv.ClaimPoolRewards(ctx, &nominatorpooltypes.MsgClaimPoolRewards{PoolID: pool.PoolID, OwnerAddress: userAddress, Height: 4})
 	require.NoError(t, err)
 	_, err = app.NominatorPoolKeeper.RequestPoolUnbond(nominatorpooltypes.MsgRequestPoolUnbond{
 		PoolID:		pool.PoolID,

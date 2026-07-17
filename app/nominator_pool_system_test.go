@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sovereign-l1/l1/app/addressing"
+	nativeaccounttypes "github.com/sovereign-l1/l1/x/native-account/types"
 	nominatorpoolkeeper "github.com/sovereign-l1/l1/x/nominator-pool/keeper"
 	nominatorpooltypes "github.com/sovereign-l1/l1/x/nominator-pool/types"
 )
@@ -147,6 +148,8 @@ func TestNominatorPoolRuntimeMutationPersistsToKVStore(t *testing.T) {
 		Height:			2,
 		ValidatorTarget:	validator.OperatorAddress,
 	})
+	// D3: the activation gate is live, so the depositor must be activated.
+	activatePoolWalletAE(t, source, sourceCtx, userAddress, 4400, nativeaccounttypes.AccountStatusActive)
 	nominatorPoolMsg(t, source, sourceCtx, &nominatorpooltypes.MsgDepositToStakingPool{
 		PoolID:		poolID,
 		WalletAddress:	userAddress,
@@ -247,6 +250,8 @@ func TestFinalAppWiringOfficialStakingPoolFlowExportImportRestart(t *testing.T) 
 		ValidatorTarget:	validator.OperatorAddress,
 	})
 
+	// D3: the activation gate is live, so the depositor must be activated.
+	activatePoolWalletAE(t, source, sourceCtx, userAddress, 4500, nativeaccounttypes.AccountStatusActive)
 	nominatorPoolMsg(t, source, sourceCtx, &nominatorpooltypes.MsgDepositToStakingPool{
 		PoolID:		poolID,
 		WalletAddress:	userAddress,

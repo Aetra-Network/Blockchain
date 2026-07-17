@@ -9,24 +9,72 @@ import (
 	appparams "github.com/sovereign-l1/l1/app/params"
 )
 
+// DefaultDistributionWeights splits each epoch's emission. The weights must sum
+// to 10000 bps; they decide WHERE a fixed emission lands, never HOW MUCH is
+// minted, so every weight here is neutral to total supply growth.
+//
+// v = ValidatorRewardBps = 8500 is the staking-ratio instrument. Pinning
+// inflation (see appparams.DefaultTargetInflationBps) costs the protocol its
+// only lever on the bonded ratio, and one instrument cannot hit two targets
+// (net supply growth AND staking ratio) at once. The split restores a second,
+// free lever: it moves validator APR by v/sigma without touching total supply.
+//
+// Sizing v = 8500:
+//   - Circulating growth is NET_circ = v*i - (burn + treasury share of fees).
+//     At v = 7000 that is 0.70*4.00% - 0.641% = 2.16%, BELOW the owner's 3%
+//     floor even though TOTAL growth is in band -- the shortfall is emission
+//     minted into reserves that never circulate. At v = 8500:
+//     0.85*4.00% - 0.641% = 3.16%, inside the band.
+//   - Validator APR = 0.98*(v*i + 0.35*phi)/sigma = 5.8-7.3% across the
+//     reachable throughput range, satisfying the "validators must earn a real
+//     return" constraint.
+//
+// ProtectionBps and BurnBps go to 0 deliberately:
+//   - Burn: burning freshly minted coins is a no-op that only makes the
+//     advertised rate a lie (mint i, destroy 5% of it, realize 0.95*i). The
+//     protocol's burn belongs on the FEE side, where it is capped and
+//     supply-aware (see appparams.EmissionFeeBurnAnnualCapBps).
+//   - Protection: the protection module has no spend path (only x/treasury can
+//     spend), so minting into it is phantom inflation -- it dilutes holders and
+//     buys nothing. Restore a weight here only alongside a spend path.
 func DefaultDistributionWeights() DistributionWeights {
 	return DistributionWeights{
-		ValidatorRewardBps:	7_000,
+		ValidatorRewardBps:	8_500,
 		TreasuryBps:		1_000,
-		ProtectionBps:		1_000,
-		BurnBps:		500,
+		ProtectionBps:		0,
+		BurnBps:		0,
 		EcosystemBps:		500,
 	}
 }
 
+// DefaultParams pins the emission rate. MinAnnualInflationBps ==
+// MaxAnnualInflationBps == DefaultTargetInflationBps (400 bps) makes
+// ComputeInflationBps clamp its output to exactly 4.00% on every epoch, at any
+// staking ratio: the rate is a constant, not a controller output.
+//
+// This is deliberate. ComputeInflationBps is an INTEGRATOR --
+// next = current + (target - actual)*resp/10^4 -- whose output is written back
+// as the next epoch's input (keeper.go FinalizeEmissionEpoch). It has no
+// restoring term, so its only fixed points are |target - actual| <= 12 bps;
+// anywhere else it ratchets by 0.08*|target-actual| bps per epoch until it hits
+// a rail and welds there. Measured live at 84.26% bonded against a 60% target
+// it stepped -194 bps/epoch and pinned itself to the floor in ONE epoch,
+// realizing 1.5% while the params advertised 3%. A controller that saturates
+// under any reachable input is not a controller, and the owner's net-growth
+// target is binding, so the rate is pinned here and the staking ratio is left
+// to the emission split (see DefaultDistributionWeights).
+//
+// The rails stay in the params rather than being deleted so governance can
+// re-open the band (up to ConstitutionalMaxInflationBps) once a real bonded
+// ratio is observed on mainnet.
 func DefaultParams() Params {
 	return Params{
 		BaseDenom:			BaseDenom,
 		CurrentInflationBps:		uint32(appparams.DefaultTargetInflationBps),
 		TargetStakingRatioBps:		uint32(appparams.DefaultTargetStakeBps),
-		MinAnnualInflationBps:		uint32(appparams.MinInflationBps),
-		MaxAnnualInflationBps:		uint32(appparams.MaxInflationBps),
-		ConstitutionalMaxInflationBps:	uint32(appparams.MaxInflationBps),
+		MinAnnualInflationBps:		uint32(appparams.DefaultTargetInflationBps),
+		MaxAnnualInflationBps:		uint32(appparams.DefaultTargetInflationBps),
+		ConstitutionalMaxInflationBps:	uint32(appparams.EmissionConstitutionalMaxInflationBps),
 		ResponsivenessBps:		uint32(appparams.DefaultResponsivenessBps),
 		AnnualReferenceSupply:		sdk.NewInt64Coin(BaseDenom, appparams.AnnualReferenceSupplyNaet),
 		EpochsPerYear:			uint64(appparams.EpochsPerYear),
@@ -52,14 +100,25 @@ func NormalizeParams(params Params) Params {
 	if params.TargetStakingRatioBps == 0 {
 		params.TargetStakingRatioBps = uint32(appparams.DefaultTargetStakeBps)
 	}
+	// These refills must use the PINNED rate, not appparams.MinInflationBps /
+	// MaxInflationBps (150/500, which remain the governance-legal outer band and
+	// are still what network_profile.go and the governance parameter specs
+	// validate). Refilling from the outer band would silently unpin inflation for
+	// any genesis that omits these fields -- reintegrating the saturating
+	// controller DefaultParams exists to disable, and putting the owner's 3-5%
+	// net band back at the mercy of the bonded ratio.
 	if params.MinAnnualInflationBps == 0 {
-		params.MinAnnualInflationBps = uint32(appparams.MinInflationBps)
+		params.MinAnnualInflationBps = uint32(appparams.DefaultTargetInflationBps)
 	}
 	if params.MaxAnnualInflationBps == 0 {
-		params.MaxAnnualInflationBps = uint32(appparams.MaxInflationBps)
+		params.MaxAnnualInflationBps = uint32(appparams.DefaultTargetInflationBps)
 	}
+	// Refill from the constitutional ceiling (500 bps), not from
+	// MaxAnnualInflationBps: the latter is now the 400 bps pin, and collapsing
+	// the constitutional maximum onto it would leave governance no headroom to
+	// ever raise the rate without a constitutional amendment.
 	if params.ConstitutionalMaxInflationBps == 0 {
-		params.ConstitutionalMaxInflationBps = params.MaxAnnualInflationBps
+		params.ConstitutionalMaxInflationBps = uint32(appparams.EmissionConstitutionalMaxInflationBps)
 	}
 	if params.ResponsivenessBps == 0 {
 		params.ResponsivenessBps = uint32(appparams.DefaultResponsivenessBps)

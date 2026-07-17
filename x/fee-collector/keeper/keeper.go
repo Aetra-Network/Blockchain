@@ -5,6 +5,9 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"time"
+
+	sdkmath "cosmossdk.io/math"
 
 	corestore "cosmossdk.io/core/store"
 	storetypes "github.com/cosmos/cosmos-sdk/store/v2/types"
@@ -13,6 +16,7 @@ import (
 	sdk "github.com/cosmos/cosmos-sdk/types"
 
 	aetraaddress "github.com/sovereign-l1/l1/app/addressing"
+	appparams "github.com/sovereign-l1/l1/app/params"
 	"github.com/sovereign-l1/l1/x/fee-collector/types"
 )
 
@@ -283,6 +287,123 @@ func (k Keeper) recordCollectedFees(ctx context.Context, fees sdk.Coins, feeType
 	return nil
 }
 
+// applyBurnCap bounds the pending fee burn to
+// appparams.EmissionFeeBurnAnnualCapBps of total supply per year, pro-rated over
+// the consensus time elapsed since the last distribution, and reassigns the
+// excess to the validator bucket. It returns the adjusted distribution and the
+// amount that was spared from the burn.
+//
+// WHY THIS MECHANISM EXISTS (this is the one non-parameter change in the
+// calibration, and it is forced):
+//
+// Emission is a fraction of supply; fee burn is T*k*f*b, which is linear and
+// UNBOUNDED in throughput. So for any fixed inflation there is a throughput
+// above which burn exceeds mint and net growth falls out of the target band from
+// below -- there is no value of the burn share that fixes this, because the
+// share multiplies an unbounded quantity. Measured live at 7.63 TPS the chain
+// ran net -72.7%/yr. The governance floor FeeSplitBurnMinBps = 3000 caps the
+// available relief at b = 30%, which still leaves ~44% of supply/yr burned.
+// Bounding the burn against SUPPLY (not against the fee) is the only fix that
+// holds at every T, and it makes
+//   NET = i - min(phi*b, gamma) in [i - gamma, i] = [3.10%, 4.00%]
+// an algebraic identity rather than a tuning.
+//
+// The pre-existing deflation guard (appparams economy.go BalanceController) is
+// deliberately NOT wired up instead: it is a single -500 bps step on the burn
+// RATIO floored at MinBurnRatioBps = 1000, so its own floor still burns ~15% of
+// supply/yr at the measured load -- 6.8x above the 1.25x-mint target it is
+// written against. It cannot satisfy its own specification, so it is replaced
+// here rather than enabled.
+//
+// Sizing and behaviour: at gamma = 90 bps and the 16B target supply the cap
+// only engages above ~18.3 TPS at the normal 0.5 AET fee (target throughput is
+// 10 TPS, hard gas ceiling ~30.6 TPS), or above ~1.83 TPS at the 5 AET
+// congestion fee. It is an attack/congestion backstop and does not participate
+// in the everyday economy.
+//
+// Time base: the cap is a rate, so it needs an interval. Consensus block time is
+// used (deterministic across nodes); the first distribution after genesis or an
+// upgrade merely starts the clock and is left uncapped, which is safe because it
+// has at most one block of fees behind it.
+func (k Keeper) applyBurnCap(ctx context.Context, params types.Params, pending types.PendingDistribution) (types.PendingDistribution, sdkmath.Int, error) {
+	burn := pending.Burn.AmountOf(params.BaseDenom)
+	if !burn.IsPositive() {
+		return pending, sdkmath.ZeroInt(), nil
+	}
+	blockTime := sdk.UnwrapSDKContext(ctx).BlockTime()
+	if blockTime.IsZero() {
+		return pending, sdkmath.ZeroInt(), nil
+	}
+	last, found, err := k.GetLastBurnCapTime(ctx)
+	if err != nil {
+		return pending, sdkmath.ZeroInt(), err
+	}
+	if err := k.SetLastBurnCapTime(ctx, blockTime); err != nil {
+		return pending, sdkmath.ZeroInt(), err
+	}
+	if !found {
+		return pending, sdkmath.ZeroInt(), nil
+	}
+	elapsed := int64(blockTime.Sub(last).Seconds())
+	if elapsed <= 0 {
+		// Same-second or non-monotonic block time: nothing accrues, so nothing
+		// may burn. Falling through would grant an unbounded allowance.
+		elapsed = 0
+	}
+
+	// maxBurn = supply * gamma/10^4 * elapsed / secondsPerYear
+	supply := k.bankKeeper.GetSupply(ctx, params.BaseDenom).Amount
+	maxBurn := supply.
+		MulRaw(appparams.EmissionFeeBurnAnnualCapBps).
+		QuoRaw(appparams.BasisPoints).
+		MulRaw(elapsed).
+		QuoRaw(appparams.SecondsPerYear)
+	if burn.LTE(maxBurn) {
+		return pending, sdkmath.ZeroInt(), nil
+	}
+
+	excess := burn.Sub(maxBurn)
+	pending.Burn = subAmount(pending.Burn, params.BaseDenom, excess)
+	pending.Validators = pending.Validators.Add(sdk.NewCoin(params.BaseDenom, excess))
+	return pending, excess, nil
+}
+
+// SetLastBurnCapTime records the block time the burn cap was last accounted at.
+func (k Keeper) SetLastBurnCapTime(ctx context.Context, t time.Time) error {
+	bz := make([]byte, 8)
+	binary.BigEndian.PutUint64(bz, uint64(t.Unix()))
+	return k.storeService.OpenKVStore(ctx).Set(types.LastBurnCapTimeKey, bz)
+}
+
+// GetLastBurnCapTime returns the block time the burn cap was last accounted at.
+func (k Keeper) GetLastBurnCapTime(ctx context.Context) (time.Time, bool, error) {
+	bz, err := k.storeService.OpenKVStore(ctx).Get(types.LastBurnCapTimeKey)
+	if err != nil || bz == nil {
+		return time.Time{}, false, err
+	}
+	if len(bz) != 8 {
+		return time.Time{}, false, types.ErrAccounting.Wrapf("last burn cap time must be 8 bytes, got %d", len(bz))
+	}
+	return time.Unix(int64(binary.BigEndian.Uint64(bz)), 0).UTC(), true, nil
+}
+
+// subAmount removes amount of denom from coins, dropping the entry when it hits
+// zero so the resulting Coins stays normalized.
+func subAmount(coins sdk.Coins, denom string, amount sdkmath.Int) sdk.Coins {
+	out := sdk.NewCoins()
+	for _, coin := range coins {
+		if coin.Denom == denom {
+			remaining := coin.Amount.Sub(amount)
+			if remaining.IsPositive() {
+				out = out.Add(sdk.NewCoin(denom, remaining))
+			}
+			continue
+		}
+		out = out.Add(coin)
+	}
+	return out
+}
+
 func (k Keeper) DistributeFees(ctx context.Context, epoch uint64) (types.FeeHistoryEntry, error) {
 	sdkCtx := sdk.UnwrapSDKContext(ctx)
 	cacheCtx, write := sdkCtx.CacheContext()
@@ -314,6 +435,26 @@ func (k Keeper) distributeFees(ctx context.Context, epoch uint64) (types.FeeHist
 	collected := pending.Total()
 	if collected.Empty() {
 		return types.FeeHistoryEntry{}, types.ErrEmptyDistribution.Wrap("no pending fees")
+	}
+
+	// Bound the burn to a fixed fraction of supply per year before anything is
+	// destroyed; the overflow becomes validator reward. This is what keeps net
+	// supply growth inside the owner's 3-5% band at ANY throughput -- see
+	// applyBurnCap.
+	pending, capped, err := k.applyBurnCap(ctx, params, pending)
+	if err != nil {
+		return types.FeeHistoryEntry{}, err
+	}
+	if capped.IsPositive() {
+		sdk.UnwrapSDKContext(ctx).EventManager().EmitEvent(sdk.NewEvent(
+			types.EventTypeBurnCapped,
+			sdk.NewAttribute(types.AttributeKeyAmount, capped.String()),
+		))
+	}
+	// The cap only moves coins between buckets, so the epoch's total is
+	// unchanged and FeeHistoryEntry.Validate's conservation check still holds.
+	if !pending.Total().Equal(collected) {
+		return types.FeeHistoryEntry{}, types.ErrAccounting.Wrapf("burn cap changed distribution total %s != %s", pending.Total(), collected)
 	}
 
 	if !pending.Treasury.Empty() {

@@ -14,7 +14,6 @@ import (
 	emissionstypes "github.com/sovereign-l1/l1/x/emissions/types"
 	feecollectortypes "github.com/sovereign-l1/l1/x/fee-collector/types"
 	mintauthoritytypes "github.com/sovereign-l1/l1/x/mint-authority/types"
-	nominatorpooltypes "github.com/sovereign-l1/l1/x/nominator-pool/types"
 )
 
 // EventTypeNativeEmissionSkipped is emitted when an epoch's scheduled emission
@@ -255,27 +254,82 @@ func (app *L1App) realStakingRatioBps(ctx sdk.Context) (uint32, error) {
 	return uint32(bps), nil
 }
 
+// maybeFinalizeNativeEmissionEpoch fires an emission epoch once
+// appparams.EmissionEpochDuration of CONSENSUS TIME has elapsed since the last
+// one.
+//
+// This used to trigger on a block count --
+// height % nominatorpooltypes.DefaultRewardEpochDurationBlocks == 0 -- which was
+// wrong twice over:
+//
+//  1. A block-count epoch realizes inflation i * (nominal/actual block time).
+//     That constant assumes 6s blocks; the chain measures 5.14s idle and 6.89s
+//     loaded, so the 14400-block "1 day" epoch was really 20.6h and realized
+//     1.751% against a configured 1.5% -- monetary policy that swung with
+//     network load, and in the wrong direction. Elapsed block time makes the
+//     realized rate equal the configured rate by construction.
+//  2. It read the interval from a NOMINATOR-POOL constant, so a nominator-pool
+//     parameter change silently rewrote monetary policy. x/emissions now owns
+//     its own cadence.
+//
+// ctx.BlockTime() is consensus-agreed, so this is deterministic across nodes.
+// The epoch number is derived from the emission clock itself rather than from
+// height, keeping it dense and independent of block cadence.
 func (app *L1App) maybeFinalizeNativeEmissionEpoch(ctx sdk.Context) error {
 	if ctx.BlockHeight() <= 0 {
 		return nil
 	}
-	interval := uint64(nominatorpooltypes.DefaultRewardEpochDurationBlocks)
-	height := uint64(ctx.BlockHeight())
-	if interval == 0 || height%interval != 0 {
+	blockTime := ctx.BlockTime()
+	if blockTime.IsZero() {
 		return nil
 	}
-	epoch := height / interval
-	if _, found, err := app.EmissionsKeeper.GetEmissionEpoch(ctx, epoch); err != nil {
+	last, found, err := app.EmissionsKeeper.GetLastEpochTime(ctx)
+	if err != nil {
 		return err
-	} else if found {
+	}
+	// First block ever: start the emission clock instead of treating the zero
+	// time as an infinitely overdue epoch.
+	if !found {
+		return app.EmissionsKeeper.SetLastEpochTime(ctx, blockTime)
+	}
+	if blockTime.Sub(last) < appparams.EmissionEpochDuration {
 		return nil
+	}
+	epoch, err := app.nextEmissionEpochNumber(ctx)
+	if err != nil {
+		return err
 	}
 	stakingRatioBps, err := app.realStakingRatioBps(ctx)
 	if err != nil {
 		return err
 	}
-	_, err = app.FinalizeNativeEconomyEpoch(ctx, epoch, stakingRatioBps)
-	return err
+	if _, err := app.FinalizeNativeEconomyEpoch(ctx, epoch, stakingRatioBps); err != nil {
+		return err
+	}
+	// Advance by exactly one epoch duration rather than to blockTime, so a late
+	// block cannot permanently shorten the following epochs: the emission clock
+	// stays on its own grid. If the chain was halted for longer than one epoch,
+	// the backlog is worked off one epoch per block rather than minted at once.
+	next := last.Add(appparams.EmissionEpochDuration)
+	if blockTime.Sub(next) >= appparams.EmissionEpochDuration {
+		// Very long gap (e.g. a restart): do not let the backlog grow unbounded.
+		next = blockTime
+	}
+	return app.EmissionsKeeper.SetLastEpochTime(ctx, next)
+}
+
+// nextEmissionEpochNumber returns the successor of the highest finalized epoch.
+// Epoch numbers are a dense sequence owned by x/emissions rather than a function
+// of block height, so they stay stable across block-time changes.
+func (app *L1App) nextEmissionEpochNumber(ctx sdk.Context) (uint64, error) {
+	history, err := app.EmissionsKeeper.GetAllEmissionEpochs(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if len(history) == 0 {
+		return 1, nil
+	}
+	return history[len(history)-1].Epoch + 1, nil
 }
 
 func (app *L1App) distributeNativeEmission(ctx sdk.Context, epoch uint64, record emissionstypes.EmissionEpoch) error {
