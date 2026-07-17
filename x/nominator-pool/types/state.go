@@ -313,6 +313,34 @@ type PendingDeposit struct {
 	Height		uint64
 }
 
+// PendingWithdrawal is a share burn awaiting its principal back.
+//
+// Amount is the pool's pre-slash CLAIM, frozen at request time by ShareValue.
+// It is deliberately never revised: PendingWithdrawal.Validate rejects a zero
+// Amount, so overwriting it with a post-slash figure would make a fully
+// slashed withdrawal fail State validation and halt the EndBlocker. What was
+// actually paid goes in SettledAmount instead, and SettledAmount <= Amount is
+// enforced below -- that inequality is invariant I2 (the pool never pays out
+// more than the withdrawal claims) expressed at the type level.
+//
+// UnbondHeight is the REAL x/staking block height at which withdrawalCustody's
+// Undelegate created the unbonding entry backing this withdrawal. It is NOT
+// RequestHeight: RequestHeight comes from MsgRequestPoolUnbond.Height, which is
+// a wire field a caller can set to any value it likes (msg_server.defaultHeight
+// only fills it in when zero). Cohort settlement keys its "has all our money
+// arrived yet" gate off UnbondHeight precisely because a caller-chosen height
+// would let a withdrawal claim coins that belong to somebody else.
+//
+// UnbondValidator is the validator this withdrawal's principal is actually
+// unbonding FROM, snapshotted at request time. It is deliberately not read back
+// off the pool: ChangePoolValidator rewrites NominatorPool.ValidatorTarget
+// (after a delay) without redelegating or touching x/staking at all, so the
+// pool's current target and the validator holding an in-flight withdrawal's
+// money can legitimately differ. Gating on the pool's live target would then
+// query a validator with no unbonding entries, conclude everything had arrived,
+// and settle the withdrawal against an empty balance -- paying it zero and
+// marking it terminally Completed. Snapshotting is what keeps the gate pointed
+// at the money.
 type PendingWithdrawal struct {
 	WithdrawalID	string
 	Delegator	string
@@ -320,6 +348,9 @@ type PendingWithdrawal struct {
 	Amount		uint64
 	RequestHeight	uint64
 	CompleteHeight	uint64
+	UnbondHeight	uint64
+	UnbondValidator	string
+	SettledAmount	uint64
 	Status		string
 }
 
@@ -1542,6 +1573,14 @@ func (w PendingWithdrawal) Validate() error {
 	}
 	if w.Shares == 0 || w.Amount == 0 || w.RequestHeight == 0 || w.CompleteHeight <= w.RequestHeight {
 		return errors.New("nominator pool withdrawal amounts and heights are invalid")
+	}
+	// I2, enforced at the type level: settlement may pay a withdrawal LESS
+	// than it claims (an in-flight x/staking slash really does destroy part of
+	// the principal before it comes back), but never more -- paying more would
+	// mean inventing money out of some other delegator's coins sitting in the
+	// same module account.
+	if w.SettledAmount > w.Amount {
+		return errors.New("nominator pool withdrawal settled more than it claimed")
 	}
 	if !isWithdrawalStatus(w.Status) {
 		return fmt.Errorf("unsupported nominator pool withdrawal status %q", w.Status)

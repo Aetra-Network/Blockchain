@@ -7,7 +7,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sovereign-l1/l1/x/internal/kvtest"
-	"github.com/sovereign-l1/l1/x/internal/prefixgenesis"
 	"github.com/sovereign-l1/l1/x/internal/prototype"
 	"github.com/sovereign-l1/l1/x/nominator-pool/types"
 )
@@ -287,6 +286,7 @@ func TestFailedTxLeavesPhantomInMemoryStateThatNextWriteResurrects(t *testing.T)
 	preTxStore, err := k.ExportGenesisState(ctx)
 	require.NoError(t, err)
 	require.Empty(t, preTxStore.State.Pools, "store starts with no pools")
+	preTxSnapshot := service.RawStore().Snapshot()
 
 	// msg1 of "tx1": succeeds, mutates k.genesis in-memory AND writes to the
 	// store via k.runtimeCtx (bound by InitGenesisState above).
@@ -304,13 +304,11 @@ func TestFailedTxLeavesPhantomInMemoryStateThatNextWriteResurrects(t *testing.T)
 	require.Equal(t, "pool-a-reverted-tx", poolA.PoolID)
 
 	// "msg2 of tx1 fails" -> BaseApp discards tx1's KV cache branch, which
-	// reverts msg1's store write. Simulate that discard directly on the shared
-	// store by writing back the pre-tx1 (empty-pools) genesis -- this is
-	// exactly what the store looks like after BaseApp abandons the cache
-	// branch. Crucially, this does NOT touch k.genesis (the keeper's Go
-	// field), because nothing in this codebase resets it on tx failure --
-	// which is precisely the defect under test.
-	require.NoError(t, prefixgenesis.Save(ctx, service, genesisKey, preTxStore))
+	// reverts msg1's store write. Restoring the pre-tx1 snapshot reverts every
+	// key tx1 wrote -- exactly what the discard does. Crucially, this does NOT
+	// touch k.genesis (the keeper's Go field), because nothing in this codebase
+	// resets it on tx failure -- which is precisely the defect under test.
+	service.RawStore().Restore(preTxSnapshot)
 
 	postDiscardStore, err := k.ExportGenesisState(ctx)
 	require.NoError(t, err)
@@ -343,9 +341,39 @@ func TestFailedTxLeavesPhantomInMemoryStateThatNextWriteResurrects(t *testing.T)
 	for _, p := range final.State.Pools {
 		poolIDs = append(poolIDs, p.PoolID)
 	}
-	require.ElementsMatch(t, []string{"pool-a-reverted-tx", "pool-b-unrelated-tx"}, poolIDs,
-		"RESURRECTION PROVEN: tx2's write serialized the WHOLE in-memory blob (which still carried the phantom pool-a), "+
-			"permanently committing a pool from a transaction that was supposed to have been reverted -- silent on-chain state corruption with no restart involved")
+	liquidIDs := make([]string, 0, len(final.State.LiquidStakingPools))
+	for _, p := range final.State.LiquidStakingPools {
+		liquidIDs = append(liquidIDs, p.PoolID)
+	}
+
+	// CORRUPTION PROVEN, in the shape the per-entity storage layout gives it.
+	//
+	// Before that layout, tx2's write re-serialized the entire in-memory blob,
+	// so the phantom came back whole and this asserted pools == {a, b}. Writes
+	// are now per-entity and diffed against what the keeper believes it last
+	// committed, so the phantom comes back only PARTIALLY -- which is worse,
+	// not better, and is why this test still earns its place:
+	//
+	//   - pool-a's own record is NOT rewritten: the diff baseline still says
+	//     "already committed" (it was, before the discard reverted it), so the
+	//     write is skipped and the NominatorPool stays gone.
+	//   - pool-a's LiquidStakingPool IS rewritten: it lives in the residual
+	//     genesis blob, which is still written as one value, and the in-memory
+	//     copy tx2 serializes still carries it.
+	//
+	// The committed result is a liquid-staking pool referencing a nominator
+	// pool that does not exist -- a dangling reference that no single tx could
+	// ever produce. Both the old symptom and this one have the same root cause
+	// and the same fix: bare *Keeper calls do not reload committed state, so
+	// every entry point must call loadForBlock first (proven by
+	// TestPhantomStateCannotResurrectThroughMsgServer below). The diff baseline
+	// is re-established from the store by that same call, which is exactly what
+	// keeps it honest in production.
+	require.Equal(t, []string{"pool-b-unrelated-tx"}, poolIDs,
+		"the reverted pool's own record is not rewritten -- the stale diff baseline claims it is still committed")
+	require.ElementsMatch(t, []string{"pool-a-reverted-tx", "pool-b-unrelated-tx"}, liquidIDs,
+		"RESURRECTION PROVEN: the reverted tx's LiquidStakingPool rides back in on the wholesale residual blob write, "+
+			"leaving committed state with a liquid pool whose nominator pool does not exist -- silent on-chain state corruption with no restart involved")
 }
 
 // TestPhantomStateCannotResurrectThroughMsgServer is the FIX-VERIFICATION
@@ -368,6 +396,7 @@ func TestPhantomStateCannotResurrectThroughMsgServer(t *testing.T) {
 	preTxStore, err := k.ExportGenesisState(ctx)
 	require.NoError(t, err)
 	require.Empty(t, preTxStore.State.Pools, "store starts with no pools")
+	preTxSnapshot := service.RawStore().Snapshot()
 
 	// "tx1" via the real msgServer entry point: succeeds, mutates k.genesis
 	// in-memory AND writes to the store.
@@ -383,10 +412,12 @@ func TestPhantomStateCannotResurrectThroughMsgServer(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// "msg2 of tx1 fails" -> BaseApp discards tx1's KV cache branch. Simulate
-	// that discard directly on the shared store, identical to the
-	// vulnerability-demonstration test -- this still does NOT touch k.genesis.
-	require.NoError(t, prefixgenesis.Save(ctx, service, genesisKey, preTxStore))
+	// "msg2 of tx1 fails" -> BaseApp discards tx1's KV cache branch. Restoring
+	// the pre-tx1 snapshot reverts every key tx1 wrote, which is exactly what
+	// the discard does -- and unlike rewriting a single genesis key, it stays
+	// faithful however the module lays its state out. This still does NOT
+	// touch k.genesis.
+	service.RawStore().Restore(preTxSnapshot)
 	postDiscardStore, err := k.ExportGenesisState(ctx)
 	require.NoError(t, err)
 	require.Empty(t, postDiscardStore.State.Pools, "store reverted to zero pools, modeling the cache-branch discard")

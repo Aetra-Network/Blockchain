@@ -15,8 +15,24 @@ func ValidatorScoreKey(validator string, epoch uint64) []byte {
 	return []byte(fmt.Sprintf("staking/validator_score/%s/%020d", validator, epoch))
 }
 
+// PoolKeyPrefix and PoolShareKeyPrefix bound a prefix iteration over the
+// per-entity pool and pool-share records. They are the authoritative storage
+// for State.Pools and State.PoolShares -- see the keeper's persistence layer.
+//
+// Neither prefix can collide with another key family: every other "staking/
+// pool*" key family separates "pool" from its qualifier with '_'
+// (pool_share, pool_allocation, pool_storage_debt, ...), never with the '/'
+// these two prefixes end on, so a scan of "staking/pool/" returns pool
+// records and nothing else. Record identity is recovered from the stored JSON
+// (PoolID / Owner fields), never by parsing the key back apart, so a pool id
+// containing '/' cannot confuse the reader.
+const (
+	PoolKeyPrefix      = "staking/pool/"
+	PoolShareKeyPrefix = "staking/pool_share/"
+)
+
 func PoolKey(poolID string) []byte {
-	return []byte("staking/pool/" + poolID)
+	return []byte(PoolKeyPrefix + poolID)
 }
 
 func PoolStorageDebtKey(poolID string) []byte {
@@ -32,7 +48,7 @@ func PoolByContractRawKey(contractAddressRaw string) []byte {
 }
 
 func PoolShareKey(poolID string, owner string) []byte {
-	return []byte("staking/pool_share/" + poolID + "/" + owner)
+	return []byte(PoolShareKeyPrefix + poolID + "/" + owner)
 }
 
 func PoolAllocationKey(poolID string, validator string) []byte {

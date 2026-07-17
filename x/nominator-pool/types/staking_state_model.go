@@ -109,6 +109,11 @@ type PoolUnbondingRequest struct {
 	Amount		uint64
 	RequestHeight	uint64
 	CompleteHeight	uint64
+	// SettledAmount mirrors PendingWithdrawal.SettledAmount -- what the pool
+	// really paid, which after an in-flight slash is less than the Amount
+	// claim above. Without it this mirror reports a payout that never
+	// happened.
+	SettledAmount	uint64
 	Status		string
 }
 

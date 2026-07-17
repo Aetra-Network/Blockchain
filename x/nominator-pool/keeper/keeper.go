@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -18,7 +19,6 @@ import (
 	stakingtypes "github.com/cosmos/cosmos-sdk/x/staking/types"
 
 	"github.com/sovereign-l1/l1/app/addressing"
-	"github.com/sovereign-l1/l1/x/internal/prefixgenesis"
 	"github.com/sovereign-l1/l1/x/internal/prototype"
 	"github.com/sovereign-l1/l1/x/nominator-pool/types"
 )
@@ -42,6 +42,14 @@ type StakingKeeper interface {
 	Delegate(ctx context.Context, delAddr sdk.AccAddress, bondAmt sdkmath.Int, tokenSrc stakingtypes.BondStatus, validator stakingtypes.Validator, subtractAccount bool) (sdkmath.LegacyDec, error)
 	Undelegate(ctx context.Context, delAddr sdk.AccAddress, valAddr sdk.ValAddress, sharesAmount sdkmath.LegacyDec) (time.Time, sdkmath.Int, error)
 	ValidateUnbondAmount(ctx context.Context, delAddr sdk.AccAddress, valAddr sdk.ValAddress, amt sdkmath.Int) (sdkmath.LegacyDec, error)
+	// GetUnbondingDelegation lets settlement see whether x/staking still holds
+	// money in flight for the pool. It is the only honest answer to "has
+	// everything this cohort is ever going to receive already arrived?" --
+	// x/staking's CompleteUnbonding removes an entry the moment it credits the
+	// pool account, so "no entry older than us remains" is exactly that
+	// question. Returns stakingtypes.ErrNoUnbondingDelegation when the pool
+	// has nothing unbonding from this validator at all.
+	GetUnbondingDelegation(ctx context.Context, delAddr sdk.AccAddress, valAddr sdk.ValAddress) (stakingtypes.UnbondingDelegation, error)
 }
 
 // DistrKeeper is the narrow x/distribution interface the pool needs to pull
@@ -92,7 +100,17 @@ type poolIndexEntry struct {
 }
 
 type Keeper struct {
-	genesis             GenesisState
+	genesis GenesisState
+	// written is exactly what this keeper last read from, or wrote to, the
+	// store -- the baseline writeDiff compares against to decide which
+	// per-entity records actually need rewriting. It is deliberately
+	// separate from genesis: several helpers mutate genesis in place, and a
+	// baseline that moved with them would silently skip real writes.
+	// loadGenesisState re-establishes it from committed state at the top of
+	// every consensus entry point, which is what keeps the write set (and
+	// therefore gas) a pure function of committed state plus message. See
+	// persistence.go.
+	written             GenesisState
 	storeService        corestore.KVStoreService
 	runtimeCtx          context.Context
 	accountStatusReader AccountStatusReader
@@ -266,27 +284,39 @@ func (k *Keeper) depositCustody(rawDelegator, rawValidatorTarget string, amountN
 // those tokens actually land back in the pool account. A no-op when custody
 // isn't wired (see hasCustody), matching depositCustody. Assumes k.mu is
 // already held by the caller.
-func (k *Keeper) withdrawalCustody(rawValidatorTarget string, amountNaet uint64) error {
+//
+// Returns the block height x/staking stamped on the unbonding entry it just
+// created (SetUnbondingDelegationEntry uses sdkCtx.BlockHeight()), so the
+// caller can record it on the withdrawal. Cohort settlement needs that real
+// height to tell its own in-flight entries apart from later withdrawals' --
+// see PendingWithdrawal.UnbondHeight for why the ledger's RequestHeight cannot
+// be trusted for this. Returns 0 when custody isn't wired, which is also the
+// only case where no entry was created.
+func (k *Keeper) withdrawalCustody(rawValidatorTarget string, amountNaet uint64) (uint64, error) {
 	if !k.hasCustody() {
-		return nil
+		return 0, nil
 	}
 	if strings.TrimSpace(rawValidatorTarget) == "" {
-		return errors.New("nominator pool withdrawal requires a validator target to undelegate from")
+		return 0, errors.New("nominator pool withdrawal requires a validator target to undelegate from")
 	}
 	validatorAddr, err := parsePoolAccAddress("nominator pool validator target", rawValidatorTarget)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	valAddr := sdk.ValAddress(validatorAddr.Bytes())
 	poolAddr := PoolModuleAddress()
 	shares, err := k.stakingKeeper.ValidateUnbondAmount(k.runtimeCtx, poolAddr, valAddr, sdkmath.NewIntFromUint64(amountNaet))
 	if err != nil {
-		return fmt.Errorf("nominator pool withdrawal share conversion: %w", err)
+		return 0, fmt.Errorf("nominator pool withdrawal share conversion: %w", err)
 	}
 	if _, _, err := k.stakingKeeper.Undelegate(k.runtimeCtx, poolAddr, valAddr, shares); err != nil {
-		return fmt.Errorf("undelegating nominator pool withdrawal: %w", err)
+		return 0, fmt.Errorf("undelegating nominator pool withdrawal: %w", err)
 	}
-	return nil
+	unbondHeight := sdk.UnwrapSDKContext(k.runtimeCtx).BlockHeight()
+	if unbondHeight < 0 {
+		unbondHeight = 0
+	}
+	return uint64(unbondHeight), nil
 }
 
 func NewPersistentKeeper(storeService corestore.KVStoreService) Keeper {
@@ -330,7 +360,7 @@ func (k *Keeper) InitGenesisState(ctx context.Context, gs GenesisState) error {
 	if k.storeService == nil {
 		return nil
 	}
-	return k.writeGenesisState(ctx, k.genesis)
+	return k.writeReplacingState(ctx, k.genesis)
 }
 
 func (k Keeper) ExportGenesis() GenesisState {
@@ -341,7 +371,7 @@ func (k Keeper) ExportGenesisState(ctx context.Context) (GenesisState, error) {
 	if k.storeService == nil {
 		return k.ExportGenesis(), nil
 	}
-	gs, _, err := prefixgenesis.Load(ctx, k.storeService, genesisKey, DefaultGenesis())
+	gs, err := k.readGenesisState(ctx)
 	if err != nil {
 		return GenesisState{}, err
 	}
@@ -371,7 +401,7 @@ func (k *Keeper) loadForBlock(ctx context.Context) error {
 	if k.storeService == nil {
 		return nil
 	}
-	gs, _, err := prefixgenesis.Load(ctx, k.storeService, genesisKey, DefaultGenesis())
+	gs, err := k.readGenesisState(ctx)
 	if err != nil {
 		return err
 	}
@@ -379,6 +409,11 @@ func (k *Keeper) loadForBlock(ctx context.Context) error {
 		return err
 	}
 	k.genesis = cloneGenesis(gs)
+	// The committed store is now, by definition, what we just read, so this
+	// is the baseline writeDiff must compare against. Re-establishing it here
+	// on every entry point is what lets a mutation write only the records it
+	// changed while staying deterministic across nodes -- see persistence.go.
+	k.written = cloneGenesis(gs)
 	k.rebuildIndexes()
 	return nil
 }
@@ -396,37 +431,7 @@ func (k *Keeper) saveGenesis(next GenesisState) error {
 	if k.storeService == nil || k.runtimeCtx == nil {
 		return nil
 	}
-	return k.writeGenesisState(k.runtimeCtx, k.genesis)
-}
-
-func (k Keeper) writeGenesisState(ctx context.Context, gs GenesisState) error {
-	if k.storeService == nil {
-		return nil
-	}
-	if err := prefixgenesis.Save(ctx, k.storeService, genesisKey, cloneGenesis(gs)); err != nil {
-		return err
-	}
-
-	store := k.storeService.OpenKVStore(ctx)
-	for _, pool := range gs.State.Pools {
-		bz, err := json.Marshal(pool)
-		if err != nil {
-			return err
-		}
-		if err := store.Set(types.PoolKey(pool.PoolID), bz); err != nil {
-			return err
-		}
-	}
-	for _, share := range gs.State.PoolShares {
-		bz, err := json.Marshal(share)
-		if err != nil {
-			return err
-		}
-		if err := store.Set(types.PoolShareKey(share.PoolID, share.Owner), bz); err != nil {
-			return err
-		}
-	}
-	return nil
+	return k.writeDiff(k.runtimeCtx, k.genesis)
 }
 
 func (k *Keeper) OperationCounters() OperationCounters {
@@ -817,7 +822,8 @@ func (k *Keeper) DepositToPool(msg types.MsgDepositToPool) (types.DelegatorShare
 	}
 	pool.TotalShares = newTotalShares
 	pool.TotalBondedStake = newTotalBondedStake
-	pool.PendingDeposits = append(pool.PendingDeposits, types.PendingDeposit{Delegator: msg.Delegator, Amount: msg.Amount, Height: msg.Height})
+	// Nothing is appended to pool.PendingDeposits -- see the note on
+	// DepositToOfficialLiquidStaking's append site below.
 	return k.savePool(idx, pool, delegator)
 }
 
@@ -898,7 +904,30 @@ func (k *Keeper) depositToOfficialLiquidStakingLocked(msg types.MsgDepositToOffi
 	}
 	pool.TotalShares = newTotalShares
 	pool.TotalBondedStake = newTotalBondedStake
-	pool.PendingDeposits = append(pool.PendingDeposits, types.PendingDeposit{Delegator: rawUserAddress, Amount: msg.Amount, Height: msg.Height})
+	// pool.PendingDeposits is deliberately NOT appended to.
+	//
+	// Nothing pends. By this line the deposit is already fully applied: the
+	// coins have left the wallet, x/staking holds the delegation, and the
+	// share is credited above. The field is a leftover from the pre-custody
+	// design where a deposit really did queue, and it has no consumer left --
+	// only Validate (a length cap) and Normalize (a sort) touch it, and its
+	// generated protobuf type is imported by nothing.
+	//
+	// Appending here made it an unbounded, append-only log inside the pool
+	// record -- the hottest value this module writes. Since gas is charged per
+	// byte written, every historical entry was re-paid for on every future
+	// deposit, so the cost grew with the number of DEPOSITS, not with the
+	// number of depositors: measured, one single wallet depositing repeatedly
+	// drove its own deposit from 231,521 gas to 560,473 by deposit #100 and
+	// would have crossed MaxTxGas (1,000,000) around #250 -- at which point
+	// NO further deposit or unbond fits in a block for ANY user of that pool
+	// and every depositor's principal is trapped. One wallet paying ordinary
+	// fees could do that to a pool deliberately.
+	//
+	// The field itself is left in place (so the record shape the off-chain
+	// indexer reads is unchanged) but is now provably dead; removing it from
+	// the Go struct, the .proto and the indexer is a separate coordinated
+	// cleanup.
 	return k.savePool(idx, pool, delegator)
 }
 
@@ -1268,7 +1297,8 @@ func (k *Keeper) requestPoolWithdrawalLocked(msg types.MsgRequestPoolWithdrawal)
 	// would burn the depositor: the ledger drops their shares, no undelegation
 	// starts, settleWithdrawal finds no spendable coins and EndBlocker leaves
 	// the withdrawal Pending forever -- money in, nothing out.
-	if err := k.withdrawalCustody(pool.ValidatorTarget, amount); err != nil {
+	unbondHeight, err := k.withdrawalCustody(pool.ValidatorTarget, amount)
+	if err != nil {
 		return types.PendingWithdrawal{}, err
 	}
 	delegator.Shares -= msg.Shares
@@ -1283,13 +1313,15 @@ func (k *Keeper) requestPoolWithdrawalLocked(msg types.MsgRequestPoolWithdrawal)
 		pool.DelegatorShares[delegatorIdx] = delegator
 	}
 	withdrawal := types.PendingWithdrawal{
-		WithdrawalID:   msg.WithdrawalID,
-		Delegator:      msg.Delegator,
-		Shares:         msg.Shares,
-		Amount:         amount,
-		RequestHeight:  msg.Height,
-		CompleteHeight: msg.Height + k.genesis.Params.UnbondingBlocks,
-		Status:         types.WithdrawalStatusPending,
+		WithdrawalID:    msg.WithdrawalID,
+		Delegator:       msg.Delegator,
+		Shares:          msg.Shares,
+		Amount:          amount,
+		RequestHeight:   msg.Height,
+		CompleteHeight:  msg.Height + k.genesis.Params.UnbondingBlocks,
+		UnbondHeight:    unbondHeight,
+		UnbondValidator: pool.ValidatorTarget,
+		Status:          types.WithdrawalStatusPending,
 	}
 	pool.PendingWithdrawals = append(pool.PendingWithdrawals, withdrawal)
 	pool.UnbondingQueue = append(pool.UnbondingQueue, types.UnbondingEntry{
@@ -1420,21 +1452,38 @@ func (k *Keeper) WithdrawPoolStake(msg types.MsgWithdrawPoolStake) (types.PoolWi
 	// unbonding matures. Marking it Completed unpaid is the unsafe half -- it
 	// permanently strands the principal by making the EndBlocker skip it.
 	// A no-op when custody isn't wired (see hasCustody), matching the EndBlocker.
+	//
+	// This goes through the SAME cohort settlement the EndBlocker uses rather
+	// than paying this one withdrawal its full Amount on demand. A per-caller
+	// full-Amount payout here would be exactly the drain the cohort rule exists
+	// to prevent: whoever calls first would take their whole claim out of a
+	// balance that, after an in-flight slash, is short for everybody -- leaving
+	// the shortfall to whoever exits last instead of sharing it pro-rata. So
+	// this settles the whole matured cohort and then reports what THIS
+	// withdrawal actually got.
 	if k.hasCustody() {
-		paid, err := k.settleWithdrawal(k.genesis.Params.BaseDenom, withdrawal)
+		settled, _, err := k.settlePoolWithdrawals(k.genesis.Params.BaseDenom, pool, msg.Height)
 		if err != nil {
 			return types.PoolWithdrawalReceipt{}, err
 		}
-		if !paid {
+		pool = settled
+		if _, current, ok := findWithdrawal(pool.PendingWithdrawals, msg.RequestID); ok {
+			withdrawal = current
+		}
+		if withdrawal.Status != types.WithdrawalStatusCompleted {
 			return types.PoolWithdrawalReceipt{}, errors.New("nominator pool withdrawal is not funded yet: the real x/staking unbonding has not completed, so the pool cannot pay it -- retry once it matures, or let the pool's EndBlocker settle it automatically")
 		}
-	}
-	withdrawal.Status = types.WithdrawalStatusCompleted
-	pool.PendingWithdrawals[withdrawalIdx] = withdrawal
-	for entryIdx, entry := range pool.UnbondingQueue {
-		if entry.WithdrawalID == msg.RequestID {
-			entry.Status = types.WithdrawalStatusCompleted
-			pool.UnbondingQueue[entryIdx] = entry
+	} else {
+		// Ledger-only pool: no coins exist to move, so "settled" is the claim
+		// by definition. Keeps the receipt below uniform across both modes.
+		withdrawal.SettledAmount = withdrawal.Amount
+		withdrawal.Status = types.WithdrawalStatusCompleted
+		pool.PendingWithdrawals[withdrawalIdx] = withdrawal
+		for entryIdx, entry := range pool.UnbondingQueue {
+			if entry.WithdrawalID == msg.RequestID {
+				entry.Status = types.WithdrawalStatusCompleted
+				pool.UnbondingQueue[entryIdx] = entry
+			}
 		}
 	}
 	next := cloneGenesis(k.genesis)
@@ -1456,7 +1505,10 @@ func (k *Keeper) WithdrawPoolStake(msg types.MsgWithdrawPoolStake) (types.PoolWi
 		PoolID:       msg.PoolID,
 		OwnerAddress: msg.OwnerAddress,
 		RequestID:    msg.RequestID,
-		Amount:       withdrawal.Amount,
+		// What the caller actually received, not what they claimed -- an
+		// in-flight slash really can make these differ, and a receipt that
+		// reports the claim would be reporting a payout that never happened.
+		Amount:       withdrawal.SettledAmount,
 		Height:       msg.Height,
 		InternalMetadata: types.PoolStateMetadata{
 			OwnerRaw:               rawOwner,
@@ -2012,6 +2064,13 @@ func (k *Keeper) ApplyPoolSlash(poolID string, slashAmount uint64) (types.Nomina
 // deliberately NOT to nominator-pool) is the intended fix. It is a real change
 // with real consensus consequences, not a comment edit, so it is deliberately
 // left out of the custody pass that made pooled stake real.
+//
+// WHEN WIRING IT: this is an entry point, so like every Msg handler and the
+// EndBlocker it must call loadForBlock(ctx) first, before it touches state.
+// That is not only the FINDING-006 rehydration rule -- loadForBlock is also
+// what re-establishes the baseline the storage layer diffs writes against, so
+// an entry point that skips it can persist against a stale baseline and drop a
+// write it should have made. See persistence.go.
 func (k *Keeper) ApplyValidatorSlash(msg types.MsgApplyValidatorSlash) ([]types.ValidatorSlashEvent, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
@@ -2153,20 +2212,16 @@ func (k *Keeper) ApplyValidatorSlash(msg types.MsgApplyValidatorSlash) ([]types.
 			k.runtimeCtx = context.Background()
 		}
 
-		if err := prefixgenesis.Save(k.runtimeCtx, k.storeService, genesisKey, cloneGenesis(k.genesis)); err != nil {
+		// This mutates k.genesis in place rather than building a `next`, so
+		// it must persist through the same diffing writer as every other
+		// path: writing the genesis blob directly here would put Pools and
+		// PoolShares back inside it and shadow their authoritative
+		// per-entity records (see persistence.go).
+		if err := k.writeDiff(k.runtimeCtx, k.genesis); err != nil {
 			return nil, err
 		}
 
 		store := k.storeService.OpenKVStore(k.runtimeCtx)
-		for _, pool := range k.genesis.State.Pools {
-			bz, err := json.Marshal(pool)
-			if err != nil {
-				return nil, err
-			}
-			if err := store.Set(types.PoolKey(pool.PoolID), bz); err != nil {
-				return nil, err
-			}
-		}
 		for _, alloc := range k.genesis.State.PoolValidatorAllocations {
 			bz, err := json.Marshal(alloc)
 			if err != nil {
@@ -2523,6 +2578,7 @@ func (k *Keeper) upsertPoolUnbonding(poolID string, owner string, withdrawal typ
 	request.Amount = withdrawal.Amount
 	request.RequestHeight = withdrawal.RequestHeight
 	request.CompleteHeight = withdrawal.CompleteHeight
+	request.SettledAmount = withdrawal.SettledAmount
 	request.Status = withdrawal.Status
 	next := cloneGenesis(k.genesis)
 	if found {
@@ -2798,16 +2854,15 @@ func totalPendingWithdrawalAmount(withdrawals []types.PendingWithdrawal) uint64 
 	return total
 }
 
-// EndBlocker settles matured pending withdrawals: once a withdrawal's
-// CompleteHeight has passed AND the pool module account actually holds
-// enough spendable balance to cover it (i.e. the real x/staking unbonding
-// triggered by withdrawalCustody has genuinely finished and x/staking's own
-// EndBlocker has already credited the pool account this same block -- see
-// x/staking's Undelegate/CompleteUnbonding), it pays the depositor and marks
-// the withdrawal completed. If the real unbonding hasn't finished yet
-// (possible if governance ever shortens the pool's own UnbondingBlocks
-// below x/staking's real UnbondingTime), it is silently retried next block
-// rather than paying out money the pool doesn't have yet.
+// EndBlocker settles each pool's matured withdrawal cohort: once the
+// withdrawals' CompleteHeight has passed AND x/staking has finished delivering
+// everything those withdrawals will ever receive (see hasUnbondingInFlight),
+// it pays the depositors pro-rata out of what actually came back and marks the
+// withdrawals completed. Until then it retries next block rather than paying
+// out money that has not arrived or that belongs to a later withdrawal.
+//
+// The settlement rule, and why an in-flight slash no longer strands a
+// depositor's principal forever, is documented on settlePoolWithdrawals.
 //
 // A no-op when custody isn't wired (see hasCustody) -- there is nothing to
 // settle for a ledger-only pool, and every existing test constructs a keeper
@@ -2825,30 +2880,12 @@ func (k *Keeper) EndBlocker(ctx context.Context) error {
 	next := cloneGenesis(k.genesis)
 	changed := false
 	for poolIdx, pool := range next.State.Pools {
-		poolChanged := false
-		for wIdx, withdrawal := range pool.PendingWithdrawals {
-			if withdrawal.Status != types.WithdrawalStatusPending || height < withdrawal.CompleteHeight {
-				continue
-			}
-			paid, err := k.settleWithdrawal(next.Params.BaseDenom, withdrawal)
-			if err != nil {
-				return err
-			}
-			if !paid {
-				continue
-			}
-			withdrawal.Status = types.WithdrawalStatusCompleted
-			pool.PendingWithdrawals[wIdx] = withdrawal
-			for entryIdx, entry := range pool.UnbondingQueue {
-				if entry.WithdrawalID == withdrawal.WithdrawalID {
-					entry.Status = types.WithdrawalStatusCompleted
-					pool.UnbondingQueue[entryIdx] = entry
-				}
-			}
-			poolChanged = true
+		settled, poolChanged, err := k.settlePoolWithdrawals(next.Params.BaseDenom, pool, height)
+		if err != nil {
+			return err
 		}
 		if poolChanged {
-			next.State.Pools[poolIdx] = pool
+			next.State.Pools[poolIdx] = settled
 			changed = true
 		}
 	}
@@ -2901,22 +2938,202 @@ func (k *Keeper) claimRewardCustody(rawDelegator, rawValidatorTarget string, rew
 	return nil
 }
 
-// settleWithdrawal pays a single matured withdrawal from the pool module
-// account if it actually has the balance, and reports whether it paid.
-// Assumes k.mu is already held (write) by the caller.
-func (k *Keeper) settleWithdrawal(baseDenom string, withdrawal types.PendingWithdrawal) (bool, error) {
-	recipient, err := parsePoolAccAddress("nominator pool withdrawal recipient", withdrawal.Delegator)
+// withdrawalUnbondHeight is the real x/staking height a withdrawal's unbonding
+// entry was created at, falling back to the ledger's RequestHeight for rows
+// written before UnbondHeight existed (and for the height-0 genesis contexts
+// unit tests build, where withdrawalCustody legitimately reports 0). The
+// fallback is only ever conservative in the direction that matters: a
+// too-small height makes the cohort gate below wait longer, never settle
+// earlier. See PendingWithdrawal.UnbondHeight.
+func withdrawalUnbondHeight(withdrawal types.PendingWithdrawal) uint64 {
+	if withdrawal.UnbondHeight != 0 {
+		return withdrawal.UnbondHeight
+	}
+	return withdrawal.RequestHeight
+}
+
+// withdrawalUnbondValidator is the validator a withdrawal's principal is
+// actually unbonding from, falling back to the pool's current target for rows
+// written before UnbondValidator existed. See PendingWithdrawal.UnbondValidator
+// for why the pool's live target is the wrong thing to gate on.
+func withdrawalUnbondValidator(pool types.NominatorPool, withdrawal types.PendingWithdrawal) string {
+	if strings.TrimSpace(withdrawal.UnbondValidator) != "" {
+		return withdrawal.UnbondValidator
+	}
+	return pool.ValidatorTarget
+}
+
+// hasUnbondingInFlight reports whether x/staking still holds an unbonding
+// entry at rawValidatorTarget that could be carrying money belonging to a
+// cohort whose latest unbond started at unbondHeight.
+//
+// This is the race gate, and the reasoning is worth stating because it is the
+// whole reason cohort settlement is safe:
+//
+//   - Every entry that holds cohort money was created by one of the cohort's
+//     own Undelegate calls, so its CreationHeight is <= unbondHeight.
+//   - x/staking's CompleteUnbonding removes an entry from the delegation at
+//     the exact moment it credits the pool account (and removes the whole
+//     UnbondingDelegation once the last entry goes). So once no entry with
+//     CreationHeight <= unbondHeight remains, every coin the cohort will ever
+//     receive has already landed.
+//   - An entry with CreationHeight > unbondHeight belongs to a strictly later
+//     withdrawal. It is still in the delegation, so its money has NOT arrived
+//     and therefore cannot be in the balance we are about to split.
+//
+// Assumes k.mu is already held by the caller and that hasCustody() is true.
+func (k *Keeper) hasUnbondingInFlight(rawValidatorTarget string, unbondHeight uint64) (bool, error) {
+	validatorAddr, err := parsePoolAccAddress("nominator pool validator target", rawValidatorTarget)
 	if err != nil {
 		return false, err
 	}
-	coins := sdk.NewCoins(sdk.NewInt64Coin(baseDenom, int64(withdrawal.Amount)))
-	poolAddr := PoolModuleAddress()
-	spendable := k.bankKeeper.SpendableCoins(k.runtimeCtx, poolAddr)
-	if !spendable.IsAllGTE(coins) {
-		return false, nil
+	valAddr := sdk.ValAddress(validatorAddr.Bytes())
+	ubd, err := k.stakingKeeper.GetUnbondingDelegation(k.runtimeCtx, PoolModuleAddress(), valAddr)
+	if err != nil {
+		// Nothing unbonding from this validator at all -- every entry the
+		// cohort created has already been completed and paid in.
+		if errors.Is(err, stakingtypes.ErrNoUnbondingDelegation) {
+			return false, nil
+		}
+		return false, fmt.Errorf("reading nominator pool unbonding delegation: %w", err)
 	}
-	if err := k.bankKeeper.SendCoinsFromModuleToAccount(k.runtimeCtx, types.ModuleName, recipient, coins); err != nil {
-		return false, fmt.Errorf("paying out nominator pool withdrawal: %w", err)
+	for _, entry := range ubd.Entries {
+		if entry.CreationHeight >= 0 && uint64(entry.CreationHeight) <= unbondHeight {
+			return true, nil
+		}
 	}
-	return true, nil
+	return false, nil
+}
+
+// settlePoolWithdrawals settles the pool's matured withdrawal cohort and
+// reports whether it changed the pool. Assumes k.mu is already held (write) by
+// the caller and that hasCustody() is true.
+//
+// It replaces a per-withdrawal "pay Amount in full or pay nothing" settle,
+// which was an unconditional fund-loss bug (F-1). Shares are burned at unbond
+// time, before the money comes back, and x/staking slashes an IN-FLIGHT
+// unbonding entry for infractions committed before the unbond began -- that is
+// the entire purpose of the unbonding period. So after any such slash strictly
+// LESS than withdrawal.Amount ever arrives, an all-or-nothing settle can never
+// succeed, and the EndBlocker retries it forever while the depositor's shares
+// are already gone. A routine ~0.01% downtime slash stranded 100% of the
+// principal. Even on a perfectly healthy chain, Unbond's TruncateInt can
+// return Amount-1 and trigger the same permanent strand.
+//
+// The rule: settle a matured cohort together, pro-rata, once x/staking has
+// finished delivering everything that cohort will ever get.
+//
+//	C         = matured, still-Pending withdrawals
+//	expected  = sum of C's Amount claims
+//	available = min(pool spendable balance, expected)
+//	payout_w  = w.Amount * available / expected     (truncated)
+//
+// Why each piece is what it is:
+//
+//   - Cohort, not per-withdrawal, because a withdrawal cannot be linked to its
+//     own proceeds even in principle. x/staking MERGES entries created in the
+//     same block into one summed Balance (types.UnbondingDelegation.AddEntry),
+//     so per-withdrawal attribution is destroyed inside x/staking itself, and
+//     CompleteUnbonding pays a lump sum into a module account already
+//     commingled with reward income. Any design keyed on per-withdrawal
+//     proceeds is unimplementable.
+//   - Gated on hasUnbondingInFlight, not on "pay whoever has coins now",
+//     because SortWithdrawals orders PendingWithdrawals by WithdrawalID
+//     LEXICOGRAPHICALLY, which is arbitrary with respect to maturity. Paying
+//     greedily in iteration order would let a not-yet-funded withdrawal drain
+//     coins that belong to a different one that already matured.
+//   - Pro-rata, so a slash lands proportionally on the cohort that was in
+//     flight when it happened, instead of being handed in full to whoever
+//     x/staking's map iteration happened to reach first.
+//   - Capped at expected, which is invariant I2: the pool can only ever pay a
+//     cohort what that cohort claims. Reward dust sitting in the same module
+//     account can top a slashed cohort back up (the pool self-heals in the
+//     delegators' favour and the cap bounds it), but it can never be used to
+//     pay out more than was claimed. Removing that top-up entirely needs a
+//     BeforeValidatorSlashed staking hook and is a separate change.
+//
+// Amount is deliberately NOT overwritten with the payout: Validate rejects a
+// zero Amount, so a heavily slashed withdrawal would fail next.Validate() and
+// halt the EndBlocker -- turning a fund-loss bug into a chain-halt bug. The
+// truth goes in SettledAmount, and a zero payout still reaches the terminal
+// Completed status rather than staying Pending forever.
+func (k *Keeper) settlePoolWithdrawals(baseDenom string, pool types.NominatorPool, height uint64) (types.NominatorPool, bool, error) {
+	cohort := make([]int, 0, len(pool.PendingWithdrawals))
+	unbondHeight := uint64(0)
+	expected := uint64(0)
+	targets := make([]string, 0, len(pool.PendingWithdrawals))
+	for idx, withdrawal := range pool.PendingWithdrawals {
+		if withdrawal.Status != types.WithdrawalStatusPending || height < withdrawal.CompleteHeight {
+			continue
+		}
+		cohort = append(cohort, idx)
+		if h := withdrawalUnbondHeight(withdrawal); h > unbondHeight {
+			unbondHeight = h
+		}
+		if target := withdrawalUnbondValidator(pool, withdrawal); !slices.Contains(targets, target) {
+			targets = append(targets, target)
+		}
+		total, err := types.CheckedAddUint64(expected, withdrawal.Amount)
+		if err != nil {
+			return pool, false, err
+		}
+		expected = total
+	}
+	if len(cohort) == 0 || expected == 0 {
+		return pool, false, nil
+	}
+	// A cohort can span validators once ChangePoolValidator has moved the
+	// pool's target, so every validator any member unbonded from has to be
+	// clear. Sorted so the order of an error return cannot depend on map
+	// iteration -- this runs in consensus.
+	slices.Sort(targets)
+	for _, target := range targets {
+		inFlight, err := k.hasUnbondingInFlight(target, unbondHeight)
+		if err != nil {
+			return pool, false, err
+		}
+		if inFlight {
+			// The cohort's own money is still unbonding: retry next block
+			// rather than paying it out of somebody else's balance.
+			return pool, false, nil
+		}
+	}
+	spendable := k.bankKeeper.SpendableCoins(k.runtimeCtx, PoolModuleAddress()).AmountOf(baseDenom)
+	available := expected
+	if expectedInt := sdkmath.NewIntFromUint64(expected); spendable.LT(expectedInt) {
+		available = spendable.Uint64()
+	}
+	changed := false
+	for _, idx := range cohort {
+		withdrawal := pool.PendingWithdrawals[idx]
+		payout := uint64(0)
+		if available > 0 {
+			share, err := types.MulDivUint64(withdrawal.Amount, available, expected)
+			if err != nil {
+				return pool, false, err
+			}
+			payout = share
+		}
+		if payout > 0 {
+			recipient, err := parsePoolAccAddress("nominator pool withdrawal recipient", withdrawal.Delegator)
+			if err != nil {
+				return pool, false, err
+			}
+			coins := sdk.NewCoins(sdk.NewCoin(baseDenom, sdkmath.NewIntFromUint64(payout)))
+			if err := k.bankKeeper.SendCoinsFromModuleToAccount(k.runtimeCtx, types.ModuleName, recipient, coins); err != nil {
+				return pool, false, fmt.Errorf("paying out nominator pool withdrawal: %w", err)
+			}
+		}
+		withdrawal.SettledAmount = payout
+		withdrawal.Status = types.WithdrawalStatusCompleted
+		pool.PendingWithdrawals[idx] = withdrawal
+		for entryIdx, entry := range pool.UnbondingQueue {
+			if entry.WithdrawalID == withdrawal.WithdrawalID {
+				entry.Status = types.WithdrawalStatusCompleted
+				pool.UnbondingQueue[entryIdx] = entry
+			}
+		}
+		changed = true
+	}
+	return pool, changed, nil
 }
