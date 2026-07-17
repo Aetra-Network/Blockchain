@@ -69,6 +69,15 @@ type Keeper struct {
 	bankKeeper              BankKeeper
 	runtimeCtx              context.Context
 	storageRentRateProvider StorageRentRateProvider
+	// written and writtenResidual are this keeper's model of what the store
+	// currently holds: the exact committed bytes of every per-record key, and
+	// of the residual blob. writeDiff writes only what differs from them. Both
+	// are re-established from the committed store by loadForBlock at the top of
+	// every consensus entry point, which is what keeps the write set (and so the
+	// gas charged) a pure function of committed state rather than of how long
+	// this node has been running. See persistence.go.
+	written         hotRecords
+	writtenResidual []byte
 }
 
 // snapshotGenesis returns a consistent, point-in-time copy of the keeper's
@@ -161,7 +170,10 @@ func (k *Keeper) InitGenesisState(ctx context.Context, gs types.GenesisState) er
 		return err
 	}
 	k.runtimeCtx = ctx
-	return k.writeGenesis(ctx)
+	// Not writeGenesis: importing a genesis over a populated store must also
+	// DELETE the records genesis does not mention, which needs the committed
+	// baseline rather than this keeper's (empty) idea of what it has written.
+	return k.writeReplacingState(ctx, types.RefreshStateRoot(k.genesis))
 }
 
 func (k Keeper) ExportGenesis() types.GenesisState {
@@ -175,16 +187,12 @@ func (k Keeper) ExportGenesisState(ctx context.Context) (types.GenesisState, err
 	if !reflect.DeepEqual(k.genesis, types.DefaultGenesis()) {
 		return k.ExportGenesis(), nil
 	}
-	bz, err := k.storeService.OpenKVStore(ctx).Get(genesisKey)
+	gs, _, found, err := k.readGenesisState(ctx)
 	if err != nil {
 		return types.GenesisState{}, err
 	}
-	if len(bz) == 0 {
+	if !found {
 		return types.DefaultGenesis(), nil
-	}
-	var gs types.GenesisState
-	if err := json.Unmarshal(bz, &gs); err != nil {
-		return types.GenesisState{}, err
 	}
 	gs = types.RefreshStateRoot(gs)
 	if err := gs.Validate(); err != nil {
@@ -2771,17 +2779,18 @@ func (k *Keeper) loadForBlock(ctx context.Context) error {
 	if k.storeService == nil {
 		return nil
 	}
-	bz, err := k.storeService.OpenKVStore(ctx).Get(genesisKey)
+	gs, baseline, found, err := k.readGenesisState(ctx)
 	if err != nil {
 		return err
 	}
-	if len(bz) == 0 {
+	if !found {
 		return nil
 	}
-	var gs types.GenesisState
-	if err := json.Unmarshal(bz, &gs); err != nil {
-		return err
-	}
+	// The baseline, not gs, is the write baseline: RefreshStateRoot prunes
+	// receipts out of the in-memory state that are still committed at their
+	// keys, and the next writeDiff is what deletes them. See persistence.go.
+	k.written = baseline.records
+	k.writtenResidual = baseline.residual
 	gs = types.RefreshStateRoot(gs)
 	if err := gs.Validate(); err != nil {
 		return err
@@ -2790,7 +2799,7 @@ func (k *Keeper) loadForBlock(ctx context.Context) error {
 	return nil
 }
 
-func (k Keeper) writeGenesis(ctx context.Context) error {
+func (k *Keeper) writeGenesis(ctx context.Context) error {
 	if k.storeService == nil {
 		return nil
 	}
@@ -2798,9 +2807,5 @@ func (k Keeper) writeGenesis(ctx context.Context) error {
 	if err := gs.Validate(); err != nil {
 		return err
 	}
-	bz, err := json.Marshal(gs)
-	if err != nil {
-		return err
-	}
-	return k.storeService.OpenKVStore(ctx).Set(genesisKey, bz)
+	return k.writeDiff(ctx, gs)
 }
