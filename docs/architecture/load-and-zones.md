@@ -38,8 +38,10 @@ consumes nothing.
 
 ## Layer 3: Zones (governance-gated horizontal scale)
 
-`x/zones`, `x/routing`, `x/mesh`, and `x/sharding-coordinator` carry the
-zone architecture: aetra core as the upper settlement layer, zones as
+`x/aez`, `x/routing`, `x/mesh`, and `x/sharding-coordinator` carry the
+zone architecture (`x/aez` replaced the deleted `x/zones`, which modelled
+zones as application types rather than as state+execution containers -- see
+[docs/architecture/aez.md](aez.md)): aetra core as the upper settlement layer, zones as
 execution lanes, routing tables mapping traffic classes to zones, and the
 load band from Layer 2 as the routing input. They ship disabled-by-default
 with routing fixed to admission-level classification
@@ -49,7 +51,7 @@ with routing fixed to admission-level classification
 Activation order when capacity requires it:
 
 1. governance enables `x/load` (Layer 2 starts scoring live);
-2. governance enables `x/zones`/`x/routing` with a published routing table;
+2. governance enables `x/aez`/`x/routing` with a published routing table;
 3. a coordinated software upgrade moves routing beyond admission-only into
    proposal/execution paths.
 

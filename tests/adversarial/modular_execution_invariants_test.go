@@ -3,18 +3,17 @@ package adversarial_test
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"testing"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/stretchr/testify/require"
 
 	appparams "github.com/sovereign-l1/l1/app/params"
+	aeztypes "github.com/sovereign-l1/l1/x/aez/types"
 	feestypes "github.com/sovereign-l1/l1/x/fees/types"
 	loadtypes "github.com/sovereign-l1/l1/x/load/types"
 	meshtypes "github.com/sovereign-l1/l1/x/mesh/types"
 	routingtypes "github.com/sovereign-l1/l1/x/routing/types"
-	zonestypes "github.com/sovereign-l1/l1/x/zones/types"
 )
 
 func TestPhase11ModularExecutionInvariants(t *testing.T) {
@@ -42,37 +41,36 @@ func TestPhase11ModularExecutionInvariants(t *testing.T) {
 
 		_, err := routingtypes.Route(adversarialRouteInput("uatom"))
 		require.ErrorContains(t, err, "naet")
-
-		zone := adversarialZone(zonestypes.ZoneIDFinancial, zonestypes.ZoneKindFinancial, zonestypes.VMPolicyNativeModule)
-		zone.FeePolicy = "uatom"
-		_, err = zonestypes.RegisterZone(zonestypes.EmptyState(), zone)
-		require.ErrorContains(t, err, "naet")
 	})
 
-	t.Run("zone roots match exported state commitment", func(t *testing.T) {
-		state := zonestypes.EmptyState()
-		var err error
-		state, err = zonestypes.RegisterZone(state, adversarialZone(zonestypes.ZoneIDFinancial, zonestypes.ZoneKindFinancial, zonestypes.VMPolicyNativeModule))
-		require.NoError(t, err)
-		exported := state.Export()
-		stateRoot := hashJSON(t, exported.Zones)
-		commitment, err := zonestypes.NewZoneCommitment(
-			zonestypes.ZoneIDFinancial,
-			1,
-			stateRoot,
-			hashString("receipt-root"),
-			hashString("message-root"),
-			hashString("execution-root"),
-			"",
-		)
-		require.NoError(t, err)
-		next, err := zonestypes.AppendCommitment(exported, commitment)
-		require.NoError(t, err)
-		require.NoError(t, next.Export().Commitments[0].ValidateHash())
+	t.Run("aez routing table hash detects tampering and core pins ignore the table", func(t *testing.T) {
+		// Successor to the deleted x/zones commitment test. The AEZ
+		// equivalent of "a tampered commitment is rejected" is a routing
+		// table whose committed TableHash no longer matches its contents.
+		table := aeztypes.GenesisRoutingTable()
+		require.NoError(t, table.Validate())
 
-		tampered := next.Export()
-		tampered.Commitments[0].StateRoot = hashString("tampered")
-		require.ErrorContains(t, tampered.Validate(), "hash mismatch")
+		tampered := table
+		tampered.Buckets[7] = aeztypes.ZoneID(4)
+		require.ErrorContains(t, tampered.Validate(), "table hash")
+
+		// A hand-crafted MALICIOUS but internally consistent table that
+		// maps every bucket away from the core zone still cannot move a
+		// core-pinned namespace: CorePinned bypasses the table entirely,
+		// so no table version can express a core-zone move (I-9).
+		var hostile [aeztypes.BucketCount]aeztypes.ZoneID
+		for i := range hostile {
+			hostile[i] = aeztypes.ZoneID(4)
+		}
+		malicious := aeztypes.NewRoutingTable(2, 1, 0, hostile)
+		require.NoError(t, malicious.Validate())
+		for _, ns := range aeztypes.AllNamespaces() {
+			if !aeztypes.CorePinned(ns) {
+				continue
+			}
+			require.NotEqual(t, aeztypes.ZoneIDCore, malicious.ZoneForBucket(aeztypes.ComputeBucket(ns, []byte("victim"))),
+				"fixture must actually route away from core, else the pin assertion is vacuous")
+		}
 	})
 
 	t.Run("load score max delta and routing determinism", func(t *testing.T) {
@@ -122,15 +120,44 @@ func FuzzMalformedMeshMessagesFailSafely(f *testing.F) {
 	})
 }
 
-func FuzzMalformedZoneCommitmentsFailSafely(f *testing.F) {
-	f.Add("FINANCIAL_ZONE", uint64(1), hashString("state"), hashString("receipt"), hashString("message"), hashString("execution"))
-	f.Add("", uint64(0), "bad", "bad", "bad", "bad")
-	f.Fuzz(func(t *testing.T, zone string, height uint64, stateRoot string, receiptRoot string, messageRoot string, executionRoot string) {
-		commitment, err := zonestypes.NewZoneCommitment(zonestypes.ZoneID(zone), height, stateRoot, receiptRoot, messageRoot, executionRoot, "")
-		if err != nil {
+// FuzzMalformedAEZBucketsFailSafely succeeds FuzzMalformedZoneCommitmentsFailSafely,
+// which was deleted with x/zones. Zone commitments do not exist until Phase 4,
+// but the bucket hash does exist today and is consensus-critical, so the
+// adversarial surface moves rather than disappearing.
+func FuzzMalformedAEZBucketsFailSafely(f *testing.F) {
+	f.Add("native-account", []byte("entity"))
+	f.Add("", []byte{})
+	f.Add("system", []byte{0x00, 0xff})
+	f.Fuzz(func(t *testing.T, namespace string, entityID []byte) {
+		ns := aeztypes.Namespace(namespace)
+		// ComputeBucket is total: it must never panic and must never
+		// return a bucket outside 0..255, for ANY input including an
+		// unknown namespace or a NUL-bearing entity id.
+		bucket := aeztypes.ComputeBucket(ns, entityID)
+		require.Less(t, uint32(bucket), uint32(aeztypes.BucketCount))
+		// ...and pure: the same input always yields the same bucket.
+		require.Equal(t, bucket, aeztypes.ComputeBucket(ns, entityID))
+	})
+}
+
+// FuzzMalformedAEZRoutingTablesFailSafely asserts a routing table with
+// arbitrary field values either validates or errors -- never panics -- and that
+// any accepted table is total over all 256 buckets.
+func FuzzMalformedAEZRoutingTablesFailSafely(f *testing.F) {
+	f.Add(uint64(1), uint64(0), int64(0), uint32(0))
+	f.Add(uint64(0), uint64(1<<40), int64(-5), uint32(99))
+	f.Fuzz(func(t *testing.T, version uint64, epoch uint64, activationHeight int64, zone uint32) {
+		var buckets [aeztypes.BucketCount]aeztypes.ZoneID
+		for i := range buckets {
+			buckets[i] = aeztypes.ZoneID(zone)
+		}
+		table := aeztypes.NewRoutingTable(version, epoch, activationHeight, buckets)
+		if err := table.Validate(); err != nil {
 			return
 		}
-		require.NoError(t, commitment.ValidateHash())
+		for i := 0; i < aeztypes.BucketCount; i++ {
+			require.True(t, table.Buckets[i].IsValid())
+		}
 	})
 }
 
@@ -197,28 +224,6 @@ func adversarialMeshSuccess() meshtypes.ExecutionResult {
 		Code:		0,
 		ResultHash:	meshtypes.HashParts("execution", "success"),
 	}
-}
-
-func adversarialZone(id zonestypes.ZoneID, kind zonestypes.ZoneKind, vm zonestypes.VMPolicy) zonestypes.Zone {
-	return zonestypes.Zone{
-		ID:			id,
-		Kind:			kind,
-		VMPolicy:		vm,
-		FeePolicy:		zonestypes.FeePolicyNaet,
-		GenesisStateHash:	hashString(string(id) + "-genesis"),
-		StateTransitionID:	"transition-" + string(id),
-		UpgradePolicy:		zonestypes.UpgradePolicyGovernance,
-		DataAvailabilityPolicy:	zonestypes.DataAvailabilityCoreCommitment,
-		AuditStatus:		zonestypes.AuditStatusExperimental,
-		ActivationHeight:	1,
-	}
-}
-
-func hashJSON(t *testing.T, value any) string {
-	t.Helper()
-	bz, err := json.Marshal(value)
-	require.NoError(t, err)
-	return hashString(string(bz))
 }
 
 func hashString(value string) string {

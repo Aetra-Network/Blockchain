@@ -3,7 +3,7 @@ param(
   [string]$Binary = "",
   [string]$BundleDir = "",
   [int]$ValidatorCount = 0,
-  [ValidateSet("base", "execution-os-sim", "zones-prototype", "mesh-prototype")]
+  [ValidateSet("base", "execution-os-sim", "aez-prototype", "mesh-prototype")]
   [string]$Profile = "base",
   [int]$BaseP2PPort = 26656,
   [int]$BaseRPCPort = 26657,

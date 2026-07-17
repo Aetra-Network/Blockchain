@@ -23,6 +23,36 @@ where the AEZ specification **conflicts with the code as written**. Every
 claim below is cited to `file:line` and was verified against the working tree
 at the time of writing.
 
+> **Status: Phase 1 has landed.** Sections 1–4 below are a Phase 0 record of the
+> tree *before* `x/aez` existed and are deliberately left as written — they are
+> the analysis the build was justified against, not a live description. Two of
+> their claims are now history rather than fact:
+>
+> - **`x/zones` is deleted.** §4.2/§4.4 argue it must not be adapted (it models
+>   zones as application types, the inverse of the container model, and its
+>   keeper mutates RAM). `x/aez` replaced it at the same index in both
+>   `prototypeModules` and `PrototypeStoreKeys()`, so the prototype count is
+>   still 16. Every `x/zones/...` citation below refers to code that no longer
+>   exists.
+> - **The operator profile `zones-prototype` is now `aez-prototype`**, and
+>   `tests/e2e/zones_smoke.ps1` is now `tests/e2e/aez_smoke.ps1`.
+>
+> Phase 1 shipped: `x/aez/types` (zone, bucket, namespace, routing table, pins,
+> entity classification, keys, genesis), `x/aez/keeper` (per-entity KV only), a
+> Query-only `module.go`, and genesis mapping all 256 buckets to zone 0.
+>
+> One correction to §5 of this document, found while implementing it and proven
+> by `x/aez/types/bucket_test.go`: **`canonical_entity_id` is NOT
+> `NormalizeToAccountIdentity` unconditionally** (as :438-441 states). That
+> function is not idempotent for a 20-byte cosmos module account — it pads to 32,
+> classifies the result `legacy_padded`, and derives a *new* v2 identity that
+> belongs to nobody. Applying it to a module account would move
+> `nominator-pool` from its pinned system bucket into an elastic one and break
+> I-10. Normalization applies to **user accounts only**; system entities are
+> matched on raw bytes **before** any normalization. See
+> `x/aez/types/entity.go` `CanonicalEntityID`, whose resolution order
+> (system → contract/name → native-account) is the invariant that enforces this.
+
 ## 1. Current architecture
 
 ### Consensus and ABCI surface

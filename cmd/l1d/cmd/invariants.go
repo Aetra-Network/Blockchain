@@ -8,6 +8,7 @@ import (
 
 	abci "github.com/cometbft/cometbft/abci/types"
 	cmtjson "github.com/cometbft/cometbft/libs/json"
+	cmtproto "github.com/cometbft/cometbft/proto/tendermint/types"
 	cmttypes "github.com/cometbft/cometbft/types"
 	dbm "github.com/cosmos/cosmos-db"
 	"github.com/spf13/cobra"
@@ -41,7 +42,6 @@ type invariantCheckReport struct {
 	Mode		string				`json:"mode"`
 	Passed		bool				`json:"passed"`
 	Routes		[]string			`json:"routes"`
-	Skipped		[]string			`json:"skipped,omitempty"`
 	Failures	[]l1app.AppInvariantFailure	`json:"failures,omitempty"`
 }
 
@@ -108,34 +108,39 @@ func runDefaultGenesisInvariantCheck() (invariantCheckReport, error) {
 	if _, err := app.InitChain(&abci.RequestInitChain{AppStateBytes: stateBytes, ConsensusParams: &consensusParams}); err != nil {
 		return invariantCheckReport{}, err
 	}
-	ctx := app.NewContext(false).WithBlockHeight(1)
+	// InitChain's writes land in the finalize-block state, not the committed
+	// multistore, so they must be finalized and committed before the
+	// invariants below can observe them. Without this the check ran against
+	// an EMPTY committed store: most invariants passed vacuously, and
+	// AppInvariantGenesisExport failed and was swept into "skipped".
+	//
+	// It went unnoticed because the blob-genesis keepers hold their whole
+	// state in a k.genesis field in RAM and serve it regardless of what the
+	// store contains -- the exact F-17 masking documented at
+	// x/contracts/keeper/keeper.go:2184-2196. x/aez keeps no state in RAM, so
+	// it reported the empty store honestly instead of hiding it.
+	if _, err := app.FinalizeBlock(&abci.RequestFinalizeBlock{Height: app.LastBlockHeight() + 1}); err != nil {
+		return invariantCheckReport{}, err
+	}
+	if _, err := app.Commit(); err != nil {
+		return invariantCheckReport{}, err
+	}
+	// NewUncachedContext, not NewContext: Commit clears the finalize-block
+	// state that NewContext branches from, and reading committed state is
+	// the whole point of committing above.
+	ctx := app.NewUncachedContext(false, cmtproto.Header{Height: app.LastBlockHeight()})
 	failures := app.RunCriticalInvariants(ctx)
-	failures, skipped := filterDefaultGenesisInvariantFailures(failures)
 	report := invariantCheckReport{
 		Command:	"invariants check",
 		Mode:		"default-genesis",
 		Passed:		len(failures) == 0,
 		Routes:		app.CriticalInvariantRoutes(),
-		Skipped:	skipped,
 		Failures:	failures,
 	}
 	if _, err := json.Marshal(report); err != nil {
 		return invariantCheckReport{}, err
 	}
 	return report, nil
-}
-
-func filterDefaultGenesisInvariantFailures(failures []l1app.AppInvariantFailure) ([]l1app.AppInvariantFailure, []string) {
-	out := make([]l1app.AppInvariantFailure, 0, len(failures))
-	skipped := make([]string, 0, 1)
-	for _, failure := range failures {
-		if failure.ID == "aetra/"+l1app.AppInvariantGenesisExport {
-			skipped = append(skipped, failure.ID)
-			continue
-		}
-		out = append(out, failure)
-	}
-	return out, skipped
 }
 
 func invariantDefaultGenesisWithValidator(app *l1app.L1App) (l1app.GenesisState, error) {

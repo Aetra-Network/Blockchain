@@ -6,7 +6,7 @@ Phase 8 converts approved executable specs into keeper-shaped prototypes for:
 
 - `x/load`
 - `x/routing`
-- `x/zones`
+- `x/aez`
 - `x/mesh`
 
 These keepers are intentionally not wired into `app.go`, do not register public
@@ -82,5 +82,5 @@ export/import functions canonicalize ordering before state is returned.
 go test ./...
 go vet ./...
 buf lint
-go test ./x/routing/types ./x/zones/types ./x/mesh/types -bench . -run '^$'
+go test ./x/routing/types ./x/aez/types ./x/mesh/types -bench . -run '^$'
 ```

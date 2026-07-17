@@ -10,15 +10,15 @@ validation only. They do not make Mesh settlement live on mainnet.
 | --- | --- | --- |
 | `base` | Current chain only | none |
 | `execution-os-sim` | Pure simulator commands plus load/routing genesis metadata | `load`, `routing` |
-| `zones-prototype` | Feature-gated zones prototype metadata | `load`, `routing`, `zones` |
-| `mesh-prototype` | Feature-gated Mesh prototype metadata | `load`, `routing`, `zones`, `mesh` |
+| `aez-prototype` | Feature-gated AEZ routing-table metadata (replaces the deleted `aez-prototype`) | `load`, `routing`, `aez` |
+| `mesh-prototype` | Feature-gated Mesh prototype metadata | `load`, `routing`, `aez`, `mesh` |
 
 ## CLI
 
 ```powershell
 build\aetrad.exe execution-os profiles
 build\aetrad.exe execution-os smoke --profile execution-os-sim
-build\aetrad.exe execution-os diagnostics --profile zones-prototype --genesis .localnet\node0\aetrad\config\genesis.json
+build\aetrad.exe execution-os diagnostics --profile aez-prototype --genesis .localnet\node0\aetrad\config\genesis.json
 ```
 
 The smoke command runs deterministic executable specs for:
@@ -31,10 +31,10 @@ The smoke command runs deterministic executable specs for:
 ## Localnet
 
 ```powershell
-.\scripts\localnet\init.ps1 -Profile zones-prototype
-.\scripts\localnet\validate-genesis.ps1 -Profile zones-prototype
-.\scripts\localnet\start.ps1 -Profile zones-prototype -NoInit
-.\scripts\localnet\execution-os-diagnostics.ps1 -Profile zones-prototype -Json
+.\scripts\localnet\init.ps1 -Profile aez-prototype
+.\scripts\localnet\validate-genesis.ps1 -Profile aez-prototype
+.\scripts\localnet\start.ps1 -Profile aez-prototype -NoInit
+.\scripts\localnet\execution-os-diagnostics.ps1 -Profile aez-prototype -Json
 ```
 
 The profile is written to `.localnet\profile.json`. Prototype profile data is
@@ -62,7 +62,7 @@ Diagnostics do not copy keyring data, mnemonics, private validator keys,
 
 ```powershell
 .\tests\e2e\execution_os_smoke.ps1 -SkipBuild
-.\tests\e2e\zones_smoke.ps1 -SkipBuild
+.\tests\e2e\aez_smoke.ps1 -SkipBuild
 .\tests\e2e\mesh_smoke.ps1 -SkipBuild
 ```
 

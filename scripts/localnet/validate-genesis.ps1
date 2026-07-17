@@ -11,7 +11,7 @@ param(
   [int]$PortStride = 100,
   [string]$TimeoutCommit = "1s",
   [string]$LogLevel = "info",
-  [ValidateSet("base", "execution-os-sim", "zones-prototype", "mesh-prototype")]
+  [ValidateSet("base", "execution-os-sim", "aez-prototype", "mesh-prototype")]
   [string]$Profile = "base",
   [bool]$EnableAPI = $true,
   [bool]$EnableGRPC = $true,
@@ -125,10 +125,28 @@ foreach ($node in $nodes) {
     throw "missing app_state for $($node.Name)"
   }
 
-  $prototypeModules = @("load", "routing", "zones", "mesh")
+  # x/aez ships genesis on every profile like the other prototypes, but its
+  # gate lives at .Params.Prototype.Enabled rather than .Params.Enabled, so it
+  # is checked separately below instead of in this flat loop.
+  $prototypeModules = @("load", "routing", "mesh")
   foreach ($moduleName in $prototypeModules) {
     if ($null -eq $appState.$moduleName) {
       throw "missing $moduleName prototype genesis for $($node.Name)"
+    }
+  }
+  if ($null -eq $appState.aez) {
+    throw "missing aez prototype genesis for $($node.Name)"
+  }
+  if ($null -eq $appState.aez.RoutingTable) {
+    throw "missing aez routing table for $($node.Name)"
+  }
+  if (@($appState.aez.RoutingTable.Buckets).Count -ne 256) {
+    throw "aez genesis must map exactly 256 buckets for $($node.Name)"
+  }
+  # Phase 1 is purely additive only while every bucket is on the core zone.
+  foreach ($zone in $appState.aez.RoutingTable.Buckets) {
+    if ($zone -ne 0) {
+      throw "aez genesis must map every bucket to the core zone for $($node.Name)"
     }
   }
   if ($Profile -eq "base") {
@@ -136,6 +154,9 @@ foreach ($node in $nodes) {
       if ($appState.$moduleName.Params.Enabled -ne $false) {
         throw "$moduleName prototype must be disabled in base profile"
       }
+    }
+    if ($appState.aez.Params.Prototype.Enabled -ne $false) {
+      throw "aez prototype must be disabled in base profile"
     }
   } else {
     if ($appState.load.Params.Enabled -ne $true -or $appState.routing.Params.Enabled -ne $true) {
@@ -145,9 +166,9 @@ foreach ($node in $nodes) {
       throw "load and routing prototypes must be marked testnet profile for $Profile"
     }
   }
-  if ($Profile -in @("zones-prototype", "mesh-prototype")) {
-    if ($appState.zones.Params.Enabled -ne $true -or @($appState.zones.State.ActiveZones).Count -lt 4) {
-      throw "zones prototype profile must activate the core execution zones"
+  if ($Profile -in @("aez-prototype", "mesh-prototype")) {
+    if ($appState.aez.Params.Prototype.Enabled -ne $true) {
+      throw "aez prototype profile must enable the aez feature gate"
     }
   }
   if ($Profile -eq "mesh-prototype") {

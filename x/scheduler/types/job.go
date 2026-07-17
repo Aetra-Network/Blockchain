@@ -122,7 +122,10 @@ func DefaultSchedulerParams() SchedulerParams {
 			"payments",
 			"routing",
 			"contract-assets",
-			"zones",
+			// "zones" removed: x/zones is deleted. It is NOT replaced by
+			// "aez" here -- x/aez schedules no jobs, and granting it an
+			// authorization x/zones happened to hold would be a real
+			// permission change rather than a rename.
 		},
 	}
 }

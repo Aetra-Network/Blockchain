@@ -4,7 +4,7 @@ $script:LocalnetProfiles = @(
   "localnet-4",
   "localnet-5",
   "execution-os-sim",
-  "zones-prototype",
+  "aez-prototype",
   "mesh-prototype"
 )
 
@@ -53,63 +53,12 @@ function Set-PrototypeParamsEnabled {
   $Params.ProductionVersionGate = ""
 }
 
-function New-LocalnetZoneProfileState {
-  $zones = @(
-    [pscustomobject]@{
-      ID                     = "APPLICATION_ZONE"
-      Kind                   = "APPLICATION"
-      VMPolicy               = "AVM"
-      FeePolicy              = "naet"
-      GenesisStateHash       = New-LocalnetSha256Hex "APPLICATION_ZONE-genesis"
-      StateTransitionID      = "transition-APPLICATION_ZONE"
-      UpgradePolicy          = "GOVERNANCE"
-      DataAvailabilityPolicy = "CORE_COMMITMENT"
-      AuditStatus            = "EXPERIMENTAL"
-      ActivationHeight       = 1
-    },
-    [pscustomobject]@{
-      ID                     = "CONTRACT_ZONE"
-      Kind                   = "CONTRACT"
-      VMPolicy               = "COSMWASM_GATED"
-      FeePolicy              = "naet"
-      GenesisStateHash       = New-LocalnetSha256Hex "CONTRACT_ZONE-genesis"
-      StateTransitionID      = "transition-CONTRACT_ZONE"
-      UpgradePolicy          = "GOVERNANCE"
-      DataAvailabilityPolicy = "CORE_COMMITMENT"
-      AuditStatus            = "EXPERIMENTAL"
-      ActivationHeight       = 1
-    },
-    [pscustomobject]@{
-      ID                     = "FINANCIAL_ZONE"
-      Kind                   = "FINANCIAL"
-      VMPolicy               = "NATIVE_MODULE"
-      FeePolicy              = "naet"
-      GenesisStateHash       = New-LocalnetSha256Hex "FINANCIAL_ZONE-genesis"
-      StateTransitionID      = "transition-FINANCIAL_ZONE"
-      UpgradePolicy          = "GOVERNANCE"
-      DataAvailabilityPolicy = "CORE_COMMITMENT"
-      AuditStatus            = "EXPERIMENTAL"
-      ActivationHeight       = 1
-    },
-    [pscustomobject]@{
-      ID                     = "IDENTITY_ZONE"
-      Kind                   = "IDENTITY"
-      VMPolicy               = "NATIVE_MODULE"
-      FeePolicy              = "naet"
-      GenesisStateHash       = New-LocalnetSha256Hex "IDENTITY_ZONE-genesis"
-      StateTransitionID      = "transition-IDENTITY_ZONE"
-      UpgradePolicy          = "GOVERNANCE"
-      DataAvailabilityPolicy = "CORE_COMMITMENT"
-      AuditStatus            = "EXPERIMENTAL"
-      ActivationHeight       = 1
-    }
-  )
+function New-LocalnetAEZProfileParams {
+  param($Params)
 
-  return [pscustomobject]@{
-    Zones       = $zones
-    ActiveZones = @("APPLICATION_ZONE", "CONTRACT_ZONE", "FINANCIAL_ZONE", "IDENTITY_ZONE")
-    Commitments = @()
-  }
+  # x/aez nests the standard prototype gate under .Prototype (its Params also
+  # carry RoutingEpochLength), unlike the flat prototype modules above.
+  Set-PrototypeParamsEnabled -Params $Params.Prototype
 }
 
 function New-LocalnetRoutingShardProfile {
@@ -152,16 +101,18 @@ function Set-LocalnetProfileGenesis {
     $doc = Get-Content -Raw -LiteralPath $genesisPath | ConvertFrom-Json
     $appState = $doc.app_state
 
-    if ($Profile -in @("execution-os-sim", "zones-prototype", "mesh-prototype")) {
+    if ($Profile -in @("execution-os-sim", "aez-prototype", "mesh-prototype")) {
       Set-PrototypeParamsEnabled -Params $appState.load.Params
       Set-PrototypeParamsEnabled -Params $appState.routing.Params
       $appState.routing.RoutingEpoch = 1
       $appState.routing.Shards = New-LocalnetRoutingShardProfile
     }
 
-    if ($Profile -in @("zones-prototype", "mesh-prototype")) {
-      Set-PrototypeParamsEnabled -Params $appState.zones.Params
-      $appState.zones.State = New-LocalnetZoneProfileState
+    if ($Profile -in @("aez-prototype", "mesh-prototype")) {
+      # The AEZ routing table is NOT rewritten here: genesis already ships all
+      # 256 buckets on the core zone, and Phase 1 keeps it that way. Only the
+      # feature gate moves.
+      New-LocalnetAEZProfileParams -Params $appState.aez.Params
     }
 
     if ($Profile -eq "mesh-prototype") {
@@ -190,8 +141,8 @@ function Write-LocalnetProfileManifest {
     "localnet-4" { @() }
     "localnet-5" { @() }
     "execution-os-sim" { @("load", "routing") }
-    "zones-prototype" { @("load", "routing", "zones") }
-    "mesh-prototype" { @("load", "routing", "zones", "mesh") }
+    "aez-prototype" { @("load", "routing", "aez") }
+    "mesh-prototype" { @("load", "routing", "aez", "mesh") }
   }
   $manifest = [ordered]@{
     profile          = $Profile

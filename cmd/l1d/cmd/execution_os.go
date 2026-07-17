@@ -11,27 +11,26 @@ import (
 
 	"github.com/spf13/cobra"
 
+	aeztypes "github.com/sovereign-l1/l1/x/aez/types"
 	loadkeeper "github.com/sovereign-l1/l1/x/load/keeper"
 	loadtypes "github.com/sovereign-l1/l1/x/load/types"
 	meshkeeper "github.com/sovereign-l1/l1/x/mesh/keeper"
 	meshtypes "github.com/sovereign-l1/l1/x/mesh/types"
 	routingkeeper "github.com/sovereign-l1/l1/x/routing/keeper"
 	routingtypes "github.com/sovereign-l1/l1/x/routing/types"
-	zoneskeeper "github.com/sovereign-l1/l1/x/zones/keeper"
-	zonestypes "github.com/sovereign-l1/l1/x/zones/types"
 )
 
 const (
-	executionOSProfileBase			= "base"
-	executionOSProfileSim			= "execution-os-sim"
-	executionOSProfileZonesPrototype	= "zones-prototype"
-	executionOSProfileMeshPrototype		= "mesh-prototype"
+	executionOSProfileBase		= "base"
+	executionOSProfileSim		= "execution-os-sim"
+	executionOSProfileAEZPrototype	= "aez-prototype"
+	executionOSProfileMeshPrototype	= "mesh-prototype"
 )
 
 var executionOSProfiles = []string{
 	executionOSProfileBase,
 	executionOSProfileSim,
-	executionOSProfileZonesPrototype,
+	executionOSProfileAEZPrototype,
 	executionOSProfileMeshPrototype,
 }
 
@@ -39,7 +38,7 @@ type executionOSReport struct {
 	Profile		string			`json:"profile"`
 	Load		executionOSLoadReport	`json:"load"`
 	Routing		executionOSRouteReport	`json:"routing"`
-	Zones		executionOSZonesReport	`json:"zones"`
+	AEZ		executionOSAEZReport	`json:"aez"`
 	Mesh		executionOSMeshReport	`json:"mesh"`
 	RestartSafe	bool			`json:"restart_safe"`
 	FeatureGated	bool			`json:"feature_gated"`
@@ -60,9 +59,17 @@ type executionOSRouteReport struct {
 	ActiveShards	uint32	`json:"active_shards"`
 }
 
-type executionOSZonesReport struct {
-	ActiveZones	[]string	`json:"active_zones"`
-	CommitmentRoots	[]string	`json:"commitment_roots"`
+// executionOSAEZReport replaces the deleted x/zones report. It reports the AEZ
+// routing table rather than a list of application-typed zones: under AEZ a zone
+// is a state+execution CONTAINER, so what an operator needs to see is the
+// bucket->zone map, not a zone taxonomy.
+type executionOSAEZReport struct {
+	TableVersion	uint64	`json:"table_version"`
+	BucketCount	int	`json:"bucket_count"`
+	// CoreOnly reports the Phase 1 invariant: every bucket maps to zone 0,
+	// so no entity can route anywhere else.
+	CoreOnly	bool	`json:"core_only"`
+	TableHash	string	`json:"table_hash"`
 }
 
 type executionOSMeshReport struct {
@@ -79,12 +86,12 @@ type executionOSDiagnostics struct {
 	FeatureGates		map[string]featureGate	`json:"feature_gates"`
 	CurrentLoadScoreBps	uint32			`json:"current_load_score_bps"`
 	LoadWindowHeight	uint64			`json:"load_window_height"`
-	ActiveZones		[]string		`json:"active_zones"`
 	ActiveShards		[]zoneShardSummary	`json:"active_shards"`
 	PendingMeshMessages	int			`json:"pending_mesh_messages"`
 	ReplayMarkerCount	int			`json:"replay_marker_count"`
 	MeshReceiptCount	int			`json:"mesh_receipt_count"`
-	ZoneCommitmentRoots	[]string		`json:"zone_commitment_roots"`
+	AEZTableVersion		uint64			`json:"aez_table_version"`
+	AEZCoreOnly		bool			`json:"aez_core_only"`
 	ProductionLive		bool			`json:"production_live"`
 }
 
@@ -192,10 +199,7 @@ func buildExecutionOSSmokeReport(profile string) (executionOSReport, error) {
 	if err != nil {
 		return executionOSReport{}, err
 	}
-	zoneState, err := buildZonesSmokeState()
-	if err != nil {
-		return executionOSReport{}, err
-	}
+	aezReport := buildAEZSmokeReport()
 	meshState, meshMsg, meshReceipt, err := runMeshSmoke()
 	if err != nil {
 		return executionOSReport{}, err
@@ -214,10 +218,7 @@ func buildExecutionOSSmokeReport(profile string) (executionOSReport, error) {
 			ShardID:	uint32(route.ShardID),
 			ActiveShards:	route.ActiveShards,
 		},
-		Zones: executionOSZonesReport{
-			ActiveZones:		zoneIDs(zoneState.ActiveZones),
-			CommitmentRoots:	zoneCommitmentRoots(zoneState.Commitments),
-		},
+		AEZ:	aezReport,
 		Mesh: executionOSMeshReport{
 			MessageID:		meshMsg.MessageID,
 			ReceiptStatus:		string(meshReceipt.Status),
@@ -238,7 +239,7 @@ func buildExecutionOSDiagnostics(profile, genesisPath string) (executionOSDiagno
 		FeatureGates: map[string]featureGate{
 			"load":		{},
 			"routing":	{},
-			"zones":	{},
+			"aez":		{},
 			"mesh":		{},
 		},
 		ProductionLive: false,
@@ -283,17 +284,17 @@ func buildExecutionOSDiagnostics(profile, genesisPath string) (executionOSDiagno
 			diag.ActiveShards[i] = zoneShardSummary{ZoneID: string(shard.ZoneID), ActiveShards: shard.ActiveShards}
 		}
 	}
-	if raw := genesis.AppState["zones"]; len(raw) > 0 {
-		var gs zoneskeeper.GenesisState
+	if raw := genesis.AppState["aez"]; len(raw) > 0 {
+		var gs aeztypes.GenesisState
 		if err := json.Unmarshal(raw, &gs); err != nil {
 			return executionOSDiagnostics{}, err
 		}
 		if err := gs.Validate(); err != nil {
 			return executionOSDiagnostics{}, err
 		}
-		diag.FeatureGates["zones"] = featureGate{Enabled: gs.Params.Enabled, TestnetProfile: gs.Params.TestnetProfile}
-		diag.ActiveZones = zoneIDs(gs.State.ActiveZones)
-		diag.ZoneCommitmentRoots = zoneCommitmentRoots(gs.State.Commitments)
+		diag.FeatureGates["aez"] = featureGate{Enabled: gs.Params.Prototype.Enabled, TestnetProfile: gs.Params.Prototype.TestnetProfile}
+		diag.AEZTableVersion = gs.RoutingTable.Version
+		diag.AEZCoreOnly = gs.IsCoreOnly()
 	}
 	if raw := genesis.AppState["mesh"]; len(raw) > 0 {
 		var gs meshkeeper.GenesisState
@@ -328,45 +329,17 @@ func runLoadSmoke() (loadtypes.Result, error) {
 	})
 }
 
-func buildZonesSmokeState() (zonestypes.ZoneRegistryState, error) {
-	state := zonestypes.EmptyState()
-	for _, zone := range []zonestypes.Zone{
-		operatorZone(zonestypes.ZoneIDApplication, zonestypes.ZoneKindApplication, zonestypes.VMPolicyAVM),
-		operatorZone(zonestypes.ZoneIDContract, zonestypes.ZoneKindContract, zonestypes.VMPolicyCosmWasmGated),
-		operatorZone(zonestypes.ZoneIDFinancial, zonestypes.ZoneKindFinancial, zonestypes.VMPolicyNativeModule),
-		operatorZone(zonestypes.ZoneIDIdentity, zonestypes.ZoneKindIdentity, zonestypes.VMPolicyNativeModule),
-	} {
-		next, err := zonestypes.RegisterZone(state, zone)
-		if err != nil {
-			return zonestypes.ZoneRegistryState{}, err
-		}
-		state = next
+// buildAEZSmokeReport reports the genesis AEZ routing table. It cannot fail:
+// the table is a compile-time constant shape (all BucketCount buckets on the
+// Core Zone), not a state machine to be driven like the old zones registry.
+func buildAEZSmokeReport() executionOSAEZReport {
+	gs := aeztypes.DefaultGenesis()
+	return executionOSAEZReport{
+		TableVersion:	gs.RoutingTable.Version,
+		BucketCount:	aeztypes.BucketCount,
+		CoreOnly:	gs.IsCoreOnly(),
+		TableHash:	hex.EncodeToString(gs.RoutingTable.TableHash),
 	}
-	for _, id := range []zonestypes.ZoneID{
-		zonestypes.ZoneIDApplication,
-		zonestypes.ZoneIDContract,
-		zonestypes.ZoneIDFinancial,
-		zonestypes.ZoneIDIdentity,
-	} {
-		next, err := zonestypes.ActivateZone(state, id, 1)
-		if err != nil {
-			return zonestypes.ZoneRegistryState{}, err
-		}
-		state = next
-	}
-	first, err := zonestypes.NewZoneCommitment(
-		zonestypes.ZoneIDFinancial,
-		1,
-		hashString("financial-state-1"),
-		hashString("financial-receipt-1"),
-		hashString("financial-message-1"),
-		hashString("financial-execution-1"),
-		"",
-	)
-	if err != nil {
-		return zonestypes.ZoneRegistryState{}, err
-	}
-	return zonestypes.AppendCommitment(state, first)
 }
 
 func runMeshSmoke() (meshtypes.MeshState, meshtypes.MeshMessage, meshtypes.MeshReceipt, error) {
@@ -420,39 +393,6 @@ func runMeshSmoke() (meshtypes.MeshState, meshtypes.MeshMessage, meshtypes.MeshR
 		return meshtypes.MeshState{}, meshtypes.MeshMessage{}, meshtypes.MeshReceipt{}, err
 	}
 	return next, msg, receipt, nil
-}
-
-func operatorZone(id zonestypes.ZoneID, kind zonestypes.ZoneKind, vm zonestypes.VMPolicy) zonestypes.Zone {
-	return zonestypes.Zone{
-		ID:			id,
-		Kind:			kind,
-		VMPolicy:		vm,
-		FeePolicy:		zonestypes.FeePolicyNaet,
-		GenesisStateHash:	hashString(string(id) + "-genesis"),
-		StateTransitionID:	"transition-" + string(id),
-		UpgradePolicy:		zonestypes.UpgradePolicyGovernance,
-		DataAvailabilityPolicy:	zonestypes.DataAvailabilityCoreCommitment,
-		AuditStatus:		zonestypes.AuditStatusExperimental,
-		ActivationHeight:	1,
-	}
-}
-
-func zoneIDs(ids []zonestypes.ZoneID) []string {
-	out := make([]string, len(ids))
-	for i, id := range ids {
-		out[i] = string(id)
-	}
-	sort.Strings(out)
-	return out
-}
-
-func zoneCommitmentRoots(commitments []zonestypes.ZoneCommitment) []string {
-	out := make([]string, 0, len(commitments))
-	for _, commitment := range commitments {
-		out = append(out, commitment.CommitmentHash)
-	}
-	sort.Strings(out)
-	return out
 }
 
 func hashBytes(value string) []byte {

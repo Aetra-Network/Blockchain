@@ -41,6 +41,6 @@ if ($report.identity.domain -ne "operator.aet") { throw ".aet registration smoke
 
 Assert-ExecutionOSGateEnabled -Diagnostics $result.Diagnostics -Module "load"
 Assert-ExecutionOSGateEnabled -Diagnostics $result.Diagnostics -Module "routing"
-Assert-ExecutionOSRestartStable -Before $result.Diagnostics -After $result.RestartDiagnostics -Fields @("feature_gates", "active_shards", "active_zones")
+Assert-ExecutionOSRestartStable -Before $result.Diagnostics -After $result.RestartDiagnostics -Fields @("feature_gates", "active_shards", "aez_table_version", "aez_core_only")
 
 Write-Host "execution OS smoke passed"

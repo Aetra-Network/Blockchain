@@ -7,7 +7,7 @@ SDK modules:
 
 - `x/load`
 - `x/routing`
-- `x/zones`
+- `x/aez`
 - `x/mesh`
 
 The wiring adds store keys, keepers, module manager registration, default

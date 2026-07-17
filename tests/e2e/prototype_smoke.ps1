@@ -13,7 +13,7 @@ param(
   [int]$PortStride = 100,
   [string]$TimeoutCommit = "1s",
   [string]$LogLevel = "info",
-  [ValidateSet("base", "execution-os-sim", "zones-prototype", "mesh-prototype")]
+  [ValidateSet("base", "execution-os-sim", "aez-prototype", "mesh-prototype")]
   [string]$ProfileName = "base",
   [bool]$EnableAPI = $true,
   [bool]$EnableGRPC = $true,

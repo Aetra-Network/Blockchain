@@ -19,7 +19,7 @@ $RepoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
 
 $Binary = Resolve-LocalnetPath -Path $Binary -DefaultRelativePath "build\aetrad.exe"
 $result = Invoke-ExecutionOSProfileLocalnet `
-  -Profile "zones-prototype" `
+  -Profile "aez-prototype" `
   -OutputDir $OutputDir `
   -Binary $Binary `
   -ValidatorCount $ValidatorCount `
@@ -32,8 +32,11 @@ $result = Invoke-ExecutionOSProfileLocalnet `
   -BasePprofPort $BasePprofPort `
   -SkipBuild:$SkipBuild
 
-Assert-ExecutionOSGateEnabled -Diagnostics $result.Diagnostics -Module "zones"
-if (@($result.Diagnostics.active_zones).Count -lt 4) { throw "zones profile did not activate all execution zones" }
-Assert-ExecutionOSRestartStable -Before $result.Diagnostics -After $result.RestartDiagnostics -Fields @("feature_gates", "active_zones", "zone_commitment_roots")
+Assert-ExecutionOSGateEnabled -Diagnostics $result.Diagnostics -Module "aez"
+if ($result.Diagnostics.aez_table_version -lt 1) { throw "aez profile did not install a routing table" }
+# Phase 1 is purely additive: enabling the gate must NOT move any bucket off the
+# core zone. If this ever trips, routing has started to bite.
+if (-not $result.Diagnostics.aez_core_only) { throw "aez routing table must map every bucket to the core zone in phase 1" }
+Assert-ExecutionOSRestartStable -Before $result.Diagnostics -After $result.RestartDiagnostics -Fields @("feature_gates", "aez_table_version", "aez_core_only")
 
-Write-Host "zones prototype smoke passed"
+Write-Host "aez prototype smoke passed"
