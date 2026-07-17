@@ -670,6 +670,12 @@ func (d *driver) setupPool() error {
 		PoolOperator:        d.node0.raw,
 		PoolCommissionBps:   500,
 		Height:              0, // msg_server defaultHeight() fills the real height
+		// The validator this pool delegates deposits to. node0 is a genesis
+		// validator, so its account address doubles as the operator address --
+		// depositCustody parses the target as an account and casts the same
+		// bytes to a ValAddress. Without a target the pool would take deposits
+		// it can never stake, which is why creation now rejects an empty one.
+		ValidatorTarget: d.node0.raw,
 	}, *poolGas, d.fee, "CreateOfficialLiquidStakingPool"); err != nil {
 		return err
 	}

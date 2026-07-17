@@ -15,7 +15,7 @@ func TestPhase33PersistentExportImportAfterRewardsAndClaimIdempotency(t *testing
 	user := aePoolAddress(t, "91")
 	service := kvtest.NewStoreService()
 	source := NewPersistentKeeper(service)
-	source.accountStatusReader = accountStatusFixture{user: accountStatusActive}
+	source.accountStatusReader = accountStatusFixture{user: accountStatusActive}.byIdentity(t)
 	require.NoError(t, source.InitGenesisState(ctx, DefaultGenesis()))
 	pool := createOfficialLiquidStakingPool(t, &source, "phase33-reward-persist")
 	_, err := source.DepositToStakingPool(types.MsgDepositToStakingPool{
@@ -51,7 +51,7 @@ func TestPhase33PersistentExportImportAfterRewardsAndClaimIdempotency(t *testing
 	exported, err := source.ExportGenesisState(ctx)
 	require.NoError(t, err)
 	imported := NewPersistentKeeper(kvtest.NewStoreService())
-	imported.accountStatusReader = accountStatusFixture{user: accountStatusActive}
+	imported.accountStatusReader = accountStatusFixture{user: accountStatusActive}.byIdentity(t)
 	require.NoError(t, imported.InitGenesisState(ctx, exported))
 	roundTrip, err := imported.ExportGenesisState(ctx)
 	require.NoError(t, err)
@@ -62,7 +62,7 @@ func TestPhase33PersistentExportImportAfterRewardsAndClaimIdempotency(t *testing
 
 func TestPhase33ReputationCannotIncreaseWithoutStakeTimeExposure(t *testing.T) {
 	user := aePoolAddress(t, "93")
-	k := NewKeeperWithAccountStatus(accountStatusFixture{user: accountStatusActive})
+	k := NewKeeperWithAccountStatus(accountStatusFixture{user: accountStatusActive}.byIdentity(t))
 	pool := createOfficialLiquidStakingPool(t, &k, "phase33-reputation")
 	_, err := k.DepositToStakingPool(types.MsgDepositToStakingPool{
 		PoolID:		pool.PoolID,

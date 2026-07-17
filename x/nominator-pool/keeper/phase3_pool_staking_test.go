@@ -20,7 +20,7 @@ import (
 // fixes kept passing their tests and failing on a live chain.
 func TestPhase31UserDepositToPoolCreditsStakeAgainstItsValidator(t *testing.T) {
 	user := aePoolAddress(t, "61")
-	k := NewKeeperWithAccountStatus(accountStatusFixture{user: accountStatusActive})
+	k := NewKeeperWithAccountStatus(accountStatusFixture{user: accountStatusActive}.byIdentity(t))
 	pool := createOfficialLiquidStakingPool(t, &k, "phase31-official")
 
 	receipt, err := k.DepositToStakingPool(types.MsgDepositToStakingPool{
@@ -46,7 +46,7 @@ func TestPhase31UserDepositToPoolCreditsStakeAgainstItsValidator(t *testing.T) {
 func TestPhase31DepositCanTargetOfficialContractAndRejectsHiddenValidatorTargets(t *testing.T) {
 	user := aePoolAddress(t, "62")
 	validator := aePoolAddress(t, "63")
-	k := NewKeeperWithAccountStatus(accountStatusFixture{user: accountStatusActive})
+	k := NewKeeperWithAccountStatus(accountStatusFixture{user: accountStatusActive}.byIdentity(t))
 	pool := createOfficialLiquidStakingPool(t, &k, "phase31-contract")
 
 	receipt, err := k.DepositToStakingPool(types.MsgDepositToStakingPool{
@@ -92,7 +92,7 @@ func TestPhase31PoolSharesDeterministicAndExportImportPreservesTotals(t *testing
 	require.Equal(t, firstExport.State.Pools[0].TotalShares, secondExport.State.Pools[0].TotalShares)
 	require.Equal(t, firstExport.State.Pools[0].TotalBondedStake, secondExport.State.Pools[0].TotalBondedStake)
 
-	imported := NewKeeperWithAccountStatus(accountStatusFixture{firstReceipt.OwnerAddress: accountStatusActive})
+	imported := NewKeeperWithAccountStatus(accountStatusFixture{firstReceipt.OwnerAddress: accountStatusActive}.byIdentity(t))
 	require.NoError(t, imported.InitGenesis(firstExport))
 	roundTrip := imported.ExportGenesis()
 	require.Equal(t, firstExport.State.Pools[0].TotalShares, roundTrip.State.Pools[0].TotalShares)
@@ -104,7 +104,7 @@ func TestPhase31PoolSharesDeterministicAndExportImportPreservesTotals(t *testing
 func TestPhase31DirectUserDelegationRejectedBeforeNominatorPoolMutation(t *testing.T) {
 	user := aePoolAddress(t, "66")
 	validator := aePoolAddress(t, "67")
-	k := NewKeeperWithAccountStatus(accountStatusFixture{user: accountStatusActive, validator: accountStatusActive})
+	k := NewKeeperWithAccountStatus(accountStatusFixture{user: accountStatusActive, validator: accountStatusActive}.byIdentity(t))
 	createOfficialLiquidStakingPool(t, &k, "phase31-no-direct")
 	before := k.ExportGenesis()
 
@@ -122,7 +122,7 @@ func TestPhase31DirectUserDelegationRejectedBeforeNominatorPoolMutation(t *testi
 func phase31DepositRun(t *testing.T) (types.StakingPoolDepositReceipt, GenesisState) {
 	t.Helper()
 	user := aePoolAddress(t, "65")
-	k := NewKeeperWithAccountStatus(accountStatusFixture{user: accountStatusActive})
+	k := NewKeeperWithAccountStatus(accountStatusFixture{user: accountStatusActive}.byIdentity(t))
 	pool := createOfficialLiquidStakingPool(t, &k, "phase31-deterministic")
 	receipt, err := k.DepositToStakingPool(types.MsgDepositToStakingPool{
 		PoolID:		pool.PoolID,

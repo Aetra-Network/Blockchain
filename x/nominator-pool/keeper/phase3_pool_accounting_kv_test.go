@@ -16,7 +16,7 @@ func TestPhase32PersistentPoolMutationExportImportQuerySameState(t *testing.T) {
 	service := kvtest.NewStoreService()
 	user := aePoolAddress(t, "71")
 	source := NewPersistentKeeper(service)
-	source.accountStatusReader = accountStatusFixture{user: accountStatusActive}
+	source.accountStatusReader = accountStatusFixture{user: accountStatusActive}.byIdentity(t)
 	require.NoError(t, source.InitGenesisState(ctx, DefaultGenesis()))
 	pool := createOfficialLiquidStakingPool(t, &source, "phase32-persist")
 
@@ -45,7 +45,7 @@ func TestPhase32PersistentPoolMutationExportImportQuerySameState(t *testing.T) {
 	require.Equal(t, receipt.Amount, exported.State.LiquidStakingPools[0].TotalDeposited)
 
 	imported := NewPersistentKeeper(kvtest.NewStoreService())
-	imported.accountStatusReader = accountStatusFixture{user: accountStatusActive}
+	imported.accountStatusReader = accountStatusFixture{user: accountStatusActive}.byIdentity(t)
 	require.NoError(t, imported.InitGenesisState(ctx, exported))
 	roundTrip, err := imported.ExportGenesisState(ctx)
 	require.NoError(t, err)
@@ -128,7 +128,7 @@ func TestPhase32OfficialPoolRentAccrualHookChargesReserveOnMutation(t *testing.T
 	service := kvtest.NewStoreService()
 	user := aePoolAddress(t, "7a")
 	k := NewPersistentKeeper(service)
-	k.accountStatusReader = accountStatusFixture{user: accountStatusActive}
+	k.accountStatusReader = accountStatusFixture{user: accountStatusActive}.byIdentity(t)
 	require.NoError(t, k.InitGenesisState(ctx, DefaultGenesis()))
 	pool := createOfficialLiquidStakingPool(t, &k, "phase32-rent-hook")
 
@@ -160,7 +160,7 @@ func TestPhase32OfficialPoolRentAccruesOnClaimAndEpochRebalance(t *testing.T) {
 	user := aePoolAddress(t, "7b")
 	validator := aePoolAddress(t, "2a")
 	k := NewPersistentKeeper(service)
-	k.accountStatusReader = accountStatusFixture{user: accountStatusActive, validator: accountStatusActive}
+	k.accountStatusReader = accountStatusFixture{user: accountStatusActive, validator: accountStatusActive}.byIdentity(t)
 	require.NoError(t, k.InitGenesisState(ctx, DefaultGenesis()))
 	pool := createOfficialLiquidStakingPool(t, &k, "phase32-rent-claim-epoch")
 
@@ -230,7 +230,7 @@ func TestPhase32OfficialPoolRentDebtRecoveryAndExportImportRoundTrip(t *testing.
 	service := kvtest.NewStoreService()
 	user := aePoolAddress(t, "7c")
 	k := NewPersistentKeeper(service)
-	k.accountStatusReader = accountStatusFixture{user: accountStatusActive}
+	k.accountStatusReader = accountStatusFixture{user: accountStatusActive}.byIdentity(t)
 	require.NoError(t, k.InitGenesisState(ctx, DefaultGenesis()))
 	pool := createOfficialLiquidStakingPool(t, &k, "phase32-rent-recovery")
 
@@ -269,7 +269,7 @@ func TestPhase32OfficialPoolRentDebtRecoveryAndExportImportRoundTrip(t *testing.
 	require.Equal(t, types.PoolStatusActive, liquidRecovered.Status)
 
 	imported := NewPersistentKeeper(kvtest.NewStoreService())
-	imported.accountStatusReader = accountStatusFixture{user: accountStatusActive}
+	imported.accountStatusReader = accountStatusFixture{user: accountStatusActive}.byIdentity(t)
 	require.NoError(t, imported.InitGenesisState(ctx, recovered))
 	roundTrip, err := imported.ExportGenesisState(ctx)
 	require.NoError(t, err)
@@ -282,7 +282,7 @@ func TestPhase32PoolAllocationKVUpdateTouchesOnlyChangedAllocationKey(t *testing
 	v1 := aePoolAddress(t, "81")
 	v2 := aePoolAddress(t, "82")
 	k := NewPersistentKeeper(service)
-	k.accountStatusReader = accountStatusFixture{v1: accountStatusActive, v2: accountStatusActive}
+	k.accountStatusReader = accountStatusFixture{v1: accountStatusActive, v2: accountStatusActive}.byIdentity(t)
 	require.NoError(t, k.InitGenesisState(ctx, DefaultGenesis()))
 	pool := createOfficialLiquidStakingPool(t, &k, "phase32-alloc")
 	for _, validator := range []string{v1, v2} {

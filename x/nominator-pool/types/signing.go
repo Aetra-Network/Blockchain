@@ -26,10 +26,16 @@ import (
 // from_address). So the signer is simply that address parsed to bytes: exactly
 // what the standard AddressCodec-based resolver produces for a MsgSend, and
 // therefore guaranteed to match what SigVerificationDecorator independently
-// derives from the tx's own AuthInfo pubkey. The keeper separately normalizes
-// this plain address to the account's v2 identity for its activation check and
-// share bookkeeping (see keeper/msg_server.go's normalizeAccountIdentity), so
-// signing stays standard while the v2 derivation lives server-side.
+// derives from the tx's own AuthInfo pubkey.
+//
+// Because the signer is resolved FROM these address fields, SetPubKeyDecorator's
+// bytes.Equal(pk.Address(), signer) check makes the field's contents
+// cryptographically load-bearing: a tx whose wallet_address/owner_address is
+// anything other than the plain 20-byte address of the signing key -- a v2
+// identity included, since those are 32 bytes -- cannot be broadcast at all.
+// The keeper therefore treats these fields as the account that holds the money,
+// and derives the v2 identity it needs for its activation check internally
+// (see keeper.ensureActiveWallet) rather than rewriting the message.
 //
 // The message arrives here as a protoreflect-hybrid wrapper (the concrete gogo
 // struct does not implement ProtoReflect()), so the address field is read by

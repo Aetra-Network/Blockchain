@@ -127,14 +127,11 @@ func TestNominatorPoolRuntimeMutationPersistsToKVStore(t *testing.T) {
 	validator := GetBondedTestValidator(t, source, sourceCtx)
 	valAddr := parseValidatorAddress(t, source, validator.OperatorAddress)
 
-	// The wallet deposits with its PLAIN address; the keeper normalizes it to the
-	// account's v2 identity, which is what share ownership is recorded under --
-	// and, because the deposit is really custodied now, also the balance the coins
-	// are collected from (msgServer.DepositToStakingPool rewrites wallet_address to
-	// that identity before the keeper runs).
+	// The wallet deposits with -- and is funded at -- its own PLAIN address, the
+	// one it signs with and really holds coins at. Share ownership is recorded
+	// under that same address, so money and ledger key agree.
 	userAddress, _ := nominatorPoolAddressPair(t, "44")
-	identityUser, _ := normalizeToV2AccountIdentity(t, userAddress)
-	depositor, err := addressing.ParseAccAddress(identityUser)
+	depositor, err := addressing.ParseAccAddress(userAddress)
 	require.NoError(t, err)
 	FundTestAddr(t, source, sourceCtx, depositor, sdk.NewCoins(sdk.NewCoin(BondDenom, sdkmath.NewIntFromUint64(4*nominatorpooltypes.DefaultMinPoolDeposit))))
 	balanceBefore := source.BankKeeper.GetBalance(sourceCtx, depositor, BondDenom)
@@ -183,7 +180,7 @@ func TestNominatorPoolRuntimeMutationPersistsToKVStore(t *testing.T) {
 	require.Len(t, exported.State.Pools, 1)
 	require.Equal(t, poolID, exported.State.Pools[0].PoolID)
 	require.Len(t, exported.State.PoolShares, 1)
-	require.Equal(t, identityUser, exported.State.PoolShares[0].Owner)
+	require.Equal(t, userAddress, exported.State.PoolShares[0].Owner)
 	require.Equal(t, nominatorpooltypes.DefaultMinPoolDeposit, exported.State.PoolShares[0].Shares)
 
 	// The pool's custody is real committed chain state, not this process's
@@ -230,13 +227,10 @@ func TestFinalAppWiringOfficialStakingPoolFlowExportImportRestart(t *testing.T) 
 	validator := GetBondedTestValidator(t, source, sourceCtx)
 	valAddr := parseValidatorAddress(t, source, validator.OperatorAddress)
 
-	// The deposit is signed/carried with the caller's PLAIN address; the keeper
-	// records share ownership under the account's normalized v2 identity, which
-	// is also the balance the coins are really collected from (msgServer.
-	// DepositToStakingPool rewrites wallet_address to that identity first).
-	userAddress, _ := nominatorPoolAddressPair(t, "33")
-	identityUser, identityRaw := normalizeToV2AccountIdentity(t, userAddress)
-	depositor, err := addressing.ParseAccAddress(identityUser)
+	// The deposit is signed/carried with, funded at, and recorded under the
+	// caller's own PLAIN address -- one address for money and ledger alike.
+	userAddress, userRaw := nominatorPoolAddressPair(t, "33")
+	depositor, err := addressing.ParseAccAddress(userAddress)
 	require.NoError(t, err)
 	FundTestAddr(t, source, sourceCtx, depositor, sdk.NewCoins(sdk.NewCoin(BondDenom, sdkmath.NewIntFromUint64(4*nominatorpooltypes.DefaultMinPoolDeposit))))
 	balanceBefore := source.BankKeeper.GetBalance(sourceCtx, depositor, BondDenom)
@@ -264,7 +258,7 @@ func TestFinalAppWiringOfficialStakingPoolFlowExportImportRestart(t *testing.T) 
 	require.True(t, pool.OfficialLiquidStaking)
 	require.Equal(t, contractUser, pool.ContractAddressUser)
 	require.Equal(t, contractRaw, pool.ContractAddressRaw)
-	share, found := source.NominatorPoolKeeper.PoolShare(nominatorpooltypes.QueryPoolShareRequest{PoolID: poolID, Delegator: identityRaw})
+	share, found := source.NominatorPoolKeeper.PoolShare(nominatorpooltypes.QueryPoolShareRequest{PoolID: poolID, Delegator: userRaw})
 	require.True(t, found)
 	require.Equal(t, nominatorpooltypes.DefaultMinPoolDeposit, share.Share.Shares)
 
@@ -286,7 +280,7 @@ func TestFinalAppWiringOfficialStakingPoolFlowExportImportRestart(t *testing.T) 
 	require.NoError(t, err)
 	require.Len(t, exported.State.LiquidStakingPools, 1)
 	require.Len(t, exported.State.PoolShares, 1)
-	require.Equal(t, identityUser, exported.State.PoolShares[0].Owner)
+	require.Equal(t, userAddress, exported.State.PoolShares[0].Owner)
 	require.Equal(t, nominatorpooltypes.DefaultMinPoolDeposit, exported.State.PoolShares[0].Shares)
 
 	restarted := NewL1App(log.NewNopLogger(), dbm.NewMemDB(), true, appOptions)
@@ -308,22 +302,6 @@ func nominatorPoolAddressPair(t *testing.T, hexByte string) (string, string) {
 	require.NoError(t, err)
 	user := addressing.FormatAccAddress(sdk.AccAddress(bz))
 	return user, raw
-}
-
-// normalizeToV2AccountIdentity mirrors the keeper's server-side plain->v2
-// address normalization (keeper.normalizeAccountIdentity): given a caller's
-// plain "AE..." address it returns the account's canonical v2 identity as an
-// (AE user, 4: raw) pair. Staking share ownership is recorded under this
-// identity, so tests that deposit with a plain address assert against it.
-func normalizeToV2AccountIdentity(t *testing.T, userAddress string) (string, string) {
-	t.Helper()
-	seed, err := addressing.Parse(userAddress)
-	require.NoError(t, err)
-	identity, err := addressing.NormalizeToAccountIdentity(seed)
-	require.NoError(t, err)
-	user, err := addressing.FormatUserFriendly(identity)
-	require.NoError(t, err)
-	return user, addressing.Format(identity)
 }
 
 func nominatorPoolMsg(t *testing.T, app *L1App, ctx sdk.Context, msg sdk.Msg) interface{} {

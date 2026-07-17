@@ -17,7 +17,7 @@ func TestPhase35PoolClaimWritesUnifiedIdentityReputationByDurationAndAmount(t *t
 		shortUser:	accountStatusActive,
 		longUser:	accountStatusActive,
 		largeUser:	accountStatusActive,
-	})
+	}.byIdentity(t))
 	pool := createOfficialLiquidStakingPool(t, &k, "phase35-identity")
 	for _, deposit := range []struct {
 		user	string
@@ -56,7 +56,7 @@ func TestPhase35PoolClaimWritesUnifiedIdentityReputationByDurationAndAmount(t *t
 
 func TestPhase35IdentityReputationClaimIdempotentAndRecordsSlashingExposure(t *testing.T) {
 	user := aePoolAddress(t, "c4")
-	k := NewKeeperWithAccountStatus(accountStatusFixture{user: accountStatusActive})
+	k := NewKeeperWithAccountStatus(accountStatusFixture{user: accountStatusActive}.byIdentity(t))
 	pool := createOfficialLiquidStakingPool(t, &k, "phase35-slash-exposure")
 	_, err := k.DepositToStakingPool(types.MsgDepositToStakingPool{
 		PoolID:		pool.PoolID,
@@ -82,7 +82,7 @@ func TestPhase35IdentityReputationClaimIdempotentAndRecordsSlashingExposure(t *t
 
 func TestPhase35LowIdentityReputationDoesNotBlockPoolDepositOrClaim(t *testing.T) {
 	user := aePoolAddress(t, "c5")
-	k := NewKeeperWithAccountStatus(accountStatusFixture{user: accountStatusActive})
+	k := NewKeeperWithAccountStatus(accountStatusFixture{user: accountStatusActive}.byIdentity(t))
 	pool := createOfficialLiquidStakingPool(t, &k, "phase35-low-rep")
 
 	receipt, err := k.DepositToStakingPool(types.MsgDepositToStakingPool{

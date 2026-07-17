@@ -12,6 +12,14 @@ import (
 	"github.com/sovereign-l1/l1/x/nominator-pool/types"
 )
 
+// accountStatusFixture doubles for native-account, the real AccountStatusReader.
+// Like the real one it is keyed by the account's v2 IDENTITY (native-account
+// stores an activation under DeriveAccountAddress(pubKey).User), and like the
+// real one it is an exact-match lookup -- it does no normalizing of its own.
+// Build one with byIdentity rather than keying it by a plain address: a
+// plain-keyed fixture answers questions the real reader would never answer,
+// which is how a keeper that looked accounts up under the wrong address form
+// stayed green here while failing on the live chain.
 type accountStatusFixture map[string]string
 
 func (f accountStatusFixture) AccountStatus(address string) (string, bool) {
@@ -19,9 +27,24 @@ func (f accountStatusFixture) AccountStatus(address string) (string, bool) {
 	return status, found
 }
 
+// byIdentity re-keys a fixture written in terms of the PLAIN addresses a test's
+// wallets sign with to the v2 identity each of them normalizes to -- i.e. what
+// native-account would actually have on record for those wallets, and what
+// ensureActiveWallet looks up.
+func (f accountStatusFixture) byIdentity(t *testing.T) accountStatusFixture {
+	t.Helper()
+	identities := make(accountStatusFixture, len(f))
+	for address, status := range f {
+		identity, err := normalizeAccountIdentity(address)
+		require.NoError(t, err)
+		identities[identity] = status
+	}
+	return identities
+}
+
 func TestPoolDepositMintsReceiptAndKeepsRawInternal(t *testing.T) {
 	user := aePoolAddress(t, "22")
-	k := NewKeeperWithAccountStatus(accountStatusFixture{user: accountStatusActive})
+	k := NewKeeperWithAccountStatus(accountStatusFixture{user: accountStatusActive}.byIdentity(t))
 	pool := createOfficialLiquidStakingPool(t, &k, "official-staking")
 
 	receipt, err := k.DepositToStakingPool(types.MsgDepositToStakingPool{
@@ -65,7 +88,7 @@ func TestPersistentRuntimeMutationSurvivesRestartAndImport(t *testing.T) {
 	user := aePoolAddress(t, "52")
 	service := kvtest.NewStoreService()
 	source := NewPersistentKeeper(service)
-	source.accountStatusReader = accountStatusFixture{user: accountStatusActive}
+	source.accountStatusReader = accountStatusFixture{user: accountStatusActive}.byIdentity(t)
 	require.NoError(t, source.InitGenesisState(ctx, DefaultGenesis()))
 	pool := createOfficialLiquidStakingPool(t, &source, "official-persistent")
 
@@ -85,7 +108,7 @@ func TestPersistentRuntimeMutationSurvivesRestartAndImport(t *testing.T) {
 	require.Equal(t, receipt.Shares, exported.State.PoolShares[0].Shares)
 
 	imported := NewPersistentKeeper(kvtest.NewStoreService())
-	imported.accountStatusReader = accountStatusFixture{user: accountStatusActive}
+	imported.accountStatusReader = accountStatusFixture{user: accountStatusActive}.byIdentity(t)
 	require.NoError(t, imported.InitGenesisState(ctx, exported))
 	share, found := imported.PoolShare(types.QueryPoolShareRequest{PoolID: pool.PoolID, Delegator: rawPoolAddress("52")})
 	require.True(t, found)
@@ -118,7 +141,7 @@ func TestRestartedKeeperDivergesOnDepositToStakingPool(t *testing.T) {
 
 	// Continuously-running node: create the pool and deposit once.
 	source := NewPersistentKeeper(service)
-	source.accountStatusReader = accountStatusFixture{user: accountStatusActive}
+	source.accountStatusReader = accountStatusFixture{user: accountStatusActive}.byIdentity(t)
 	require.NoError(t, source.InitGenesisState(ctx, DefaultGenesis()))
 	pool := createOfficialLiquidStakingPool(t, &source, "official-restart-divergence")
 
@@ -142,7 +165,7 @@ func TestRestartedKeeperDivergesOnDepositToStakingPool(t *testing.T) {
 	// never on a later process start -- see app/wiring PreBlockers, which do
 	// not include a nominator-pool rehydration step).
 	restarted := NewPersistentKeeper(service)
-	restarted.accountStatusReader = accountStatusFixture{user: accountStatusActive}
+	restarted.accountStatusReader = accountStatusFixture{user: accountStatusActive}.byIdentity(t)
 	require.Empty(t, restarted.genesis.State.Pools, "a freshly-constructed keeper starts at the empty default in memory, per NewPersistentKeeper")
 
 	// The SAME deposit message that succeeded on the continuously-running node
@@ -178,18 +201,12 @@ func TestRestartedKeeperDivergesOnDepositToStakingPool(t *testing.T) {
 func TestRestartedNodeViaMsgServerNoLongerDivergesOnDepositToStakingPool(t *testing.T) {
 	ctx := context.Background()
 	user := aePoolAddress(t, "72")
-	// msgServer.DepositToStakingPool normalizes WalletAddress to the account's
-	// v2 identity BEFORE calling the keeper (see msg_server.go), so
-	// ensureActiveWallet checks the NORMALIZED identity, not the raw address --
-	// unlike the bare-keeper test above, which bypasses that normalization.
-	userIdentity, err := normalizeAccountIdentity(user)
-	require.NoError(t, err)
 	service := kvtest.NewStoreService()
 
 	// Continuously-running node: create the pool and deposit once, through the
 	// real msgServer entry point.
 	source := NewPersistentKeeper(service)
-	source.accountStatusReader = accountStatusFixture{userIdentity: accountStatusActive}
+	source.accountStatusReader = accountStatusFixture{user: accountStatusActive}.byIdentity(t)
 	require.NoError(t, source.InitGenesisState(ctx, DefaultGenesis()))
 	pool := createOfficialLiquidStakingPool(t, &source, "official-restart-fixed")
 	sourceServer := NewMsgServerImpl(&source)
@@ -212,7 +229,7 @@ func TestRestartedNodeViaMsgServerNoLongerDivergesOnDepositToStakingPool(t *test
 	// SAME committed store, without InitGenesis -- identical setup to the
 	// vulnerability-demonstration test above.
 	restarted := NewPersistentKeeper(service)
-	restarted.accountStatusReader = accountStatusFixture{userIdentity: accountStatusActive}
+	restarted.accountStatusReader = accountStatusFixture{user: accountStatusActive}.byIdentity(t)
 	require.Empty(t, restarted.genesis.State.Pools, "a freshly-constructed keeper starts at the empty default in memory")
 	restartedServer := NewMsgServerImpl(&restarted)
 
@@ -408,7 +425,7 @@ func TestPoolDepositRejectsInactiveFrozenLowAndFrozenLimitedPool(t *testing.T) {
 		active:		accountStatusActive,
 		inactive:	accountStatusInactive,
 		frozen:		accountStatusFrozen,
-	})
+	}.byIdentity(t))
 	pool := createOfficialLiquidStakingPool(t, &k, "official-rejects")
 
 	_, err := k.DepositToStakingPool(types.MsgDepositToStakingPool{PoolID: pool.PoolID, WalletAddress: inactive, Amount: types.DefaultMinPoolDeposit, Height: 2})
@@ -439,7 +456,7 @@ func TestPoolDepositRejectsInactiveFrozenLowAndFrozenLimitedPool(t *testing.T) {
 
 func TestFrozenLimitedPoolAllowsTopUpClaimUnbondAndMaturedWithdrawals(t *testing.T) {
 	user := aePoolAddress(t, "24")
-	k := NewKeeperWithAccountStatus(accountStatusFixture{user: accountStatusActive})
+	k := NewKeeperWithAccountStatus(accountStatusFixture{user: accountStatusActive}.byIdentity(t))
 	pool := createOfficialLiquidStakingPool(t, &k, "official-exits")
 	_, err := k.DepositToStakingPool(types.MsgDepositToStakingPool{PoolID: pool.PoolID, WalletAddress: user, Amount: 2 * types.DefaultMinPoolDeposit, Height: 2})
 	require.NoError(t, err)
@@ -505,7 +522,7 @@ func TestFrozenLimitedPoolAllowsTopUpClaimUnbondAndMaturedWithdrawals(t *testing
 
 func TestValidatorRegistrationUpdateAndDuplicate(t *testing.T) {
 	validator := aePoolAddress(t, "31")
-	k := NewKeeperWithAccountStatus(accountStatusFixture{validator: accountStatusActive})
+	k := NewKeeperWithAccountStatus(accountStatusFixture{validator: accountStatusActive}.byIdentity(t))
 
 	_, err := k.RegisterValidator(types.MsgRegisterValidator{
 		SignerAddress:		validator,
@@ -558,7 +575,7 @@ func TestInjectAndRebalanceAllocationsAreDeterministicAndBounded(t *testing.T) {
 		v1:	accountStatusActive,
 		v2:	accountStatusActive,
 		v3:	accountStatusActive,
-	})
+	}.byIdentity(t))
 	pool := createOfficialLiquidStakingPool(t, &k, "official-alloc")
 	_, err := k.DepositToStakingPool(types.MsgDepositToStakingPool{PoolID: pool.PoolID, WalletAddress: user, Amount: 100 * types.DefaultAETBaseUnits, Height: 2})
 	require.NoError(t, err)
@@ -621,7 +638,7 @@ func TestInjectAndRebalanceAllocationsAreDeterministicAndBounded(t *testing.T) {
 
 func TestStakeReputationClaimTouchesOnlyShareKey(t *testing.T) {
 	user := aePoolAddress(t, "50")
-	k := NewKeeperWithAccountStatus(accountStatusFixture{user: accountStatusActive})
+	k := NewKeeperWithAccountStatus(accountStatusFixture{user: accountStatusActive}.byIdentity(t))
 	pool := createOfficialLiquidStakingPool(t, &k, "official-reputation")
 	_, err := k.DepositToStakingPool(types.MsgDepositToStakingPool{PoolID: pool.PoolID, WalletAddress: user, Amount: types.DefaultMinPoolDeposit, Height: 2})
 	require.NoError(t, err)
@@ -637,13 +654,13 @@ func TestStakeReputationClaimTouchesOnlyShareKey(t *testing.T) {
 	}, claim.InternalMetadata.TouchedKeys)
 
 	exported := k.ExportGenesis()
-	imported := NewKeeperWithAccountStatus(accountStatusFixture{user: accountStatusActive})
+	imported := NewKeeperWithAccountStatus(accountStatusFixture{user: accountStatusActive}.byIdentity(t))
 	require.NoError(t, imported.InitGenesis(exported))
 }
 
 func TestStakeReputationNoActiveExposureNoIncrease(t *testing.T) {
 	user := aePoolAddress(t, "51")
-	k := NewKeeperWithAccountStatus(accountStatusFixture{user: accountStatusActive})
+	k := NewKeeperWithAccountStatus(accountStatusFixture{user: accountStatusActive}.byIdentity(t))
 	pool := createOfficialLiquidStakingPool(t, &k, "official-no-exposure")
 	_, err := k.DepositToStakingPool(types.MsgDepositToStakingPool{PoolID: pool.PoolID, WalletAddress: user, Amount: types.DefaultMinPoolDeposit, Height: 2})
 	require.NoError(t, err)

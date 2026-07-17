@@ -112,11 +112,13 @@ func TestMsgServiceDepositAndQuerySurface(t *testing.T) {
 	k := keeper.NewKeeper()
 	msgRouter, _ := registerModuleServices(t, &k)
 	pool := createServiceOfficialPool(t, &k)
-	// The msg server records share ownership under the account's normalized v2
-	// identity, so the deposit is made with the caller's PLAIN address and the
-	// share is queried back by that identity's raw form.
-	user := aeFromRawForServiceTest(t, serviceRawAddress("22"))
-	identityRaw := serviceIdentityRaw(t, user)
+	// The msg server records share ownership under the caller's own PLAIN
+	// address -- the one that signs, holds the balance and funds the deposit --
+	// so the share queries back by that same address's raw form. It used to be
+	// recorded under the account's derived v2 identity instead, which is what
+	// split the money address from the ledger key.
+	userRaw := serviceRawAddress("22")
+	user := aeFromRawForServiceTest(t, userRaw)
 
 	handler := msgRouter.Handler(&types.MsgDepositToStakingPool{})
 	require.NotNil(t, handler)
@@ -129,7 +131,7 @@ func TestMsgServiceDepositAndQuerySurface(t *testing.T) {
 	require.NoError(t, err)
 
 	query := keeper.NewQueryServerImpl(&k)
-	share, err := query.PoolShare(context.Background(), &types.QueryPoolShareRequest{PoolID: pool.PoolID, Delegator: identityRaw})
+	share, err := query.PoolShare(context.Background(), &types.QueryPoolShareRequest{PoolID: pool.PoolID, Delegator: userRaw})
 	require.NoError(t, err)
 	require.Equal(t, types.DefaultMinPoolDeposit, share.Share.Shares)
 
@@ -141,7 +143,7 @@ func TestMsgServiceDepositAndQuerySurface(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, poolsRes.Pools, 1)
 
-	delegatorRes, err := query.PoolDelegator(context.Background(), &types.QueryPoolDelegatorRequest{PoolID: pool.PoolID, Delegator: identityRaw})
+	delegatorRes, err := query.PoolDelegator(context.Background(), &types.QueryPoolDelegatorRequest{PoolID: pool.PoolID, Delegator: userRaw})
 	require.NoError(t, err)
 	require.Equal(t, types.DefaultMinPoolDeposit, delegatorRes.Delegator.Shares)
 
@@ -272,17 +274,4 @@ func aeFromRawForServiceTest(t *testing.T, raw string) string {
 	user, err := addressing.FormatUserFriendly(bz)
 	require.NoError(t, err)
 	return user
-}
-
-// serviceIdentityRaw mirrors the msg server's plain->v2 address normalization
-// (keeper.normalizeAccountIdentity): it returns the raw (ae1…) form of the v2
-// identity a plain user address is recorded under, so queries can find the
-// share written by a msg-server-routed deposit.
-func serviceIdentityRaw(t *testing.T, userAddress string) string {
-	t.Helper()
-	seed, err := addressing.Parse(userAddress)
-	require.NoError(t, err)
-	identity, err := addressing.NormalizeToAccountIdentity(seed)
-	require.NoError(t, err)
-	return addressing.Format(identity)
 }

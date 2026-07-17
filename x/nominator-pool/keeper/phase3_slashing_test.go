@@ -93,7 +93,7 @@ func TestPhase34SlashedStateExportImportAndLegacyMigrationCannotRecoverStake(t *
 	k := NewPersistentKeeper(service)
 	user := aePoolAddress(t, "b1")
 	validator := aePoolAddress(t, "b2")
-	k.accountStatusReader = accountStatusFixture{user: accountStatusActive, validator: accountStatusActive}
+	k.accountStatusReader = accountStatusFixture{user: accountStatusActive, validator: accountStatusActive}.byIdentity(t)
 	require.NoError(t, k.InitGenesisState(ctx, DefaultGenesis()))
 	pool := createOfficialLiquidStakingPool(t, &k, "phase34-persist")
 	require.NoError(t, phase34RegisterAndAllocate(t, &k, pool, user, validator, 2*types.DefaultMinPoolDeposit))
@@ -113,7 +113,7 @@ func TestPhase34SlashedStateExportImportAndLegacyMigrationCannotRecoverStake(t *
 	require.NotEqual(t, uint64(2*types.DefaultMinPoolDeposit), slashedTotal)
 
 	imported := NewPersistentKeeper(kvtest.NewStoreService())
-	imported.accountStatusReader = accountStatusFixture{user: accountStatusActive, validator: accountStatusActive}
+	imported.accountStatusReader = accountStatusFixture{user: accountStatusActive, validator: accountStatusActive}.byIdentity(t)
 	require.NoError(t, imported.InitGenesisState(ctx, slashedExport))
 	roundTrip, err := imported.ExportGenesisState(ctx)
 	require.NoError(t, err)
@@ -165,7 +165,7 @@ func phase34PoolWithValidatorAllocation(t *testing.T, poolID string, validatorHe
 	t.Helper()
 	user := aePoolAddress(t, "a0")
 	validator := aePoolAddress(t, validatorHex)
-	k := NewKeeperWithAccountStatus(accountStatusFixture{user: accountStatusActive, validator: accountStatusActive})
+	k := NewKeeperWithAccountStatus(accountStatusFixture{user: accountStatusActive, validator: accountStatusActive}.byIdentity(t))
 	pool := createOfficialLiquidStakingPool(t, &k, poolID)
 	require.NoError(t, phase34RegisterAndAllocate(t, &k, pool, user, validator, amount))
 	return k, pool, validator

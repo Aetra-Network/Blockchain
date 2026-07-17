@@ -132,20 +132,21 @@ func TestPoSOfficialPoolDepositPathWorksWhileDirectDelegationDisabled(t *testing
 	require.NoError(t, err)
 
 	// The deposit is routed through the msg server with the caller's PLAIN
-	// address; share ownership is recorded under the account's normalized v2
-	// identity, so the share is queried by that identity's raw form.
+	// address, and share ownership is recorded under that same address, so the
+	// share is queried by its raw form.
 	//
-	// That same normalization decides whose coins are custodied: msgServer.
-	// DepositToStakingPool rewrites wallet_address to the v2 identity before
-	// the keeper runs, and the identity is the address a native account is
-	// actually activated under and holds its balance at (see
-	// addressing.NormalizeToAccountIdentity and nativeAccountActivateViaRoute).
-	// So the identity -- not the plain address -- is the balance a real deposit
-	// has to come out of.
+	// That address is also the one whose coins are custodied, because it is the
+	// one that actually holds a balance: an account's v2 identity is a one-way
+	// hash of it, used by native-account purely as the key it files an
+	// activation record under -- nothing ever funds it and no key can spend from
+	// it. This test previously funded the identity and asserted against it,
+	// because msgServer rewrote wallet_address to the identity before the keeper
+	// ran; that made the test agree with a chain on which every real deposit
+	// failed for insufficient funds.
 	const depositAmount = nominatorpooltypes.DefaultMinPoolDeposit
-	user := aeFromRawForPoSTest(t, posRawAddress("22"))
-	identityUser, identityRaw := normalizeToV2AccountIdentity(t, user)
-	depositor, err := addressing.ParseAccAddress(identityUser)
+	userRaw := posRawAddress("22")
+	user := aeFromRawForPoSTest(t, userRaw)
+	depositor, err := addressing.ParseAccAddress(user)
 	require.NoError(t, err)
 	FundTestAddr(t, app, ctx, depositor, sdk.NewCoins(sdk.NewCoin(BondDenom, sdkmath.NewIntFromUint64(4*depositAmount))))
 	balanceBefore := app.BankKeeper.GetBalance(ctx, depositor, BondDenom)
@@ -164,7 +165,7 @@ func TestPoSOfficialPoolDepositPathWorksWhileDirectDelegationDisabled(t *testing
 
 	query, found := app.NominatorPoolKeeper.PoolShare(nominatorpooltypes.QueryPoolShareRequest{
 		PoolID:		pool.PoolID,
-		Delegator:	identityRaw,
+		Delegator:	userRaw,
 	})
 	require.True(t, found)
 	require.Equal(t, nominatorpooltypes.DefaultMinPoolDeposit, query.Share.Shares)

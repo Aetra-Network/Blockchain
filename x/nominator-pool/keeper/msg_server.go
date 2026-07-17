@@ -82,14 +82,15 @@ func (m msgServer) DepositToStakingPool(ctx context.Context, msg *types.MsgDepos
 	if err := m.keeper.loadForBlock(ctx); err != nil {
 		return nil, err
 	}
-	// The wallet signs with (and carries in wallet_address) its PLAIN address;
-	// resolve it to the account's v2 identity before the keeper's activation
-	// check and share bookkeeping. See keeper.normalizeAccountIdentity.
-	identity, err := normalizeAccountIdentity(msg.WalletAddress)
-	if err != nil {
-		return nil, err
-	}
-	msg.WalletAddress = identity
+	// wallet_address stays exactly as the wallet signed it: its PLAIN address.
+	// It is the account that holds the balance, pays the fee, and that
+	// MsgDepositToStakingPoolSigners resolves the signer to, so it is the only
+	// account the deposit can legitimately be collected from. This used to be
+	// rewritten to the account's v2 identity here, which made the keeper debit a
+	// derived address no key controls and nothing funds -- every live deposit
+	// failed with "spendable balance 0naet". The identity is still used for the
+	// activation check, but it is now derived inside ensureActiveWallet at the
+	// single point that needs it, rather than by rewriting the message.
 	msg.Height = defaultHeight(ctx, msg.Height)
 	receipt, err := m.keeper.DepositToStakingPool(*msg)
 	if err != nil {
@@ -112,13 +113,12 @@ func (m msgServer) RequestPoolUnbond(ctx context.Context, msg *types.MsgRequestP
 	if err := m.keeper.loadForBlock(ctx); err != nil {
 		return nil, err
 	}
-	// See DepositToStakingPool: owner_address arrives as the signer's PLAIN
-	// address; resolve it to the account's v2 identity before keeper bookkeeping.
-	identity, err := normalizeAccountIdentity(msg.OwnerAddress)
-	if err != nil {
-		return nil, err
-	}
-	msg.OwnerAddress = identity
+	// See DepositToStakingPool: owner_address stays the signer's PLAIN address.
+	// It keys the delegator's shares (which the deposit wrote under the same
+	// plain address) AND is the account settleWithdrawal pays the unbonded
+	// principal back to. Rewriting it to the v2 identity here paid real coins to
+	// an address no signature can ever spend from -- see ensureActiveWallet for
+	// where the identity is derived instead.
 	msg.Height = defaultHeight(ctx, msg.Height)
 	receipt, err := m.keeper.RequestPoolUnbond(*msg)
 	if err != nil {
@@ -182,21 +182,12 @@ func (m msgServer) ClaimPoolRewards(ctx context.Context, msg *types.MsgClaimPool
 	if err := m.keeper.loadForBlock(ctx); err != nil {
 		return nil, err
 	}
-	// A user claim carries the signer's PLAIN owner_address; resolve it to the
-	// v2 identity. The keeper requires a user claim's authority to equal its
-	// owner, so keep them in lock-step (an empty authority is left for the keeper
-	// to default to the owner). A governance claim (empty owner_address) is left
-	// untouched.
-	if msg.OwnerAddress != "" {
-		identity, err := normalizeAccountIdentity(msg.OwnerAddress)
-		if err != nil {
-			return nil, err
-		}
-		if msg.Authority == msg.OwnerAddress {
-			msg.Authority = identity
-		}
-		msg.OwnerAddress = identity
-	}
+	// A user claim's owner_address stays the signer's PLAIN address: it keys the
+	// delegator's shares and is the account claimRewardCustody pays the reward
+	// to. Rewriting it to the v2 identity sent the reward to an unspendable
+	// derived address, and forced an Authority rewrite in lock-step just to keep
+	// the keeper's "authority must equal owner" check satisfied. Leaving both
+	// plain keeps that check trivially true and needs no lock-step hack.
 	msg.Height = defaultHeight(ctx, msg.Height)
 	receipt, err := m.keeper.ClaimPoolRewardsWithReceipt(*msg)
 	if err != nil {

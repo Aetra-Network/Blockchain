@@ -1401,6 +1401,34 @@ func (k *Keeper) WithdrawPoolStake(msg types.MsgWithdrawPoolStake) (types.PoolWi
 	if msg.Height < withdrawal.CompleteHeight {
 		return types.PoolWithdrawalReceipt{}, errors.New("pool withdrawal cannot release before unbonding period")
 	}
+	// Pay the withdrawal for real before marking it completed. This used to just
+	// flip Status to Completed and save, moving no coins at all -- and
+	// settlePendingWithdrawals (the EndBlocker) only ever settles withdrawals
+	// that are still Pending, so a withdrawal "completed" here was paid by
+	// nobody, ever: the owner's shares were already burned at RequestPoolUnbond
+	// and their principal sat in the pool module account permanently.
+	//
+	// That was unreachable only by accident: msg_server rewrote unbond's
+	// owner_address to the account's v2 identity while this path's owner stayed
+	// plain, so withdrawal.Delegator != rawOwner above always tripped first. Now
+	// that both paths carry the plain address that check passes, which makes
+	// this reachable -- so it has to actually settle.
+	//
+	// Failing when the pool cannot cover it yet is the safe half of the trade:
+	// the tx errors, nothing mutates, the withdrawal stays Pending, and either
+	// the EndBlocker or a later retry settles it once the real x/staking
+	// unbonding matures. Marking it Completed unpaid is the unsafe half -- it
+	// permanently strands the principal by making the EndBlocker skip it.
+	// A no-op when custody isn't wired (see hasCustody), matching the EndBlocker.
+	if k.hasCustody() {
+		paid, err := k.settleWithdrawal(k.genesis.Params.BaseDenom, withdrawal)
+		if err != nil {
+			return types.PoolWithdrawalReceipt{}, err
+		}
+		if !paid {
+			return types.PoolWithdrawalReceipt{}, errors.New("nominator pool withdrawal is not funded yet: the real x/staking unbonding has not completed, so the pool cannot pay it -- retry once it matures, or let the pool's EndBlocker settle it automatically")
+		}
+	}
 	withdrawal.Status = types.WithdrawalStatusCompleted
 	pool.PendingWithdrawals[withdrawalIdx] = withdrawal
 	for entryIdx, entry := range pool.UnbondingQueue {
@@ -2291,10 +2319,18 @@ func (k *Keeper) savePoolOnly(idx int, pool types.NominatorPool) (types.Nominato
 // staking message address fields so standard signer resolution can verify the tx
 // (see types/signing.go) — to the account's canonical v2 identity: the "AE..."
 // form of addressing.DeriveAccountAddress's output, which is the identity
-// native-account records activation under. The msg server resolves the incoming
-// plain address to this identity before the activation check and every
-// share-ownership write, so staking state lives under the account's real on-chain
-// identity while signing stays standard and the v2 derivation stays server-side.
+// native-account records activation under.
+//
+// Its ONLY caller is ensureActiveWallet, and that is deliberate. The derivation
+// is a one-way sha256 (see addressing.deriveV2RawAddress): the identity is a
+// 32-byte address, no pubkey's 20-byte pk.Address() can ever equal it, so no
+// signature can move coins out of it and it can never be inverted back to the
+// plain address. That makes it usable ONLY as a lookup key for the activation
+// check -- never as an account to debit, credit, or key a share by. The msg
+// server used to rewrite wallet_address/owner_address to this identity before
+// calling the keeper; that debited an empty derived address on deposit (every
+// live deposit failed) and would have paid withdrawals and rewards into one
+// permanently.
 //
 // It is idempotent: an address that is already a v2 identity is returned
 // unchanged (NormalizeV2RawAddress passes v2/system-class addresses through), so
@@ -2311,11 +2347,27 @@ func normalizeAccountIdentity(userAddress string) (string, error) {
 	return addressing.FormatUserFriendly(identity)
 }
 
+// ensureActiveWallet gates an action on the signer's account being activated
+// and unfrozen. It takes the caller's PLAIN address -- the one that signed --
+// and derives the account's v2 identity itself, because native-account (the
+// real AccountStatusReader) keys its records by that identity: an activation
+// stores the account under DeriveAccountAddress(pubKey).User, never under the
+// plain address the pubkey hashes to.
+//
+// Deriving here, rather than rewriting the message in msg_server, is what keeps
+// the identity confined to this check. Every other keeper use of the address --
+// the bank debit, the payout recipient, the share/ledger key, the receipt --
+// stays on the plain address, so money and bookkeeping agree and both entry
+// points (msgServer and the direct keeper API) pass the same address in.
 func (k *Keeper) ensureActiveWallet(address string, action string) error {
 	if k.accountStatusReader == nil {
 		return nil
 	}
-	status, found := k.accountStatusReader.AccountStatus(address)
+	identity, err := normalizeAccountIdentity(address)
+	if err != nil {
+		return err
+	}
+	status, found := k.accountStatusReader.AccountStatus(identity)
 	if !found || status == accountStatusInactive {
 		return errors.New(action + " requires active wallet")
 	}
