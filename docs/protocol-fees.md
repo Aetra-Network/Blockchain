@@ -21,13 +21,18 @@ Default v1 params:
 - max block gas: `20,000,000`
 - max block tx count: `5,000`
 - sender rate limit: `25` txs per block, stake-weighted up to `250`
+- **authoritative fee split (`x/fee-collector`): `50%` burned · `35%` validators · `15%` treasury**
 - validator rewards target: `distribution/validator_rewards`
 - community pool target: `protocolpool/community_pool`
-- split: `98%` validator rewards, `2%` community pool
+- secondary validator-share sub-split: `98%` validator rewards, `2%` community pool
 
-The community pool split is synchronized into `x/distribution` as
-`community_tax`, so the accounting policy and actual distribution policy stay
-aligned.
+The **authoritative** distribution of collected fees is the `x/fee-collector`
+split above — 50% burned, 35% to validators, 15% to treasury (`BurnBps 5000`,
+`ValidatorsBps 3500`, `TreasuryBps 1500` in `x/fee-collector/types/genesis.go`).
+The `98% / 2%` figure is a **secondary** layer: it applies only to the validator
+share, synchronized into `x/distribution` as `community_tax`, so validators net
+about `35% × 0.98 ≈ 34.3%` and the community pool gets ~0.7%. Do not read the
+`98/2` as the top-level fee split.
 
 ## Low-Fee Dynamic Formula
 

@@ -24,20 +24,30 @@ Network.
 |----------|-------|
 | Native asset | **AET** (1 AET = 10⁹ naet) |
 | Consensus | CometBFT proof of stake |
-| Chain IDs | Mainnet `18` · Testnet `19` (dev networks use `aetra-local-1`) |
-| Average transfer fee | ~0.5 AET, dynamic and governance-adjustable |
+| Chain IDs | Mainnet `18` · Testnet `-19` (the leading `-` marks a test network; dev/local ids contain `-local-` / `-testnet-`) |
+| Average transfer fee | ~0.4963 AET for a standard transfer — a continuous formula, not a fixed 0.5, and it rises with network load |
 | Smart contracts | AVM (deterministic virtual machine) + Aetralis language (`.atlx`) |
-| Staking | Pool-based — users deposit into pools, never pick validators directly |
-| Addresses | User `AE...` · Raw `4:...` · Protocol `-7:...` |
+| Staking | Pool-based — users deposit into the official liquid-staking pool, never pick validators directly |
+| Execution | Aetra Elastic Zones (AEZ): deterministic zoned execution inside one chain — one consensus, one validator set, all validators run every zone |
+| Addresses | User-facing `AE…` · raw bech32 `ae1…` (the older `4:` / `-7:` string forms have been removed) |
 
 ## Fees
 
-A normal transfer averages **0.5 AET**. The fee is computed
-deterministically from a flat anchor plus per-gas, per-size, and per-message
-components. On top of that average, separate additive parts apply where
-relevant: a storage fee for transactions that grow chain state, a bounded
-premium/discount from the sender's reputation, and a bounded congestion
-surcharge under network load. All rates are governance parameters.
+The fee is **not** a fixed number — it is a continuous function computed
+deterministically in whole naet, so a real fee looks like `0.4963` AET, not a
+round `0.5`. A standard transfer starts from a `0.4` AET anchor plus per-gas,
+per-size, and per-message components (≈0.4963 AET total). On top of that:
+a storage-rent charge for transactions that grow chain state, a bounded
+premium/discount from the sender's reputation, and a congestion surcharge that
+climbs toward a `5` AET ceiling as blocks fill. Collected fees are split
+**50% burned / 35% to validators / 15% to treasury** (the authoritative
+`x/fee-collector` split); validators net ~34.3% after the 2% community tax.
+All rates are governance parameters.
+
+Emission is the sole source of protocol inflation: a governance-pinned annual
+target of **4%** (band 1.5–5%), calibrated so net supply growth is ~3.10% per
+year at ordinary load. Because fees are burned, net growth is
+throughput-dependent — above heavy sustained load the burn can exceed emission.
 
 ## Run a Validator
 
@@ -100,10 +110,26 @@ See the [AVM overview](docs/AVM.md) and the
 
 ## Staking and Accounts
 
-Staking is pool-based: users make an official pool deposit and the protocol
-allocates stake across validators — normal users never select a validator.
+Staking is pool-based: direct user delegation to validators is disabled, so
+users make an official liquid-staking pool deposit and the protocol allocates
+that stake to a real `x/staking` delegation on their behalf — normal users
+never select a validator. Unbonding time is network-dependent (about a week on
+mainnet, short on local/testnet, set at genesis via `--unbonding-time`).
 Accounts, freezing, storage rent, and reputation are described in
 [Native Account, Staking, Reputation, And Rent Model](docs/native-account-staking-reputation.md).
+
+## Elastic Zones (AEZ)
+
+Aetra runs **Aetra Elastic Zones**: deterministic zoned execution inside a
+single chain — one CometBFT consensus, one validator set, one block height, one
+global state root, and every validator executes every zone. It is not sharding:
+there are no separate chains, committees, or cross-shard consensus. Entities map
+to one of 256 buckets, buckets map to zones through a governance-controlled
+routing table, and system entities (validators, staking, governance) are pinned
+to a Core Zone. A deterministic cross-zone message bus carries exactly-once,
+next-block messages between zones. See
+[AEZ architecture](docs/architecture/aez.md). Native `.aet` naming (the Aetra
+Name System) builds on it — see [ANS](docs/architecture/ans.md).
 
 ## Repository Layout
 
@@ -126,7 +152,8 @@ Accounts, freezing, storage rent, and reputation are described in
 | Symbol | AET |
 | Base denom | `naet` (1 AET = 1,000,000,000 naet) |
 | Staking / fee denom | `naet` |
-| Supply | Governance-capped emission with a burn share |
+| Inflation | Emission-only, 4% governance-pinned target (1.5–5% band), ~3.10% net after fee burn |
+| Emission epoch | ~6 hours (1460 epochs/year) |
 
 ## Status and Security
 

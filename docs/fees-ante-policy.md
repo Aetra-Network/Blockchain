@@ -12,7 +12,7 @@ This document defines the prototype fee policy for Aetra.
 - Protocol `min_fee_amount`: `1`
 - Protocol `min_fee_amount` v1 cap: `1000000000000000000`
 - V1 allowed fee denom list size: exactly one denom
-- Fee split params: validator rewards `0.98`, community pool `0.02`
+- Fee split (authoritative, `x/fee-collector`): `50%` burned, `35%` validators, `15%` treasury. The `x/fees` `validator_rewards 0.98 / community_pool 0.02` params are a **secondary** sub-split of the validator share only (synced into `x/distribution` community_tax), not the top-level split.
 
 `naet` is the only accepted fee denom because it is also the base bank, staking, and mint denom. Factory denoms, LP denoms, `testtoken`, and display denom `AET` must not be used for transaction fees in the prototype.
 
@@ -122,7 +122,7 @@ fee denom testtoken not accepted; use naet
 - `min_fee_amount` is bounded to a positive integer no greater than `1000000000000000000`.
 - `MsgUpdateParams` requires the governance module authority and validates params before writing state.
 - Wrong fee denoms return a stable error message without logging keys, mnemonics, env vars, or local paths.
-- This module only enforces fee denom policy. Protocol fee distribution/accounting remains separate future work.
+- This module enforces fee denom and admission policy. Fee distribution IS implemented — in `x/fee-collector` (50% burn / 35% validators / 15% treasury), run every EndBlock — not future work.
 
 ## Required Checks
 
