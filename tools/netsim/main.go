@@ -110,7 +110,7 @@ var (
 	transferGas = flag.Uint64("transfer-gas", 200_000, "tx gas limit for bank transfers")
 	poolGas     = flag.Uint64("pool-gas", 900_000, "tx gas limit for nominator-pool msgs")
 	contractGas = flag.Uint64("contract-gas", 1_000_000, "tx gas limit for x/contracts msgs (AVM needs the max, see docs/api.md:204)")
-	feeOverride = flag.Int64("fee", 0, "flat fee in naet per tx (0 = use the chain's max_fee_amount, which is admissible at any congestion)")
+	feeOverride = flag.Int64("fee", 0, "flat fee in naet per tx (0 = the chain's base_fee_amount, i.e. what an ordinary wallet pays)")
 )
 
 func main() {
@@ -341,9 +341,21 @@ func (d *driver) loadFeeParams() error {
 		return fmt.Errorf("read /l1/fees/v1/params: %w", err)
 	}
 	d.maxTxGas = params.maxTxGas
-	d.fee = params.maxFee
+	// Pay what an ordinary wallet pays: the chain's base fee (0.4 AET), not its
+	// max fee (5 AET).
+	//
+	// Defaulting to max_fee_amount made every tx admissible at any congestion,
+	// which is convenient for a load driver and ruinous for a measurement: the
+	// fee is burned 50/50, so a run reported ~12.5x the real burn and made the
+	// economy look like it destroys its whole supply in weeks. Under congestion
+	// a base-fee tx can be rejected -- that is the real user experience and
+	// belongs in the numbers, not papered over. Use --fee to override.
+	d.fee = params.baseFee
 	if *feeOverride > 0 {
 		d.fee = *feeOverride
+	}
+	if d.fee <= 0 {
+		d.fee = params.maxFee
 	}
 	for name, gas := range map[string]uint64{
 		"--transfer-gas": *transferGas,
