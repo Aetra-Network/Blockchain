@@ -21,9 +21,9 @@ import (
 // stayed green here while failing on the live chain.
 type accountStatusFixture map[string]string
 
-func (f accountStatusFixture) AccountStatus(address string) (string, bool) {
+func (f accountStatusFixture) AccountStatus(_ context.Context, address string) (string, bool, error) {
 	status, found := f[address]
-	return status, found
+	return status, found, nil
 }
 
 // byIdentity re-keys a fixture written in terms of the PLAIN addresses a test's

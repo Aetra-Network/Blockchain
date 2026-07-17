@@ -277,6 +277,76 @@ type State struct {
 	EpochStakingSnapshots		[]EpochStakingSnapshot
 	ValidatorSetSnapshots		[]ValidatorSetSnapshot
 	ValidatorSlashEvents		[]ValidatorSlashEvent
+	// UnbondingCustody tracks the x/staking unbonding entries this module has
+	// in flight, so a pool's arriving principal can be credited to the pool it
+	// belongs to. See PoolUnbondingCustody -- it exists because every pool
+	// shares ONE bank account and ONE x/staking delegator identity.
+	UnbondingCustody		[]PoolUnbondingCustody
+}
+
+// PoolUnbondingCustody is one x/staking unbonding entry the module has in
+// flight, and which pools' money is inside it.
+//
+// # Why this exists
+//
+// Every pool delegates from, and unbonds to, the SAME address:
+// keeper.PoolModuleAddress() takes no pool argument. So x/staking holds one
+// UnbondingDelegation per (module account, validator) for the whole module, and
+// CompleteUnbonding credits a lump sum into one shared bank account with no
+// per-pool label. Settlement used to read that shared balance
+// (bankKeeper.SpendableCoins(PoolModuleAddress())) and treat it as the settling
+// pool's own money, so pool A's cohort could be paid out of pool B's arrived
+// principal -- and, because the EndBlocker walks pools in PoolID order, the
+// lexicographically smallest PoolID was permanently first in line for a balance
+// it had not earned. This record is what makes "whose money is this" answerable.
+//
+// # Why (Validator, CreationHeight) is the right key
+//
+// It is exactly x/staking's own merge key. UnbondingDelegation.AddEntry sums a
+// new unbond into an existing entry when both creationHeight AND completionTime
+// match; two unbonds in the same block against the same validator share a block
+// time, so they merge into ONE entry with a summed Balance. Two pools unbonding
+// from the same validator in the same block are therefore indistinguishable
+// INSIDE x/staking -- no per-pool query could ever separate them. Keying this
+// record the same way means one record models exactly one x/staking entry, and
+// Contributions carries the split x/staking threw away.
+//
+// # Why LastBalance is exact, not an estimate
+//
+// The pool cannot observe an arrival: x/staking's EndBlocker completes the
+// unbonding and credits the account one module BEFORE the pool's EndBlocker runs
+// (app/wiring/aetracore/order.go). But it can observe entry.Balance while the
+// entry still exists, and that field is already post-slash --
+// SlashUnbondingDelegation writes the slashed figure straight into it.
+//
+// Within a single block, slashing and completion are mutually exclusive:
+// SlashUnbondingDelegation SKIPS an entry that IsMature(now), while
+// CompleteUnbonding requires exactly IsMature(ctxTime). Both run against the
+// same block time. So an entry completed at EndBlock N was not slashed at
+// BeginBlock N, and the snapshot the pool took at EndBlock N-1 is precisely what
+// x/staking paid. Balance can only ever change while the entry is still there to
+// be seen.
+//
+// Observed distinguishes "we have seen this entry at least once" from "it came
+// and went before we ever looked" -- possible only when UnbondingTime is 0 (some
+// test configs), where crediting the full contribution is likewise exact,
+// because a zero unbonding window leaves no room for an in-flight slash.
+type PoolUnbondingCustody struct {
+	Validator	string
+	CreationHeight	uint64
+	InitialTotal	uint64
+	LastBalance	uint64
+	Observed	bool
+	Contributions	[]PoolUnbondingContribution
+}
+
+// PoolUnbondingContribution is one pool's share of a merged unbonding entry,
+// recorded at unbond time when the split is still known. A slash applies
+// uniformly to the whole entry, so splitting the delivered balance by
+// contribution-to-InitialTotal is the true allocation, not an approximation.
+type PoolUnbondingContribution struct {
+	PoolID	string
+	Amount	uint64
 }
 
 type NominatorPool struct {
@@ -305,6 +375,31 @@ type NominatorPool struct {
 	ValidatorAllocations		[]ValidatorRewardAllocation
 	Status				string
 	UnbondingQueue			[]UnbondingEntry
+	// Entitlement is this pool's claim, in naet, on the module's single shared
+	// bank account -- the only money settlement is allowed to spend for this
+	// pool.
+	//
+	// It exists because keeper.PoolModuleAddress() is shared by every pool, so
+	// the account's balance is not any one pool's money. Settlement used to read
+	// that balance directly and pay a cohort out of whatever was there, which
+	// let one pool spend another's arrived principal. available is now bounded by
+	// this field instead, so a cross-pool spend is not merely rejected but
+	// unrepresentable.
+	//
+	// It is credited only by reconcileUnbondingCustody, from the exact balance
+	// x/staking delivered for THIS pool's own unbonding entries (see
+	// PoolUnbondingCustody), and by claimed reward income attributed per
+	// validator. It is debited only by a payout of the same amount to that
+	// pool's own recipient.
+	//
+	// The invariant is sum(Entitlement) <= spendable balance, deliberately NOT
+	// equality: the pool address is unblocked in
+	// app/accounts/module_accounts.go (required, so staking payouts can land),
+	// so anyone may bank-send to it at any time, and MulDivUint64 truncation
+	// leaves dust. An equality assert in consensus would hand every wallet a
+	// chain-halt button for the price of 1naet. The surplus is simply
+	// unattributed and no pool can spend it.
+	Entitlement			uint64
 }
 
 type PendingDeposit struct {
@@ -1206,6 +1301,70 @@ func (p Params) ComputeValidatorScoreV1(candidate ValidatorPolicyCandidate) (Val
 	return score, nil
 }
 
+// validateUnbondingCustody checks the in-flight unbonding records are
+// well-formed. poolIDs is the set of pools that exist, so a record cannot name
+// a pool that is gone -- an entitlement credited to a missing pool would be
+// money nothing could ever pay out.
+//
+// InitialTotal must equal the sum of the contributions exactly: it is the
+// denominator every pro-rata credit divides by (see
+// keeper.reconcileUnbondingCustody), so a drift between the two silently
+// mis-splits real principal between pools.
+func (s State) validateUnbondingCustody(poolIDs map[string]struct{}) error {
+	seen := map[string]struct{}{}
+	for _, record := range s.UnbondingCustody {
+		// Deliberately only a non-empty check, not an address-format check:
+		// this field is a verbatim copy of the pool's own ValidatorTarget, so
+		// validating it to a stricter rule than NominatorPool.Validate applies
+		// to that field would reject state the pool itself accepts -- and this
+		// runs on every save, so it would halt the EndBlocker rather than
+		// reject a message.
+		if strings.TrimSpace(record.Validator) == "" {
+			return errors.New("nominator pool unbonding custody record requires a validator")
+		}
+		key := fmt.Sprintf("%s/%d", record.Validator, record.CreationHeight)
+		if _, found := seen[key]; found {
+			return fmt.Errorf("duplicate nominator pool unbonding custody record %s", key)
+		}
+		seen[key] = struct{}{}
+		if len(record.Contributions) == 0 {
+			return fmt.Errorf("nominator pool unbonding custody record %s has no contributions", key)
+		}
+		total := uint64(0)
+		pools := map[string]struct{}{}
+		for _, contribution := range record.Contributions {
+			if strings.TrimSpace(contribution.PoolID) == "" {
+				return fmt.Errorf("nominator pool unbonding custody record %s has an empty pool id", key)
+			}
+			if _, found := poolIDs[contribution.PoolID]; !found {
+				return fmt.Errorf("nominator pool unbonding custody record %s names unknown pool %s", key, contribution.PoolID)
+			}
+			if _, found := pools[contribution.PoolID]; found {
+				return fmt.Errorf("nominator pool unbonding custody record %s names pool %s twice", key, contribution.PoolID)
+			}
+			pools[contribution.PoolID] = struct{}{}
+			if contribution.Amount == 0 {
+				return fmt.Errorf("nominator pool unbonding custody record %s has a zero contribution for pool %s", key, contribution.PoolID)
+			}
+			sum, err := CheckedAddUint64(total, contribution.Amount)
+			if err != nil {
+				return err
+			}
+			total = sum
+		}
+		if total != record.InitialTotal {
+			return fmt.Errorf("nominator pool unbonding custody record %s initial total %d does not match its contributions %d", key, record.InitialTotal, total)
+		}
+		if record.LastBalance > record.InitialTotal {
+			return fmt.Errorf("nominator pool unbonding custody record %s observed balance %d exceeds the %d that was unbonded", key, record.LastBalance, record.InitialTotal)
+		}
+		if !record.Observed && record.LastBalance != 0 {
+			return fmt.Errorf("nominator pool unbonding custody record %s carries a balance it never observed", key)
+		}
+	}
+	return nil
+}
+
 func (s State) Validate(params Params) error {
 	if err := params.Validate(); err != nil {
 		return err
@@ -1222,6 +1381,9 @@ func (s State) Validate(params Params) error {
 			return fmt.Errorf("duplicate nominator pool id %s", pool.PoolID)
 		}
 		ids[pool.PoolID] = struct{}{}
+	}
+	if err := s.validateUnbondingCustody(ids); err != nil {
+		return err
 	}
 	validators := map[string]Validator{}
 	for _, validator := range s.Validators {
@@ -1638,7 +1800,28 @@ func (s State) Normalize(params Params) State {
 	s.RewardClaims = SortRewardClaims(s.RewardClaims)
 	s.EpochStakingSnapshots = SortEpochStakingSnapshots(s.EpochStakingSnapshots)
 	s.ValidatorSetSnapshots = SortValidatorSetSnapshots(s.ValidatorSetSnapshots)
+	s.UnbondingCustody = SortUnbondingCustody(s.UnbondingCustody)
 	return s
+}
+
+// SortUnbondingCustody orders the in-flight unbonding records, and each
+// record's contributions, by their identity. This runs in consensus and the
+// records are built by iterating pools, so an unsorted slice would let the
+// serialized bytes -- and therefore the app hash -- depend on iteration order.
+func SortUnbondingCustody(values []PoolUnbondingCustody) []PoolUnbondingCustody {
+	out := append([]PoolUnbondingCustody(nil), values...)
+	for idx := range out {
+		contributions := append([]PoolUnbondingContribution(nil), out[idx].Contributions...)
+		sort.SliceStable(contributions, func(i, j int) bool { return contributions[i].PoolID < contributions[j].PoolID })
+		out[idx].Contributions = contributions
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Validator != out[j].Validator {
+			return out[i].Validator < out[j].Validator
+		}
+		return out[i].CreationHeight < out[j].CreationHeight
+	})
+	return out
 }
 
 func SortAllocations(values []PoolAllocation) []PoolAllocation {

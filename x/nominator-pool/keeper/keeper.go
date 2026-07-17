@@ -90,8 +90,23 @@ const (
 	accountStatusFrozen   = "frozen"
 )
 
+// AccountStatusReader is the narrow x/native-account interface the pool's
+// activation gate needs. The signature is not a matter of taste: it is
+// x/native-account's real method, verbatim.
+//
+// It used to read AccountStatus(string) (string, bool), which NO type in this
+// binary implements -- native-account's keeper has always been
+// AccountStatus(ctx, string) (string, bool, error) (it opens a KV store, so it
+// needs the context and can fail). The two could never be connected, so
+// app/keepers.go wired bank/staking/distribution and silently left this reader
+// nil, and ensureActiveWallet's nil check turned the whole gate into dead code:
+// every frozen or never-activated wallet could deposit, unbond and claim. The
+// nil check is retained ONLY for the ledger-only keepers unit tests construct
+// (see hasCustody for the same pattern), and app/nominator_pool_activation_gate_test.go
+// now asserts the real app wires a non-nil reader so that path cannot silently
+// return.
 type AccountStatusReader interface {
-	AccountStatus(address string) (string, bool)
+	AccountStatus(ctx context.Context, address string) (string, bool, error)
 }
 
 type poolIndexEntry struct {
@@ -189,6 +204,16 @@ func NewKeeperWithAccountStatus(reader AccountStatusReader) Keeper {
 func (k Keeper) WithAccountStatusReader(reader AccountStatusReader) Keeper {
 	k.accountStatusReader = reader
 	return k
+}
+
+// HasAccountStatusReader reports whether the activation gate is actually
+// connected to anything. ensureActiveWallet returns nil when it is not, so a
+// false here means every gated path silently accepts every wallet -- which is
+// precisely the state app/keepers.go shipped in. It exists so that the wiring
+// can be asserted directly rather than only inferred from behaviour; see
+// app/nominator_pool_activation_gate_test.go.
+func (k Keeper) HasAccountStatusReader() bool {
+	return k.accountStatusReader != nil
 }
 
 // WithBankKeeper wires real bank custody (#2/SA2-N01): without it, deposit
@@ -1333,6 +1358,30 @@ func (k *Keeper) requestPoolWithdrawalLocked(msg types.MsgRequestPoolWithdrawal)
 	})
 	next := cloneGenesis(k.genesis)
 	next.State.Pools[idx] = pool
+	// Record whose money just went into x/staking's unbonding entry, while the
+	// split is still known. Once CompleteUnbonding pays it into the shared
+	// module account it is an unlabelled lump sum and no query can take it
+	// apart again -- see types.PoolUnbondingCustody.
+	if k.hasCustody() {
+		// Snapshot the entry's balance NOW, in the same message that created
+		// it, so the record is born already observed.
+		//
+		// Without this a record could be credited having never been looked at,
+		// and the only number available then is InitialTotal -- the PRE-slash
+		// figure. Crediting that after a slash hands the pool more than
+		// arrived, and the shortfall comes out of whatever else is in the
+		// shared account: the very cross-pool theft this record exists to
+		// prevent, merely relocated. Reading it back rather than assuming
+		// `amount` is deliberate too -- x/staking MERGES same-block unbonds at
+		// one validator into a single entry, so the entry's balance is the
+		// merged total, not this pool's slice of it.
+		observed, err := k.observedUnbondingBalance(pool.ValidatorTarget, unbondHeight)
+		if err != nil {
+			return types.PendingWithdrawal{}, err
+		}
+		next.State.UnbondingCustody = trackUnbondingContribution(
+			next.State.UnbondingCustody, pool.ValidatorTarget, unbondHeight, pool.PoolID, amount, observed)
+	}
 	next.State = next.State.Normalize(next.Params)
 	if err := next.Validate(); err != nil {
 		return types.PendingWithdrawal{}, err
@@ -1461,8 +1510,22 @@ func (k *Keeper) WithdrawPoolStake(msg types.MsgWithdrawPoolStake) (types.PoolWi
 	// the shortfall to whoever exits last instead of sharing it pro-rata. So
 	// this settles the whole matured cohort and then reports what THIS
 	// withdrawal actually got.
+	next := cloneGenesis(k.genesis)
 	if k.hasCustody() {
-		settled, _, err := k.settlePoolWithdrawals(k.genesis.Params.BaseDenom, pool, msg.Height)
+		// Credit before spending, exactly as the EndBlocker does: settlement
+		// can only pay out of this pool's entitlement now, so an on-demand
+		// settle that skipped reconciliation would find an entitlement missing
+		// its own just-arrived principal and refuse a withdrawal it can
+		// actually cover. Reconciling against next.State (not the pool copy
+		// below) is what lets the credit reach the pool this call then settles.
+		if _, err := k.reconcileUnbondingCustody(&next.State); err != nil {
+			return types.PoolWithdrawalReceipt{}, err
+		}
+		pool = next.State.Pools[idx]
+		if _, current, ok := findWithdrawal(pool.PendingWithdrawals, msg.RequestID); ok {
+			withdrawal = current
+		}
+		settled, _, err := k.settlePoolWithdrawals(next.Params.BaseDenom, pool, msg.Height)
 		if err != nil {
 			return types.PoolWithdrawalReceipt{}, err
 		}
@@ -1486,7 +1549,6 @@ func (k *Keeper) WithdrawPoolStake(msg types.MsgWithdrawPoolStake) (types.PoolWi
 			}
 		}
 	}
-	next := cloneGenesis(k.genesis)
 	next.State.Pools[idx] = pool
 	next.State = next.State.Normalize(next.Params)
 	if err := next.Validate(); err != nil {
@@ -1741,8 +1803,18 @@ func (k *Keeper) claimPoolRewardsLocked(msg types.MsgClaimPoolRewards) (uint64, 
 	// so an over-stated reward would be paid out of the next depositor's
 	// principal. Deriving the ledger number from real accrual is the actual fix
 	// and a separate change.
+	//
+	// D2: the payout is also bounded by, and debited from, THIS pool's
+	// entitlement. It used to be bounded by SpendableCoins of the shared module
+	// account, which is every pool's money plus every depositor's un-settled
+	// principal -- so an over-stated reward on one pool was payable out of
+	// another pool's balance, and a reward claimed in the window between
+	// CompleteUnbonding and a cohort's settlement was payable out of that
+	// cohort's principal. Both are now unrepresentable for the same reason the
+	// withdrawal path's is: the shared balance is not an input any more.
+	next := cloneGenesis(k.genesis)
 	if reward > 0 {
-		if err := k.claimRewardCustody(delegator, pool.ValidatorTarget, reward); err != nil {
+		if err := k.claimRewardCustody(&next.State, idx, delegator, reward); err != nil {
 			return 0, err
 		}
 	}
@@ -1751,7 +1823,6 @@ func (k *Keeper) claimPoolRewardsLocked(msg types.MsgClaimPoolRewards) (uint64, 
 	if err := share.Validate(); err != nil {
 		return 0, err
 	}
-	next := cloneGenesis(k.genesis)
 	next.State.Pools[idx].DelegatorShares[delegatorIdx] = share
 	if err := k.saveGenesis(next); err != nil {
 		return 0, err
@@ -2422,7 +2493,19 @@ func (k *Keeper) ensureActiveWallet(address string, action string) error {
 	if err != nil {
 		return err
 	}
-	status, found := k.accountStatusReader.AccountStatus(identity)
+	// loadForBlock sets runtimeCtx at the top of every consensus entry point,
+	// so on any live path it is the block context by the time we get here. A
+	// nil means the keeper is being driven directly by a unit test that never
+	// went through a block; those wire a fixture reader that ignores the
+	// context. Same fallback, and same reason, as saveGenesis' callers below.
+	statusCtx := k.runtimeCtx
+	if statusCtx == nil {
+		statusCtx = context.Background()
+	}
+	status, found, err := k.accountStatusReader.AccountStatus(statusCtx, identity)
+	if err != nil {
+		return fmt.Errorf("reading account status for %s: %w", action, err)
+	}
 	if !found || status == accountStatusInactive {
 		return errors.New(action + " requires active wallet")
 	}
@@ -2878,7 +2961,18 @@ func (k *Keeper) EndBlocker(ctx context.Context) error {
 	}
 	height := uint64(sdk.UnwrapSDKContext(ctx).BlockHeight())
 	next := cloneGenesis(k.genesis)
-	changed := false
+	// Credit first, spend second, and in that order for a reason: x/staking's
+	// EndBlocker runs before this one (app/wiring/aetracore/order.go), so any
+	// principal that matured this block is already sitting in the shared
+	// account, unlabelled. reconcileUnbondingCustody is what attributes it to
+	// the pool that unbonded it; settlement below can then only spend what this
+	// step credited. Reconciling after settling would make every cohort wait an
+	// extra block for its own money -- and reconciling not at all would leave
+	// every entitlement at zero and nothing would ever be paid.
+	changed, err := k.reconcileUnbondingCustody(&next.State)
+	if err != nil {
+		return err
+	}
 	for poolIdx, pool := range next.State.Pools {
 		settled, poolChanged, err := k.settlePoolWithdrawals(next.Params.BaseDenom, pool, height)
 		if err != nil {
@@ -2899,17 +2993,91 @@ func (k *Keeper) EndBlocker(ctx context.Context) error {
 	return k.saveGenesis(next)
 }
 
-// claimRewardCustody opportunistically pulls the pool's real, actually
-// accrued x/staking distribution rewards into the pool module account
-// (ignoring "nothing to withdraw" -- the pool's ledger-computed reward may be
-// smaller than, larger than, or claimed on a different cadence than what
-// x/distribution has accrued; reconciling SyncPoolRewards' external
-// injection with real distribution income exactly is a deliberate follow-up,
-// not attempted here), then pays the claimant their ledger-computed reward
-// ONLY if the pool account actually has the funds -- erroring cleanly rather
-// than silently paying a partial amount if it doesn't. A no-op when custody
-// isn't wired (see hasCustody). Assumes k.mu is already held by the caller.
-func (k *Keeper) claimRewardCustody(rawDelegator, rawValidatorTarget string, rewardNaet uint64) error {
+// creditRewardIncome splits reward income just withdrawn for one validator
+// across the pools that delegate to it, pro rata by TotalBondedStake, and adds
+// each pool's share to its Entitlement.
+//
+// One WithdrawDelegationRewards call collects the income of every pool
+// targeting that validator, because they all delegate as the same account.
+// Splitting by bonded stake is the closest attribution available without a
+// per-pool delegation; see claimRewardCustody for why it is bounded rather than
+// exact, and why "bounded" is the property that keeps one pool out of another's
+// money. Truncation dust stays unattributed, preserving
+// sum(Entitlement) <= balance.
+//
+// When no pool has any bonded stake at the validator there is nothing to divide
+// by; the income is left unattributed rather than guessed at.
+func creditRewardIncome(state *types.State, rawValidatorTarget string, income uint64) error {
+	totalStake := uint64(0)
+	for _, pool := range state.Pools {
+		if pool.ValidatorTarget != rawValidatorTarget {
+			continue
+		}
+		sum, err := types.CheckedAddUint64(totalStake, pool.TotalBondedStake)
+		if err != nil {
+			return err
+		}
+		totalStake = sum
+	}
+	if totalStake == 0 {
+		return nil
+	}
+	for idx, pool := range state.Pools {
+		if pool.ValidatorTarget != rawValidatorTarget || pool.TotalBondedStake == 0 {
+			continue
+		}
+		share, err := types.MulDivUint64(income, pool.TotalBondedStake, totalStake)
+		if err != nil {
+			return err
+		}
+		if share == 0 {
+			continue
+		}
+		total, err := types.CheckedAddUint64(pool.Entitlement, share)
+		if err != nil {
+			return err
+		}
+		pool.Entitlement = total
+		state.Pools[idx] = pool
+	}
+	return nil
+}
+
+// claimRewardCustody pulls the pool's real accrued x/staking distribution
+// rewards into the shared module account, attributes them to the pools that
+// earned them, and then pays the claimant their ledger-computed reward out of
+// THIS pool's entitlement -- erroring cleanly rather than paying a partial
+// amount, or somebody else's money, if that entitlement is short. A no-op when
+// custody isn't wired (see hasCustody). Assumes k.mu is held by the caller and
+// mutates state.Pools[poolIdx].
+//
+// D2: the payout used to be bounded by SpendableCoins(PoolModuleAddress()) --
+// the whole shared account. That number is the sum of every pool's income, every
+// pool's un-settled principal, auto-withdrawn rewards from x/staking's
+// BeforeDelegationSharesModified hook, and anything anyone bank-sent to the
+// address (it is deliberately unblocked, see app/accounts/module_accounts.go).
+// A single scalar cannot tell those apart, so a reward claim could be paid out
+// of another pool's principal, or out of a depositor's own matured-but-unsettled
+// principal, and the loss surfaced later as a short settlement for somebody else.
+// Bounding by pool.Entitlement removes the shared balance from the expression.
+//
+// # Attribution is bounded, not exact -- and this is the honest statement of it
+//
+// WithdrawDelegationRewards(PoolModuleAddress(), V) withdraws the rewards of the
+// WHOLE delegation at V, which is every pool targeting V at once; x/staking has
+// no pool dimension. The withdrawn total is split across those pools pro rata by
+// TotalBondedStake, which is not exact -- x/distribution accrues per share per
+// block, so a pool that delegated later is slightly over-credited relative to a
+// pool that has been bonded longer. It is bounded in the way that matters: the
+// sum credited never exceeds the income actually withdrawn, so no pool can be
+// credited with another pool's money, only with a slightly wrong slice of the
+// income of the validator they genuinely share.
+//
+// The exact fix is deriving RewardIndex from real accrual instead of
+// SyncPoolRewards' external injection -- the same follow-up the ledger-vs-income
+// note on claimPoolRewardsLocked already names. Until then this bounds the
+// error; it does not claim to eliminate it.
+func (k *Keeper) claimRewardCustody(state *types.State, poolIdx int, rawDelegator string, rewardNaet uint64) error {
 	if !k.hasCustody() {
 		return nil
 	}
@@ -2917,21 +3085,43 @@ func (k *Keeper) claimRewardCustody(rawDelegator, rawValidatorTarget string, rew
 	if err != nil {
 		return err
 	}
+	rawValidatorTarget := state.Pools[poolIdx].ValidatorTarget
 	if strings.TrimSpace(rawValidatorTarget) != "" {
 		if validatorAddr, err := parsePoolAccAddress("nominator pool validator target", rawValidatorTarget); err == nil {
 			valAddr := sdk.ValAddress(validatorAddr.Bytes())
-			// Best-effort: a pool with no live delegation yet, or with
-			// nothing currently accrued, returns an error here that we
-			// deliberately ignore -- the payout below still proceeds against
-			// whatever the pool account already holds.
-			_, _ = k.distrKeeper.WithdrawDelegationRewards(k.runtimeCtx, PoolModuleAddress(), valAddr)
+			// Best-effort: a pool with no live delegation yet, or nothing
+			// currently accrued, errors here and we carry on against whatever
+			// entitlement the pool already has. The RETURN VALUE is the one
+			// piece of ground truth x/distribution gives us about what just
+			// arrived and for whom -- it used to be discarded.
+			coins, err := k.distrKeeper.WithdrawDelegationRewards(k.runtimeCtx, PoolModuleAddress(), valAddr)
+			if err == nil {
+				income := coins.AmountOf(k.genesis.Params.BaseDenom)
+				if income.IsPositive() && income.IsUint64() {
+					// Capped by the unattributed surplus for the same reason
+					// reconcileUnbondingCustody caps its credits: whatever
+					// this reports, sum(Entitlement) must not be able to
+					// exceed the balance that actually backs it.
+					amount := income.Uint64()
+					if surplus := k.unattributedSurplus(state); amount > surplus {
+						amount = surplus
+					}
+					if err := creditRewardIncome(state, rawValidatorTarget, amount); err != nil {
+						return err
+					}
+				}
+			}
 		}
 	}
-	coins := sdk.NewCoins(sdk.NewInt64Coin(k.genesis.Params.BaseDenom, int64(rewardNaet)))
-	spendable := k.bankKeeper.SpendableCoins(k.runtimeCtx, PoolModuleAddress())
-	if !spendable.IsAllGTE(coins) {
-		return fmt.Errorf("nominator pool account does not yet hold the claimed reward (has %s, needs %s) -- retry once real distribution income catches up", spendable.String(), coins.String())
+	pool := state.Pools[poolIdx]
+	if rewardNaet > pool.Entitlement {
+		return fmt.Errorf(
+			"nominator pool %s does not yet hold the claimed reward (entitled to %d%s, needs %d%s) -- retry once real distribution income catches up",
+			pool.PoolID, pool.Entitlement, k.genesis.Params.BaseDenom, rewardNaet, k.genesis.Params.BaseDenom)
 	}
+	pool.Entitlement -= rewardNaet
+	state.Pools[poolIdx] = pool
+	coins := sdk.NewCoins(sdk.NewInt64Coin(k.genesis.Params.BaseDenom, int64(rewardNaet)))
 	if err := k.bankKeeper.SendCoinsFromModuleToAccount(k.runtimeCtx, types.ModuleName, recipient, coins); err != nil {
 		return fmt.Errorf("paying out nominator pool reward: %w", err)
 	}
@@ -3003,6 +3193,276 @@ func (k *Keeper) hasUnbondingInFlight(rawValidatorTarget string, unbondHeight ui
 		}
 	}
 	return false, nil
+}
+
+// trackUnbondingContribution adds amount to the (validator, creationHeight)
+// record for poolID, creating the record if this is the first pool to unbond
+// from that validator in that block.
+//
+// Merging into an existing record rather than appending a second one mirrors
+// x/staking exactly: UnbondingDelegation.AddEntry sums two unbonds that share a
+// creationHeight and completionTime into ONE entry, and two unbonds in the same
+// block share both. One record therefore models one x/staking entry, which is
+// what makes the pro-rata split at reconcile time correspond to something real.
+func trackUnbondingContribution(records []types.PoolUnbondingCustody, validator string, creationHeight uint64, poolID string, amount, observed uint64) []types.PoolUnbondingCustody {
+	if amount == 0 {
+		return records
+	}
+	for idx := range records {
+		if records[idx].Validator != validator || records[idx].CreationHeight != creationHeight {
+			continue
+		}
+		records[idx].InitialTotal += amount
+		records[idx].LastBalance = observed
+		records[idx].Observed = true
+		for cIdx := range records[idx].Contributions {
+			if records[idx].Contributions[cIdx].PoolID == poolID {
+				records[idx].Contributions[cIdx].Amount += amount
+				return records
+			}
+		}
+		records[idx].Contributions = append(records[idx].Contributions,
+			types.PoolUnbondingContribution{PoolID: poolID, Amount: amount})
+		return records
+	}
+	return append(records, types.PoolUnbondingCustody{
+		Validator:	validator,
+		CreationHeight:	creationHeight,
+		InitialTotal:	amount,
+		LastBalance:	observed,
+		Observed:	true,
+		Contributions:	[]types.PoolUnbondingContribution{{PoolID: poolID, Amount: amount}},
+	})
+}
+
+// observedUnbondingBalance reads back the balance of the unbonding entry at
+// (validator, creationHeight) that was just created or merged into. A missing
+// entry means x/staking completed it within this very block (UnbondingTime 0),
+// in which case nothing was slashed and 0 is corrected by the caller's own
+// contribution accounting.
+func (k *Keeper) observedUnbondingBalance(rawValidatorTarget string, creationHeight uint64) (uint64, error) {
+	entries, err := k.unbondingEntryBalances(rawValidatorTarget)
+	if err != nil {
+		return 0, err
+	}
+	return entries[creationHeight], nil
+}
+
+// reconcileUnbondingCustody is the credit half of the entitlement ledger: it
+// turns "x/staking delivered a lump sum into our shared account" into "pool P is
+// owed N naet".
+//
+// For every validator this module has money in flight at, it re-reads the
+// UnbondingDelegation and compares it against what we tracked:
+//
+//   - entry still present -> snapshot its Balance. That field is already
+//     post-slash, and the entry cannot leave without us seeing this snapshot
+//     first (see below), so the last snapshot is always the delivered amount.
+//   - entry gone -> x/staking's CompleteUnbonding has credited the shared
+//     account with exactly the last Balance we saw. Split it across the pools
+//     that funded the entry, pro rata by their contribution, and drop the
+//     record.
+//
+// Why the last snapshot is exact rather than merely recent: within one block,
+// slashing and completion are mutually exclusive. SlashUnbondingDelegation
+// skips an entry that IsMature(now); CompleteUnbonding requires exactly
+// IsMature(ctxTime). Both use the same block time. So an entry completed in
+// block N's staking EndBlocker was NOT slashed in block N's BeginBlocker, and
+// the snapshot taken by this function in block N-1 is what was paid. An entry's
+// Balance can only change while the entry is still there to observe.
+//
+// The pro-rata split inside a merged entry is exact for the same reason a slash
+// is: SlashUnbondingDelegation applies one fraction to the whole entry, so
+// dividing the delivered balance by contribution-to-InitialTotal reproduces
+// each pool's real share rather than approximating it.
+//
+// Truncation dust is deliberately left unattributed: it stays in the account,
+// belongs to no pool, and keeps sum(Entitlement) <= balance true.
+//
+// Assumes k.mu is held (write) and hasCustody() is true. Must run BEFORE
+// settlement in the same block, or a cohort settles against an entitlement that
+// has not yet been credited with its own arrived principal.
+func (k *Keeper) reconcileUnbondingCustody(state *types.State) (bool, error) {
+	if len(state.UnbondingCustody) == 0 {
+		return false, nil
+	}
+	// Sorted by Normalize, and read one validator at a time, so both the
+	// staking queries and the credits happen in a fixed order on every node.
+	balances := make(map[string]map[uint64]uint64, len(state.UnbondingCustody))
+	for _, record := range state.UnbondingCustody {
+		if _, done := balances[record.Validator]; done {
+			continue
+		}
+		entries, err := k.unbondingEntryBalances(record.Validator)
+		if err != nil {
+			return false, err
+		}
+		balances[record.Validator] = entries
+	}
+
+	// surplus is the money in the shared account that no pool is entitled to
+	// yet: donations, truncation dust, and -- the case that matters here --
+	// principal x/staking has just delivered but which has not been attributed
+	// to anyone. Every credit below is capped by it and subtracts from it.
+	//
+	// That cap is what makes sum(Entitlement) <= spendable balance true BY
+	// CONSTRUCTION rather than by argument, and it is load-bearing, not
+	// defensive. LastBalance is only exactly what x/staking delivered if this
+	// function observed the entry in the block before it completed. On a live
+	// chain it always does -- the EndBlocker runs every block, and an entry
+	// completed at EndBlock N provably was not slashed at BeginBlock N (see the
+	// doc comment above). But a sequence that skips blocks entirely -- a test,
+	// or any future caller that reconciles less often than once per block --
+	// can leave a snapshot that predates a slash, and crediting THAT number
+	// would hand a pool more than arrived: the first pool to settle would drain
+	// the shortfall out of the next pool's principal, which is the exact bug
+	// this whole record exists to kill. Capping at the surplus means a stale
+	// snapshot can only ever under-credit, never over-credit.
+	//
+	// Note the direction: spendable is a CEILING on what may be credited. It is
+	// never a source. The old settlement bug was spendable RAISING what a pool
+	// could take, up to the whole shared balance; here it can only lower it.
+	surplus := k.unattributedSurplus(state)
+
+	changed := false
+	remaining := make([]types.PoolUnbondingCustody, 0, len(state.UnbondingCustody))
+	for _, record := range state.UnbondingCustody {
+		balance, present := balances[record.Validator][record.CreationHeight]
+		if present {
+			if !record.Observed || record.LastBalance != balance {
+				record.Observed = true
+				record.LastBalance = balance
+				changed = true
+			}
+			remaining = append(remaining, record)
+			continue
+		}
+		// Gone: x/staking has paid it into the shared account, and the amount
+		// it paid is the last balance we saw.
+		//
+		// LastBalance is used unconditionally, with NO fall back to
+		// InitialTotal. That fallback existed and was wrong: InitialTotal is
+		// the PRE-slash figure, so any record credited through it after a slash
+		// took more than arrived and the shortfall came out of another pool's
+		// principal -- the original bug, moved from PoolID order to record
+		// order. Records are now born observed (see trackUnbondingContribution),
+		// so there is no case left to fall back for.
+		delivered := record.LastBalance
+		if delivered > surplus {
+			delivered = surplus
+		}
+		credited, err := k.creditEntitlement(state, record, delivered)
+		if err != nil {
+			return false, err
+		}
+		surplus -= credited
+		changed = true
+	}
+	if changed {
+		state.UnbondingCustody = remaining
+	}
+	return changed, nil
+}
+
+// unbondingEntryBalances reads the module's live unbonding entries at one
+// validator, as creationHeight -> Balance.
+//
+// Entries merge by creationHeight inside x/staking (AddEntry), so the height is
+// a unique key within one delegation and this map is lossless. A validator with
+// nothing unbonding yields an empty map, which is what tells reconcile that
+// every entry it tracked there has been completed and paid.
+func (k *Keeper) unbondingEntryBalances(rawValidatorTarget string) (map[uint64]uint64, error) {
+	validatorAddr, err := parsePoolAccAddress("nominator pool validator target", rawValidatorTarget)
+	if err != nil {
+		return nil, err
+	}
+	ubd, err := k.stakingKeeper.GetUnbondingDelegation(k.runtimeCtx, PoolModuleAddress(), sdk.ValAddress(validatorAddr.Bytes()))
+	if err != nil {
+		if errors.Is(err, stakingtypes.ErrNoUnbondingDelegation) {
+			return map[uint64]uint64{}, nil
+		}
+		return nil, fmt.Errorf("reading nominator pool unbonding delegation: %w", err)
+	}
+	entries := make(map[uint64]uint64, len(ubd.Entries))
+	for _, entry := range ubd.Entries {
+		if entry.CreationHeight < 0 || entry.Balance.IsNegative() {
+			continue
+		}
+		entries[uint64(entry.CreationHeight)] = entry.Balance.Uint64()
+	}
+	return entries, nil
+}
+
+// unattributedSurplus is the money in the shared module account that no pool
+// has a claim on: the spendable balance minus every pool's Entitlement.
+//
+// It is what a credit may draw from, and capping every credit by it is what
+// makes the module's solvency invariant -- sum(Entitlement) <= spendable --
+// hold by construction instead of by argument. Sources of genuine surplus are
+// principal x/staking has delivered but nobody has attributed yet, reward
+// income, MulDivUint64 truncation dust, and outright donations: the pool
+// address is deliberately NOT in app/accounts.BlockedAddresses(), so any wallet
+// can bank-send to it at any time. That last one is also why the invariant is
+// <= and not ==; an equality assert in consensus would let a 1naet transfer
+// from anybody halt the chain.
+//
+// Saturating at zero rather than going negative is deliberate: a negative
+// surplus would mean the module is already insolvent, and the answer to that is
+// to credit nothing further, not to panic inside an EndBlocker.
+func (k *Keeper) unattributedSurplus(state *types.State) uint64 {
+	spendable := k.bankKeeper.SpendableCoins(k.runtimeCtx, PoolModuleAddress()).AmountOf(k.genesis.Params.BaseDenom)
+	surplus := uint64(0)
+	if spendable.IsPositive() && spendable.IsUint64() {
+		surplus = spendable.Uint64()
+	}
+	for _, pool := range state.Pools {
+		if pool.Entitlement >= surplus {
+			return 0
+		}
+		surplus -= pool.Entitlement
+	}
+	return surplus
+}
+
+// creditEntitlement splits delivered across the pools that funded one completed
+// unbonding entry, adds each pool's share to its Entitlement, and returns the
+// total actually credited (which is <= delivered, because each share is
+// truncated and a share for a pool that has since vanished is dropped).
+//
+// The caller needs that total, not delivered, to keep its surplus accounting
+// honest -- crediting less than it debited from the surplus would slowly
+// under-count the money still available to attribute.
+//
+// A contribution naming a pool that no longer exists is skipped rather than
+// erroring: the money is then simply unattributed surplus in the shared account
+// (which the <= invariant permits), whereas returning an error here would halt
+// the EndBlocker -- turning a stale record into a chain halt.
+func (k *Keeper) creditEntitlement(state *types.State, record types.PoolUnbondingCustody, delivered uint64) (uint64, error) {
+	if delivered == 0 || record.InitialTotal == 0 {
+		return 0, nil
+	}
+	credited := uint64(0)
+	for _, contribution := range record.Contributions {
+		share, err := types.MulDivUint64(delivered, contribution.Amount, record.InitialTotal)
+		if err != nil {
+			return 0, err
+		}
+		if share == 0 {
+			continue
+		}
+		idx, pool, found := findPool(state.Pools, contribution.PoolID)
+		if !found {
+			continue
+		}
+		total, err := types.CheckedAddUint64(pool.Entitlement, share)
+		if err != nil {
+			return 0, err
+		}
+		pool.Entitlement = total
+		state.Pools[idx] = pool
+		credited += share
+	}
+	return credited, nil
 }
 
 // settlePoolWithdrawals settles the pool's matured withdrawal cohort and
@@ -3098,10 +3558,31 @@ func (k *Keeper) settlePoolWithdrawals(baseDenom string, pool types.NominatorPoo
 			return pool, false, nil
 		}
 	}
-	spendable := k.bankKeeper.SpendableCoins(k.runtimeCtx, PoolModuleAddress()).AmountOf(baseDenom)
-	available := expected
-	if expectedInt := sdkmath.NewIntFromUint64(expected); spendable.LT(expectedInt) {
-		available = spendable.Uint64()
+	// available comes from THIS POOL's entitlement, never from the shared
+	// account balance.
+	//
+	// It used to be min(SpendableCoins(PoolModuleAddress()), expected), and
+	// that expression has no pool term in it at all: PoolModuleAddress() takes
+	// no pool argument, so every pool read the same number and each one treated
+	// the whole shared balance as its own. With two pools that is a live fund
+	// bug -- pool A's slashed cohort was silently topped back up to its full
+	// pre-slash claim out of pool B's arrived principal, and pool B, settling
+	// later in the same loop, took the shortfall and was marked Completed
+	// terminally. Which pool won was decided by PoolID sort order
+	// (types.SortPools), i.e. by whoever picked the lexicographically smaller
+	// name.
+	//
+	// Entitlement is credited only from what x/staking actually delivered for
+	// this pool's own unbonding entries (reconcileUnbondingCustody), so the
+	// cross-pool spend is not rejected here -- it is unrepresentable, because
+	// the number that made it possible is no longer in scope.
+	//
+	// The expected cap is kept on top (invariant I2: a cohort can never be paid
+	// more than it claims), so surplus entitlement -- e.g. reward income
+	// attributed to this pool -- cannot inflate a payout either.
+	available := pool.Entitlement
+	if available > expected {
+		available = expected
 	}
 	changed := false
 	for _, idx := range cohort {
@@ -3119,6 +3600,15 @@ func (k *Keeper) settlePoolWithdrawals(baseDenom string, pool types.NominatorPoo
 			if err != nil {
 				return pool, false, err
 			}
+			// Debit before paying. payout is a pro-rata slice of available,
+			// which is itself <= pool.Entitlement, so this cannot underflow --
+			// but the debit is what makes the ledger and the bank move
+			// together, so that a second cohort in a later block cannot spend
+			// the same entitlement twice.
+			if payout > pool.Entitlement {
+				return pool, false, fmt.Errorf("nominator pool %s payout %d exceeds its entitlement %d", pool.PoolID, payout, pool.Entitlement)
+			}
+			pool.Entitlement -= payout
 			coins := sdk.NewCoins(sdk.NewCoin(baseDenom, sdkmath.NewIntFromUint64(payout)))
 			if err := k.bankKeeper.SendCoinsFromModuleToAccount(k.runtimeCtx, types.ModuleName, recipient, coins); err != nil {
 				return pool, false, fmt.Errorf("paying out nominator pool withdrawal: %w", err)

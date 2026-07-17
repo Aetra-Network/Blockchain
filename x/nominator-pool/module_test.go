@@ -75,7 +75,6 @@ func TestAppModuleRegistersMsgQueryServicesAndCommands(t *testing.T) {
 		"cancel-withdrawal",
 		"deposit",
 		"request-unbond",
-		"withdraw",
 		"claim-rewards",
 		"sync-rewards",
 		"claim-staking-rewards",
