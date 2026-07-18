@@ -181,6 +181,12 @@ const (
 	OpVerifySecp256k1 Opcode = 0x53
 	OpEcrecover       Opcode = 0x54
 
+	// Integer square root: isqrt(x) = floor(sqrt(x)) over uint256 via big.Int's
+	// deterministic integer Newton iteration (no float). The root of a 256-bit
+	// value is at most 128-bit, so it never traps on width. The constant-product
+	// AMM needs it for sqrt(k) LP minting and for sqrtPrice tick math.
+	OpIsqrt Opcode = 0x55
+
 	OpWallClock Opcode = 0xf0
 	OpRandom    Opcode = 0xf1
 	OpFileRead  Opcode = 0xf2
@@ -412,6 +418,10 @@ func DefaultParams() Params {
 			// reconstruct the public key).
 			OpVerifySecp256k1: 6_000,
 			OpEcrecover:       8_000,
+			// Integer square root: a bounded run of big.Int Newton iterations on a
+			// 256-bit operand -- well above the fused mul-div (fixed-width divides),
+			// far below any curve op. Flat, fixed-size operand, so no per-byte term.
+			OpIsqrt: 30,
 		},
 		// See the GasPerOperandUnit doc comment: 1 extra gas per map entry /
 		// tuple element / byte cloned or iterated, on top of the flat
@@ -548,6 +558,7 @@ func (p Params) Validate() error {
 		OpMulDivRoundUp,
 		OpVerifySecp256k1,
 		OpEcrecover,
+		OpIsqrt,
 	} {
 		if p.GasSchedule[op] == 0 {
 			return fmt.Errorf("gas schedule missing opcode 0x%02x", byte(op))
@@ -1377,6 +1388,20 @@ func (r *Runner) Run(module Module, storage Storage, ctx RuntimeContext) (Execut
 				return rollback(async.ResultExecutionFailed, err)
 			}
 			stack = append(stack, result)
+		case OpIsqrt:
+			// isqrt(x): floor(sqrt(x)) over uint256. Pops one operand and pushes
+			// its integer square root. big.Int.Sqrt is deterministic and, on an
+			// unsigned operand, never negative -- so the checked conversion never
+			// traps on width.
+			xVal, ok := pop(&stack)
+			if !ok {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on isqrt operand"))
+			}
+			result, err := runtimeIsqrt(xVal)
+			if err != nil {
+				return rollback(async.ResultExecutionFailed, err)
+			}
+			stack = append(stack, result)
 		case OpVerifySecp256k1:
 			// verifySecp256k1(msgHash, sig, pubkey): pubkey on top (pushed last),
 			// then sig, then msgHash. Verifies a 64-byte compact R‖S signature
@@ -2121,6 +2146,17 @@ func runtimeMulDiv(a, b, c RuntimeValue, roundUp bool) (RuntimeValue, error) {
 		quo.Add(quo, big.NewInt(1))
 	}
 	return runtimeFromBigIntChecked(TagUint256, quo)
+}
+
+func runtimeIsqrt(a RuntimeValue) (RuntimeValue, error) {
+	ai, err := runtimeNumeric(a)
+	if err != nil {
+		return RuntimeValue{}, err
+	}
+	// Operands are unsigned (uint256), so Sqrt is always defined; floor(sqrt(ai))
+	// is at most 128-bit and therefore always fits the checked uint256 result.
+	root := new(big.Int).Sqrt(ai)
+	return runtimeFromBigIntChecked(TagUint256, root)
 }
 
 func runtimeMessageFieldValue(body []byte, field string) (RuntimeValue, error) {
@@ -3586,7 +3622,8 @@ func IsAllowedOpcode(op Opcode) bool {
 		OpMulDiv,
 		OpMulDivRoundUp,
 		OpVerifySecp256k1,
-		OpEcrecover:
+		OpEcrecover,
+		OpIsqrt:
 		return true
 	default:
 		return false

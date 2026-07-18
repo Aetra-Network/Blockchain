@@ -153,6 +153,10 @@ const (
 	// (msgHash, sig) in Args and yields bytes (the 64-byte X‖Y pubkey body).
 	IRExprVerifySecp256k1 IRExprKind = "verify_secp256k1"
 	IRExprEcrecover       IRExprKind = "ecrecover"
+
+	// Integer square root over uint256 (isqrt): one uint256 operand in Args,
+	// one uint256 result. Maps 1:1 to avm.OpIsqrt.
+	IRExprIsqrt IRExprKind = "isqrt"
 )
 
 type IRStructField struct {

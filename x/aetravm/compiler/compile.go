@@ -2450,6 +2450,15 @@ func (c *Compiler) inferExprType(expr Expr, env map[string]TypeRef, storage *Str
 				}
 			}
 			return TypeRef{Name: "uint256"}, nil
+		case "isqrt":
+			// isqrt(x: uint256) -> uint256: floor(sqrt(x)).
+			if len(expr.Args) != 1 {
+				return TypeRef{}, fail("E_CALL_ARITY", expr.Pos, "isqrt() requires one argument")
+			}
+			if _, err := c.inferExprType(expr.Args[0], env, storage, structs, enums, types, functions, consts, inPure); err != nil {
+				return TypeRef{}, err
+			}
+			return TypeRef{Name: "uint256"}, nil
 		case "verifysecp256k1":
 			// verifySecp256k1(msgHash: hash, sig: bytes, pubkey: bytes) -> bool.
 			if len(expr.Args) != 3 {
@@ -5100,6 +5109,15 @@ func lowerExprToIR(expr Expr, env loweringEnv, functions map[string]*FunctionDec
 				kind = IRExprMulDivRoundUp
 			}
 			return &IRExpr{Kind: kind, Args: args, Pos: expr.Pos}, nil
+		case "isqrt":
+			if len(expr.Args) != 1 {
+				return nil, fail("E_LOWER_CALL", expr.Pos, "isqrt() requires one argument")
+			}
+			arg, err := lowerExprToIR(expr.Args[0], env, functions, seen)
+			if err != nil {
+				return nil, err
+			}
+			return &IRExpr{Kind: IRExprIsqrt, Args: []*IRExpr{arg}, Pos: expr.Pos}, nil
 		case "verifysecp256k1":
 			if len(expr.Args) != 3 {
 				return nil, fail("E_LOWER_CALL", expr.Pos, "verifySecp256k1() requires three arguments")
@@ -5551,7 +5569,7 @@ func emitIRExpr(expr *IRExpr, code *[]avm.Instruction) error {
 			return err
 		}
 		*code = append(*code, avm.Instruction{Op: avm.OpVerifySignature})
-	case IRExprMulDiv, IRExprMulDivRoundUp, IRExprVerifySecp256k1, IRExprEcrecover:
+	case IRExprMulDiv, IRExprMulDivRoundUp, IRExprVerifySecp256k1, IRExprEcrecover, IRExprIsqrt:
 		// Operands are pushed in source order; the VM dispatch pops them
 		// last-pushed-first (mulDiv pops c, b, a; verifySecp256k1 pops pubkey,
 		// sig, msgHash; ecrecover pops sig, msgHash).
@@ -5570,6 +5588,8 @@ func emitIRExpr(expr *IRExpr, code *[]avm.Instruction) error {
 			op = avm.OpVerifySecp256k1
 		case IRExprEcrecover:
 			op = avm.OpEcrecover
+		case IRExprIsqrt:
+			op = avm.OpIsqrt
 		}
 		*code = append(*code, avm.Instruction{Op: op})
 	case IRExprCoinsCast:

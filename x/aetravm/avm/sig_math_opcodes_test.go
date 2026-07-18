@@ -210,6 +210,57 @@ func TestAVMEcrecover(t *testing.T) {
 	require.Len(t, short, 0, "a 64-byte (non-recoverable) signature must soft-fail to empty")
 }
 
+func isqrtCode(t *testing.T, x *big.Int) []Instruction {
+	code := append([]Instruction(nil), pushU256(t, x)...)
+	return append(code, Instruction{Op: OpIsqrt})
+}
+
+// TestAVMIsqrt proves the integer square root floors correctly, handles the
+// boundary values (0, 1, perfect squares), and stays exact at full 256-bit
+// width. The constant-product AMM mints initial LP shares as
+// isqrt(reserveA*reserveB) (Uniswap-V2 style), so both the floor semantics and
+// the wide-input exactness matter.
+func TestAVMIsqrt(t *testing.T) {
+	run := func(x *big.Int) (*big.Int, Execution) {
+		exec, err := runByteCode(t, isqrtCode(t, x))
+		require.NoError(t, err)
+		require.Equal(t, async.ResultOK, exec.ResultCode)
+		got, err := exec.ReturnValue.AsBigInt()
+		require.NoError(t, err)
+		return got, exec
+	}
+
+	small := []struct{ in, want int64 }{
+		{0, 0}, {1, 1}, {2, 1}, {3, 1}, {4, 2}, {8, 2}, {9, 3},
+		{15, 3}, {16, 4}, {99, 9}, {100, 10}, {144, 12},
+	}
+	for _, tc := range small {
+		got, exec := run(big.NewInt(tc.in))
+		require.Equal(t, tc.want, got.Int64(), "isqrt(%d)", tc.in)
+		require.GreaterOrEqual(t, exec.GasUsed, uint64(30), "isqrt must charge its flat base gas")
+	}
+
+	// 10^18 = (10^9)^2 is a perfect square at the AET/naet scale.
+	e18 := new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil)
+	got, _ := run(e18)
+	require.Equal(t, 0, got.Cmp(new(big.Int).Exp(big.NewInt(10), big.NewInt(9), nil)), "isqrt(10^18)=10^9")
+
+	// (2^128-1)^2 fits u256; its root is exactly 2^128-1.
+	max128 := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 128), big.NewInt(1))
+	sq := new(big.Int).Mul(max128, max128)
+	got, _ = run(sq)
+	require.Equal(t, 0, got.Cmp(max128), "isqrt((2^128-1)^2)=2^128-1")
+
+	// One below that square floors to 2^128-2.
+	got, _ = run(new(big.Int).Sub(sq, big.NewInt(1)))
+	require.Equal(t, 0, got.Cmp(new(big.Int).Sub(max128, big.NewInt(1))), "isqrt((2^128-1)^2 - 1) floors")
+
+	// isqrt(2^256-1) = 2^128 - 1, the largest representable root.
+	max256 := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
+	got, _ = run(max256)
+	require.Equal(t, 0, got.Cmp(max128), "isqrt(2^256-1)=2^128-1")
+}
+
 // TestAVMEd25519ConsensusVerify proves the ed25519 opcode (now backed by
 // ed25519consensus / ZIP-215) still verifies an ordinary stdlib-produced
 // signature and rejects a tampered one, so the verification-set change did not
