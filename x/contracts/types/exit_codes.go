@@ -71,6 +71,19 @@ const (
 	ExitCodeInsufficientGas     uint32 = 102
 	ExitCodeExplicitAbort       uint32 = 103
 	ExitCodeInactiveFrozen      uint32 = 104
+
+	// Financial Numeric Library Errors (105-109): Stage-6 codes for the
+	// invariant-enforcing BasisPoints/Ratio256/DecimalNNN/SignedDecimalNNN
+	// types (examples/avm/finance/finance_types.atlx). Grouped as their own
+	// block rather than folded into the VM Execution Errors (0-31) domain
+	// because that range is fully packed; see x/aetravm/async/types.go's
+	// ResultBadDenominator/... doc comment for which of these correspond to
+	// a genuinely distinguishable VM-level trap today.
+	ExitCodeBadDenominator uint32 = 105
+	ExitCodeBadBasisPoints uint32 = 106
+	ExitCodePrecisionLoss  uint32 = 107
+	ExitCodeBadConversion  uint32 = 108
+	ExitCodeOutOfRange     uint32 = 109
 )
 
 // IsVMExecutionError returns true if code is in VM execution domain (0-31)
@@ -192,6 +205,16 @@ func ExitCodeName(code uint32) string {
 		return "explicit_abort"
 	case ExitCodeInactiveFrozen:
 		return "inactive_frozen"
+	case ExitCodeBadDenominator:
+		return "bad_denominator"
+	case ExitCodeBadBasisPoints:
+		return "bad_basis_points"
+	case ExitCodePrecisionLoss:
+		return "precision_loss"
+	case ExitCodeBadConversion:
+		return "bad_conversion"
+	case ExitCodeOutOfRange:
+		return "out_of_range"
 	default:
 		return "unknown"
 	}
@@ -245,6 +268,13 @@ func CanonicalExitCodes() []ExitCodeSpec {
 		{ExitCodeAssertionFailed, "assertion_failed"},
 		{ExitCodeInsufficientBalance, "insufficient_balance"},
 		{ExitCodeInsufficientGas, "insufficient_gas"},
+		{ExitCodeExplicitAbort, "explicit_abort"},
+		{ExitCodeInactiveFrozen, "inactive_frozen"},
+		{ExitCodeBadDenominator, "bad_denominator"},
+		{ExitCodeBadBasisPoints, "bad_basis_points"},
+		{ExitCodePrecisionLoss, "precision_loss"},
+		{ExitCodeBadConversion, "bad_conversion"},
+		{ExitCodeOutOfRange, "out_of_range"},
 	}
 }
 

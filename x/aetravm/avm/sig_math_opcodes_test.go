@@ -95,16 +95,141 @@ func TestAVMMulDivFloorAndRoundUp(t *testing.T) {
 func TestAVMMulDivByZeroTraps(t *testing.T) {
 	exec, err := runByteCode(t, mulDivCode(t, big.NewInt(5), big.NewInt(7), big.NewInt(0), false))
 	require.Error(t, err)
-	require.Equal(t, async.ResultExecutionFailed, exec.ResultCode)
+	// Stage 1(c): mulDiv-by-zero now threads the specific, already-defined
+	// async.ResultDivisionByZero code instead of the generic
+	// ResultExecutionFailed (indistinguishable from an ordinary div/mod by
+	// zero, by design -- see runtimeMulDiv's doc comment).
+	require.Equal(t, async.ResultDivisionByZero, exec.ResultCode)
 }
 
 // TestAVMMulDivResultOverflowTraps: when the QUOTIENT itself exceeds u256 (here
-// 2^255 * 4 / 1 = 2^257), the checked narrow traps rather than wrapping.
+// 2^255 * 4 / 1 = 2^257), the checked narrow traps rather than wrapping. The
+// trap is classified as async.ResultOutOfRange (Stage 6: enforceIntWidth's
+// overflow path is wrapped in errIntegerOutOfRange and recognized by
+// arithResultCode), not the generic async.ResultExecutionFailed.
 func TestAVMMulDivResultOverflowTraps(t *testing.T) {
 	a := new(big.Int).Lsh(big.NewInt(1), 255)
 	exec, err := runByteCode(t, mulDivCode(t, a, big.NewInt(4), big.NewInt(1), false))
 	require.Error(t, err)
-	require.Equal(t, async.ResultExecutionFailed, exec.ResultCode)
+	require.Equal(t, async.ResultOutOfRange, exec.ResultCode)
+}
+
+func mulDivNearestCode(t *testing.T, a, b, c *big.Int) []Instruction {
+	code := append([]Instruction(nil), pushU256(t, a)...)
+	code = append(code, pushU256(t, b)...)
+	code = append(code, pushU256(t, c)...)
+	return append(code, Instruction{Op: OpMulDivNearest})
+}
+
+// TestAVMMulDivNearestRoundsHalfUp pins mulDivNearest's rounding rule: round
+// UP iff the true remainder, doubled, is >= the divisor (exact half rounds
+// up), otherwise floor -- distinct from mulDiv (always floors) and
+// mulDivRoundUp (ceils on ANY nonzero remainder).
+func TestAVMMulDivNearestRoundsHalfUp(t *testing.T) {
+	cases := []struct {
+		a, b, c int64
+		want    int64
+	}{
+		{7, 3, 2, 11},   // 21/2 = 10.5 -> exact half rounds UP to 11
+		{6, 2, 3, 4},    // 12/3 = 4 exactly -> 4
+		{100, 100, 3, 3333},  // 10000/3 = 3333.33 -> floor to 3333
+		{100, 101, 3, 3367},  // 10100/3 = 3366.67 -> rounds UP to 3367
+		{5, 1, 2, 3},    // 5/2 = 2.5 -> exact half rounds UP to 3
+		{1, 1, 3, 0},    // 1/3 = 0.33 -> floor to 0
+	}
+	for _, tc := range cases {
+		a, b, c := big.NewInt(tc.a), big.NewInt(tc.b), big.NewInt(tc.c)
+		exec, err := runByteCode(t, mulDivNearestCode(t, a, b, c))
+		require.NoError(t, err)
+		require.Equal(t, async.ResultOK, exec.ResultCode)
+		got, err := exec.ReturnValue.AsBigInt()
+		require.NoError(t, err)
+		require.Equal(t, tc.want, got.Int64(), "mulDivNearest(%d,%d,%d)", tc.a, tc.b, tc.c)
+	}
+}
+
+// TestAVMMulDivNearestFullWidth proves mulDivNearest also forms the a*b
+// product at unbounded width, exactly like mulDiv/mulDivRoundUp.
+func TestAVMMulDivNearestFullWidth(t *testing.T) {
+	a := new(big.Int).Lsh(big.NewInt(1), 200)
+	b := new(big.Int).Lsh(big.NewInt(1), 200)
+	c := new(big.Int).Lsh(big.NewInt(1), 160)
+	want := new(big.Int).Lsh(big.NewInt(1), 240) // exact, no rounding needed
+
+	exec, err := runByteCode(t, mulDivNearestCode(t, a, b, c))
+	require.NoError(t, err)
+	require.Equal(t, async.ResultOK, exec.ResultCode)
+	got, err := exec.ReturnValue.AsBigInt()
+	require.NoError(t, err)
+	require.Equal(t, 0, got.Cmp(want), "mulDivNearest(2^200, 2^200, 2^160) must be 2^240")
+}
+
+// TestAVMMulDivNearestByZeroTraps mirrors TestAVMMulDivByZeroTraps: a zero
+// divisor traps with the specific async.ResultDivisionByZero code.
+func TestAVMMulDivNearestByZeroTraps(t *testing.T) {
+	exec, err := runByteCode(t, mulDivNearestCode(t, big.NewInt(5), big.NewInt(7), big.NewInt(0)))
+	require.Error(t, err)
+	require.Equal(t, async.ResultDivisionByZero, exec.ResultCode)
+}
+
+// TestAVMMulDivNearestResultOverflowTraps mirrors
+// TestAVMMulDivResultOverflowTraps: a quotient that overflows u256 traps,
+// classified as async.ResultOutOfRange (Stage 6), not the generic
+// async.ResultExecutionFailed.
+func TestAVMMulDivNearestResultOverflowTraps(t *testing.T) {
+	a := new(big.Int).Lsh(big.NewInt(1), 255)
+	exec, err := runByteCode(t, mulDivNearestCode(t, a, big.NewInt(4), big.NewInt(1)))
+	require.Error(t, err)
+	require.Equal(t, async.ResultOutOfRange, exec.ResultCode)
+}
+
+// TestAVMBitwiseWidthCheckTraps is the regression for Stage 1(b): OpBitAnd/
+// OpBitOr/OpBitXor used to skip the width check every other binary arithmetic
+// op (+,-,*,/,%,shl) applies, so a result computed from MISMATCHED-tag
+// operands -- reachable because the verifier performs no stack-type-
+// consistency analysis across a binary op's two operands -- could silently
+// WRAP into a different, wrong, in-range value instead of trapping.
+// Confirmed concretely before this fix: XOR(int8(-1), int256(10000))
+// mathematically equals -10001 (outside int8's [-128,127] range), but
+// runtimeFromBigInt's unchecked int8(v.Int64()) cast silently produced -17
+// instead of trapping -- real value corruption, not just a theoretical gap.
+func TestAVMBitwiseWidthCheckTraps(t *testing.T) {
+	left := ValueInt8(-1)
+	right := ValueBigInt256(big.NewInt(10000))
+
+	_, err := runtimeBinaryArithmetic(OpBitXor, left, right)
+	require.Error(t, err, "XOR of mismatched-width operands must trap, not silently wrap")
+
+	// Same-width, same-signedness operands never trip this: the two's-
+	// complement identity keeps a matched-width bitwise result in range, so
+	// the new check adds no new failure mode for well-typed programs.
+	same, err := runtimeBinaryArithmetic(OpBitXor, ValueInt8(-1), ValueInt8(5))
+	require.NoError(t, err)
+	got, err := same.AsBigInt()
+	require.NoError(t, err)
+	require.Equal(t, int64(-6), got.Int64(), "XOR(int8(-1), int8(5)) = -6, matched widths never trap")
+}
+
+// TestAVMArithResultCodeThreading proves Stage 1(c): ordinary integer div/mod
+// by zero and an invalid shift amount now thread their specific,
+// already-defined async.Result* codes instead of the generic
+// ResultExecutionFailed every arithmetic trap used to report.
+func TestAVMArithResultCodeThreading(t *testing.T) {
+	t.Run("div by zero", func(t *testing.T) {
+		exec, err := runByteCode(t, []Instruction{pushU64(7), pushU64(0), {Op: OpDiv}})
+		require.Error(t, err)
+		require.Equal(t, async.ResultDivisionByZero, exec.ResultCode)
+	})
+	t.Run("mod by zero", func(t *testing.T) {
+		exec, err := runByteCode(t, []Instruction{pushU64(7), pushU64(0), {Op: OpMod}})
+		require.Error(t, err)
+		require.Equal(t, async.ResultDivisionByZero, exec.ResultCode)
+	})
+	t.Run("invalid shift amount", func(t *testing.T) {
+		exec, err := runByteCode(t, []Instruction{pushU64(1), pushU64(4097), {Op: OpShl}})
+		require.Error(t, err)
+		require.Equal(t, async.ResultInvalidShift, exec.ResultCode)
+	})
 }
 
 // --- secp256k1 test vectors: a fixed private scalar signs a fixed digest.

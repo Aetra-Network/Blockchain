@@ -52,6 +52,30 @@ const (
 	ResultInactiveFrozen         = uint32(37)
 	ResultActionBudgetExceeded   = uint32(38)
 
+	// Financial numeric library codes (Stage 6 -- errors/diagnostics for the
+	// Ratio256/BasisPoints/Decimal128/Decimal256/SignedDecimal128/
+	// SignedDecimal256 types added in examples/avm/finance/finance_types.atlx).
+	// See arithResultCode's doc comment in avm.go for exactly which of these
+	// are reachable as a DISTINCT trap today versus minted for taxonomy
+	// completeness only (finance_types.atlx's invariant checks are, by
+	// deliberate design, plain expressions over the SAME generic checked
+	// arithmetic every other operator already traps through -- see that
+	// file's header comment -- so the VM interpreter has no contract-specific
+	// signal to distinguish e.g. "this division by zero was Ratio256's own
+	// denominator check" from an ordinary unrelated division by zero
+	// elsewhere; only ResultOutOfRange (the checked-narrowing-cast /
+	// enforceIntWidth overflow path) is genuinely distinguishable and wired
+	// as a new sentinel below). There is no ResultBadRoundingMode: every
+	// rounding mode in this library is a separate named function
+	// (mulDivFloor/Ceil/Nearest, dec*ToInteger{Floor,Ceil,Nearest}), never an
+	// enum value, so there is no invalid rounding-mode STATE to construct or
+	// trap on.
+	ResultBadDenominator = uint32(39)
+	ResultBadBasisPoints = uint32(40)
+	ResultPrecisionLoss  = uint32(41)
+	ResultBadConversion  = uint32(42)
+	ResultOutOfRange     = uint32(43)
+
 	CodeHashLength = 32
 
 	ContractStatusActive = "active"

@@ -16,12 +16,12 @@
 //   - concat()      to assemble the raw nonce||challenge preimage,
 //   - sha256()      the byte-exact hash (NOT hash(), which is the chunk-tree
 //                   root and would never match an external verifier),
-//   - slice()       to take the leading bytes of the digest,
+//   - subBytes()    to take the leading bytes of the digest,
 //   - fromBytesBE() to read those bytes as a big-endian number, and
 //   - a plain numeric "< TARGET" comparison (bytewise magnitude).
 //
 // The getters additionally exercise every other new primitive — keccak256
-// (Ethereum/bridge padding), blake2b, ripemd160, sha512, byteAt, slice and
+// (Ethereum/bridge padding), blake2b, ripemd160, sha512, byteAt, subBytes and
 // toBytesBE — over the fixed challenge, so a test can check each against a
 // known-answer vector end to end through the compiled contract.
 //
@@ -81,10 +81,10 @@ contract PowMiner {
     // The canonical PoW predicate. The whole check is one expression (so this
     // helper stays inlinable): assemble the preimage with concat(), hash it
     // byte-exactly with sha256(), read the leading 8 bytes as a big-endian
-    // number with fromBytesBE(slice(...)), and compare it against the target.
+    // number with fromBytesBE(subBytes(...)), and compare it against the target.
     @pure
     func meetsTarget(nonce: bytes): uint64 {
-        return (fromBytesBE(slice(sha256(concat(nonce, CHALLENGE)), 0, 8)) < POW_TARGET) ? 1 : 0
+        return (fromBytesBE(subBytes(sha256(concat(nonce, CHALLENGE)), 0, 8)) < POW_TARGET) ? 1 : 0
     }
 
     @internal
@@ -164,10 +164,10 @@ contract PowMiner {
         return byteAt(CHALLENGE, 0)
     }
 
-    // slice — the 4-byte prefix of the challenge.
+    // subBytes — the 4-byte prefix of the challenge.
     @get
     func challengePrefix(): bytes {
-        return slice(CHALLENGE, 0, 4)
+        return subBytes(CHALLENGE, 0, 4)
     }
 
     // toBytesBE — the difficulty target serialized to 8 big-endian bytes.

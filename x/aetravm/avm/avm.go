@@ -206,6 +206,34 @@ const (
 	// a result that does not fit int256.
 	OpMulDivSigned Opcode = 0x57
 
+	// Round-half-up fused multiply-divide: mulDivNearest(a,b,c) rounds
+	// floor(a*b/c) up to the next integer iff the true remainder, doubled, is
+	// >= c (i.e. the exact quotient's fractional part is >= 1/2) -- unlike
+	// mulDiv (always floor) and mulDivRoundUp (always ceil on any nonzero
+	// remainder), giving the least-bias rounding a fee/price calculation
+	// needs. Same unbounded a*b intermediate as mulDiv/mulDivRoundUp. TRAPS
+	// on c==0 and on a quotient that overflows uint256.
+	OpMulDivNearest Opcode = 0x58
+
+	// Checked narrowing casts: pop a numeric value of ANY width/signedness and
+	// re-tag it as uint128 / int128, TRAPPING if the magnitude does not fit the
+	// target width (reusing enforceIntWidth, the same check every arithmetic
+	// result already goes through). Needed because mulDiv/mulDivRoundUp/
+	// mulDivNearest/mulCmp always yield uint256 and mulDivSigned always yields
+	// int256 (see their doc comments) — a struct field genuinely backed by
+	// uint128/int128 (e.g. a Decimal128 fixed-point type) must explicitly
+	// narrow a fused-multiply-divide result back down, rather than silently
+	// keeping the wider tag or wrapping the magnitude modulo 2^128.
+	OpNarrowToUint128 Opcode = 0x59
+	OpNarrowToInt128  Opcode = 0x5a
+	// OpNarrowToInt256 re-tags a numeric value (typically an UNSIGNED uint256
+	// from mulDiv/mulDivRoundUp/mulDivNearest) as int256, checked/TRAPPING if
+	// the magnitude does not fit (>= 2^255). Needed to build a genuinely
+	// int256-backed signed value (e.g. a SignedDecimal256's raw field) out of
+	// an unsigned source (a Ratio256 or BasisPoints, which are always
+	// non-negative) without the result silently keeping the wrong tag.
+	OpNarrowToInt256 Opcode = 0x5b
+
 	OpWallClock Opcode = 0xf0
 	OpRandom    Opcode = 0xf1
 	OpFileRead  Opcode = 0xf2
@@ -415,7 +443,7 @@ func DefaultParams() Params {
 			OpRipemd160: 90,
 			OpSha512:    90,
 			OpBlake2b:   90,
-			// Byte ops. concat/slice/toBytesBE also charge 1 gas per OUTPUT byte
+			// Byte ops. concat/subBytes/toBytesBE also charge 1 gas per OUTPUT byte
 			// inside the handler before allocating; byteAt/fromBytesBE are O(1)
 			// (index / <=32-byte parse) so the flat base is the whole cost.
 			OpConcat:      8,
@@ -447,6 +475,18 @@ func DefaultParams() Params {
 			// operands, no per-byte term.
 			OpMulCmp:       13,
 			OpMulDivSigned: 13,
+			// Round-half-up fused multiply-divide: same big.Int multiply + divide
+			// as mulDiv/mulDivRoundUp, plus one extra shift+compare to test the
+			// remainder against the divisor. Priced identically to the other
+			// fused mul-div variants.
+			OpMulDivNearest: 13,
+			// Checked narrowing cast: one enforceIntWidth range check (a big.Int
+			// Cmp or two) against a fixed 128-bit bound, no per-byte term.
+			// Priced like the other flat unary casts (OpCastCoins) plus a
+			// touch more for the comparison.
+			OpNarrowToUint128: 3,
+			OpNarrowToInt128:  3,
+			OpNarrowToInt256:  3,
 		},
 		// See the GasPerOperandUnit doc comment: 1 extra gas per map entry /
 		// tuple element / byte cloned or iterated, on top of the flat
@@ -568,6 +608,8 @@ func (p Params) Validate() error {
 		OpReadMsgValue,
 		OpReadMsgBody,
 		OpIsEmpty,
+		OpReadMsgField,
+		OpCastCoins,
 		OpReadRandom,
 		OpSha256,
 		OpKeccak256,
@@ -586,6 +628,10 @@ func (p Params) Validate() error {
 		OpIsqrt,
 		OpMulCmp,
 		OpMulDivSigned,
+		OpMulDivNearest,
+		OpNarrowToUint128,
+		OpNarrowToInt128,
+		OpNarrowToInt256,
 	} {
 		if p.GasSchedule[op] == 0 {
 			return fmt.Errorf("gas schedule missing opcode 0x%02x", byte(op))
@@ -808,7 +854,7 @@ func (r *Runner) Run(module Module, storage Storage, ctx RuntimeContext) (Execut
 			}
 			sum, err := runtimeAdd(left, right)
 			if err != nil {
-				return rollback(async.ResultExecutionFailed, err)
+				return rollback(arithResultCode(err), err)
 			}
 			stack = append(stack, sum)
 		case OpSub:
@@ -822,7 +868,7 @@ func (r *Runner) Run(module Module, storage Storage, ctx RuntimeContext) (Execut
 			}
 			diff, err := runtimeSub(left, right)
 			if err != nil {
-				return rollback(async.ResultExecutionFailed, err)
+				return rollback(arithResultCode(err), err)
 			}
 			stack = append(stack, diff)
 		case OpMul, OpDiv, OpMod, OpShl, OpShr, OpBitAnd, OpBitOr, OpBitXor:
@@ -836,7 +882,7 @@ func (r *Runner) Run(module Module, storage Storage, ctx RuntimeContext) (Execut
 			}
 			value, err := runtimeBinaryArithmetic(ins.Op, left, right)
 			if err != nil {
-				return rollback(async.ResultExecutionFailed, err)
+				return rollback(arithResultCode(err), err)
 			}
 			stack = append(stack, value)
 		case OpNeg, OpBitNot:
@@ -846,7 +892,7 @@ func (r *Runner) Run(module Module, storage Storage, ctx RuntimeContext) (Execut
 			}
 			out, err := runtimeUnaryArithmetic(ins.Op, value)
 			if err != nil {
-				return rollback(async.ResultExecutionFailed, err)
+				return rollback(arithResultCode(err), err)
 			}
 			stack = append(stack, out)
 		case OpEq, OpNe, OpLt, OpLe, OpGt, OpGe, OpCmp:
@@ -1278,8 +1324,10 @@ func (r *Runner) Run(module Module, storage Storage, ctx RuntimeContext) (Execut
 			out = append(out, lb...)
 			stack = append(stack, ValueBytes(out))
 		case OpSlice:
-			// slice(b, start, len): len on top, then start, then b. TRAP if the
-			// window runs past the end; charge 1 gas per output byte.
+			// subBytes(b, start, len): len on top, then start, then b. TRAP if the
+			// window runs past the end; charge 1 gas per output byte. (Opcode
+			// name/value OpSlice/0x4d kept for bytecode compatibility; the
+			// language-facing builtin name is subBytes, not slice.)
 			lenVal, ok := pop(&stack)
 			if !ok {
 				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on slice length"))
@@ -1412,7 +1460,31 @@ func (r *Runner) Run(module Module, storage Storage, ctx RuntimeContext) (Execut
 			}
 			result, err := runtimeMulDiv(aVal, bVal, cVal, ins.Op == OpMulDivRoundUp)
 			if err != nil {
-				return rollback(async.ResultExecutionFailed, err)
+				return rollback(arithResultCode(err), err)
+			}
+			stack = append(stack, result)
+		case OpMulDivNearest:
+			// mulDivNearest(a, b, c): c on top (pushed last), then b, then a.
+			// Computes round-half-up(a*b/c) -- floor(a*b/c), rounded up to the
+			// next integer iff the remainder, doubled, is >= c -- with the a*b
+			// product held in an unbounded big.Int so it never overflows; only
+			// the narrowed uint256 result is width-checked. TRAP on c==0 or a
+			// result that does not fit uint256.
+			cVal, ok := pop(&stack)
+			if !ok {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on mulDivNearest divisor"))
+			}
+			bVal, ok := pop(&stack)
+			if !ok {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on mulDivNearest multiplicand"))
+			}
+			aVal, ok := pop(&stack)
+			if !ok {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on mulDivNearest multiplier"))
+			}
+			result, err := runtimeMulDivNearest(aVal, bVal, cVal)
+			if err != nil {
+				return rollback(arithResultCode(err), err)
 			}
 			stack = append(stack, result)
 		case OpIsqrt:
@@ -1477,7 +1549,38 @@ func (r *Runner) Run(module Module, storage Storage, ctx RuntimeContext) (Execut
 			}
 			result, err := runtimeMulDivSigned(aVal, bVal, cVal)
 			if err != nil {
-				return rollback(async.ResultExecutionFailed, err)
+				return rollback(arithResultCode(err), err)
+			}
+			stack = append(stack, result)
+		case OpNarrowToUint128, OpNarrowToInt128, OpNarrowToInt256:
+			// Checked narrowing/re-tagging cast: pop a value of any numeric
+			// tag and re-tag it as uint128 / int128 / int256, TRAPPING (not
+			// wrapping) if the magnitude doesn't fit -- the reusable
+			// width/sign-fixing step a mulDiv/mulDivRoundUp/mulDivNearest/
+			// mulCmp (always uint256) or mulDivSigned (always int256) result
+			// needs before it can be stored into a genuinely 128-bit-backed
+			// field, or before an unsigned (Ratio256/BasisPoints-derived)
+			// magnitude can be stored into a signed int256 field.
+			value, ok := pop(&stack)
+			if !ok {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on narrowing cast operand"))
+			}
+			num, err := runtimeNumeric(value)
+			if err != nil {
+				return rollback(arithResultCode(err), err)
+			}
+			var targetTag ValueTag
+			switch ins.Op {
+			case OpNarrowToInt128:
+				targetTag = TagInt128
+			case OpNarrowToInt256:
+				targetTag = TagInt256
+			default:
+				targetTag = TagUint128
+			}
+			result, err := runtimeFromBigIntChecked(targetTag, num)
+			if err != nil {
+				return rollback(arithResultCode(err), err)
 			}
 			stack = append(stack, result)
 		case OpVerifySecp256k1:
@@ -1907,7 +2010,7 @@ func runtimeNumeric(v RuntimeValue) (*big.Int, error) {
 	case TagInt8, TagInt16, TagInt32, TagInt64, TagInt128, TagInt256, TagUint8, TagUint16, TagUint32, TagUint64, TagUint128, TagUint256, TagCoins, TagTimestamp:
 		return v.AsBigInt()
 	default:
-		return nil, fmt.Errorf("AVM type error: expected numeric value, got %s", v.Tag)
+		return nil, fmt.Errorf("%w: expected numeric value, got %s", errNumericTypeMismatch, v.Tag)
 	}
 }
 
@@ -1935,7 +2038,7 @@ func runtimeSub(left, right RuntimeValue) (RuntimeValue, error) {
 	}
 	diff := new(big.Int).Sub(li, ri)
 	if diff.Sign() < 0 && !IsSigned(left.Tag) {
-		return RuntimeValue{}, errors.New("AVM unsigned subtraction underflow")
+		return RuntimeValue{}, errUnsignedUnderflow
 	}
 	return runtimeFromBigIntChecked(left.Tag, diff)
 }
@@ -1962,7 +2065,7 @@ func runtimeBinaryArithmetic(op Opcode, left, right RuntimeValue) (RuntimeValue,
 			return RuntimeValue{}, err
 		}
 		if ri.Sign() == 0 {
-			return RuntimeValue{}, errors.New("AVM division by zero")
+			return RuntimeValue{}, errDivisionByZero
 		}
 		if op == OpDiv {
 			return runtimeFromBigIntChecked(left.Tag, new(big.Int).Quo(li, ri))
@@ -1978,7 +2081,7 @@ func runtimeBinaryArithmetic(op Opcode, left, right RuntimeValue) (RuntimeValue,
 			return RuntimeValue{}, err
 		}
 		if ri.Sign() < 0 || !ri.IsUint64() || ri.Uint64() > 4096 {
-			return RuntimeValue{}, errors.New("AVM invalid shift amount")
+			return RuntimeValue{}, errInvalidShiftAmount
 		}
 		shift := uint(ri.Uint64())
 		if op == OpShl {
@@ -2003,7 +2106,21 @@ func runtimeBinaryArithmetic(op Opcode, left, right RuntimeValue) (RuntimeValue,
 		case OpBitXor:
 			out.Xor(li, ri)
 		}
-		return runtimeFromBigInt(left.Tag, out), nil
+		// Width-check like every other binary arithmetic op (+,-,*,/,%,shl).
+		// big.Int's And/Or/Xor operate as if negative operands were sign-
+		// extended in infinite two's-complement, so combining two operands of
+		// MISMATCHED tags/widths -- reachable because the verifier does no
+		// stack-type-consistency analysis across a binary op's two operands --
+		// can produce a magnitude that does not fit left.Tag's declared width.
+		// Confirmed concretely: XOR(int8(-1), int256(10000)) mathematically
+		// equals -10001 (outside int8's [-128,127]), and runtimeFromBigInt's
+		// unchecked int8(v.Int64()) cast previously SILENTLY WRAPPED this to
+		// -17 instead of trapping -- a real, reachable value-corruption bug,
+		// not just a theoretical gap. runtimeFromBigIntChecked closes it by
+		// trapping instead. Same-width, same-signedness operands never trip
+		// this (two's-complement bitwise ops modulo 2^width stay in range), so
+		// this adds no new failure mode for well-typed programs.
+		return runtimeFromBigIntChecked(left.Tag, out)
 	default:
 		return RuntimeValue{}, fmt.Errorf("AVM opcode 0x%02x is not a binary arithmetic op", byte(op))
 	}
@@ -2150,6 +2267,79 @@ func runtimeFromBigInt(tag ValueTag, v *big.Int) RuntimeValue {
 	}
 }
 
+// Sentinel arithmetic errors, wrapped (via errors.Is/fmt.Errorf %w) rather
+// than matched by message text, so the Dispatch loop can classify a runtime
+// arithmetic error to the specific async.Result* exit code the async package
+// already defines for it (ResultDivisionByZero/ResultInvalidShift/
+// ResultArithmeticUnderflow/ResultTypeCheckError/ResultOutOfRange) instead of
+// the generic ResultExecutionFailed every arithmetic trap used to report. See
+// arithResultCode.
+var (
+	errDivisionByZero      = errors.New("AVM division by zero")
+	errInvalidShiftAmount  = errors.New("AVM invalid shift amount")
+	errUnsignedUnderflow   = errors.New("AVM unsigned subtraction underflow")
+	errNumericTypeMismatch = errors.New("AVM type error: expected numeric value")
+	// errIntegerOutOfRange is enforceIntWidth's overflow sentinel (distinct
+	// from errUnsignedUnderflow, its underflow sentinel): an arithmetic
+	// result -- signed or unsigned -- that does not fit the target integer
+	// tag's representable range. This is the trap the checked-narrowing-cast
+	// opcodes (OpNarrowToUint128/OpNarrowToInt128/OpNarrowToInt256, compiled
+	// from finance_types.atlx's toUint128/toInt128/toInt256 builtins) hit
+	// whenever a mulDiv/mulDivRoundUp/mulDivNearest/mulDivSigned result
+	// doesn't fit the narrower target width -- e.g. dec128OverflowTrapG and
+	// sdec128OverflowTrapG in finance_types.atlx exist specifically to prove
+	// this TRAPS rather than silently wraps -- but it is equally reachable
+	// from plain checked +/-/*/shl on any width. See ResultOutOfRange's doc
+	// comment in async/types.go.
+	errIntegerOutOfRange = errors.New("AVM integer out of range")
+)
+
+// arithResultCode classifies a runtime arithmetic error (from runtimeAdd/Sub/
+// BinaryArithmetic/UnaryArithmetic/MulDiv*/MulDivSigned/Numeric) to the
+// specific async.Result* exit code it corresponds to, falling back to the
+// generic async.ResultExecutionFailed for anything else -- stack underflow
+// (handled separately, before these helpers are even called), mulCmp/isqrt's
+// own domain errors, etc. This lets the Dispatch loop's rollback(...) calls
+// report a precise, stable code for the well-known division-by-zero /
+// invalid-shift / underflow / type-mismatch / out-of-range cases without
+// having to duplicate that classification logic at every call site.
+//
+// NOTE on the financial-numeric-library codes (ResultBadDenominator/
+// ResultBadBasisPoints/ResultPrecisionLoss/ResultBadConversion, minted
+// alongside ResultOutOfRange in async/types.go): they are deliberately NOT
+// classified here. finance_types.atlx's Ratio256/BasisPoints invariant
+// checks (den != 0, bps <= MAX_BPS) are, by design (see that file's header
+// comment), plain expressions over these SAME generic checked-arithmetic
+// primitives -- e.g. ratioFromRaw's den != 0 check IS an ordinary mulDiv
+// division-by-zero, indistinguishable at this layer from any other
+// contract's unrelated zero-divisor. Reclassifying every division-by-zero as
+// "bad denominator" here would be wrong for all the OTHER contracts that
+// never touch Ratio256. Those two codes stay minted for API/taxonomy
+// completeness (matching the existing pattern of codes defined ahead of a
+// caller, e.g. ResultStorageRentDebt) rather than wired to a fake signal;
+// closing that gap for real needs a dedicated opcode with its own trap site,
+// not a reclassification of a shared one. ResultPrecisionLoss/
+// ResultBadConversion have no current call site either: every Decimal
+// conversion in finance_types.atlx is an explicit, named rounding mode
+// (Floor/Ceil/Nearest), never an implicit truncation, so there is nothing to
+// trap for "precision loss" today.
+func arithResultCode(err error) uint32 {
+	switch {
+	case errors.Is(err, errDivisionByZero):
+		return async.ResultDivisionByZero
+	case errors.Is(err, errInvalidShiftAmount):
+		return async.ResultInvalidShift
+	case errors.Is(err, errUnsignedUnderflow):
+		return async.ResultArithmeticUnderflow
+	case errors.Is(err, errNumericTypeMismatch):
+		return async.ResultTypeCheckError
+	case errors.Is(err, errIntegerOutOfRange):
+		return async.ResultOutOfRange
+	default:
+		return async.ResultExecutionFailed
+	}
+}
+
 // enforceIntWidth rejects an arithmetic result that does not fit the target
 // integer type's bit width. This applies to ALL integer widths: the <=64-bit
 // tags used to be exempt because runtimeFromBigInt reduces them via
@@ -2169,16 +2359,16 @@ func enforceIntWidth(tag ValueTag, v *big.Int) error {
 		maxInclusive := new(big.Int).Sub(bound, big.NewInt(1))  // 2^(w-1)-1
 		minInclusive := new(big.Int).Neg(bound)                 // -2^(w-1)
 		if v.Cmp(minInclusive) < 0 || v.Cmp(maxInclusive) > 0 {
-			return fmt.Errorf("AVM integer overflow for %s", tag)
+			return fmt.Errorf("%w: AVM integer overflow for %s", errIntegerOutOfRange, tag)
 		}
 		return nil
 	}
 	if v.Sign() < 0 {
-		return fmt.Errorf("AVM unsigned integer underflow for %s", tag)
+		return fmt.Errorf("%w: AVM unsigned integer underflow for %s", errUnsignedUnderflow, tag)
 	}
 	limit := new(big.Int).Lsh(big.NewInt(1), uint(width)) // 2^w
 	if v.Cmp(limit) >= 0 {
-		return fmt.Errorf("AVM integer overflow for %s", tag)
+		return fmt.Errorf("%w: AVM integer overflow for %s", errIntegerOutOfRange, tag)
 	}
 	return nil
 }
@@ -2214,13 +2404,47 @@ func runtimeMulDiv(a, b, c RuntimeValue, roundUp bool) (RuntimeValue, error) {
 		return RuntimeValue{}, err
 	}
 	if ci.Sign() == 0 {
-		return RuntimeValue{}, errors.New("AVM division by zero")
+		return RuntimeValue{}, errDivisionByZero
 	}
 	prod := new(big.Int).Mul(ai, bi)
 	quo := new(big.Int)
 	rem := new(big.Int)
 	quo.QuoRem(prod, ci, rem)
 	if roundUp && rem.Sign() != 0 {
+		quo.Add(quo, big.NewInt(1))
+	}
+	return runtimeFromBigIntChecked(TagUint256, quo)
+}
+
+// runtimeMulDivNearest computes round-half-up(a*b/c) as a uint256: the exact
+// floor(a*b/c) and remainder are formed in the same unbounded big.Int shape as
+// runtimeMulDiv, then the quotient is rounded up iff the remainder, doubled,
+// is >= c (i.e. the true quotient's fractional part is >= 1/2). Traps on a
+// zero divisor (reusing errDivisionByZero, indistinguishable from an ordinary
+// integer divide-by-zero) and on a quotient that overflows uint256, exactly
+// like runtimeMulDiv/runtimeMulDiv(roundUp=true).
+func runtimeMulDivNearest(a, b, c RuntimeValue) (RuntimeValue, error) {
+	ai, err := runtimeNumeric(a)
+	if err != nil {
+		return RuntimeValue{}, err
+	}
+	bi, err := runtimeNumeric(b)
+	if err != nil {
+		return RuntimeValue{}, err
+	}
+	ci, err := runtimeNumeric(c)
+	if err != nil {
+		return RuntimeValue{}, err
+	}
+	if ci.Sign() == 0 {
+		return RuntimeValue{}, errDivisionByZero
+	}
+	prod := new(big.Int).Mul(ai, bi)
+	quo := new(big.Int)
+	rem := new(big.Int)
+	quo.QuoRem(prod, ci, rem)
+	doubled := new(big.Int).Lsh(rem, 1)
+	if doubled.Cmp(ci) >= 0 {
 		quo.Add(quo, big.NewInt(1))
 	}
 	return runtimeFromBigIntChecked(TagUint256, quo)
@@ -2303,7 +2527,7 @@ func runtimeMulDivSigned(a, b, c RuntimeValue) (RuntimeValue, error) {
 		return RuntimeValue{}, err
 	}
 	if ci.Sign() == 0 {
-		return RuntimeValue{}, errors.New("AVM division by zero")
+		return RuntimeValue{}, errDivisionByZero
 	}
 	// sign = sign(a)*sign(b)*sign(c); zero if any operand is zero.
 	sign := ai.Sign() * bi.Sign() * ci.Sign()
@@ -2840,7 +3064,7 @@ func runtimeVerifySecp256k1(msgHash, signature, publicKey RuntimeValue) (bool, e
 // runtimeEcrecover recovers the signer's public key from a 65-byte
 // Ethereum-layout recoverable signature (R‖S‖v) over a 32-byte digest and
 // returns the 64-byte uncompressed public-key body X‖Y (so a contract can
-// derive an Ethereum address via keccak256(pub) then slice(_, 12, 20)). The v
+// derive an Ethereum address via keccak256(pub) then subBytes(_, 12, 20)). The v
 // byte is accepted as {0,1} or {27,28} and normalized; low-S is enforced so
 // recovery is canonical. Any malformed input or failed recovery returns empty
 // bytes (soft-fail), never a trap, matching Ethereum's ecrecover.
@@ -3786,7 +4010,11 @@ func IsAllowedOpcode(op Opcode) bool {
 		OpEcrecover,
 		OpIsqrt,
 		OpMulCmp,
-		OpMulDivSigned:
+		OpMulDivSigned,
+		OpMulDivNearest,
+		OpNarrowToUint128,
+		OpNarrowToInt128,
+		OpNarrowToInt256:
 		return true
 	default:
 		return false

@@ -24,6 +24,17 @@
 //
 // PROVEN target: collateral 1500, debt 1000, threshold 8000bps => adjusted 1200
 // => HF = 1.2e18, not liquidatable.
+//
+// TYPED VARIANT (additive, does not replace the raw-scalar getters above):
+// healthFactorTypedOf/liquidatableTypedOf below demonstrate the SAME
+// computation through finance_types.atlx's real BasisPoints struct (embedded
+// here per the no-cross-file-import convention noted above) instead of a
+// bare uint256 the caller must remember is "out of 10000". The improvement
+// is invariant enforcement: a liquidation threshold is conceptually always
+// 0-100%, and BasisPoints.fromPercentBounded TRAPS at construction time if
+// the caller passes e.g. 15000 (150%) — a mistake the old raw-scalar
+// bpApplyTo/healthOf above cannot catch (it would silently compute an
+// "adjusted collateral" larger than the collateral itself).
 
 const ERR_BAD_MSG = 0xFFFF
 const ERR_NOT_OWNER = 1001
@@ -46,6 +57,13 @@ struct SetPosition {
 }
 
 type AcctMsg = SetPosition
+
+// BasisPoints — embedded from finance_types.atlx (see the file header on why
+// a reference contract embeds rather than imports the type). Only the
+// bounded constructor and the floor-apply method this contract needs.
+struct BasisPoints {
+    bps: uint256
+}
 
 contract LendingHealth {
     author: "Aetralis example"
@@ -82,6 +100,30 @@ contract LendingHealth {
     @pure
     func healthOf(collateral: uint256, debt: uint256, thresholdBps: uint256): uint256 {
         return decDiv(bpApplyTo(thresholdBps, collateral), debt)
+    }
+
+    // ---- Typed variant: BasisPoints.fromPercentBounded + applyFloor -------
+
+    // Bounded constructor: TRAPS if bps > 10000 (i.e. requires the threshold
+    // be 0-100% inclusive) — see finance_types.atlx's bpFromPercentBounded
+    // for the identical checked-subtraction trap idiom.
+    @pure
+    func bpFromPercentBounded(bps: uint256): BasisPoints {
+        return BasisPoints{bps: bps + 0 * (MAX_BPS - bps)}
+    }
+
+    @pure
+    func bpApplyFloor(self: BasisPoints, amount: uint256): uint256 {
+        return mulDiv(amount, self.bps, MAX_BPS)
+    }
+
+    // Health factor computed via the real, invariant-checked BasisPoints
+    // type: constructing `threshold` TRAPS up front if thresholdBps is an
+    // impossible >100% value, instead of silently producing a nonsensical
+    // "adjusted collateral" larger than the collateral itself.
+    @pure
+    func healthOfTyped(collateral: uint256, debt: uint256, threshold: BasisPoints): uint256 {
+        return decDiv(bpApplyFloor(threshold, collateral), debt)
     }
 
     @internal
@@ -134,6 +176,27 @@ contract LendingHealth {
     func liquidatableOf(collateral: uint256, debt: uint256, thresholdBps: uint256): uint64 {
         const safeDebt = (debt == 0) ? 1 : debt
         const hf = healthOf(collateral, safeDebt, thresholdBps)
+        const eff = (debt == 0) ? ONE_1E18 : hf
+        return (eff < ONE_1E18) ? 1 : 0
+    }
+
+    // Typed health factor: thresholdBps is validated via
+    // BasisPoints.fromPercentBounded BEFORE any computation happens, so an
+    // out-of-range threshold TRAPS here instead of silently producing a
+    // wrong health factor the way healthFactorOf above would.
+    @get
+    func healthFactorTypedOf(collateral: uint256, debt: uint256, thresholdBps: uint256): uint256 {
+        const threshold = bpFromPercentBounded(thresholdBps)
+        const safeDebt = (debt == 0) ? 1 : debt
+        const hf = healthOfTyped(collateral, safeDebt, threshold)
+        return (debt == 0) ? 0 : hf
+    }
+
+    @get
+    func liquidatableTypedOf(collateral: uint256, debt: uint256, thresholdBps: uint256): uint64 {
+        const threshold = bpFromPercentBounded(thresholdBps)
+        const safeDebt = (debt == 0) ? 1 : debt
+        const hf = healthOfTyped(collateral, safeDebt, threshold)
         const eff = (debt == 0) ? ONE_1E18 : hf
         return (eff < ONE_1E18) ? 1 : 0
     }

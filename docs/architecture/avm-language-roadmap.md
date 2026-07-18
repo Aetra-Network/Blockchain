@@ -50,6 +50,12 @@ and real liquidations) remain BLOCKED on language upgrades surfaced by the AVM v
 (a) is the one remaining Phase E / follow-up item; until it lands, the finance library stays a
 primitive-level demonstration, honestly labelled as such in each contract header.
 
+Struct field access has since landed (commit `1165cf4f`) and the full financial struct library
+(BasisPoints/Ratio256/Decimal128/Decimal256/SignedDecimal128/SignedDecimal256) has shipped in
+`examples/avm/finance/finance_types.atlx`. See `docs/architecture/avm-financial-arithmetic.md` for the
+complete numeric-type catalog, fixed-point scale/rounding rules, overflow handling, `mulDiv*` internals,
+error codes, and gas costs, and `docs/architecture/avm-financial-abi.md` for the wire-format reference.
+
 ## Phase C — bridge / light-client primitives (DONE)
 merkle_verify (RFC-6962 domain-separated: leaf = H(0x00||data), internal node = H(0x01||left||right), so
 an internal node can never be replayed as a leaf), parameterized by hash algo (sha256/keccak256); batched

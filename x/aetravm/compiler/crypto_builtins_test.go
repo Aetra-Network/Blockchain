@@ -65,10 +65,10 @@ contract CryptoDemo {
   @get func gRipemd160(): bytes { return ripemd160(INPUT) }
   @get func gSha512(): bytes { return sha512(INPUT) }
   @get func gConcat(): bytes { return concat(INPUT, INPUT) }
-  @get func gSlice(): bytes { return slice(INPUT, 1, 2) }
+  @get func gSlice(): bytes { return subBytes(INPUT, 1, 2) }
   @get func gByteAt(): uint8 { return byteAt(INPUT, 1) }
   @get func gToBytesBE(): bytes { return toBytesBE(258, 4) }
-  @get func gFromBytesBE(): uint256 { return fromBytesBE(slice(INPUT, 0, 8)) }
+  @get func gFromBytesBE(): uint256 { return fromBytesBE(subBytes(INPUT, 0, 8)) }
 }
 `
 

@@ -162,11 +162,45 @@ func canonicalCodecTypeName(name string) string {
 	return strings.ToLower(strings.TrimSpace(name))
 }
 
+// financialFieldSpec names one field of a Stage-3 financial struct type, in
+// the exact declaration order from examples/avm/finance/finance_types.atlx.
+type financialFieldSpec struct {
+	Name string
+	Type TypeRef
+}
+
+// financialStructFieldSpecs is the closed ABI registry for the Stage-3
+// financial struct types (BasisPoints/Ratio256/Decimal256/Decimal128/
+// SignedDecimal256/SignedDecimal128). Registering these explicitly closes the
+// codec gap where an unrecognized struct type name fell through to the
+// generic/zero default (docs/architecture/avm-financial-abi.md documents the
+// wire shape): encode/decode of these specific names now goes through
+// canonicalFinancialStructValue / assignFinancialStructValue, which enforce
+// the exact field set (name-keyed, matching the TagMap wire shape used by
+// avm.CanonicalEncode for value structs) instead of accepting or silently
+// zero-defaulting an arbitrary/malformed shape.
+var financialStructFieldSpecs = map[string][]financialFieldSpec{
+	"basispoints":      {{Name: "bps", Type: TypeRef{Name: "uint256"}}},
+	"ratio256":         {{Name: "num", Type: TypeRef{Name: "uint256"}}, {Name: "den", Type: TypeRef{Name: "uint256"}}},
+	"decimal256":       {{Name: "raw", Type: TypeRef{Name: "uint256"}}},
+	"decimal128":       {{Name: "raw", Type: TypeRef{Name: "uint128"}}},
+	"signeddecimal256": {{Name: "raw", Type: TypeRef{Name: "int256"}}},
+	"signeddecimal128": {{Name: "raw", Type: TypeRef{Name: "int128"}}},
+}
+
 func zeroValueForType(typ TypeRef) any {
 	if typ.Optional {
 		return nil
 	}
-	switch canonicalCodecTypeName(typ.Name) {
+	canonical := canonicalCodecTypeName(typ.Name)
+	if spec, ok := financialStructFieldSpecs[canonical]; ok {
+		out := make(map[string]any, len(spec))
+		for _, field := range spec {
+			out[field.Name] = zeroValueForType(field.Type)
+		}
+		return out
+	}
+	switch canonical {
 	case "bool":
 		return false
 	case "u2", "u4", "u8", "u16", "u32", "u64", "u128", "u256", "uint2", "uint4", "uint8", "uint16", "uint32", "uint64", "uint128", "uint256", "i2", "i4", "i8", "i16", "i32", "i64", "i128", "i256", "int2", "int4", "int8", "int16", "int32", "int64", "int128", "int256", "coins", "timestamp":
@@ -361,7 +395,11 @@ func canonicalCodecValue(typ TypeRef, value reflect.Value) (any, error) {
 		}
 		value = value.Elem()
 	}
-	switch canonicalCodecTypeName(typ.Name) {
+	canonical := canonicalCodecTypeName(typ.Name)
+	if spec, ok := financialStructFieldSpecs[canonical]; ok {
+		return canonicalFinancialStructValue(typ.Name, spec, value)
+	}
+	switch canonical {
 	case "bool":
 		return value.Bool(), nil
 	case "u2", "u4", "u8", "u16", "u32", "u64", "u128", "u256", "uint2", "uint4", "uint8", "uint16", "uint32", "uint64", "uint128", "uint256", "i2", "i4", "i8", "i16", "i32", "i64", "i128", "i256", "int2", "int4", "int8", "int16", "int32", "int64", "int128", "int256", "coins", "timestamp":
@@ -402,6 +440,108 @@ func canonicalCodecValue(typ TypeRef, value reflect.Value) (any, error) {
 			return out, nil
 		}
 		return fmt.Sprintf("%v", value.Interface()), nil
+	}
+}
+
+// canonicalFinancialStructValue encodes a registered financial struct type
+// (BasisPoints/Ratio256/DecimalNNN/SignedDecimalNNN) by requiring EXACTLY the
+// registered field set to be present on the source value -- unlike the
+// generic structToMap/mapToCanonical fallback used for arbitrary struct
+// types, a missing field is rejected rather than silently encoded as absent.
+func canonicalFinancialStructValue(typeName string, spec []financialFieldSpec, value reflect.Value) (any, error) {
+	if value.Kind() != reflect.Struct && value.Kind() != reflect.Map {
+		return nil, fmt.Errorf("encode %s: expected struct or map value, got %s", typeName, value.Kind())
+	}
+	out := make(map[string]any, len(spec))
+	for _, field := range spec {
+		fv, ok := extractFieldValue(value, field.Name)
+		if !ok {
+			return nil, fmt.Errorf("encode %s: missing field %q", typeName, field.Name)
+		}
+		encoded, err := canonicalCodecValue(field.Type, fv)
+		if err != nil {
+			return nil, fmt.Errorf("encode %s.%s: %w", typeName, field.Name, err)
+		}
+		out[field.Name] = encoded
+	}
+	return out, nil
+}
+
+// assignFinancialStructValue decodes a wire value for a registered financial
+// struct type. The raw JSON object must contain EXACTLY the registered field
+// set -- no missing field (silently zero-defaulted) and no extra/unknown
+// field -- or decode is rejected deterministically. This closes the codec
+// gap where an unrecognized/malformed struct payload fell through to a
+// generic, unvalidated map decode.
+func assignFinancialStructValue(field reflect.Value, typeName string, spec []financialFieldSpec, raw json.RawMessage) error {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return fmt.Errorf("decode %s: expected a JSON object: %w", typeName, err)
+	}
+	if len(obj) != len(spec) {
+		return fmt.Errorf("decode %s: expected %d field(s), got %d", typeName, len(spec), len(obj))
+	}
+	for _, f := range spec {
+		if _, ok := obj[f.Name]; !ok {
+			return fmt.Errorf("decode %s: missing field %q", typeName, f.Name)
+		}
+	}
+	for field.Kind() == reflect.Pointer {
+		if field.IsNil() {
+			if !field.CanSet() {
+				return fmt.Errorf("decode %s: nil pointer target cannot be allocated", typeName)
+			}
+			field.Set(reflect.New(field.Type().Elem()))
+		}
+		field = field.Elem()
+	}
+	switch field.Kind() {
+	case reflect.Map:
+		if field.IsNil() {
+			field.Set(reflect.MakeMap(field.Type()))
+		}
+		for _, f := range spec {
+			elem := reflect.New(field.Type().Elem())
+			if err := assignDecodedValue(elem.Elem(), f.Type, obj[f.Name]); err != nil {
+				return fmt.Errorf("decode %s.%s: %w", typeName, f.Name, err)
+			}
+			v := elem.Elem()
+			if !v.Type().AssignableTo(field.Type().Elem()) {
+				if field.Type().Elem().Kind() == reflect.Interface {
+					v = reflect.ValueOf(v.Interface())
+				} else if v.Type().ConvertibleTo(field.Type().Elem()) {
+					v = v.Convert(field.Type().Elem())
+				} else {
+					return fmt.Errorf("decode %s.%s: cannot assign %s to %s", typeName, f.Name, v.Type(), field.Type().Elem())
+				}
+			}
+			field.SetMapIndex(reflect.ValueOf(f.Name), v)
+		}
+		return nil
+	case reflect.Struct:
+		for _, f := range spec {
+			target := field.FieldByNameFunc(func(n string) bool { return strings.EqualFold(n, f.Name) })
+			if !target.IsValid() || !target.CanSet() {
+				return fmt.Errorf("decode %s: target struct has no settable field %q", typeName, f.Name)
+			}
+			if err := assignDecodedValue(target, f.Type, obj[f.Name]); err != nil {
+				return fmt.Errorf("decode %s.%s: %w", typeName, f.Name, err)
+			}
+		}
+		return nil
+	case reflect.Interface:
+		built := make(map[string]any, len(spec))
+		for _, f := range spec {
+			elem := reflect.New(reflect.TypeOf((*any)(nil)).Elem())
+			if err := assignDecodedValue(elem.Elem(), f.Type, obj[f.Name]); err != nil {
+				return fmt.Errorf("decode %s.%s: %w", typeName, f.Name, err)
+			}
+			built[f.Name] = elem.Elem().Interface()
+		}
+		field.Set(reflect.ValueOf(built))
+		return nil
+	default:
+		return fmt.Errorf("decode %s: unsupported target kind %s", typeName, field.Kind())
 	}
 }
 
@@ -640,6 +780,9 @@ func extractFieldValue(rv reflect.Value, name string) (reflect.Value, bool) {
 func assignDecodedValue(field reflect.Value, typ TypeRef, raw json.RawMessage) error {
 	if !field.CanSet() {
 		return fmt.Errorf("field cannot be set")
+	}
+	if spec, ok := financialStructFieldSpecs[canonicalCodecTypeName(typ.Name)]; ok {
+		return assignFinancialStructValue(field, typ.Name, spec, raw)
 	}
 	switch field.Kind() {
 	case reflect.String:

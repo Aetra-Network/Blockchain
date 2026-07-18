@@ -51,6 +51,12 @@ var runtimeExitCodes = []RuntimeExitCodeSpec{
 	{Code: ResultStorageRentDebt, Name: "storage_rent_debt", ContractExitCode: contractstypes.ExitCodeStorageRentDebt, ContractExitCodeName: "storage_rent_debt"},
 	{Code: ResultInactiveFrozen, Name: "inactive_frozen", ContractExitCode: contractstypes.ExitCodeInactiveFrozen, ContractExitCodeName: "inactive_frozen"},
 	{Code: ResultActionBudgetExceeded, Name: "action_budget_exceeded", ContractExitCode: contractstypes.ExitCodeActionBudgetExceeded, ContractExitCodeName: "action_budget_exceeded"},
+
+	{Code: ResultBadDenominator, Name: "bad_denominator", ContractExitCode: contractstypes.ExitCodeBadDenominator, ContractExitCodeName: "bad_denominator"},
+	{Code: ResultBadBasisPoints, Name: "bad_basis_points", ContractExitCode: contractstypes.ExitCodeBadBasisPoints, ContractExitCodeName: "bad_basis_points"},
+	{Code: ResultPrecisionLoss, Name: "precision_loss", ContractExitCode: contractstypes.ExitCodePrecisionLoss, ContractExitCodeName: "precision_loss"},
+	{Code: ResultBadConversion, Name: "bad_conversion", ContractExitCode: contractstypes.ExitCodeBadConversion, ContractExitCodeName: "bad_conversion"},
+	{Code: ResultOutOfRange, Name: "out_of_range", ContractExitCode: contractstypes.ExitCodeOutOfRange, ContractExitCodeName: "out_of_range"},
 }
 
 func RuntimeExitCodes() []RuntimeExitCodeSpec {
@@ -155,6 +161,16 @@ func ContractExitCodeForRuntime(code uint32, failedPhase string) uint32 {
 		return contractstypes.ExitCodeInactiveFrozen
 	case ResultActionBudgetExceeded:
 		return contractstypes.ExitCodeActionBudgetExceeded
+	case ResultBadDenominator:
+		return contractstypes.ExitCodeBadDenominator
+	case ResultBadBasisPoints:
+		return contractstypes.ExitCodeBadBasisPoints
+	case ResultPrecisionLoss:
+		return contractstypes.ExitCodePrecisionLoss
+	case ResultBadConversion:
+		return contractstypes.ExitCodeBadConversion
+	case ResultOutOfRange:
+		return contractstypes.ExitCodeOutOfRange
 	default:
 		if code >= 100 && code < 200 {
 			return contractstypes.ExitCodeContractAbort

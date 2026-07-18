@@ -153,11 +153,11 @@ contract DualSigMultisig {
 
     // The Ethereum-style address of the recovered signer: the low 20 bytes of
     // keccak256(pubKeyXY). This composes THREE new primitives — ecrecover,
-    // byte-exact keccak256, and slice — exactly as an Ethereum-bridge contract
+    // byte-exact keccak256, and subBytes — exactly as an Ethereum-bridge contract
     // would to authenticate a foreign-chain signer.
     @get
     func recoveredEthAddress(): bytes {
-        return slice(keccak256(ecrecover(sha256(OWNER_MESSAGE), SECP_RECOVERABLE)), 12, 20)
+        return subBytes(keccak256(ecrecover(sha256(OWNER_MESSAGE), SECP_RECOVERABLE)), 12, 20)
     }
 
     // The number of authorized actions performed (guarded by dualVerify).

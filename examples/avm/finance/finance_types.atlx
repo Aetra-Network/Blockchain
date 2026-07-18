@@ -1,0 +1,1247 @@
+// Aetralis financial standard library, PHASE 2 — genuine invariant-enforcing
+// STRUCT types layered on top of finance_stdlib.atlx's namespace-function
+// convention (finance_stdlib.atlx is untouched; this is an additive sibling
+// file). Where finance_stdlib.atlx's bp*/ratio*/dec*/pnl* functions treat a
+// "BasisPoints" or "Ratio" as a naming CONVENTION over raw uintN scalars (the
+// AVM v1 capability probe found reading a field off a value struct
+// unsupported at the time), struct field access on locals/params/self now
+// works (see struct_field_access_test.go), so these are REAL structs with
+// REAL fields, constructed only through invariant-checking constructors.
+//
+// MANDATORY names (owner-specified): BasisPoints, Ratio256. Every other name
+// here was chosen by studying finance_stdlib.atlx's own convention (bp*/
+// ratio*/dec*/pnl* prefixes, Decimal18 = "Decimal" + scale-digit-count for a
+// fixed-point type) and extending it to distinguish the four new fixed-point
+// types by BACKING WIDTH instead: Decimal128/Decimal256 (unsigned) and
+// SignedDecimal128/SignedDecimal256 (signed). No type is generic over its
+// scale (`Decimal<N>` is explicitly out per the design brief); each concrete
+// type hard-codes its own scale, chosen to fit comfortably inside its
+// backing width: Decimal128/SignedDecimal128 use SCALE128 = 1e9 (9 decimal
+// digits), Decimal256/SignedDecimal256 use SCALE256 = 1e18 (matching the
+// existing Decimal18 precedent exactly).
+//
+// ============================================================================
+// AVM v1 LANGUAGE CONSTRAINT THIS FILE IS WRITTEN AROUND (read this first):
+// ============================================================================
+// Every ordinary function call (`f(x, y)`, `TypeName.method(...)`, or a
+// struct-typed `self` parameter's "method") is TEXTUALLY INLINED at its call
+// site (compile.go's tryInlineUserFunctionCall) rather than compiled to a
+// real CALL/RET — the AVM has no subroutine opcode. Inlining only succeeds
+// when the callee's body is at most [optional `lazy Storage.load()`
+// bindings] followed by EXACTLY ONE `return <expr>` — no `const`/`var`
+// locals, no `if`/`assert`/loop statements. So every "constructor" and
+// "method" below is a single return expression; there is no assert/throw
+// available inside them. Invariant checks (Ratio256's den != 0, a bounded
+// BasisPoints <= 10000) are instead encoded as EXPRESSIONS that TRAP via the
+// same checked/width-enforced arithmetic every operator already goes
+// through — e.g. `mulDiv(num, den, den)` recomputes `num` exactly whenever
+// `den != 0` and TRAPS on `den == 0` (mulDiv's own division-by-zero guard),
+// turning a would-be assert into a reusable, inlinable expression.
+// Multi-statement logic (Ratio256.reduce()'s GCD loop) is instead exposed as
+// a @get — a genuine top-level entry point compiled directly from full
+// statements, never inlined — taking scalar arguments (per the ABI
+// constraint below) and returning the already-reduced struct.
+//
+// CRITICAL ABI CONSTRAINT: a struct-typed value cannot yet arrive directly as
+// a wire message/getter ARGUMENT (only scalar uint256/int256/... arguments
+// decode off the wire today). Every constructor below therefore accepts ONLY
+// scalar arguments and returns the real typed struct — the correct shape for
+// a caller sending raw numerator/denominator/bps scalars into a constructor
+// that enforces the invariant, not a workaround. A struct VALUE returned
+// FROM a @get (the encode direction) works fine (CanonicalEncode already
+// gives any struct a field-name-keyed map wire shape); the conformance test
+// for this file reads such return values directly via the runtime API,
+// bypassing the (unaffected) JSON getter-argument codec entirely.
+//
+// TAG DISCIPLINE for the two 128-bit-backed types (Decimal128 /
+// SignedDecimal128): mulDiv/mulDivRoundUp/mulDivNearest/mulCmp always yield
+// uint256, and mulDivSigned always yields int256 (see their own doc comments
+// in avm.go) — never uint128/int128, regardless of their operands' widths.
+// Storing such a result into a field genuinely declared uint128/int128 needs
+// an explicit, CHECKED narrowing cast, or the value would silently carry the
+// wrong runtime tag (breaking arithmetic and canonical encoding alike). This
+// file adds exactly that: toUint128(x)/toInt128(x) (checked narrow) and
+// toInt256(x) (checked re-tag, needed when an unsigned Ratio256/BasisPoints
+// magnitude must become a SIGNED decimal's raw field). All three TRAP — never
+// wrap — when the value doesn't fit, mirroring every other checked op here.
+//
+// SIGNED ARITHMETIC SCOPE: the only signed fused multiply-divide opcode is
+// mulDivSigned (a*b)/c, TRUNCATED TOWARD ZERO — there is no signed
+// floor/ceil/nearest variant (out of scope for this file; the unsigned
+// mulDivFloor/Ceil/Nearest trio is what Stage 1/2 shipped). SignedDecimal128
+// and SignedDecimal256's mul/div/toInteger are therefore single-mode
+// (truncate toward zero), not triples of Floor/Ceil/Nearest methods like
+// their unsigned counterparts — a deliberate scope decision, not an
+// oversight.
+//
+// Like finance_stdlib.atlx, this ships as a HOST CONTRACT (the AVM requires
+// exactly one contract per compiled unit) so a conformance test can compile
+// AND execute every routine through the real VM.
+
+const ERR_BAD_MSG = 0xFFFF
+
+// 100% in basis points (BasisPoints.bps scale).
+const MAX_BPS = 10000
+
+// Decimal128 / SignedDecimal128 scale: 1.0 == 1e9 (9 decimal digits), chosen
+// to leave ample integer-part headroom inside a 128-bit magnitude.
+const SCALE128 = 1000000000
+
+// Decimal256 / SignedDecimal256 scale: 1.0 == 1e18, matching the existing
+// Decimal18 precedent (finance_stdlib.atlx) exactly.
+const SCALE256 = 1000000000000000000
+
+// ---- Struct definitions ---------------------------------------------------
+
+// BasisPoints: an unrestricted or percent-bounded rate scaled by 10000 =
+// 100%. Unrestricted by default (bpFromRaw) because some ratios legitimately
+// exceed 100% (e.g. a leverage multiplier); bpFromPercentBounded is the
+// separate, explicitly-bounded constructor for callers that need <= 100%.
+struct BasisPoints {
+    bps: uint256
+}
+
+// Ratio256: an unreduced (num, den) pair. INVARIANT: den != 0, enforced at
+// every public constructor (ratioFromRaw, and everything built from it) —
+// there is no way to observe a Ratio256 with den == 0 through this API.
+struct Ratio256 {
+    num: uint256
+    den: uint256
+}
+
+// Decimal128 / Decimal256: unsigned fixed-point, backed by uint128 / uint256
+// respectively, at a fixed hard-coded scale (SCALE128 / SCALE256 — see the
+// file header for why the scale is not a type parameter).
+struct Decimal128 {
+    raw: uint128
+}
+
+struct Decimal256 {
+    raw: uint256
+}
+
+// SignedDecimal128 / SignedDecimal256: signed fixed-point, backed by int128 /
+// int256. Every operand reaching these as a SIGNED value must arrive via a
+// decoded int256 message/getter argument (an ATLX integer literal is always
+// unsigned — see finance_stdlib.atlx's own note on this), never a negative
+// literal.
+struct SignedDecimal128 {
+    raw: int128
+}
+
+struct SignedDecimal256 {
+    raw: int256
+}
+
+// A no-op message so the contract satisfies the "internal or external
+// handler" requirement, plus ONE genuinely stateful message: ReduceRatio.
+// Ratio256.reduce()'s Euclidean GCD needs a mutating loop accumulator
+// (`var a/b` reassigned each iteration), but @get/@pure bodies are ALWAYS
+// validated as read-only (compile.go's validateGetter hard-codes inPure=true
+// — every `StatementSet`, including a plain local `var` reassignment, not
+// just a storage write, is rejected there). A message HANDLER is validated
+// as impure, so it CAN mutate locals in a loop; ReduceRatio therefore runs
+// the GCD loop and writes the reduced (num, den) into storage, and the
+// paired ratioReduce @get below just reads that storage back out — the same
+// write-then-read split bridge_verify.atlx uses for its own Merkle-proof
+// loops.
+@storage
+struct StdlibStorage {
+    owner: address
+    reducedNum: uint256 = 0
+    reducedDen: uint256 = 1
+}
+
+@message(0x9101)
+struct Noop {}
+
+@message(0x9102)
+struct ReduceRatio {
+    num: uint256
+    den: uint256
+}
+
+type StdlibMsg = Noop | ReduceRatio
+
+contract FinanceTypes {
+    author: "Aetralis example"
+    description: "Phase 2 financial types: invariant-enforcing BasisPoints / Ratio256 / Decimal128 / Decimal256 / SignedDecimal128 / SignedDecimal256 structs"
+    version: "0.01.0"
+
+    storage: StdlibStorage
+    incomingMessages: StdlibMsg
+
+    @store
+    func StdlibStorage.load() {
+        return StdlibStorage.fromChunk(contract.getData())
+    }
+
+    // ======================================================================
+    // BasisPoints
+    // ======================================================================
+
+    // Unrestricted constructor: bps may exceed MAX_BPS (a >100% rate is
+    // representable on purpose — see the struct doc comment).
+    @pure
+    func bpFromRaw(bps: uint256): BasisPoints {
+        return BasisPoints{bps: bps}
+    }
+
+    // Bounded constructor: TRAPS if bps > MAX_BPS (i.e. requires 0-100%
+    // inclusive). `MAX_BPS - bps` is a checked subtraction that underflows
+    // (traps) the instant bps > MAX_BPS; multiplying that guard expression by
+    // 0 discards its value while still forcing it to evaluate (the AVM is an
+    // eager, depth-first-evaluated stack machine — there is no short-circuit
+    // skipping an operand of `*`), so the returned bps is unchanged on the
+    // non-trapping path. This is the file's canonical "inline bounds trap"
+    // idiom; see also ratioFromRaw below for the equivalent zero-denominator
+    // idiom via mulDiv.
+    @pure
+    func bpFromPercentBounded(bps: uint256): BasisPoints {
+        return BasisPoints{bps: bps + 0 * (MAX_BPS - bps)}
+    }
+
+    @pure
+    func bpRaw(self: BasisPoints): uint256 {
+        return self.bps
+    }
+
+    @pure
+    func bpApplyFloor(self: BasisPoints, amount: uint256): uint256 {
+        return mulDivFloor(amount, self.bps, MAX_BPS)
+    }
+
+    @pure
+    func bpApplyCeil(self: BasisPoints, amount: uint256): uint256 {
+        return mulDivCeil(amount, self.bps, MAX_BPS)
+    }
+
+    @pure
+    func bpApplyNearest(self: BasisPoints, amount: uint256): uint256 {
+        return mulDivNearest(amount, self.bps, MAX_BPS)
+    }
+
+    // complement() = MAX_BPS - bps. A checked subtraction: TRAPS if
+    // self.bps > MAX_BPS (an over-100% BasisPoints, legally constructed via
+    // bpFromRaw, has no meaningful complement).
+    @pure
+    func bpComplement(self: BasisPoints): BasisPoints {
+        return BasisPoints{bps: MAX_BPS - self.bps}
+    }
+
+    // Checked add: TRAPS on a uint256 overflow (both operands' own `bps`
+    // already fit uint256, so only their SUM can overflow, at the very top
+    // of the representable range) via the ordinary checked `+`.
+    @pure
+    func bpAdd(a: BasisPoints, b: BasisPoints): BasisPoints {
+        return BasisPoints{bps: a.bps + b.bps}
+    }
+
+    // Checked sub: TRAPS if b.bps > a.bps (checked-subtraction underflow).
+    @pure
+    func bpSub(a: BasisPoints, b: BasisPoints): BasisPoints {
+        return BasisPoints{bps: a.bps - b.bps}
+    }
+
+    // ======================================================================
+    // Ratio256
+    // ======================================================================
+
+    // The ONLY public way to build a Ratio256. `mulDiv(num, den, den)` is
+    // mathematically `floor(num*den/den) == num` for any den != 0 (dividing
+    // back out exactly what was just multiplied in, no remainder), and
+    // mulDiv's own division-by-zero guard TRAPS the instant den == 0 — so
+    // this single expression both re-derives `num` unchanged AND enforces
+    // Ratio256's den != 0 invariant, with no assert statement needed (see the
+    // file header on why constructors can't use assert/throw).
+    @pure
+    func ratioFromRaw(num: uint256, den: uint256): Ratio256 {
+        return Ratio256{num: mulDiv(num, den, den), den: den}
+    }
+
+    @pure
+    func ratioNumerator(self: Ratio256): uint256 {
+        return self.num
+    }
+
+    @pure
+    func ratioDenominator(self: Ratio256): uint256 {
+        return self.den
+    }
+
+    // invert() = den/num. Routed through ratioFromRaw (not a bare struct
+    // literal) so the den != 0 invariant is re-checked on the NEW
+    // denominator (self.num): inverting a Ratio256 whose numerator is 0
+    // (the valid ratio 0/anything) would otherwise silently produce an
+    // invalid den == 0 value; instead it TRAPS, exactly like any other
+    // attempt to construct 1/0.
+    @pure
+    func ratioInvert(self: Ratio256): Ratio256 {
+        return ratioFromRaw(self.den, self.num)
+    }
+
+    // Full-range compare: sign(a.num*b.den - b.num*a.den) as -1/0/+1, via
+    // mulCmp so neither cross product can overflow uint256 and trap the
+    // compare itself (unlike a naive cross-multiply with a plain `*`).
+    @pure
+    func ratioCompare(a: Ratio256, b: Ratio256): int256 {
+        return mulCmp(a.num, b.den, b.num, a.den)
+    }
+
+    @pure
+    func ratioGreaterThan(a: Ratio256, b: Ratio256): uint64 {
+        return (ratioCompare(a, b) > 0) ? 1 : 0
+    }
+
+    // a/b + c/d = (a.num*b.den + c.num*a.den) / (a.den*b.den), unreduced.
+    // Every `*`/`+` here is the ordinary CHECKED operator: an overflowing
+    // cross product or sum TRAPS (the "trap on the final result not
+    // fitting" the design brief asks for), and the new denominator
+    // a.den*b.den can never be 0 (the product of two already-nonzero
+    // denominators), so the invariant holds without re-routing through
+    // ratioFromRaw.
+    @pure
+    func ratioAdd(a: Ratio256, b: Ratio256): Ratio256 {
+        return Ratio256{num: a.num * b.den + b.num * a.den, den: a.den * b.den}
+    }
+
+    // a/b - c/d = (a.num*b.den - c.num*a.den) / (a.den*b.den). The checked
+    // subtraction TRAPS if a < b (Ratio256 has no negative representation),
+    // exactly the "checked, trap" semantics the design brief asks for.
+    @pure
+    func ratioSub(a: Ratio256, b: Ratio256): Ratio256 {
+        return Ratio256{num: a.num * b.den - b.num * a.den, den: a.den * b.den}
+    }
+
+    // a/b * c/d = (a.num*c.num) / (a.den*c.den), unreduced. Checked `*`
+    // TRAPS if either cross product overflows uint256.
+    @pure
+    func ratioMul(a: Ratio256, b: Ratio256): Ratio256 {
+        return Ratio256{num: a.num * b.num, den: a.den * b.den}
+    }
+
+    // a/b / c/d = (a.num*b.den) / (a.den*b.num) -- dividing by b is the same
+    // as multiplying by b's inverse, computed directly via ratioFromRaw
+    // rather than by nesting `ratioMul(a, ratioInvert(b))`: AVM v1's call
+    // inlining substitutes an ARGUMENT EXPRESSION into the callee's body
+    // wherever its parameter is used, but refuses to do so when that usage
+    // is a FIELD ACCESS (ratioMul's body reads `b.num`/`b.den`) and the
+    // argument is a COMPLEX expression rather than a bare identifier —
+    // `ratioInvert(b)` is exactly such a complex expression. Computing the
+    // new numerator/denominator directly from a/b's own fields sidesteps
+    // this entirely, and still TRAPS if b.num == 0 (the new denominator
+    // a.den*b.num is 0 iff b.num == 0, since a.den is never 0) — i.e.
+    // dividing by the zero ratio correctly traps.
+    @pure
+    func ratioDiv(a: Ratio256, b: Ratio256): Ratio256 {
+        return ratioFromRaw(a.num * b.den, a.den * b.num)
+    }
+
+    @pure
+    func ratioApplyToFloor(self: Ratio256, amount: uint256): uint256 {
+        return mulDivFloor(amount, self.num, self.den)
+    }
+
+    @pure
+    func ratioApplyToCeil(self: Ratio256, amount: uint256): uint256 {
+        return mulDivCeil(amount, self.num, self.den)
+    }
+
+    @pure
+    func ratioApplyToNearest(self: Ratio256, amount: uint256): uint256 {
+        return mulDivNearest(amount, self.num, self.den)
+    }
+
+    // reduce(): gcd-based reduction, performed ONLY when explicitly called
+    // (never implicitly after ratioAdd/Sub/Mul/Div — an unreduced Ratio256
+    // is a perfectly valid Ratio256, and reducing after every op would be
+    // pure wasted gas). The Euclidean GCD loop needs a mutating accumulator,
+    // which @get bodies cannot have (see the ReduceRatio message doc comment
+    // above) — so the loop itself runs in onInternalMessage's ReduceRatio
+    // handler below, which writes the reduced (num, den) into storage; this
+    // getter is the read-only half, just loading that result back out.
+    @get
+    func ratioReduce(): Ratio256 {
+        const st = StdlibStorage.load()
+        return Ratio256{num: st.reducedNum, den: st.reducedDen}
+    }
+
+    // ======================================================================
+    // Decimal256 (unsigned, uint256-backed, scale 1e18)
+    // ======================================================================
+
+    @pure
+    func dec256FromInt(n: uint256): Decimal256 {
+        return Decimal256{raw: mulDiv(n, SCALE256, 1)}
+    }
+
+    @pure
+    func dec256FromRaw(raw: uint256): Decimal256 {
+        return Decimal256{raw: raw}
+    }
+
+    @pure
+    func dec256FromRatioFloor(r: Ratio256): Decimal256 {
+        return Decimal256{raw: mulDivFloor(SCALE256, r.num, r.den)}
+    }
+
+    @pure
+    func dec256FromRatioCeil(r: Ratio256): Decimal256 {
+        return Decimal256{raw: mulDivCeil(SCALE256, r.num, r.den)}
+    }
+
+    @pure
+    func dec256FromRatioNearest(r: Ratio256): Decimal256 {
+        return Decimal256{raw: mulDivNearest(SCALE256, r.num, r.den)}
+    }
+
+    @pure
+    func dec256FromBasisPoints(bp: BasisPoints): Decimal256 {
+        return Decimal256{raw: mulDivFloor(SCALE256, bp.bps, MAX_BPS)}
+    }
+
+    @pure
+    func dec256Raw(self: Decimal256): uint256 {
+        return self.raw
+    }
+
+    // Checked mul/div via mulDiv's unbounded a*b intermediate: two
+    // near-max-uint256 scaled decimals multiplying can legitimately need
+    // more than 256 bits mid-computation even though the final rescaled
+    // result fits — a plain checked `*` would trap on the intermediate,
+    // wrongly rejecting a valid multiplication.
+    @pure
+    func dec256MulFloor(a: Decimal256, b: Decimal256): Decimal256 {
+        return Decimal256{raw: mulDivFloor(a.raw, b.raw, SCALE256)}
+    }
+
+    @pure
+    func dec256MulCeil(a: Decimal256, b: Decimal256): Decimal256 {
+        return Decimal256{raw: mulDivCeil(a.raw, b.raw, SCALE256)}
+    }
+
+    @pure
+    func dec256MulNearest(a: Decimal256, b: Decimal256): Decimal256 {
+        return Decimal256{raw: mulDivNearest(a.raw, b.raw, SCALE256)}
+    }
+
+    @pure
+    func dec256DivFloor(a: Decimal256, b: Decimal256): Decimal256 {
+        return Decimal256{raw: mulDivFloor(a.raw, SCALE256, b.raw)}
+    }
+
+    @pure
+    func dec256DivCeil(a: Decimal256, b: Decimal256): Decimal256 {
+        return Decimal256{raw: mulDivCeil(a.raw, SCALE256, b.raw)}
+    }
+
+    @pure
+    func dec256DivNearest(a: Decimal256, b: Decimal256): Decimal256 {
+        return Decimal256{raw: mulDivNearest(a.raw, SCALE256, b.raw)}
+    }
+
+    // toInteger{Floor,Ceil,Nearest}: EXPLICIT rounding mode, never an
+    // implicit/ambiguous truncation. Floor is a plain checked `/` (dividing
+    // only ever shrinks the magnitude, so there is no intermediate to
+    // overflow). Ceil/Nearest must NOT build their rounding bias with a
+    // same-width checked `+` before dividing: self.raw can legitimately sit
+    // within SCALE256 (or SCALE256/2) of uint256's max, which would make the
+    // bias-add itself trap even though the true result is small and well
+    // in-range. Route them through mulDivCeil/mulDivNearest's unbounded
+    // big.Int intermediate instead (same reasoning as every other
+    // Ceil/Nearest routine in this file).
+    @pure
+    func dec256ToIntegerFloor(self: Decimal256): uint256 {
+        return self.raw / SCALE256
+    }
+
+    @pure
+    func dec256ToIntegerCeil(self: Decimal256): uint256 {
+        return mulDivCeil(self.raw, 1, SCALE256)
+    }
+
+    @pure
+    func dec256ToIntegerNearest(self: Decimal256): uint256 {
+        return mulDivNearest(self.raw, 1, SCALE256)
+    }
+
+    // Integer / fractional part accessors (Decimal256 is non-negative, so
+    // "integer part" is unambiguously the floor).
+    @pure
+    func dec256IntegerPart(self: Decimal256): uint256 {
+        return self.raw / SCALE256
+    }
+
+    @pure
+    func dec256FractionalPart(self: Decimal256): uint256 {
+        return self.raw % SCALE256
+    }
+
+    // ======================================================================
+    // Decimal128 (unsigned, uint128-backed, scale 1e9)
+    // ======================================================================
+    // Same shape as Decimal256, but every mulDiv-family result (always
+    // uint256) is narrowed back to uint128 via toUint128 (checked, TRAPS if
+    // it doesn't fit) before it can be stored into a `raw: uint128` field.
+
+    @pure
+    func dec128FromInt(n: uint256): Decimal128 {
+        return Decimal128{raw: toUint128(mulDiv(n, SCALE128, 1))}
+    }
+
+    @pure
+    func dec128FromRaw(raw: uint256): Decimal128 {
+        return Decimal128{raw: toUint128(raw)}
+    }
+
+    @pure
+    func dec128FromRatioFloor(r: Ratio256): Decimal128 {
+        return Decimal128{raw: toUint128(mulDivFloor(SCALE128, r.num, r.den))}
+    }
+
+    @pure
+    func dec128FromRatioCeil(r: Ratio256): Decimal128 {
+        return Decimal128{raw: toUint128(mulDivCeil(SCALE128, r.num, r.den))}
+    }
+
+    @pure
+    func dec128FromRatioNearest(r: Ratio256): Decimal128 {
+        return Decimal128{raw: toUint128(mulDivNearest(SCALE128, r.num, r.den))}
+    }
+
+    @pure
+    func dec128FromBasisPoints(bp: BasisPoints): Decimal128 {
+        return Decimal128{raw: toUint128(mulDivFloor(SCALE128, bp.bps, MAX_BPS))}
+    }
+
+    @pure
+    func dec128Raw(self: Decimal128): uint128 {
+        return self.raw
+    }
+
+    @pure
+    func dec128MulFloor(a: Decimal128, b: Decimal128): Decimal128 {
+        return Decimal128{raw: toUint128(mulDivFloor(a.raw, b.raw, SCALE128))}
+    }
+
+    @pure
+    func dec128MulCeil(a: Decimal128, b: Decimal128): Decimal128 {
+        return Decimal128{raw: toUint128(mulDivCeil(a.raw, b.raw, SCALE128))}
+    }
+
+    @pure
+    func dec128MulNearest(a: Decimal128, b: Decimal128): Decimal128 {
+        return Decimal128{raw: toUint128(mulDivNearest(a.raw, b.raw, SCALE128))}
+    }
+
+    @pure
+    func dec128DivFloor(a: Decimal128, b: Decimal128): Decimal128 {
+        return Decimal128{raw: toUint128(mulDivFloor(a.raw, SCALE128, b.raw))}
+    }
+
+    @pure
+    func dec128DivCeil(a: Decimal128, b: Decimal128): Decimal128 {
+        return Decimal128{raw: toUint128(mulDivCeil(a.raw, SCALE128, b.raw))}
+    }
+
+    @pure
+    func dec128DivNearest(a: Decimal128, b: Decimal128): Decimal128 {
+        return Decimal128{raw: toUint128(mulDivNearest(a.raw, SCALE128, b.raw))}
+    }
+
+    // toIntegerFloor stays within uint128 throughout (plain checked `/`,
+    // left operand self.raw is already uint128 so the result tag propagates
+    // correctly) — dividing only shrinks the magnitude, no narrowing cast
+    // needed. Ceil/Nearest must NOT build their rounding bias with a
+    // same-width checked `+` before dividing: self.raw can legitimately sit
+    // within SCALE128 (or SCALE128/2) of uint128's max, which would make the
+    // bias-add itself trap even though the true result is tiny. Route them
+    // through mulDivCeil/mulDivNearest's unbounded big.Int intermediate
+    // (result is always << 2^128, so the toUint128 narrowing back never
+    // traps) instead.
+    @pure
+    func dec128ToIntegerFloor(self: Decimal128): uint128 {
+        return self.raw / SCALE128
+    }
+
+    @pure
+    func dec128ToIntegerCeil(self: Decimal128): uint128 {
+        return toUint128(mulDivCeil(self.raw, 1, SCALE128))
+    }
+
+    @pure
+    func dec128ToIntegerNearest(self: Decimal128): uint128 {
+        return toUint128(mulDivNearest(self.raw, 1, SCALE128))
+    }
+
+    @pure
+    func dec128IntegerPart(self: Decimal128): uint128 {
+        return self.raw / SCALE128
+    }
+
+    @pure
+    func dec128FractionalPart(self: Decimal128): uint128 {
+        return self.raw % SCALE128
+    }
+
+    // ======================================================================
+    // SignedDecimal256 (signed, int256-backed, scale 1e18)
+    // ======================================================================
+    // Single-mode mul/div/toInteger (truncate toward zero, via mulDivSigned)
+    // — see the file header on why there is no signed floor/ceil/nearest.
+
+    @pure
+    func sdec256FromInt(n: int256): SignedDecimal256 {
+        return SignedDecimal256{raw: mulDivSigned(n, SCALE256, 1)}
+    }
+
+    @pure
+    func sdec256FromRaw(raw: int256): SignedDecimal256 {
+        return SignedDecimal256{raw: raw}
+    }
+
+    // Ratio256 is always non-negative; toInt256 re-tags the unsigned
+    // mulDivFloor result as a (necessarily non-negative) signed value,
+    // TRAPPING only in the unreachable-in-practice case that SCALE256*num/den
+    // exceeds the int256 max (2^255 - 1).
+    @pure
+    func sdec256FromRatio(r: Ratio256): SignedDecimal256 {
+        return SignedDecimal256{raw: toInt256(mulDivFloor(SCALE256, r.num, r.den))}
+    }
+
+    @pure
+    func sdec256FromBasisPoints(bp: BasisPoints): SignedDecimal256 {
+        return SignedDecimal256{raw: toInt256(mulDivFloor(SCALE256, bp.bps, MAX_BPS))}
+    }
+
+    @pure
+    func sdec256Raw(self: SignedDecimal256): int256 {
+        return self.raw
+    }
+
+    @pure
+    func sdec256Mul(a: SignedDecimal256, b: SignedDecimal256): SignedDecimal256 {
+        return SignedDecimal256{raw: mulDivSigned(a.raw, b.raw, SCALE256)}
+    }
+
+    @pure
+    func sdec256Div(a: SignedDecimal256, b: SignedDecimal256): SignedDecimal256 {
+        return SignedDecimal256{raw: mulDivSigned(a.raw, SCALE256, b.raw)}
+    }
+
+    // Truncated-toward-zero integer conversion. Plain checked signed `/`
+    // (OpDiv truncates toward zero, matching mulDivSigned's own convention)
+    // — no mulDivSigned needed since dividing by SCALE256 only shrinks the
+    // magnitude.
+    @pure
+    func sdec256ToInteger(self: SignedDecimal256): int256 {
+        return self.raw / SCALE256
+    }
+
+    @pure
+    func sdec256IntegerPart(self: SignedDecimal256): int256 {
+        return self.raw / SCALE256
+    }
+
+    @pure
+    func sdec256FractionalPart(self: SignedDecimal256): int256 {
+        return self.raw % SCALE256
+    }
+
+    // ======================================================================
+    // SignedDecimal128 (signed, int128-backed, scale 1e9)
+    // ======================================================================
+    // Same shape as SignedDecimal256, narrowed to int128 via toInt128
+    // wherever the source is a mulDivSigned/mulDiv-family result (always
+    // int256 / uint256).
+
+    @pure
+    func sdec128FromInt(n: int256): SignedDecimal128 {
+        return SignedDecimal128{raw: toInt128(mulDivSigned(n, SCALE128, 1))}
+    }
+
+    @pure
+    func sdec128FromRaw(raw: int256): SignedDecimal128 {
+        return SignedDecimal128{raw: toInt128(raw)}
+    }
+
+    @pure
+    func sdec128FromRatio(r: Ratio256): SignedDecimal128 {
+        return SignedDecimal128{raw: toInt128(mulDivFloor(SCALE128, r.num, r.den))}
+    }
+
+    @pure
+    func sdec128FromBasisPoints(bp: BasisPoints): SignedDecimal128 {
+        return SignedDecimal128{raw: toInt128(mulDivFloor(SCALE128, bp.bps, MAX_BPS))}
+    }
+
+    @pure
+    func sdec128Raw(self: SignedDecimal128): int128 {
+        return self.raw
+    }
+
+    @pure
+    func sdec128Mul(a: SignedDecimal128, b: SignedDecimal128): SignedDecimal128 {
+        return SignedDecimal128{raw: toInt128(mulDivSigned(a.raw, b.raw, SCALE128))}
+    }
+
+    @pure
+    func sdec128Div(a: SignedDecimal128, b: SignedDecimal128): SignedDecimal128 {
+        return SignedDecimal128{raw: toInt128(mulDivSigned(a.raw, SCALE128, b.raw))}
+    }
+
+    // Plain checked signed `/`/`%`: self.raw is already int128, so the
+    // result tag propagates correctly without a narrowing cast.
+    @pure
+    func sdec128ToInteger(self: SignedDecimal128): int128 {
+        return self.raw / SCALE128
+    }
+
+    @pure
+    func sdec128IntegerPart(self: SignedDecimal128): int128 {
+        return self.raw / SCALE128
+    }
+
+    @pure
+    func sdec128FractionalPart(self: SignedDecimal128): int128 {
+        return self.raw % SCALE128
+    }
+
+    // ======================================================================
+    // Signed PnL / equity helper (extends finance_stdlib.atlx's pnl*
+    // namespace with the real SignedDecimal256 type)
+    // ======================================================================
+
+    // Realized PnL for a position, expressed as a SignedDecimal256: the raw
+    // int256 PnL (exitPrice - entryPrice) * size is treated as an
+    // ALREADY-SCALED SCALE256 fixed-point amount (the same convention
+    // finance_stdlib.atlx's pnlOf/decMulSigned use for funding-index style
+    // accumulation), not re-scaled again.
+    @pure
+    func pnlEquityOf(entryPrice: int256, exitPrice: int256, size: int256): SignedDecimal256 {
+        return SignedDecimal256{raw: (exitPrice - entryPrice) * size}
+    }
+
+    // Funding-index-style scaled accumulation: a SCALE256-scaled signed rate
+    // applied to a SCALE256-scaled signed size, via mulDivSigned so the
+    // unbounded a*b intermediate never spuriously overflows int256.
+    @pure
+    func pnlEquityScale(rate: SignedDecimal256, size: SignedDecimal256): SignedDecimal256 {
+        return SignedDecimal256{raw: mulDivSigned(rate.raw, size.raw, SCALE256)}
+    }
+
+    // equity = margin + pnl, both already SCALE256-scaled SignedDecimal256
+    // values; checked signed `+` TRAPS on an int256 overflow.
+    @pure
+    func pnlEquityTotal(margin: SignedDecimal256, pnl: SignedDecimal256): SignedDecimal256 {
+        return SignedDecimal256{raw: margin.raw + pnl.raw}
+    }
+
+    @pure
+    func pnlEquityIsNegative(self: SignedDecimal256): uint64 {
+        return (self.raw < 0) ? 1 : 0
+    }
+
+    @internal
+    func onInternalMessage(in: InMessage) {
+        const msg = lazy StdlibMsg.fromSegment(in.body)
+        match (msg) {
+            Noop => {
+                // Pure library contract: nothing to mutate.
+            }
+            ReduceRatio => {
+                // Euclidean GCD: the only mutating loop in this file, run
+                // here (an impure message handler) because @get/@pure bodies
+                // cannot reassign a local (see the ratioReduce getter's doc
+                // comment above). ratioFromRaw enforces den != 0 up front.
+                var st = lazy StdlibStorage.load()
+                const r = ratioFromRaw(msg.num, msg.den)
+                var a = r.num
+                var b = r.den
+                while (b != 0) {
+                    const t = b
+                    b = a % b
+                    a = t
+                }
+                // a now holds gcd(num, den) and is never 0: gcd(0, den) =
+                // den, and den != 0 is already guaranteed by ratioFromRaw.
+                st.reducedNum = r.num / a
+                st.reducedDen = r.den / a
+                st.save()
+            }
+            else => {
+                assert (in.body.isEmpty()) throw ERR_BAD_MSG
+            }
+        }
+    }
+
+    // ======================================================================
+    // Getters: one thin @get per routine (plus a few composite getters for
+    // multi-step invariants) so the conformance test can drive every routine
+    // through the real VM with exact numeric assertions.
+    // ======================================================================
+
+    // NOTE on every getter below that constructs a struct and immediately
+    // passes it into another routine: it's bound to a local `const` FIRST
+    // (`const bp = bpFromRaw(bps)`, then `bpApplyFloor(bp, amount)`) rather
+    // than nested directly (`bpApplyFloor(bpFromRaw(bps), amount)`). The
+    // callee's body reads a FIELD off that parameter (`self.bps`), and AVM
+    // v1's call-inlining substitution can only splice a plain identifier
+    // into a field-access position, not an arbitrary expression (see
+    // ratioDiv's doc comment above for the same constraint from the other
+    // side). A @get body is a real top-level entry point (not itself
+    // inlined anywhere), so it — unlike a @pure helper — is free to hold as
+    // many `const` locals as needed.
+
+    // ---- BasisPoints ----
+    @get
+    func bpFromRawG(bps: uint256): BasisPoints {
+        return bpFromRaw(bps)
+    }
+
+    @get
+    func bpFromPercentBoundedG(bps: uint256): BasisPoints {
+        return bpFromPercentBounded(bps)
+    }
+
+    @get
+    func bpRawG(bps: uint256): uint256 {
+        const bp = bpFromRaw(bps)
+        return bpRaw(bp)
+    }
+
+    @get
+    func bpApplyFloorG(bps: uint256, amount: uint256): uint256 {
+        const bp = bpFromRaw(bps)
+        return bpApplyFloor(bp, amount)
+    }
+
+    @get
+    func bpApplyCeilG(bps: uint256, amount: uint256): uint256 {
+        const bp = bpFromRaw(bps)
+        return bpApplyCeil(bp, amount)
+    }
+
+    @get
+    func bpApplyNearestG(bps: uint256, amount: uint256): uint256 {
+        const bp = bpFromRaw(bps)
+        return bpApplyNearest(bp, amount)
+    }
+
+    @get
+    func bpComplementG(bps: uint256): BasisPoints {
+        const bp = bpFromRaw(bps)
+        return bpComplement(bp)
+    }
+
+    @get
+    func bpAddG(aBps: uint256, bBps: uint256): BasisPoints {
+        const a = bpFromRaw(aBps)
+        const b = bpFromRaw(bBps)
+        return bpAdd(a, b)
+    }
+
+    @get
+    func bpSubG(aBps: uint256, bBps: uint256): BasisPoints {
+        const a = bpFromRaw(aBps)
+        const b = bpFromRaw(bBps)
+        return bpSub(a, b)
+    }
+
+    // ---- Ratio256 ----
+    @get
+    func ratioFromRawG(num: uint256, den: uint256): Ratio256 {
+        return ratioFromRaw(num, den)
+    }
+
+    @get
+    func ratioNumeratorG(num: uint256, den: uint256): uint256 {
+        const r = ratioFromRaw(num, den)
+        return ratioNumerator(r)
+    }
+
+    @get
+    func ratioDenominatorG(num: uint256, den: uint256): uint256 {
+        const r = ratioFromRaw(num, den)
+        return ratioDenominator(r)
+    }
+
+    @get
+    func ratioInvertG(num: uint256, den: uint256): Ratio256 {
+        const r = ratioFromRaw(num, den)
+        return ratioInvert(r)
+    }
+
+    @get
+    func ratioCompareG(numA: uint256, denA: uint256, numB: uint256, denB: uint256): int256 {
+        const a = ratioFromRaw(numA, denA)
+        const b = ratioFromRaw(numB, denB)
+        return ratioCompare(a, b)
+    }
+
+    @get
+    func ratioGreaterThanG(numA: uint256, denA: uint256, numB: uint256, denB: uint256): uint64 {
+        const a = ratioFromRaw(numA, denA)
+        const b = ratioFromRaw(numB, denB)
+        return ratioGreaterThan(a, b)
+    }
+
+    @get
+    func ratioAddG(numA: uint256, denA: uint256, numB: uint256, denB: uint256): Ratio256 {
+        const a = ratioFromRaw(numA, denA)
+        const b = ratioFromRaw(numB, denB)
+        return ratioAdd(a, b)
+    }
+
+    @get
+    func ratioSubG(numA: uint256, denA: uint256, numB: uint256, denB: uint256): Ratio256 {
+        const a = ratioFromRaw(numA, denA)
+        const b = ratioFromRaw(numB, denB)
+        return ratioSub(a, b)
+    }
+
+    @get
+    func ratioMulG(numA: uint256, denA: uint256, numB: uint256, denB: uint256): Ratio256 {
+        const a = ratioFromRaw(numA, denA)
+        const b = ratioFromRaw(numB, denB)
+        return ratioMul(a, b)
+    }
+
+    @get
+    func ratioDivG(numA: uint256, denA: uint256, numB: uint256, denB: uint256): Ratio256 {
+        const a = ratioFromRaw(numA, denA)
+        const b = ratioFromRaw(numB, denB)
+        return ratioDiv(a, b)
+    }
+
+    @get
+    func ratioApplyToFloorG(num: uint256, den: uint256, amount: uint256): uint256 {
+        const r = ratioFromRaw(num, den)
+        return ratioApplyToFloor(r, amount)
+    }
+
+    @get
+    func ratioApplyToCeilG(num: uint256, den: uint256, amount: uint256): uint256 {
+        const r = ratioFromRaw(num, den)
+        return ratioApplyToCeil(r, amount)
+    }
+
+    @get
+    func ratioApplyToNearestG(num: uint256, den: uint256, amount: uint256): uint256 {
+        const r = ratioFromRaw(num, den)
+        return ratioApplyToNearest(r, amount)
+    }
+
+    // ---- Decimal256 ----
+    @get
+    func dec256FromIntG(n: uint256): Decimal256 {
+        return dec256FromInt(n)
+    }
+
+    @get
+    func dec256RawG(raw: uint256): uint256 {
+        const d = dec256FromRaw(raw)
+        return dec256Raw(d)
+    }
+
+    @get
+    func dec256FromRatioFloorG(num: uint256, den: uint256): Decimal256 {
+        const r = ratioFromRaw(num, den)
+        return dec256FromRatioFloor(r)
+    }
+
+    @get
+    func dec256FromRatioCeilG(num: uint256, den: uint256): Decimal256 {
+        const r = ratioFromRaw(num, den)
+        return dec256FromRatioCeil(r)
+    }
+
+    @get
+    func dec256FromRatioNearestG(num: uint256, den: uint256): Decimal256 {
+        const r = ratioFromRaw(num, den)
+        return dec256FromRatioNearest(r)
+    }
+
+    @get
+    func dec256FromBasisPointsG(bps: uint256): Decimal256 {
+        const bp = bpFromRaw(bps)
+        return dec256FromBasisPoints(bp)
+    }
+
+    @get
+    func dec256MulFloorG(rawA: uint256, rawB: uint256): Decimal256 {
+        const a = dec256FromRaw(rawA)
+        const b = dec256FromRaw(rawB)
+        return dec256MulFloor(a, b)
+    }
+
+    @get
+    func dec256MulCeilG(rawA: uint256, rawB: uint256): Decimal256 {
+        const a = dec256FromRaw(rawA)
+        const b = dec256FromRaw(rawB)
+        return dec256MulCeil(a, b)
+    }
+
+    @get
+    func dec256MulNearestG(rawA: uint256, rawB: uint256): Decimal256 {
+        const a = dec256FromRaw(rawA)
+        const b = dec256FromRaw(rawB)
+        return dec256MulNearest(a, b)
+    }
+
+    @get
+    func dec256DivFloorG(rawA: uint256, rawB: uint256): Decimal256 {
+        const a = dec256FromRaw(rawA)
+        const b = dec256FromRaw(rawB)
+        return dec256DivFloor(a, b)
+    }
+
+    @get
+    func dec256DivCeilG(rawA: uint256, rawB: uint256): Decimal256 {
+        const a = dec256FromRaw(rawA)
+        const b = dec256FromRaw(rawB)
+        return dec256DivCeil(a, b)
+    }
+
+    @get
+    func dec256DivNearestG(rawA: uint256, rawB: uint256): Decimal256 {
+        const a = dec256FromRaw(rawA)
+        const b = dec256FromRaw(rawB)
+        return dec256DivNearest(a, b)
+    }
+
+    @get
+    func dec256ToIntegerFloorG(raw: uint256): uint256 {
+        const d = dec256FromRaw(raw)
+        return dec256ToIntegerFloor(d)
+    }
+
+    @get
+    func dec256ToIntegerCeilG(raw: uint256): uint256 {
+        const d = dec256FromRaw(raw)
+        return dec256ToIntegerCeil(d)
+    }
+
+    @get
+    func dec256ToIntegerNearestG(raw: uint256): uint256 {
+        const d = dec256FromRaw(raw)
+        return dec256ToIntegerNearest(d)
+    }
+
+    @get
+    func dec256IntegerPartG(raw: uint256): uint256 {
+        const d = dec256FromRaw(raw)
+        return dec256IntegerPart(d)
+    }
+
+    @get
+    func dec256FractionalPartG(raw: uint256): uint256 {
+        const d = dec256FromRaw(raw)
+        return dec256FractionalPart(d)
+    }
+
+    // ---- Decimal128 ----
+    @get
+    func dec128FromIntG(n: uint256): Decimal128 {
+        return dec128FromInt(n)
+    }
+
+    @get
+    func dec128RawG(raw: uint256): uint128 {
+        const d = dec128FromRaw(raw)
+        return dec128Raw(d)
+    }
+
+    @get
+    func dec128FromRatioFloorG(num: uint256, den: uint256): Decimal128 {
+        const r = ratioFromRaw(num, den)
+        return dec128FromRatioFloor(r)
+    }
+
+    @get
+    func dec128FromRatioCeilG(num: uint256, den: uint256): Decimal128 {
+        const r = ratioFromRaw(num, den)
+        return dec128FromRatioCeil(r)
+    }
+
+    @get
+    func dec128FromRatioNearestG(num: uint256, den: uint256): Decimal128 {
+        const r = ratioFromRaw(num, den)
+        return dec128FromRatioNearest(r)
+    }
+
+    @get
+    func dec128FromBasisPointsG(bps: uint256): Decimal128 {
+        const bp = bpFromRaw(bps)
+        return dec128FromBasisPoints(bp)
+    }
+
+    @get
+    func dec128MulFloorG(rawA: uint256, rawB: uint256): Decimal128 {
+        const a = dec128FromRaw(rawA)
+        const b = dec128FromRaw(rawB)
+        return dec128MulFloor(a, b)
+    }
+
+    @get
+    func dec128DivFloorG(rawA: uint256, rawB: uint256): Decimal128 {
+        const a = dec128FromRaw(rawA)
+        const b = dec128FromRaw(rawB)
+        return dec128DivFloor(a, b)
+    }
+
+    @get
+    func dec128ToIntegerFloorG(raw: uint256): uint128 {
+        const d = dec128FromRaw(raw)
+        return dec128ToIntegerFloor(d)
+    }
+
+    @get
+    func dec128ToIntegerCeilG(raw: uint256): uint128 {
+        const d = dec128FromRaw(raw)
+        return dec128ToIntegerCeil(d)
+    }
+
+    @get
+    func dec128ToIntegerNearestG(raw: uint256): uint128 {
+        const d = dec128FromRaw(raw)
+        return dec128ToIntegerNearest(d)
+    }
+
+    @get
+    func dec128FractionalPartG(raw: uint256): uint128 {
+        const d = dec128FromRaw(raw)
+        return dec128FractionalPart(d)
+    }
+
+    // Overflow-proof getter: constructs a Decimal128 whose raw value is
+    // guaranteed to exceed uint128's range (2^128 through mulDiv's unbounded
+    // intermediate), proving toUint128 TRAPS rather than silently wrapping.
+    @get
+    func dec128OverflowTrapG(hugeNumerator: uint256): Decimal128 {
+        const r = ratioFromRaw(hugeNumerator, 1)
+        return dec128FromRatioFloor(r)
+    }
+
+    // ---- SignedDecimal256 ----
+    @get
+    func sdec256FromIntG(n: int256): SignedDecimal256 {
+        return sdec256FromInt(n)
+    }
+
+    @get
+    func sdec256RawG(raw: int256): int256 {
+        const d = sdec256FromRaw(raw)
+        return sdec256Raw(d)
+    }
+
+    @get
+    func sdec256FromRatioG(num: uint256, den: uint256): SignedDecimal256 {
+        const r = ratioFromRaw(num, den)
+        return sdec256FromRatio(r)
+    }
+
+    @get
+    func sdec256FromBasisPointsG(bps: uint256): SignedDecimal256 {
+        const bp = bpFromRaw(bps)
+        return sdec256FromBasisPoints(bp)
+    }
+
+    @get
+    func sdec256MulG(rawA: int256, rawB: int256): SignedDecimal256 {
+        const a = sdec256FromRaw(rawA)
+        const b = sdec256FromRaw(rawB)
+        return sdec256Mul(a, b)
+    }
+
+    @get
+    func sdec256DivG(rawA: int256, rawB: int256): SignedDecimal256 {
+        const a = sdec256FromRaw(rawA)
+        const b = sdec256FromRaw(rawB)
+        return sdec256Div(a, b)
+    }
+
+    @get
+    func sdec256ToIntegerG(raw: int256): int256 {
+        const d = sdec256FromRaw(raw)
+        return sdec256ToInteger(d)
+    }
+
+    @get
+    func sdec256IntegerPartG(raw: int256): int256 {
+        const d = sdec256FromRaw(raw)
+        return sdec256IntegerPart(d)
+    }
+
+    @get
+    func sdec256FractionalPartG(raw: int256): int256 {
+        const d = sdec256FromRaw(raw)
+        return sdec256FractionalPart(d)
+    }
+
+    // ---- SignedDecimal128 ----
+    @get
+    func sdec128FromIntG(n: int256): SignedDecimal128 {
+        return sdec128FromInt(n)
+    }
+
+    @get
+    func sdec128RawG(raw: int256): int128 {
+        const d = sdec128FromRaw(raw)
+        return sdec128Raw(d)
+    }
+
+    @get
+    func sdec128MulG(rawA: int256, rawB: int256): SignedDecimal128 {
+        const a = sdec128FromRaw(rawA)
+        const b = sdec128FromRaw(rawB)
+        return sdec128Mul(a, b)
+    }
+
+    @get
+    func sdec128DivG(rawA: int256, rawB: int256): SignedDecimal128 {
+        const a = sdec128FromRaw(rawA)
+        const b = sdec128FromRaw(rawB)
+        return sdec128Div(a, b)
+    }
+
+    @get
+    func sdec128ToIntegerG(raw: int256): int128 {
+        const d = sdec128FromRaw(raw)
+        return sdec128ToInteger(d)
+    }
+
+    // Overflow-proof getter: a huge negative int256 raw value narrowed to
+    // int128 must TRAP, not wrap — proves toInt128 checks the SIGNED range
+    // (not just magnitude) too.
+    @get
+    func sdec128OverflowTrapG(hugeRaw: int256): SignedDecimal128 {
+        return SignedDecimal128{raw: toInt128(hugeRaw)}
+    }
+
+    // ---- PnL / equity ----
+    @get
+    func pnlEquityOfG(entryPrice: int256, exitPrice: int256, size: int256): SignedDecimal256 {
+        return pnlEquityOf(entryPrice, exitPrice, size)
+    }
+
+    @get
+    func pnlEquityScaleG(rateRaw: int256, sizeRaw: int256): SignedDecimal256 {
+        const rate = sdec256FromRaw(rateRaw)
+        const size = sdec256FromRaw(sizeRaw)
+        return pnlEquityScale(rate, size)
+    }
+
+    @get
+    func pnlEquityTotalG(marginRaw: int256, pnlRaw: int256): SignedDecimal256 {
+        const margin = sdec256FromRaw(marginRaw)
+        const pnl = sdec256FromRaw(pnlRaw)
+        return pnlEquityTotal(margin, pnl)
+    }
+
+    @get
+    func pnlEquityIsNegativeG(entryPrice: int256, exitPrice: int256, size: int256): uint64 {
+        const pnl = pnlEquityOf(entryPrice, exitPrice, size)
+        return pnlEquityIsNegative(pnl)
+    }
+}

@@ -234,6 +234,19 @@ func TestAcceptanceLendingHealthFactor(t *testing.T) {
 	// getters return 0 for HF and treat a zero-debt position as NOT liquidatable.
 	requireBigEq(t, bi(0), bigResult(t, callGetter(t, runner, res, avm.Storage{}, "healthFactorOf", []string{u256, u256, u256}, bi(1500), bi(0), bi(8000))), "healthFactorOf debt 0 => 0")
 	require.Equal(t, uint64(0), u64Result(t, callGetter(t, runner, res, avm.Storage{}, "liquidatableOf", []string{u256, u256, u256}, bi(1500), bi(0), bi(8000))), "zero debt => not liquidatable")
+
+	// ---- Typed variant (BasisPoints.fromPercentBounded + applyFloor) -------
+	// Same numbers, computed via the real invariant-checked BasisPoints type:
+	// identical result to the raw-scalar getter above.
+	hfTyped := bigResult(t, callGetter(t, runner, res, avm.Storage{}, "healthFactorTypedOf", []string{u256, u256, u256}, bi(1500), bi(1000), bi(8000)))
+	requireBigEq(t, want, hfTyped, "healthFactorTypedOf matches the raw-scalar computation")
+	require.Equal(t, uint64(0), u64Result(t, callGetter(t, runner, res, avm.Storage{}, "liquidatableTypedOf", []string{u256, u256, u256}, bi(1500), bi(1000), bi(8000))), "typed: healthy => not liquidatable")
+	require.Equal(t, uint64(1), u64Result(t, callGetter(t, runner, res, avm.Storage{}, "liquidatableTypedOf", []string{u256, u256, u256}, bi(1000), bi(1000), bi(8000))), "typed: underwater => liquidatable")
+
+	// The improvement over the raw-scalar getter: an impossible >100%
+	// threshold TRAPS at construction time instead of silently computing a
+	// nonsensical "adjusted collateral" bigger than the collateral itself.
+	callGetterExpectTrap(t, runner, res, avm.Storage{}, "healthFactorTypedOf", []string{u256, u256, u256}, bi(1500), bi(1000), bi(15000))
 }
 
 // TestAcceptancePerpPnl compiles the perpetual-PnL contract and proves the

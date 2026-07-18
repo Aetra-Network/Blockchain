@@ -2395,9 +2395,9 @@ func (c *Compiler) inferExprType(expr Expr, env map[string]TypeRef, storage *Str
 				}
 			}
 			return TypeRef{Name: "bytes"}, nil
-		case "slice":
+		case "subbytes":
 			if len(expr.Args) != 3 {
-				return TypeRef{}, fail("E_CALL_ARITY", expr.Pos, "slice() requires three arguments")
+				return TypeRef{}, fail("E_CALL_ARITY", expr.Pos, "subBytes() requires three arguments")
 			}
 			for _, arg := range expr.Args {
 				if _, err := c.inferExprType(arg, env, storage, structs, enums, types, functions, consts, inPure); err != nil {
@@ -2438,9 +2438,12 @@ func (c *Compiler) inferExprType(expr Expr, env map[string]TypeRef, storage *Str
 				return TypeRef{}, fail("E_CALL_ARITY", expr.Pos, expr.Text+"() requires three arguments")
 			}
 			return TypeRef{Name: "bool"}, nil
-		case "muldiv", "muldivroundup":
+		case "muldiv", "muldivroundup", "muldivnearest", "muldivfloor", "muldivceil":
 			// Full-width a*b/c on uint256; the a*b product cannot overflow (it is
 			// computed in an unbounded intermediate), only the uint256 result.
+			// mulDivNearest rounds half-up (floor(a*b/c), rounded up iff the
+			// remainder doubled is >= c). mulDivFloor/mulDivCeil are alternate
+			// spellings of mulDiv/mulDivRoundUp -- same opcode, same behavior.
 			if len(expr.Args) != 3 {
 				return TypeRef{}, fail("E_CALL_ARITY", expr.Pos, expr.Text+"() requires three arguments")
 			}
@@ -2482,6 +2485,42 @@ func (c *Compiler) inferExprType(expr Expr, env map[string]TypeRef, storage *Str
 				if _, err := c.inferExprType(arg, env, storage, structs, enums, types, functions, consts, inPure); err != nil {
 					return TypeRef{}, err
 				}
+			}
+			return TypeRef{Name: "int256"}, nil
+		case "touint128":
+			// toUint128(x) -> uint128: checked narrowing cast, TRAPS if x does
+			// not fit uint128 (or is negative). Needed to store a
+			// mulDiv/mulDivRoundUp/mulDivNearest/mulCmp result (always
+			// uint256) into a genuinely uint128-backed field.
+			if len(expr.Args) != 1 {
+				return TypeRef{}, fail("E_CALL_ARITY", expr.Pos, "toUint128() requires one argument")
+			}
+			if _, err := c.inferExprType(expr.Args[0], env, storage, structs, enums, types, functions, consts, inPure); err != nil {
+				return TypeRef{}, err
+			}
+			return TypeRef{Name: "uint128"}, nil
+		case "toint128":
+			// toInt128(x) -> int128: checked narrowing cast, TRAPS if x does not
+			// fit int128. Needed to store a mulDivSigned result (always int256)
+			// into a genuinely int128-backed field.
+			if len(expr.Args) != 1 {
+				return TypeRef{}, fail("E_CALL_ARITY", expr.Pos, "toInt128() requires one argument")
+			}
+			if _, err := c.inferExprType(expr.Args[0], env, storage, structs, enums, types, functions, consts, inPure); err != nil {
+				return TypeRef{}, err
+			}
+			return TypeRef{Name: "int128"}, nil
+		case "toint256":
+			// toInt256(x) -> int256: checked re-tagging cast, TRAPS if x does
+			// not fit int256 (>= 2^255). Needed to store an unsigned
+			// (Ratio256/BasisPoints-derived) magnitude, e.g. a mulDiv/
+			// mulDivRoundUp/mulDivNearest result, into a genuinely
+			// int256-backed signed field.
+			if len(expr.Args) != 1 {
+				return TypeRef{}, fail("E_CALL_ARITY", expr.Pos, "toInt256() requires one argument")
+			}
+			if _, err := c.inferExprType(expr.Args[0], env, storage, structs, enums, types, functions, consts, inPure); err != nil {
+				return TypeRef{}, err
 			}
 			return TypeRef{Name: "int256"}, nil
 		case "verifysecp256k1":
@@ -4588,7 +4627,7 @@ func constValueType(v constValue) TypeRef {
 // lowerExprArgs lowers a positional argument list to IR in source order,
 // preserving order so the emitter can push operands in the sequence the VM
 // dispatch pops them (last-pushed-first). Used by the multi-operand byte
-// builtins (concat/slice/byteAt/toBytesBE).
+// builtins (concat/subBytes/byteAt/toBytesBE).
 func lowerExprArgs(args []Expr, env loweringEnv, functions map[string]*FunctionDecl, seen map[string]bool) ([]*IRExpr, error) {
 	out := make([]*IRExpr, len(args))
 	for i, arg := range args {
@@ -5080,9 +5119,9 @@ func lowerExprToIR(expr Expr, env loweringEnv, functions map[string]*FunctionDec
 				return nil, err
 			}
 			return &IRExpr{Kind: IRExprConcat, Args: args, Pos: expr.Pos}, nil
-		case "slice":
+		case "subbytes":
 			if len(expr.Args) != 3 {
-				return nil, fail("E_LOWER_CALL", expr.Pos, "slice() requires three arguments")
+				return nil, fail("E_LOWER_CALL", expr.Pos, "subBytes() requires three arguments")
 			}
 			args, err := lowerExprArgs(expr.Args, env, functions, seen)
 			if err != nil {
@@ -5172,7 +5211,7 @@ func lowerExprToIR(expr Expr, env loweringEnv, functions map[string]*FunctionDec
 				return nil, err
 			}
 			return &IRExpr{Kind: IRExprSignatureVerify, Args: []*IRExpr{data, signature, publicKey}, Pos: expr.Pos}, nil
-		case "muldiv", "muldivroundup":
+		case "muldiv", "muldivroundup", "muldivnearest", "muldivfloor", "muldivceil":
 			if len(expr.Args) != 3 {
 				return nil, fail("E_LOWER_CALL", expr.Pos, expr.Text+"() requires three arguments")
 			}
@@ -5181,8 +5220,11 @@ func lowerExprToIR(expr Expr, env loweringEnv, functions map[string]*FunctionDec
 				return nil, err
 			}
 			kind := IRExprMulDiv
-			if strings.EqualFold(expr.Text, "muldivroundup") {
+			switch {
+			case strings.EqualFold(expr.Text, "muldivroundup"), strings.EqualFold(expr.Text, "muldivceil"):
 				kind = IRExprMulDivRoundUp
+			case strings.EqualFold(expr.Text, "muldivnearest"):
+				kind = IRExprMulDivNearest
 			}
 			return &IRExpr{Kind: kind, Args: args, Pos: expr.Pos}, nil
 		case "isqrt":
@@ -5212,6 +5254,33 @@ func lowerExprToIR(expr Expr, env loweringEnv, functions map[string]*FunctionDec
 				return nil, err
 			}
 			return &IRExpr{Kind: IRExprMulDivSigned, Args: args, Pos: expr.Pos}, nil
+		case "touint128":
+			if len(expr.Args) != 1 {
+				return nil, fail("E_LOWER_CALL", expr.Pos, "toUint128() requires one argument")
+			}
+			arg, err := lowerExprToIR(expr.Args[0], env, functions, seen)
+			if err != nil {
+				return nil, err
+			}
+			return &IRExpr{Kind: IRExprNarrowToUint128, Args: []*IRExpr{arg}, Pos: expr.Pos}, nil
+		case "toint128":
+			if len(expr.Args) != 1 {
+				return nil, fail("E_LOWER_CALL", expr.Pos, "toInt128() requires one argument")
+			}
+			arg, err := lowerExprToIR(expr.Args[0], env, functions, seen)
+			if err != nil {
+				return nil, err
+			}
+			return &IRExpr{Kind: IRExprNarrowToInt128, Args: []*IRExpr{arg}, Pos: expr.Pos}, nil
+		case "toint256":
+			if len(expr.Args) != 1 {
+				return nil, fail("E_LOWER_CALL", expr.Pos, "toInt256() requires one argument")
+			}
+			arg, err := lowerExprToIR(expr.Args[0], env, functions, seen)
+			if err != nil {
+				return nil, err
+			}
+			return &IRExpr{Kind: IRExprNarrowToInt256, Args: []*IRExpr{arg}, Pos: expr.Pos}, nil
 		case "verifysecp256k1":
 			if len(expr.Args) != 3 {
 				return nil, fail("E_LOWER_CALL", expr.Pos, "verifySecp256k1() requires three arguments")
@@ -5626,7 +5695,7 @@ func emitIRExpr(expr *IRExpr, code *[]avm.Instruction) error {
 		*code = append(*code, avm.Instruction{Op: op})
 	case IRExprConcat, IRExprSlice, IRExprByteAt, IRExprToBytesBE:
 		// Operands are pushed in source order; the VM dispatch pops them
-		// last-pushed-first (e.g. slice pops len, start, b).
+		// last-pushed-first (e.g. subBytes pops len, start, b).
 		for _, arg := range expr.Args {
 			if err := emitIRExpr(arg, code); err != nil {
 				return err
@@ -5663,11 +5732,12 @@ func emitIRExpr(expr *IRExpr, code *[]avm.Instruction) error {
 			return err
 		}
 		*code = append(*code, avm.Instruction{Op: avm.OpVerifySignature})
-	case IRExprMulDiv, IRExprMulDivRoundUp, IRExprVerifySecp256k1, IRExprEcrecover, IRExprIsqrt, IRExprMulCmp, IRExprMulDivSigned:
+	case IRExprMulDiv, IRExprMulDivRoundUp, IRExprMulDivNearest, IRExprVerifySecp256k1, IRExprEcrecover, IRExprIsqrt, IRExprMulCmp, IRExprMulDivSigned, IRExprNarrowToUint128, IRExprNarrowToInt128, IRExprNarrowToInt256:
 		// Operands are pushed in source order; the VM dispatch pops them
-		// last-pushed-first (mulDiv pops c, b, a; verifySecp256k1 pops pubkey,
-		// sig, msgHash; ecrecover pops sig, msgHash; mulCmp pops d, c, b, a;
-		// mulDivSigned pops c, b, a).
+		// last-pushed-first (mulDiv/mulDivNearest pop c, b, a; verifySecp256k1
+		// pops pubkey, sig, msgHash; ecrecover pops sig, msgHash; mulCmp pops
+		// d, c, b, a; mulDivSigned pops c, b, a; the narrowing casts pop their
+		// single operand).
 		for _, arg := range expr.Args {
 			if err := emitIRExpr(arg, code); err != nil {
 				return err
@@ -5679,6 +5749,8 @@ func emitIRExpr(expr *IRExpr, code *[]avm.Instruction) error {
 			op = avm.OpMulDiv
 		case IRExprMulDivRoundUp:
 			op = avm.OpMulDivRoundUp
+		case IRExprMulDivNearest:
+			op = avm.OpMulDivNearest
 		case IRExprVerifySecp256k1:
 			op = avm.OpVerifySecp256k1
 		case IRExprEcrecover:
@@ -5689,6 +5761,12 @@ func emitIRExpr(expr *IRExpr, code *[]avm.Instruction) error {
 			op = avm.OpMulCmp
 		case IRExprMulDivSigned:
 			op = avm.OpMulDivSigned
+		case IRExprNarrowToUint128:
+			op = avm.OpNarrowToUint128
+		case IRExprNarrowToInt128:
+			op = avm.OpNarrowToInt128
+		case IRExprNarrowToInt256:
+			op = avm.OpNarrowToInt256
 		}
 		*code = append(*code, avm.Instruction{Op: op})
 	case IRExprCoinsCast:

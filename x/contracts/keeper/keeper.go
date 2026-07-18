@@ -1496,7 +1496,20 @@ func (k *Keeper) executeContract(ctx context.Context, msg types.MsgExecuteContra
 		}
 		observability.RecordContractExecutionGas("avm", contractGasResultLabel(exec.ResultCode), exec.GasUsed)
 		if exec.ResultCode != async.ResultOK {
-			return types.ExecuteContractResponse{}, fmt.Errorf("%s: avm external execution failed with code %d", types.ErrExecutionFailed, exec.ResultCode)
+			// Resolve the raw VM ResultCode through the async package's own
+			// exit-code taxonomy (async/exit_codes.go) instead of surfacing only
+			// the bare numeric code: RuntimeExitCodeName gives a stable
+			// runtime-level name (e.g. "division_by_zero", "out_of_range") and
+			// ContractExitCodeForRuntime maps it to the contract-level exit code
+			// family (x/contracts/types/exit_codes.go) used elsewhere for
+			// observability. Previously this mapping was defined but never
+			// called from any execution path, so the meaningful ResultCode
+			// values async/exit_codes.go now assigns were silently dropped down
+			// to a bare %d in this error string.
+			contractExitCode := async.ContractExitCodeForRuntime(exec.ResultCode, async.FailedPhaseExecution)
+			return types.ExecuteContractResponse{}, fmt.Errorf("%s: avm external execution failed: result_code=%d (%s) exit_code=%d (%s)",
+				types.ErrExecutionFailed, exec.ResultCode, async.RuntimeExitCodeName(exec.ResultCode),
+				contractExitCode, types.ExitCodeName(contractExitCode))
 		}
 		contract.Data = encodeSnapshotStorage(exec.State)
 		outgoing = append([]async.MessageEnvelope(nil), exec.Outgoing...)
@@ -2000,7 +2013,13 @@ func (k *Keeper) ReceiveInternalMessage(msg types.MsgReceiveInternalMessage) (ty
 			}
 			observability.RecordContractExecutionGas("avm", contractGasResultLabel(exec.ResultCode), exec.GasUsed)
 			if exec.ResultCode != async.ResultOK {
-				return types.InternalMessage{}, fmt.Errorf("%s: avm internal execution failed with code %d", types.ErrExecutionFailed, exec.ResultCode)
+				// See the matching comment in ExecuteContract above: resolve the
+				// raw VM ResultCode through async/exit_codes.go's mapping instead
+				// of dropping it to a bare %d.
+				contractExitCode := async.ContractExitCodeForRuntime(exec.ResultCode, async.FailedPhaseExecution)
+				return types.InternalMessage{}, fmt.Errorf("%s: avm internal execution failed: result_code=%d (%s) exit_code=%d (%s)",
+					types.ErrExecutionFailed, exec.ResultCode, async.RuntimeExitCodeName(exec.ResultCode),
+					contractExitCode, types.ExitCodeName(contractExitCode))
 			}
 			destination.Data = encodeSnapshotStorage(exec.State)
 			destination.LogicalTime++
@@ -2103,7 +2122,13 @@ func (k *Keeper) ReceiveInternalMessage(msg types.MsgReceiveInternalMessage) (ty
 			}
 			observability.RecordContractExecutionGas("avm", contractGasResultLabel(exec.ResultCode), exec.GasUsed)
 			if exec.ResultCode != async.ResultOK {
-				return types.InternalMessage{}, fmt.Errorf("%s: avm internal execution failed with code %d", types.ErrExecutionFailed, exec.ResultCode)
+				// See the matching comment in ExecuteContract above: resolve the
+				// raw VM ResultCode through async/exit_codes.go's mapping instead
+				// of dropping it to a bare %d.
+				contractExitCode := async.ContractExitCodeForRuntime(exec.ResultCode, async.FailedPhaseExecution)
+				return types.InternalMessage{}, fmt.Errorf("%s: avm internal execution failed: result_code=%d (%s) exit_code=%d (%s)",
+					types.ErrExecutionFailed, exec.ResultCode, async.RuntimeExitCodeName(exec.ResultCode),
+					contractExitCode, types.ExitCodeName(contractExitCode))
 			}
 			destination.Data = encodeSnapshotStorage(exec.State)
 			destination.LogicalTime++

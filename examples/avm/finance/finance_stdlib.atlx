@@ -23,7 +23,10 @@
 //     arguments so the sign survives the message-field decode.
 //   - mulDiv(a,b,c) = floor(a*b/c) forms the a*b product at unbounded width and
 //     range-checks the FINAL quotient to uint256 (traps if it overflows).
-//     isqrt(x) = floor(sqrt(x)). Both are unsigned-only.
+//     isqrt(x) = floor(sqrt(x)). Both are unsigned-only. mulDiv/mulDivRoundUp
+//     may also be spelled mulDivFloor/mulDivCeil (pure aliases, identical
+//     opcodes, identical behavior) -- this file keeps using the bare
+//     mulDiv/mulDivRoundUp names below, both spellings are accepted.
 //
 // Namespaces (prefix = namespace):
 //   bp*   BasisPoints   scale 10000 = 100%

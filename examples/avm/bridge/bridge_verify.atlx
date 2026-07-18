@@ -9,7 +9,7 @@
 //      validator set signed the header hash the proof is rooted at.
 //
 // Both are expressed from the existing byte-exact primitives with NO new
-// opcode: sha256 / keccak256 for the hash, concat / slice / byteAt for the
+// opcode: sha256 / keccak256 for the hash, concat / subBytes / byteAt for the
 // audit path, verifySecp256k1 for the ECDSA batch, and while-loops for the
 // walk. Because ATLX getters are validated as PURE (no local mutation, hence no
 // accumulator loop), the iterative verification lives in the @internal message
@@ -197,7 +197,7 @@ contract BridgeVerify {
     // this helper PURE and inlinable for the distinct-signer dedup below.
     @pure
     func pubkeyEq(a: bytes, b: bytes): bool {
-        return (fromBytesBE(slice(a, 0, HASH_LEN)) == fromBytesBE(slice(b, 0, HASH_LEN)))
+        return (fromBytesBE(subBytes(a, 0, HASH_LEN)) == fromBytesBE(subBytes(b, 0, HASH_LEN)))
             && (byteAt(a, PUBKEY_LEN - 1) == byteAt(b, PUBKEY_LEN - 1))
     }
 
@@ -222,7 +222,7 @@ contract BridgeVerify {
                     var cur = leafHashSha(msg.leaf)
                     var i = 0
                     while (i < n) {
-                        const sib = slice(msg.proof, i * HASH_LEN, HASH_LEN)
+                        const sib = subBytes(msg.proof, i * HASH_LEN, HASH_LEN)
                         cur = (byteAt(msg.directions, i) == 0) ? hashNodeSha(cur, sib) : hashNodeSha(sib, cur)
                         i += 1
                     }
@@ -244,7 +244,7 @@ contract BridgeVerify {
                     var cur = leafHashKeccak(msg.leaf)
                     var i = 0
                     while (i < n) {
-                        const sib = slice(msg.proof, i * HASH_LEN, HASH_LEN)
+                        const sib = subBytes(msg.proof, i * HASH_LEN, HASH_LEN)
                         cur = (byteAt(msg.directions, i) == 0) ? hashNodeKeccak(cur, sib) : hashNodeKeccak(sib, cur)
                         i += 1
                     }
@@ -262,15 +262,15 @@ contract BridgeVerify {
                 var i = 0
                 const k = len(msg.sigs) / SIG_LEN
                 while (i < k) {
-                    const pk = slice(msg.pubkeys, i * PUBKEY_LEN, PUBKEY_LEN)
-                    const sig = slice(msg.sigs, i * SIG_LEN, SIG_LEN)
+                    const pk = subBytes(msg.pubkeys, i * PUBKEY_LEN, PUBKEY_LEN)
+                    const sig = subBytes(msg.sigs, i * SIG_LEN, SIG_LEN)
                     // Distinct-signer dedup: skip this key if it already appeared
                     // earlier in the batch, so a replayed validator cannot be
                     // counted twice toward the super-majority.
                     var seen = 0
                     var j = 0
                     while (j < i) {
-                        const pkj = slice(msg.pubkeys, j * PUBKEY_LEN, PUBKEY_LEN)
+                        const pkj = subBytes(msg.pubkeys, j * PUBKEY_LEN, PUBKEY_LEN)
                         if (pubkeyEq(pk, pkj)) {
                             seen = 1
                         }
@@ -296,12 +296,12 @@ contract BridgeVerify {
                 var i = 0
                 const k = len(msg.sigs) / SIG_LEN
                 while (i < k) {
-                    const pk = slice(msg.pubkeys, i * PUBKEY_LEN, PUBKEY_LEN)
-                    const sig = slice(msg.sigs, i * SIG_LEN, SIG_LEN)
+                    const pk = subBytes(msg.pubkeys, i * PUBKEY_LEN, PUBKEY_LEN)
+                    const sig = subBytes(msg.sigs, i * SIG_LEN, SIG_LEN)
                     var seen = 0
                     var j = 0
                     while (j < i) {
-                        const pkj = slice(msg.pubkeys, j * PUBKEY_LEN, PUBKEY_LEN)
+                        const pkj = subBytes(msg.pubkeys, j * PUBKEY_LEN, PUBKEY_LEN)
                         if (pubkeyEq(pk, pkj)) {
                             seen = 1
                         }
@@ -326,7 +326,7 @@ contract BridgeVerify {
                     var cur = leafHashSha(msg.leaf)
                     var m = 0
                     while (m < n) {
-                        const sib = slice(msg.proof, m * HASH_LEN, HASH_LEN)
+                        const sib = subBytes(msg.proof, m * HASH_LEN, HASH_LEN)
                         cur = (byteAt(msg.directions, m) == 0) ? hashNodeSha(cur, sib) : hashNodeSha(sib, cur)
                         m += 1
                     }

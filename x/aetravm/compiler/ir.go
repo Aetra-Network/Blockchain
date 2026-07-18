@@ -134,19 +134,27 @@ const (
 	IRExprSha512    IRExprKind = "sha512"
 	IRExprBlake2b   IRExprKind = "blake2b"
 
-	// Byte manipulation for building/parsing hash preimages. concat/slice/byteAt/
+	// Byte manipulation for building/parsing hash preimages. concat/subBytes/byteAt/
 	// toBytesBE carry their operands in Args (in source order); fromBytesBE uses
-	// Left.
+	// Left. (IRExprSlice is the IR kind name for the subBytes source builtin --
+	// kept as "slice" for IR-level stability; the language-facing name is
+	// subBytes.)
 	IRExprConcat      IRExprKind = "concat"
 	IRExprSlice       IRExprKind = "slice"
 	IRExprByteAt      IRExprKind = "byte_at"
 	IRExprToBytesBE   IRExprKind = "to_bytes_be"
 	IRExprFromBytesBE IRExprKind = "from_bytes_be"
 
-	// Full-width fused multiply-divide (mulDiv / mulDivRoundUp). Three uint256
-	// operands carried in Args (source order a, b, c); yields uint256.
+	// Full-width fused multiply-divide (mulDiv / mulDivRoundUp / mulDivNearest,
+	// also spelled mulDivFloor / mulDivCeil / mulDivNearest at the source level --
+	// mulDivFloor and mulDivCeil are pure aliases lowering to the same IR kinds
+	// as mulDiv and mulDivRoundUp respectively, no new opcode).
+	// Three uint256 operands carried in Args (source order a, b, c); yields
+	// uint256. mulDivNearest rounds floor(a*b/c) up iff the remainder, doubled,
+	// is >= c (round-half-up). Maps 1:1 to avm.OpMulDivNearest.
 	IRExprMulDiv        IRExprKind = "mul_div"
 	IRExprMulDivRoundUp IRExprKind = "mul_div_round_up"
+	IRExprMulDivNearest IRExprKind = "mul_div_nearest"
 
 	// secp256k1 signature verification / public-key recovery. verifySecp256k1
 	// carries (msgHash, sig, pubkey) in Args and yields bool; ecrecover carries
@@ -167,6 +175,22 @@ const (
 	// (source order a, b, c) in Args, yields int256 (a*b)/c truncated toward
 	// zero. Maps 1:1 to avm.OpMulDivSigned.
 	IRExprMulDivSigned IRExprKind = "mul_div_signed"
+
+	// Checked narrowing casts (toUint128 / toInt128): one numeric operand in
+	// Args, re-tagged to uint128 / int128, TRAPPING if the magnitude does not
+	// fit. Needed because mulDiv/mulDivRoundUp/mulDivNearest/mulCmp always
+	// yield uint256 and mulDivSigned always yields int256 -- a struct field
+	// genuinely backed by uint128/int128 must explicitly narrow a
+	// fused-multiply-divide result. Maps 1:1 to avm.OpNarrowToUint128 /
+	// avm.OpNarrowToInt128.
+	IRExprNarrowToUint128 IRExprKind = "narrow_to_uint128"
+	IRExprNarrowToInt128  IRExprKind = "narrow_to_int128"
+
+	// IRExprNarrowToInt256 (toInt256): one numeric operand in Args, re-tagged
+	// to int256, TRAPPING if the magnitude does not fit (>= 2^255). Needed to
+	// store an unsigned (Ratio256/BasisPoints-derived) magnitude into a
+	// genuinely int256-backed signed field. Maps 1:1 to avm.OpNarrowToInt256.
+	IRExprNarrowToInt256 IRExprKind = "narrow_to_int256"
 )
 
 type IRStructField struct {

@@ -439,7 +439,10 @@ func TestSubOpcodeExecutesDeterministicallyAndRejectsUnderflow(t *testing.T) {
 	}
 	failed, err := runner.Run(underflow, nil, runtimeCtx(EntryReceiveInternal))
 	require.ErrorContains(t, err, "underflow")
-	require.Equal(t, async.ResultExecutionFailed, failed.ResultCode)
+	// Stage 1(c): unsigned subtraction underflow now threads the specific,
+	// already-defined async.ResultArithmeticUnderflow code instead of the
+	// generic ResultExecutionFailed.
+	require.Equal(t, async.ResultArithmeticUnderflow, failed.ResultCode)
 }
 
 func TestGasAccountingIsDeterministicAcrossEntrypointsAndLimits(t *testing.T) {
