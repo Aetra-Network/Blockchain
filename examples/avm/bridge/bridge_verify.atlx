@@ -1,0 +1,391 @@
+// Cross-chain BRIDGE trust primitives for ATLX / AVM.
+//
+// A bridge / light client accepts a fact about a FOREIGN chain only when two
+// independent proofs both hold:
+//
+//   1. MERKLE INCLUSION -- a leaf is proven to sit under a committed root
+//      (the foreign header's stateRoot) via an audit path of sibling hashes.
+//   2. VALIDATOR QUORUM -- a strict super-majority (> 2/3) of the foreign
+//      validator set signed the header hash the proof is rooted at.
+//
+// Both are expressed from the existing byte-exact primitives with NO new
+// opcode: sha256 / keccak256 for the hash, concat / slice / byteAt for the
+// audit path, verifySecp256k1 for the ECDSA batch, and while-loops for the
+// walk. Because ATLX getters are validated as PURE (no local mutation, hence no
+// accumulator loop), the iterative verification lives in the @internal message
+// handler -- a relayer SUBMITS a proof as a message and the handler commits the
+// boolean verdict to storage, which off-chain callers read back through the
+// getters below. The proof arguments therefore arrive as message fields (the
+// "explicit args"); nothing about the check reads chain-internal state.
+//
+// SECURITY-CRITICAL invariants encoded here (a subtle break silently accepts a
+// forged proof, which on a bridge means minting unbacked funds):
+//
+//   * DOMAIN SEPARATION (RFC-6962). A bare Merkle tree that hashes BOTH leaves
+//     and internal nodes as H(left||right) is SECOND-PREIMAGE FORGEABLE: an
+//     internal node digest H(a||b) has the exact byte shape of a leaf, so an
+//     attacker can present that internal digest AS a leaf, hand over the
+//     truncated audit path that already sits above it, and forge inclusion of a
+//     value that was never a real leaf (on a bridge: an unbacked mint). This is
+//     closed by tagging the two hash domains apart, exactly as RFC-6962 does:
+//         leaf  = H(0x00 || leafData)        -- computed ON-CHAIN from raw bytes
+//         node  = H(0x01 || left  || right)
+//     Because every leaf digest begins its preimage with 0x00 and every internal
+//     digest with 0x01, no internal node can ever be re-presented as a leaf, and
+//     the forgery is impossible. The contract prepends 0x00 to the caller-
+//     supplied raw leaf itself, so domain separation is ENFORCED on-chain rather
+//     than trusted to the relayer.
+//   * LENGTH DISCIPLINE. Every audit-path sibling MUST be exactly HASH_LEN (32)
+//     bytes, the direction vector MUST have exactly one entry per proof level
+//     (len(proof)/HASH_LEN), and the committed root MUST be 32 bytes. A proof
+//     whose blob is not a whole number of 32-byte siblings, or whose direction
+//     count disagrees, is rejected (verdict 0) before any hashing -- a ragged
+//     blob must never be silently reinterpreted into a passing path.
+//   * CONCATENATION ORDER. At each level the sibling is hashed on the LEFT or
+//     the RIGHT of the running node, selected by the direction byte. H(cur||sib)
+//     and H(sib||cur) are different digests; the wrong one lets an attacker
+//     replay a sibling at the wrong position and forge inclusion. The order is
+//     pinned by hashNodeSha / hashNodeKeccak and driven by byteAt(directions,i):
+//     0 = running node is the LEFT child  (sibling on the right, H(0x01||cur||sib));
+//     non-zero = running node is the RIGHT child (sibling on the left,
+//     H(0x01||sib||cur)).
+//   * HASH CHOICE. A bridge to a sha256 chain and a bridge to a keccak256
+//     (Ethereum) chain MUST use that chain's hash; mixing them never matches.
+//     Both variants ship so the caller commits to one explicitly.
+//   * LOW-S / CANONICAL ECDSA. verifySecp256k1 enforces canonical low-S, so a
+//     malleated signature cannot be counted twice toward the quorum.
+//   * DISTINCT SIGNERS. The batched quorum counts each validator public key at
+//     most once: a duplicated (pubkey, signature) pair is NOT counted twice, so
+//     a single validator cannot be replayed to manufacture a super-majority.
+//   * STRICT super-majority. Acceptance requires valid*3 > total*2, i.e.
+//     strictly MORE than two thirds; exactly two thirds is NOT enough (BFT
+//     safety).
+//
+// NOTE ON THE VALIDATOR SET. This example accepts the validator public keys as
+// a submitted message field to keep the primitive self-contained. A production
+// light client MUST instead PIN the validator set (and its stake weights) from
+// its own committed state / a trusted genesis + verified rotations, and count
+// weighted stake, not a raw key tally -- otherwise a relayer could submit an
+// attacker-chosen "validator set". The dedup here defends the tally shape; the
+// provenance of the set is the caller's responsibility to anchor.
+//
+// The final root comparison is done over fromBytesBE(...) of both 32-byte
+// digests so it is a pure numeric equality that does not depend on whether the
+// running node is carried as a hash tag or a bytes tag.
+//
+// This is application-level only; it never touches PoS/consensus.
+
+const ERR_BAD_MSG = 0xFFFF
+
+// Record sizes inside the flat blobs. A Merkle sibling and a digest are 32
+// bytes; a compressed secp256k1 key is 33 bytes; a compact R‖S ECDSA signature
+// is 64 bytes.
+const HASH_LEN = 32
+const PUBKEY_LEN = 33
+const SIG_LEN = 64
+
+// RFC-6962 domain-separation tags, prepended to the hash preimage so a leaf and
+// an internal node live in disjoint hash domains (see the header note). Built
+// into a single prefix byte via toBytesBE(tag, 1) and concatenated.
+const LEAF_TAG = 0x00
+const NODE_TAG = 0x01
+
+@storage
+struct BridgeStorage {
+    // Last sha256 Merkle-inclusion verdict (1 = leaf proven under root).
+    merkleShaResult: uint64
+    // Last keccak256 Merkle-inclusion verdict.
+    merkleKeccakResult: uint64
+    // Number of DISTINCT valid validator signatures in the last batch.
+    sigCount: uint64
+    // Whether the last batch met the strict > 2/3 quorum (1 = met).
+    thresholdResult: uint64
+    // Last light-client verdict (1 = quorum AND inclusion both held).
+    accepted: uint64
+}
+
+// Submit a leaf + sha256 audit path to test inclusion under `root`.
+@message(0xB101)
+struct VerifyMerkleSha {
+    leaf: bytes
+    proof: bytes
+    directions: bytes
+    root: bytes
+}
+
+// Same, over the keccak256 (Ethereum) hash.
+@message(0xB102)
+struct VerifyMerkleKeccak {
+    leaf: bytes
+    proof: bytes
+    directions: bytes
+    root: bytes
+}
+
+// Submit a validator-set signature batch over `headerHash`.
+@message(0xB103)
+struct VerifySigs {
+    headerHash: bytes
+    pubkeys: bytes
+    sigs: bytes
+}
+
+// Submit a full light-client proof: a validator batch over the header hash AND
+// a Merkle inclusion of `leaf` under the header's `stateRoot`.
+@message(0xB104)
+struct LightClientVerify {
+    headerHash: bytes
+    pubkeys: bytes
+    sigs: bytes
+    leaf: bytes
+    proof: bytes
+    directions: bytes
+    stateRoot: bytes
+}
+
+type BridgeMsg = VerifyMerkleSha | VerifyMerkleKeccak | VerifySigs | LightClientVerify
+
+contract BridgeVerify {
+    author: "Aetralis example"
+    description: "Cross-chain bridge trust primitives: RFC-6962 domain-separated Merkle inclusion (sha256/keccak256) + secp256k1 distinct-signer validator-quorum light client"
+    version: "0.02.0"
+
+    storage: BridgeStorage
+    incomingMessages: BridgeMsg
+
+    @store
+    func BridgeStorage.load() {
+        return BridgeStorage.fromChunk(contract.getData())
+    }
+
+    @store
+    func BridgeStorage.save(self) {
+        contract.setData(self.toChunk())
+    }
+
+    // --- Domain-separated single-step hashes. Each is one return expression
+    //     (inlinable). LEAF hashing tags the preimage with 0x00; NODE hashing
+    //     tags it with 0x01, so an internal digest can never be replayed as a
+    //     leaf (RFC-6962). The parent of an ordered (left, right) pair is
+    //     H(0x01 || left || right); the CALLER picks which of the running node /
+    //     sibling is `left` per the direction byte, so the concat order is
+    //     decided exactly once, here. ---
+
+    @pure
+    func leafHashSha(leaf: bytes): hash32 {
+        return sha256(concat(toBytesBE(LEAF_TAG, 1), leaf))
+    }
+
+    @pure
+    func leafHashKeccak(leaf: bytes): hash32 {
+        return keccak256(concat(toBytesBE(LEAF_TAG, 1), leaf))
+    }
+
+    @pure
+    func hashNodeSha(left: bytes, right: bytes): hash32 {
+        return sha256(concat(toBytesBE(NODE_TAG, 1), concat(left, right)))
+    }
+
+    @pure
+    func hashNodeKeccak(left: bytes, right: bytes): hash32 {
+        return keccak256(concat(toBytesBE(NODE_TAG, 1), concat(left, right)))
+    }
+
+    // Byte-exact equality of two compressed secp256k1 public keys (PUBKEY_LEN =
+    // 33 bytes). Compares the leading 32 bytes as a big-endian integer and the
+    // trailing byte directly, so it covers all 33 bytes with no loop -- keeping
+    // this helper PURE and inlinable for the distinct-signer dedup below.
+    @pure
+    func pubkeyEq(a: bytes, b: bytes): bool {
+        return (fromBytesBE(slice(a, 0, HASH_LEN)) == fromBytesBE(slice(b, 0, HASH_LEN)))
+            && (byteAt(a, PUBKEY_LEN - 1) == byteAt(b, PUBKEY_LEN - 1))
+    }
+
+    @internal
+    func onInternalMessage(in: InMessage) {
+        const msg = lazy BridgeMsg.fromSegment(in.body)
+
+        match (msg) {
+            // ---- 1a. sha256 Merkle inclusion --------------------------------
+            VerifyMerkleSha => {
+                var st = lazy BridgeStorage.load()
+                const n = len(msg.proof) / HASH_LEN
+                // Length discipline: the proof blob must be a whole number of
+                // 32-byte siblings, one direction per level, 32-byte root.
+                const lenOk = (len(msg.proof) == n * HASH_LEN)
+                    && (len(msg.directions) == n)
+                    && (len(msg.root) == HASH_LEN)
+                var result = 0
+                if (lenOk) {
+                    // Start from the DOMAIN-SEPARATED leaf hash H(0x00||leaf), not
+                    // the raw leaf, so an internal digest can never pose as a leaf.
+                    var cur = leafHashSha(msg.leaf)
+                    var i = 0
+                    while (i < n) {
+                        const sib = slice(msg.proof, i * HASH_LEN, HASH_LEN)
+                        cur = (byteAt(msg.directions, i) == 0) ? hashNodeSha(cur, sib) : hashNodeSha(sib, cur)
+                        i += 1
+                    }
+                    result = (fromBytesBE(cur) == fromBytesBE(msg.root)) ? 1 : 0
+                }
+                st.merkleShaResult = result
+                st.save()
+            }
+
+            // ---- 1b. keccak256 (Ethereum) Merkle inclusion ------------------
+            VerifyMerkleKeccak => {
+                var st = lazy BridgeStorage.load()
+                const n = len(msg.proof) / HASH_LEN
+                const lenOk = (len(msg.proof) == n * HASH_LEN)
+                    && (len(msg.directions) == n)
+                    && (len(msg.root) == HASH_LEN)
+                var result = 0
+                if (lenOk) {
+                    var cur = leafHashKeccak(msg.leaf)
+                    var i = 0
+                    while (i < n) {
+                        const sib = slice(msg.proof, i * HASH_LEN, HASH_LEN)
+                        cur = (byteAt(msg.directions, i) == 0) ? hashNodeKeccak(cur, sib) : hashNodeKeccak(sib, cur)
+                        i += 1
+                    }
+                    result = (fromBytesBE(cur) == fromBytesBE(msg.root)) ? 1 : 0
+                }
+                st.merkleKeccakResult = result
+                st.save()
+            }
+
+            // ---- 2. Batched validator-signature verify ----------------------
+            //      Each DISTINCT public key counts at most once toward the tally.
+            VerifySigs => {
+                var st = lazy BridgeStorage.load()
+                var valid = 0
+                var i = 0
+                const k = len(msg.sigs) / SIG_LEN
+                while (i < k) {
+                    const pk = slice(msg.pubkeys, i * PUBKEY_LEN, PUBKEY_LEN)
+                    const sig = slice(msg.sigs, i * SIG_LEN, SIG_LEN)
+                    // Distinct-signer dedup: skip this key if it already appeared
+                    // earlier in the batch, so a replayed validator cannot be
+                    // counted twice toward the super-majority.
+                    var seen = 0
+                    var j = 0
+                    while (j < i) {
+                        const pkj = slice(msg.pubkeys, j * PUBKEY_LEN, PUBKEY_LEN)
+                        if (pubkeyEq(pk, pkj)) {
+                            seen = 1
+                        }
+                        j += 1
+                    }
+                    if (seen == 0 && verifySecp256k1(msg.headerHash, sig, pk)) {
+                        valid += 1
+                    }
+                    i += 1
+                }
+                const total = len(msg.pubkeys) / PUBKEY_LEN
+                st.sigCount = valid
+                st.thresholdResult = (valid * 3 > total * 2) ? 1 : 0
+                st.save()
+            }
+
+            // ---- 3. Light-client accept (BOTH proofs) -----------------------
+            LightClientVerify => {
+                var st = lazy BridgeStorage.load()
+
+                // (a) validator quorum over the header hash, distinct signers.
+                var valid = 0
+                var i = 0
+                const k = len(msg.sigs) / SIG_LEN
+                while (i < k) {
+                    const pk = slice(msg.pubkeys, i * PUBKEY_LEN, PUBKEY_LEN)
+                    const sig = slice(msg.sigs, i * SIG_LEN, SIG_LEN)
+                    var seen = 0
+                    var j = 0
+                    while (j < i) {
+                        const pkj = slice(msg.pubkeys, j * PUBKEY_LEN, PUBKEY_LEN)
+                        if (pubkeyEq(pk, pkj)) {
+                            seen = 1
+                        }
+                        j += 1
+                    }
+                    if (seen == 0 && verifySecp256k1(msg.headerHash, sig, pk)) {
+                        valid += 1
+                    }
+                    i += 1
+                }
+                const total = len(msg.pubkeys) / PUBKEY_LEN
+                const quorum = (valid * 3 > total * 2) ? 1 : 0
+
+                // (b) domain-separated Merkle inclusion under the header's
+                //     stateRoot, with the same length discipline as leg 1.
+                const n = len(msg.proof) / HASH_LEN
+                const lenOk = (len(msg.proof) == n * HASH_LEN)
+                    && (len(msg.directions) == n)
+                    && (len(msg.stateRoot) == HASH_LEN)
+                var merkleOk = 0
+                if (lenOk) {
+                    var cur = leafHashSha(msg.leaf)
+                    var m = 0
+                    while (m < n) {
+                        const sib = slice(msg.proof, m * HASH_LEN, HASH_LEN)
+                        cur = (byteAt(msg.directions, m) == 0) ? hashNodeSha(cur, sib) : hashNodeSha(sib, cur)
+                        m += 1
+                    }
+                    merkleOk = (fromBytesBE(cur) == fromBytesBE(msg.stateRoot)) ? 1 : 0
+                }
+
+                // Accept only when the quorum AND the inclusion proof both hold.
+                st.sigCount = valid
+                st.thresholdResult = quorum
+                st.merkleShaResult = merkleOk
+                st.accepted = (quorum == 1 && merkleOk == 1) ? 1 : 0
+                st.save()
+            }
+
+            else => {
+                assert (in.body.isEmpty()) throw ERR_BAD_MSG
+            }
+        }
+    }
+
+    @bounced
+    func onBouncedMessage(in: InMessageBounced) {
+        // No outbound messages are sent, so there is nothing to reconcile.
+    }
+
+    // --- Getters: read back the verdict a submitted proof committed. ---
+
+    // sha256 Merkle-inclusion verdict of the last VerifyMerkleSha (1 = proven).
+    @get
+    func merkleShaResult(): uint64 {
+        const st = lazy BridgeStorage.load()
+        return st.merkleShaResult
+    }
+
+    // keccak256 Merkle-inclusion verdict of the last VerifyMerkleKeccak.
+    @get
+    func merkleKeccakResult(): uint64 {
+        const st = lazy BridgeStorage.load()
+        return st.merkleKeccakResult
+    }
+
+    // Number of DISTINCT valid validator signatures in the last batch.
+    @get
+    func sigCount(): uint64 {
+        const st = lazy BridgeStorage.load()
+        return st.sigCount
+    }
+
+    // Whether the last batch met the strict > 2/3 quorum (1 = met).
+    @get
+    func thresholdResult(): uint64 {
+        const st = lazy BridgeStorage.load()
+        return st.thresholdResult
+    }
+
+    // Last light-client verdict: 1 iff quorum AND Merkle inclusion both held.
+    @get
+    func accepted(): uint64 {
+        const st = lazy BridgeStorage.load()
+        return st.accepted
+    }
+}
