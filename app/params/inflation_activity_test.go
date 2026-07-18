@@ -36,11 +36,13 @@ func TestActivityInflationControllerRaisesInflationWithExplainableInputs(t *test
 		RecentInflationBps:		[]int64{290, 295, controllerFixtureInflationBps},
 	}, params)
 	require.NoError(t, err)
-	// Pressure is strongly positive, so rawTarget clamps to the 500 rail; the
-	// 4-sample smoothing window averages {290, 295, 300, 500} = 346, a +46 bps
-	// step that the per-window limiter cuts to +25 -> 325.
+	// Pressure is strongly positive, so rawTarget rises well above the current
+	// 300 bps rate, though it no longer saturates the (now 800 bps) max rail; the
+	// 4-sample smoothing window then proposes a step the per-window limiter cuts
+	// to +25 -> 325.
 	require.Equal(t, controllerFixtureInflationBps+params.PerWindowChangeLimitBps, out.InflationBps)
-	require.Equal(t, params.MaxInflationBps, out.RawTargetInflationBps)
+	require.Greater(t, out.RawTargetInflationBps, controllerFixtureInflationBps)
+	require.LessOrEqual(t, out.RawTargetInflationBps, params.MaxInflationBps)
 	require.True(t, out.ChangeLimited)
 	require.False(t, out.EmergencyFrozen)
 	require.Len(t, out.Components, 7)

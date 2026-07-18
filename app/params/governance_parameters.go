@@ -168,7 +168,7 @@ func DefaultGovernanceParameterSpecs() []GovernanceParameterSpec {
 		governanceIntegerSpec(GovernanceParamUnbondingBlocks, "staking_policy", GovernanceDefaultUnbondingBlocks, GovernanceDefaultUnbondingBlocks, GovernanceDefaultUnbondingBlocks, true),
 		governanceIntegerSpec(GovernanceParamMinTxFee, "fees", GovernanceDefaultMinTxFeeNaet, GovernanceDefaultMinTxFeeNaet, GovernanceDefaultMinTxFeeNaet, true),
 		governanceIntegerSpec(GovernanceParamInflationMin, "economics", MinInflationBps, 150, 200, true),
-		governanceIntegerSpec(GovernanceParamInflationMax, "economics", MaxInflationBps, 500, 600, true),
+		governanceIntegerSpec(GovernanceParamInflationMax, "economics", MaxInflationBps, 500, 800, true),
 		governanceIntegerSpec(GovernanceParamTargetBondedRatio, "economics", AetraTargetBondedRatioDefaultBps, AetraTargetBondedRatioMinBps, AetraTargetBondedRatioMaxBps, true),
 		governanceIntegerSpec(GovernanceParamFeeBurnShare, "economics", 5_000, AetraFeeBurnShareMinBps, AetraFeeBurnShareMaxBps, true),
 		governanceIntegerSpec(GovernanceParamFeeRewardShare, "economics", 3_500, AetraFeeRewardShareMinBps, AetraFeeRewardShareMaxBps, true),

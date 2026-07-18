@@ -13,25 +13,24 @@ import (
 // to 10000 bps; they decide WHERE a fixed emission lands, never HOW MUCH is
 // minted, so every weight here is neutral to total supply growth.
 //
-// v = ValidatorRewardBps = 8500 is the staking-ratio instrument. Pinning
-// inflation (see appparams.DefaultTargetInflationBps) costs the protocol its
-// only lever on the bonded ratio, and one instrument cannot hit two targets
-// (net supply growth AND staking ratio) at once. The split restores a second,
-// free lever: it moves validator APR by v/sigma without touching total supply.
+// v = ValidatorRewardBps = 8500 sends the bulk of emission to the parties that
+// actually secure the chain. With inflation once again the adaptive staking
+// lever (see appparams.DefaultTargetInflationBps), the split is no longer asked
+// to double as a second lever; v is simply sized so emission reaches
+// circulating validators and delegators rather than being stranded in reserves.
 //
 // Sizing v = 8500:
 //   - Circulating growth is NET_circ = v*i - (burn + treasury share of fees).
-//     At v = 7000 that is 0.70*4.00% - 0.641% = 2.16%, BELOW the owner's 3%
-//     floor even though TOTAL growth is in band -- the shortfall is emission
-//     minted into reserves that never circulate. At v = 8500:
-//     0.85*4.00% - 0.641% = 3.16%, inside the band.
-//   - Validator APR = 0.98*(v*i + 0.35*phi)/sigma = 5.8-7.3% across the
-//     reachable throughput range, satisfying the "validators must earn a real
-//     return" constraint.
+//     At v = 7000 and the 4% start that is 0.70*4.00% - 0.641% = 2.16%; the
+//     shortfall is emission minted into reserves that never circulate. At
+//     v = 8500 it is 0.85*4.00% - 0.641% = 3.16%, so almost all of the start
+//     rate reaches holders.
+//   - Validator APR = 0.98*(v*i + 0.35*phi)/sigma is a real return at the
+//     target operating point, satisfying the "validators must earn" constraint.
 //
 // ProtectionBps and BurnBps go to 0 deliberately:
 //   - Burn: burning freshly minted coins is a no-op that only makes the
-//     advertised rate a lie (mint i, destroy 5% of it, realize 0.95*i). The
+//     advertised rate a lie (mint i, destroy some of it, realize less). The
 //     protocol's burn belongs on the FEE side, where it is capped and
 //     supply-aware (see appparams.EmissionFeeBurnAnnualCapBps).
 //   - Protection: the protection module has no spend path (only x/treasury can
@@ -47,33 +46,31 @@ func DefaultDistributionWeights() DistributionWeights {
 	}
 }
 
-// DefaultParams pins the emission rate. MinAnnualInflationBps ==
-// MaxAnnualInflationBps == DefaultTargetInflationBps (400 bps) makes
-// ComputeInflationBps clamp its output to exactly 4.00% on every epoch, at any
-// staking ratio: the rate is a constant, not a controller output.
+// DefaultParams seeds the ADAPTIVE emission controller. CurrentInflationBps is
+// the 4.00% start; MinAnnualInflationBps / MaxAnnualInflationBps open the band
+// to [1.50%, 8.00%] so ComputeInflationBps can steer with the bonded ratio.
 //
-// This is deliberate. ComputeInflationBps is an INTEGRATOR --
+// ComputeInflationBps is an INTEGRATOR --
 // next = current + (target - actual)*resp/10^4 -- whose output is written back
-// as the next epoch's input (keeper.go FinalizeEmissionEpoch). It has no
-// restoring term, so its only fixed points are |target - actual| <= 12 bps;
-// anywhere else it ratchets by 0.08*|target-actual| bps per epoch until it hits
-// a rail and welds there. Measured live at 84.26% bonded against a 60% target
-// it stepped -194 bps/epoch and pinned itself to the floor in ONE epoch,
-// realizing 1.5% while the params advertised 3%. A controller that saturates
-// under any reachable input is not a controller, and the owner's net-growth
-// target is binding, so the rate is pinned here and the staking ratio is left
-// to the emission split (see DefaultDistributionWeights).
+// as the next epoch's input (keeper.go FinalizeEmissionEpoch). With the band
+// open this is exactly the intended behaviour: a bonded ratio persistently
+// below the 65% target walks the rate UP toward the 8% ceiling to attract
+// stake, and one persistently above walks it DOWN toward the 1.5% floor. The
+// real bonded ratio reaches this function through the epoch EndBlocker
+// (app/native_economy.go realStakingRatioBps -> StakingKeeper.BondedRatio), not
+// a hardcoded target, so the steer tracks committed state.
 //
-// The rails stay in the params rather than being deleted so governance can
-// re-open the band (up to ConstitutionalMaxInflationBps) once a real bonded
-// ratio is observed on mainnet.
+// NET supply growth is therefore no longer a fixed band; it floats with stake
+// (see appparams.DefaultTargetInflationBps). ConstitutionalMaxInflationBps is
+// the hard mint ceiling, equal to the top of the band, leaving governance room
+// to widen it later.
 func DefaultParams() Params {
 	return Params{
 		BaseDenom:			BaseDenom,
 		CurrentInflationBps:		uint32(appparams.DefaultTargetInflationBps),
 		TargetStakingRatioBps:		uint32(appparams.DefaultTargetStakeBps),
-		MinAnnualInflationBps:		uint32(appparams.DefaultTargetInflationBps),
-		MaxAnnualInflationBps:		uint32(appparams.DefaultTargetInflationBps),
+		MinAnnualInflationBps:		uint32(appparams.MinInflationBps),
+		MaxAnnualInflationBps:		uint32(appparams.MaxInflationBps),
 		ConstitutionalMaxInflationBps:	uint32(appparams.EmissionConstitutionalMaxInflationBps),
 		ResponsivenessBps:		uint32(appparams.DefaultResponsivenessBps),
 		AnnualReferenceSupply:		sdk.NewInt64Coin(BaseDenom, appparams.AnnualReferenceSupplyNaet),
@@ -100,23 +97,20 @@ func NormalizeParams(params Params) Params {
 	if params.TargetStakingRatioBps == 0 {
 		params.TargetStakingRatioBps = uint32(appparams.DefaultTargetStakeBps)
 	}
-	// These refills must use the PINNED rate, not appparams.MinInflationBps /
-	// MaxInflationBps (150/500, which remain the governance-legal outer band and
-	// are still what network_profile.go and the governance parameter specs
-	// validate). Refilling from the outer band would silently unpin inflation for
-	// any genesis that omits these fields -- reintegrating the saturating
-	// controller DefaultParams exists to disable, and putting the owner's 3-5%
-	// net band back at the mercy of the bonded ratio.
+	// Refill the band from the adaptive bounds appparams.MinInflationBps /
+	// MaxInflationBps (150/800). These are the governance-legal band the emission
+	// controller steers inside; a genesis that omits the fields inherits the full
+	// adaptive band rather than a welded rate.
 	if params.MinAnnualInflationBps == 0 {
-		params.MinAnnualInflationBps = uint32(appparams.DefaultTargetInflationBps)
+		params.MinAnnualInflationBps = uint32(appparams.MinInflationBps)
 	}
 	if params.MaxAnnualInflationBps == 0 {
-		params.MaxAnnualInflationBps = uint32(appparams.DefaultTargetInflationBps)
+		params.MaxAnnualInflationBps = uint32(appparams.MaxInflationBps)
 	}
-	// Refill from the constitutional ceiling (500 bps), not from
-	// MaxAnnualInflationBps: the latter is now the 400 bps pin, and collapsing
-	// the constitutional maximum onto it would leave governance no headroom to
-	// ever raise the rate without a constitutional amendment.
+	// Refill the constitutional ceiling from EmissionConstitutionalMaxInflationBps
+	// (800 bps). It equals the top of the adaptive band today, but is kept a
+	// distinct knob so governance can widen MaxAnnualInflationBps up to it without
+	// a constitutional amendment.
 	if params.ConstitutionalMaxInflationBps == 0 {
 		params.ConstitutionalMaxInflationBps = uint32(appparams.EmissionConstitutionalMaxInflationBps)
 	}

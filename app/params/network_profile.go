@@ -38,7 +38,7 @@ const (
 	AetraHealthyVotingPowerBps		= int64(6_667)
 	AetraTargetBondedRatioMinBps		= int64(5_500)
 	AetraTargetBondedRatioMaxBps		= int64(6_500)
-	AetraTargetBondedRatioDefaultBps	= int64(6_000)
+	AetraTargetBondedRatioDefaultBps	= int64(6_500)
 	AetraNormalInflationMinBps		= int64(300)
 	AetraNormalInflationMaxBps		= int64(400)
 	AetraDelegatorAPRTargetMinBps		= int64(400)
@@ -232,8 +232,8 @@ func (p NetworkProfile) Validate() error {
 	if DefaultTargetStakeBps != p.TargetBondedRatioDefaultBps {
 		return fmt.Errorf("default target stake must equal network target bonded ratio default")
 	}
-	if MinInflationBps < 150 || MinInflationBps > 200 || MaxInflationBps > 600 {
-		return fmt.Errorf("mint inflation bounds must stay within 1.5-6 percent")
+	if MinInflationBps < 150 || MinInflationBps > 200 || MaxInflationBps > 800 {
+		return fmt.Errorf("mint inflation bounds must stay within 1.5-8 percent")
 	}
 	if err := validateBpsRange("normal_inflation", p.NormalInflationMinBps, p.NormalInflationMaxBps, 300, 400); err != nil {
 		return err

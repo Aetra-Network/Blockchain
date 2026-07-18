@@ -14,55 +14,58 @@ const (
 	MaxCommissionBps		= int64(2_000)
 	MaxDailyCommissionChangeBps	= int64(100)
 
+	// MinInflationBps and MaxInflationBps are the adaptive band the emission
+	// controller steers inside: 1.5% when actual staking EXCEEDS the 65% target
+	// (plenty bonded, no need to incentivise) up to 8.0% when staking is BELOW
+	// target (too little bonded, incentivise). x/emissions seeds
+	// MinAnnualInflationBps / MaxAnnualInflationBps from these, so
+	// ComputeInflationBps' output moves across the whole range with the real
+	// bonded ratio instead of being welded to a single value.
 	MinInflationBps			= int64(150)
-	MaxInflationBps			= int64(500)
-	// DefaultTargetInflationBps is the PINNED gross annual emission rate: 4.00%.
+	MaxInflationBps			= int64(800)
+	// DefaultTargetInflationBps is the genesis START of the adaptive rate: 4.00%.
 	//
-	// Derivation (target throughput T = 10 TPS, see EmissionFeeBurnAnnualCapBps):
-	//   NET(T) = i*d*(1-beta) - min(phi*b, gamma)
-	// with d = 1 (time-triggered epoch, see EmissionEpochDuration), beta = 0
-	// (emission BurnBps = 0, see x/emissions DefaultDistributionWeights) this
-	// collapses to NET(T) = i - min(phi*b, gamma), so
-	//   NET in [i - gamma, i] = [4.00% - 0.90%, 4.00%] = [3.10%, 4.00%]
-	// for EVERY throughput, fee and supply -- the owner's 3-5% net band holds
-	// unconditionally rather than as a tuning. i = 400 is the smallest rate that
-	// keeps the floor above 3% given gamma = 90, and it is the top of the
-	// network profile's normal inflation band (AetraNormalInflationMaxBps = 400),
-	// so it stays legal under network_profile.go's "default target inflation must
-	// remain inside normal inflation range" check.
+	// It is NOT a pin. It seeds x/emissions' CurrentInflationBps, and from there
+	// ComputeInflationBps steers each epoch:
+	//   next = clamp(current + (targetStake - actualStake)*responsiveness/10^4,
+	//               [MinInflationBps, MaxInflationBps])
+	// Actual bonded stake ABOVE the 65% target (DefaultTargetStakeBps) drives the
+	// rate DOWN toward the 1.5% floor (enough is staked, stop paying for more);
+	// BELOW target drives it UP toward the 8.0% ceiling (too little staked, pay to
+	// attract it). This is the standard Cosmos adaptive model, fed by the REAL
+	// bonded ratio from committed state (app/native_economy.go realStakingRatioBps
+	// -> StakingKeeper.BondedRatio).
 	//
-	// This is a PIN, not a target the controller steers toward: x/emissions sets
-	// MinAnnualInflationBps == MaxAnnualInflationBps == this value, which welds
-	// ComputeInflationBps' output here regardless of the staking ratio. See
-	// EmissionConstitutionalMaxInflationBps for why.
+	// 4.00% is the start because it is the top of the network profile's normal
+	// inflation band (AetraNormalInflationMaxBps = 400), so it stays legal under
+	// network_profile.go's "default target inflation must remain inside normal
+	// inflation range" check.
+	//
+	// Consequence the owner accepts: NET supply growth = inflation - fee burn no
+	// longer sits in a fixed 3-5% band. It floats with the bonded ratio (gross
+	// inflation 1.5-8%, minus the capped fee burn). Inflation is once again the
+	// protocol's staking lever; the emission split is no longer asked to double as
+	// one (see x/emissions DefaultDistributionWeights).
 	DefaultTargetInflationBps	= int64(400)
 	// EmissionConstitutionalMaxInflationBps is the hard ceiling x/emissions may
-	// never mint above (5.00%), independent of the pinned rate above. It leaves
-	// 100 bps of governance headroom over the 400 bps pin and sits far under
-	// x/constitution's own MaxInflationBps = 2000 (20%).
-	EmissionConstitutionalMaxInflationBps	= int64(500)
-	// EmissionFeeBurnAnnualCapBps caps the protocol's fee burn at 1.00% of total
+	// never mint above (8.00%), equal to the top of the adaptive band. It sits far
+	// under x/constitution's own MaxInflationBps = 2000 (20%), which leaves
+	// governance ample headroom to widen the band by ordinary proposal.
+	EmissionConstitutionalMaxInflationBps	= int64(800)
+	// EmissionFeeBurnAnnualCapBps caps the protocol's fee burn at 0.90% of total
 	// supply per year; the overflow is routed to validators instead of destroyed.
 	//
-	// Why a cap is REQUIRED and not a tuning: fee burn is T*k*f*b, which is
-	// linear and unbounded in throughput, while emission is a fixed fraction of
+	// This is a deflation / DoS backstop, NOT a net-growth tuning. Fee burn is
+	// T*k*f*b, linear and unbounded in throughput, while emission is a fraction of
 	// supply. Without a ceiling there is always a throughput at which burn
-	// overwhelms mint and net supply growth leaves the 3-5% band from below --
-	// measured live at 7.63 TPS the chain ran NET = -72.7%/yr. Capping the burn
-	// makes NET in [i-gamma, i] an algebraic identity (see above) at any T.
+	// overwhelms mint and net supply growth goes deeply negative -- measured live
+	// at 7.63 TPS the chain ran NET = -72.7%/yr. Capping the burn bounds how far
+	// net growth can be dragged below the (now adaptive) inflation rate at any T,
+	// so a fee-spam attack cannot force the supply into a death spiral.
 	//
-	// Sizing: gamma = 90 bps puts the net-growth floor at i - gamma = 4.00% -
-	// 0.90% = 3.10%, leaving 10 bps of margin ABOVE the owner's 3% floor.
-	//
-	// gamma = 100 -- nominally "the largest cap that still keeps NET >= 3%" --
-	// is WRONG, and the economic-outcome test catches it: it places the floor at
-	// exactly 3.00% with zero margin, but the REALIZED rate is a hair under the
-	// configured one. Emission is minted once per epoch and each epoch's amount
-	// is integer-truncated (ComputeEpochEmissionWithSupply divides by
-	// EpochsPerYear), so the chain realizes i - delta for a small delta > 0, and
-	// 4.00% - 1.00% - delta < 3.00% breaches the band. The constraint is
-	// gamma <= i - 300 - delta, so gamma must be strictly under 100. The 10 bps
-	// margin swallows the quantization with room to spare.
+	// Net growth is no longer pinned to a fixed band -- it floats with the bonded
+	// ratio (see DefaultTargetInflationBps) -- so gamma = 90 is sized as a plain
+	// backstop rather than to hold an algebraic [i-gamma, i] identity.
 	//
 	// At the 16B target supply the cap only binds above
 	//   T = gamma*S / (k*f*b) = 0.009*16e9 / (31,536,000 * 0.5 * 0.5) = 18.3 TPS,
@@ -70,7 +73,7 @@ const (
 	// ~30.6 TPS), and under congestion (f -> 5 AET) above T = 1.83 TPS. It stays
 	// an attack backstop, not a participant in the everyday economy.
 	EmissionFeeBurnAnnualCapBps	= int64(90)
-	DefaultTargetStakeBps		= int64(6_000)
+	DefaultTargetStakeBps		= int64(6_500)
 	DefaultResponsivenessBps	= int64(800)
 	DefaultActivityCouplingBps	= int64(100)
 	NormalBurnRatioBps		= int64(3_000)

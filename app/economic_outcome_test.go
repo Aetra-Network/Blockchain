@@ -69,6 +69,13 @@ const (
 	// peer-defensible ceiling phi_max = 1%/yr:
 	//   S >= 10 * 31,536,000 * 0.5 / 0.01 = 1.577e10 -> 16e9 AET.
 	targetSupplyAET = int64(16_000_000_000)
+
+	// emissionTargetStakeBps is the 65% bonded ratio the adaptive controller
+	// holds inflation steady at (== appparams.DefaultTargetStakeBps ==
+	// x/emissions TargetStakingRatioBps). At this operating point
+	// ComputeInflationBps returns the 4% start unchanged, so the burn cap alone
+	// shapes net supply growth -- the design point the net-band tests pin.
+	emissionTargetStakeBps = uint64(appparams.DefaultTargetStakeBps)
 )
 
 // aetToNaet returns amount AET in naet as an sdkmath.Int. It deliberately does
@@ -134,15 +141,22 @@ func netAnnualGrowthBps(t *testing.T, supplyNaet sdkmath.Int, stakingRatioBps ui
 	return net.Mul(sdkmath.NewInt(appparams.BasisPoints)).Quo(supplyNaet).Int64()
 }
 
-// TestNetAnnualSupplyGrowthStaysInOwnerBand is the headline contract: for every
-// physically reachable throughput, at both the live and the target supply, and at
-// both the normal and the congested fee, net annual supply growth must land in
-// 3-5%.
+// TestNetAnnualSupplyGrowthStaysInOwnerBand is the headline contract at the
+// DESIGN OPERATING POINT: when the bonded ratio sits at the 65% target the
+// adaptive controller holds inflation at its 4% start, and for every physically
+// reachable throughput, at both the live and the target supply, and at both the
+// normal and the congested fee, net annual supply growth must land in 3-5%.
+//
+// At the target ratio inflation is constant, so this is once again the burn-cap
+// identity NET in [i-gamma, i] = [3.10%, 4.00%]: it is the cap, not a
+// coincidence of the operating point, that holds the floor. AWAY from the target
+// the controller deliberately moves inflation, and hence net growth, with the
+// bonded ratio -- that steering (and the fact that net is no longer a fixed band
+// across all ratios) is TestEmissionRateSteersWithStakingRatio's job.
 //
 // The grid deliberately includes throughputs far past the chain's ~30.6 TPS gas
 // ceiling (and a 1000 TPS absurdity) to prove the band is an identity rather than
-// a tuning: it is the burn cap, not a coincidence of the operating point, that
-// holds the floor.
+// a tuning at this operating point.
 func TestNetAnnualSupplyGrowthStaysInOwnerBand(t *testing.T) {
 	const (
 		minNetBps = int64(300)
@@ -172,10 +186,12 @@ func TestNetAnnualSupplyGrowthStaysInOwnerBand(t *testing.T) {
 				name := fmt.Sprintf("%s/%s/%dmTPS", supply.name, fee.name, milliTPS)
 				t.Run(name, func(t *testing.T) {
 					supplyNaet := aetToNaet(supply.aet)
-					// 84.26% bonded: the ratio measured live, far above the
-					// 60% emission target. Under the old controller this alone
-					// drove inflation to the floor.
-					netBps := netAnnualGrowthBps(t, supplyNaet, 8_426, milliTPS, fee.naet)
+					// At the 65% target the controller holds inflation at the 4%
+					// start (delta = target - actual = 0), so the burn cap alone
+					// shapes net growth into the owner's band. (At the live 84.26%
+					// bonded the rate would instead steer down -- see
+					// TestEmissionRateSteersWithStakingRatio.)
+					netBps := netAnnualGrowthBps(t, supplyNaet, emissionTargetStakeBps, milliTPS, fee.naet)
 
 					require.GreaterOrEqual(t, netBps, minNetBps,
 						"net annual supply growth %d bps fell BELOW the owner's 3%% floor -- the fee burn is outrunning emission", netBps)
@@ -205,60 +221,93 @@ func TestNetGrowthWithoutBurnCapLeavesBand(t *testing.T) {
 		Mul(sdkmath.NewInt(int64(feeParams.BurnBps))).
 		Quo(sdkmath.NewInt(appparams.BasisPoints))
 
-	mint, emissionBurn, _ := annualEmissionNaet(t, supplyNaet, 8_426)
+	mint, emissionBurn, _ := annualEmissionNaet(t, supplyNaet, emissionTargetStakeBps)
 	uncappedNetBps := mint.Sub(emissionBurn).Sub(uncappedBurn).
 		Mul(sdkmath.NewInt(appparams.BasisPoints)).Quo(supplyNaet).Int64()
 
 	require.Less(t, uncappedNetBps, int64(-5_000),
 		"sanity: without the burn cap the live operating point must be deeply deflationary (measured ~-73%%/yr); got %d bps", uncappedNetBps)
 
-	// And with the cap, the same operating point is back in band.
-	cappedNetBps := netAnnualGrowthBps(t, supplyNaet, 8_426, 7_630, liveMeasuredFeeNaet)
+	// And with the cap, the same operating point is back in band (evaluated at the
+	// 65% target, where inflation holds at the 4% start).
+	cappedNetBps := netAnnualGrowthBps(t, supplyNaet, emissionTargetStakeBps, 7_630, liveMeasuredFeeNaet)
 	require.GreaterOrEqual(t, cappedNetBps, int64(300))
 	require.LessOrEqual(t, cappedNetBps, int64(500))
 }
 
-// TestEmissionRateIsIndependentOfStakingRatio pins the Tinbergen fix.
+// TestEmissionRateSteersWithStakingRatio is the inverse of the retired pin
+// contract: inflation MUST move with the bonded ratio now, not stay welded to
+// the 4% start.
 //
-// One instrument cannot hit two targets. The old controller used inflation to
-// steer the BONDED RATIO, which made net supply growth a function of how much
-// stake happened to be bonded -- at the measured 84.26% it drove inflation to the
-// 150 bps floor in a single epoch and realized 1.5% while the params advertised
-// 3%. Worse, it is an INTEGRATOR whose output is fed back as its next input with
-// no restoring term, so it welds to whichever rail it reaches.
-//
-// The rate is now pinned and the staking ratio is steered by the emission SPLIT
-// instead (DefaultDistributionWeights' validator share), which is neutral to total
-// supply growth. So: inflation must not move with the staking ratio, at all.
-func TestEmissionRateIsIndependentOfStakingRatio(t *testing.T) {
+// One epoch's step from the 4% start (CurrentInflationBps = 400, target 65%,
+// responsiveness 800 bps): bonded BELOW target pushes the rate UP, AT target
+// leaves it unchanged, ABOVE target pushes it DOWN -- always clamped to the
+// [1.5%, 8%] band. The old pinned config (Min == Max == 400) returned 400 at
+// every ratio, so it would fail this test flat.
+func TestEmissionRateSteersWithStakingRatio(t *testing.T) {
 	supplyNaet := aetToNaet(targetSupplyAET)
+	start := uint32(appparams.DefaultTargetInflationBps)
 
-	for _, stakingRatioBps := range []uint64{0, 1_000, 5_000, 6_000, 8_426, 10_000} {
-		t.Run(fmt.Sprintf("bonded-%dbps", stakingRatioBps), func(t *testing.T) {
-			_, _, inflationBps := annualEmissionNaet(t, supplyNaet, stakingRatioBps)
-			require.Equal(t, uint32(appparams.DefaultTargetInflationBps), inflationBps,
-				"inflation must be pinned at %d bps regardless of the bonded ratio; the split, not the rate, is the staking instrument",
-				appparams.DefaultTargetInflationBps)
+	// One-epoch steer from the 4% start across the owner's grid of bonded ratios.
+	for _, tc := range []struct {
+		bondedBps uint64
+		want      uint32
+	}{
+		{bondedBps: 4_000, want: 600}, // 40% bonded, far below the 65% target -> up
+		{bondedBps: 5_500, want: 480}, // 55% -> up (above the 4% start)
+		{bondedBps: 6_500, want: 400}, // 65% == target -> unchanged
+		{bondedBps: 7_500, want: 320}, // 75% -> down (below the 4% start)
+		{bondedBps: 9_000, want: 200}, // 90% -> down
+	} {
+		t.Run(fmt.Sprintf("bonded-%dbps", tc.bondedBps), func(t *testing.T) {
+			_, _, inflationBps := annualEmissionNaet(t, supplyNaet, tc.bondedBps)
+			require.Equal(t, tc.want, inflationBps,
+				"one epoch from %d bps at %d bps bonded must steer to %d bps", start, tc.bondedBps, tc.want)
+			require.GreaterOrEqual(t, inflationBps, uint32(appparams.MinInflationBps))
+			require.LessOrEqual(t, inflationBps, uint32(appparams.MaxInflationBps))
 		})
 	}
+
+	// The pin is genuinely gone: below target the rate rises above the start,
+	// above target it falls below, and the two are not equal -- none of which a
+	// welded Min == Max == 400 controller could produce.
+	_, _, low := annualEmissionNaet(t, supplyNaet, 4_000)
+	_, _, high := annualEmissionNaet(t, supplyNaet, 9_000)
+	require.Greater(t, low, start, "below target must exceed the 4% start")
+	require.Less(t, high, start, "above target must fall below the 4% start")
+	require.NotEqual(t, low, high, "a pinned controller would return the same rate at both ratios")
 }
 
-// TestEmissionRateIsPinnedAcrossRepeatedEpochs guards the integrator directly:
+// TestEmissionRateWalksToFloorUnderHeavyStaking guards the integrator feedback:
 // x/emissions writes each epoch's computed rate back as the next epoch's input
-// (CurrentInflationBps), so a controller with a live band ratchets. With the band
-// pinned (Min == Max), iterating must be a fixed point.
-func TestEmissionRateIsPinnedAcrossRepeatedEpochs(t *testing.T) {
+// (CurrentInflationBps), so at a bonded ratio persistently above the 65% target
+// the rate must ratchet DOWN and weld at the 1.5% floor -- the adaptive
+// behaviour the old pin suppressed (it held 400 here forever).
+func TestEmissionRateWalksToFloorUnderHeavyStaking(t *testing.T) {
 	params := emissionstypes.DefaultParams()
 	supplyNaet := aetToNaet(targetSupplyAET)
 
+	const heavyBondedBps = uint64(8_426) // 84.26%, far above the 65% target
+
+	prev := params.CurrentInflationBps
+	require.Equal(t, uint32(appparams.DefaultTargetInflationBps), prev, "starts at the 4% seed")
+
+	var last uint32
 	for epoch := uint64(1); epoch <= 24; epoch++ {
-		record, err := emissionstypes.ComputeEpochEmissionWithSupply(params, epoch, 8_426, int64(epoch), supplyNaet)
+		record, err := emissionstypes.ComputeEpochEmissionWithSupply(params, epoch, heavyBondedBps, int64(epoch), supplyNaet)
 		require.NoError(t, err)
-		require.Equal(t, uint32(appparams.DefaultTargetInflationBps), record.InflationBps,
-			"epoch %d drifted off the pin", epoch)
+		require.LessOrEqual(t, record.InflationBps, prev,
+			"epoch %d must not ratchet up under persistent heavy staking", epoch)
+		require.GreaterOrEqual(t, record.InflationBps, uint32(appparams.MinInflationBps))
+		prev = record.InflationBps
+		last = record.InflationBps
 		// Feed the output back in, exactly as the keeper does.
 		params.CurrentInflationBps = record.InflationBps
 	}
+	require.Equal(t, uint32(appparams.MinInflationBps), last,
+		"under persistent heavy staking the integrator must weld at the 1.5%% floor")
+	require.NotEqual(t, uint32(appparams.DefaultTargetInflationBps), last,
+		"the old pin held 400 here; the adaptive controller must not")
 }
 
 // TestValidatorsEarnARealReturn pins the owner's hard constraint that validators
@@ -327,8 +376,10 @@ func TestTargetSupplyIsRepresentableOnTheEmissionPath(t *testing.T) {
 	require.Equal(t, int64(9_223_372_036), maxInt64Supply.Int64())
 	require.Less(t, maxInt64Supply.Int64(), targetSupplyAET)
 
-	// The real emission path handles it: 16e9 * 400/10^4 = 640e6 AET/yr.
-	mint, _, inflationBps := annualEmissionNaet(t, targetNaet, 8_426)
+	// The real emission path handles it: 16e9 * 400/10^4 = 640e6 AET/yr. Evaluated
+	// at the 65% target, where the controller holds inflation at the 4% start so
+	// the int64-representability math below is sized against the right rate.
+	mint, _, inflationBps := annualEmissionNaet(t, targetNaet, emissionTargetStakeBps)
 	require.Equal(t, uint32(appparams.DefaultTargetInflationBps), inflationBps)
 
 	// ...but not to the naet. This is delta, the per-epoch truncation that forces
