@@ -152,10 +152,15 @@ func (k *Keeper) registerViaCollectionLocked(msg types.MsgSendToNameCollection, 
 		DeadlineHeight:	deadline,
 		CreatedHeight:	msg.Height,
 	}
-	next := cloneGenesis(k.genesis)
+	next := cloneGenesisUnsorted(k.genesis)
 	next.State.Auctions = upsertAuction(next.State.Auctions, auction)
-	next.State = next.State.Export()
-	if err := next.Validate(); err != nil {
+	// Incremental validation (FD-02): auction-name uniqueness against an
+	// already-open auction is already checked above; only the auction's own
+	// field validity is scoped here.
+	if err := validateGlobal(next); err != nil {
+		return CollectionOutcome{}, err
+	}
+	if err := auction.Validate(next.IdentityParams); err != nil {
 		return CollectionOutcome{}, err
 	}
 	if err := k.persistLocked(next); err != nil {
@@ -249,10 +254,12 @@ func (k *Keeper) PlaceBid(msg types.MsgPlaceBid) (BidOutcome, error) {
 	auction.HighBidNaet = bid.String()
 	auction.HighBidder = msg.Bidder
 
-	next := cloneGenesis(k.genesis)
+	next := cloneGenesisUnsorted(k.genesis)
 	next.State.Auctions = upsertAuction(next.State.Auctions, auction)
-	next.State = next.State.Export()
-	if err := next.Validate(); err != nil {
+	if err := validateGlobal(next); err != nil {
+		return BidOutcome{}, err
+	}
+	if err := auction.Validate(next.IdentityParams); err != nil {
 		return BidOutcome{}, err
 	}
 	if err := k.persistLocked(next); err != nil {
@@ -308,10 +315,12 @@ func (k *Keeper) StartAuction(msg types.MsgStartAuction) (StartAuctionOutcome, e
 		DeadlineHeight:	deadline,
 		CreatedHeight:	msg.Height,
 	}
-	next := cloneGenesis(k.genesis)
+	next := cloneGenesisUnsorted(k.genesis)
 	next.State.Auctions = upsertAuction(next.State.Auctions, auction)
-	next.State = next.State.Export()
-	if err := next.Validate(); err != nil {
+	if err := validateGlobal(next); err != nil {
+		return StartAuctionOutcome{}, err
+	}
+	if err := auction.Validate(next.IdentityParams); err != nil {
 		return StartAuctionOutcome{}, err
 	}
 	if err := k.persistLocked(next); err != nil {
@@ -328,12 +337,14 @@ func (k *Keeper) UpdatePriceTable(msg types.MsgUpdatePriceTable) (int, error) {
 		return 0, err
 	}
 	tiers := types.PriceTiersFromMsg(&msg)
-	next := cloneGenesis(k.genesis)
+	next := cloneGenesisUnsorted(k.genesis)
 	next.IdentityParams.PriceTable = tiers
+	// A price-table update touches only IdentityParams -- it never adds,
+	// removes, or renames a record, reserved name, resolver, reverse record,
+	// binding, auction, or attachment, so none of the per-record or
+	// cross-record invariants can be affected. IdentityParams.Validate() is
+	// the whole check (FD-02: this used to also run a full state Validate()).
 	if err := next.IdentityParams.Validate(); err != nil {
-		return 0, err
-	}
-	if err := next.Validate(); err != nil {
 		return 0, err
 	}
 	if err := k.persistLocked(next); err != nil {
@@ -360,12 +371,20 @@ func (k *Keeper) runEndBlockLocked(height uint64) error {
 		// A disabled collection is inert -- nothing to close or sweep.
 		return nil
 	}
-	next := cloneGenesis(k.genesis)
+	next := cloneGenesisUnsorted(k.genesis)
 	changed := false
+	// grantedNames collects every name an auction closed THIS block actually
+	// granted (closeAuctionLocked/grantAuctionName only runs for a due auction
+	// that has a bid), so each granted record can be validated below without
+	// re-validating the whole state.
+	var grantedNames []string
 
 	for _, auction := range dueAuctions(next.State.Auctions, height) {
 		if err := k.closeAuctionLocked(&next, auction, height); err != nil {
 			return err
+		}
+		if auction.HasBid() {
+			grantedNames = append(grantedNames, auction.Name)
 		}
 		next.State.Auctions = removeAuction(next.State.Auctions, auction.Name)
 		changed = true
@@ -382,9 +401,18 @@ func (k *Keeper) runEndBlockLocked(height uint64) error {
 	if !changed {
 		return nil
 	}
-	next.State = next.State.Export()
-	if err := next.Validate(); err != nil {
+	// Incremental validation (FD-02): a full Validate() rejecting a grant used
+	// to make the EndBlocker return an error, i.e. a deterministic chain halt.
+	// validateGrantedName reproduces that exact per-record + reserved-owner
+	// check for every name actually granted this block, so a grant that used
+	// to halt the chain still halts it identically.
+	if err := validateGlobal(next); err != nil {
 		return err
+	}
+	for _, name := range grantedNames {
+		if err := validateGrantedName(next, name); err != nil {
+			return err
+		}
 	}
 	return k.persistLocked(next)
 }

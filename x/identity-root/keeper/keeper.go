@@ -216,11 +216,34 @@ func (k *Keeper) loadForBlock(ctx context.Context) error {
 	k.written = baseline.records
 	k.writtenResidual = baseline.residual
 	gs = cloneGenesis(gs)
-	if err := gs.Validate(); err != nil {
+	// FD-02: this used to be a full gs.Validate() -- an O(state) re-check of
+	// bytes that were already fully validated when they were WRITTEN (every
+	// write path either goes through the per-message incremental validators in
+	// incremental_validate.go, or through a genesis/import boundary that runs
+	// the full validator). Re-running it here on every single message/
+	// EndBlocker was a SECOND full-state pass additive to the per-handler one.
+	// Keep only the O(1) params check; committed record content is trusted.
+	if err := gs.validateParamsOnly(); err != nil {
 		return err
 	}
 	k.genesis = gs
 	return nil
+}
+
+// validateParamsOnly is loadForBlock's lightweight substitute for the full
+// GenesisState.Validate(): it checks the genesis version and both O(1) params
+// structs but does NOT walk (or Export) the module's collections. Safe only
+// because loadForBlock reads state that was already fully validated at write
+// time (see incremental_validate.go); it must NOT be used at a genesis/import
+// boundary where the state may be arbitrary/external.
+func (gs GenesisState) validateParamsOnly() error {
+	if gs.Version != prototype.CurrentGenesisVersion {
+		return errors.New("identity root prototype unsupported genesis version")
+	}
+	if err := gs.Params.Validate(); err != nil {
+		return err
+	}
+	return gs.IdentityParams.Validate()
 }
 
 // persistLocked assigns next as the new in-memory genesis and, when custody is
@@ -268,6 +291,15 @@ func (k *Keeper) RegisterName(msg types.MsgRegisterName) (types.NameRecord, erro
 	if err != nil {
 		return types.NameRecord{}, err
 	}
+	// Restore the cross-record parent invariant the old full Validate()
+	// enforced for every record with a non-empty ParentName (state.go:374-385):
+	// RegisterName can mint an arbitrary-depth dotted name via types.ParentName
+	// without ever going through CreateSubdomain's owned-parent check, so it
+	// needs its own read-only lookup against the parent that already exists in
+	// k.genesis (nothing has been mutated yet). See incremental_validate.go.
+	if err := requireParentPolicySatisfied(k.genesis.State.Records, parent, name, msg.Owner); err != nil {
+		return types.NameRecord{}, err
+	}
 	binding := prepareBinding(name, msg.Owner, msg.NFTBinding, k.genesis.IdentityParams)
 	record := types.NameRecord{
 		Name:				name,
@@ -283,17 +315,36 @@ func (k *Keeper) RegisterName(msg types.MsgRegisterName) (types.NameRecord, erro
 		CreatedHeight:			msg.Height,
 		UpdatedHeight:			msg.Height,
 	}.Normalize(k.genesis.IdentityParams)
-	next := cloneGenesis(k.genesis)
+	next := cloneGenesisUnsorted(k.genesis)
 	next.State.Records = append(next.State.Records, record)
-	if record.ResolverRoot != types.DefaultResolverRoot {
-		next.State.Resolvers = upsertResolver(next.State.Resolvers, types.ResolverRecord{Name: name, ResolverRoot: record.ResolverRoot, UpdatedHeight: msg.Height}, next.IdentityParams)
+	var resolver types.ResolverRecord
+	hasResolver := record.ResolverRoot != types.DefaultResolverRoot
+	if hasResolver {
+		resolver = types.ResolverRecord{Name: name, ResolverRoot: record.ResolverRoot, UpdatedHeight: msg.Height}.Normalize(next.IdentityParams)
+		next.State.Resolvers = upsertResolver(next.State.Resolvers, resolver, next.IdentityParams)
 	}
 	if binding.Enabled {
 		next.State.NFTBindings = upsertBinding(next.State.NFTBindings, binding, next.IdentityParams)
 	}
-	next.State = next.State.Export()
-	if err := next.Validate(); err != nil {
+	// Incremental validation (FD-02): only what THIS message touched, not the
+	// whole module state. See incremental_validate.go. Name uniqueness and the
+	// reserved-name x owner cross-check are already enforced above (:257,:260)
+	// before any state was built, so they need no re-check here.
+	if err := validateGlobal(next); err != nil {
 		return types.NameRecord{}, err
+	}
+	if err := record.Validate(next.IdentityParams); err != nil {
+		return types.NameRecord{}, err
+	}
+	if hasResolver {
+		if err := resolver.Validate(next.IdentityParams); err != nil {
+			return types.NameRecord{}, err
+		}
+	}
+	if binding.Enabled {
+		if err := binding.Validate(next.IdentityParams); err != nil {
+			return types.NameRecord{}, err
+		}
 	}
 	if err := k.persistLocked(next); err != nil {
 		return types.NameRecord{}, err
@@ -313,7 +364,7 @@ func (k *Keeper) RenewName(msg types.MsgRenewName) (types.NameRecord, error) {
 	if err := k.requireEnabled(); err != nil {
 		return types.NameRecord{}, err
 	}
-	index, record, err := k.requireOwnedName(msg.Name, msg.Owner, msg.Height, false)
+	_, record, err := k.requireOwnedName(msg.Name, msg.Owner, msg.Height, false)
 	if err != nil {
 		return types.NameRecord{}, err
 	}
@@ -334,10 +385,21 @@ func (k *Keeper) RenewName(msg types.MsgRenewName) (types.NameRecord, error) {
 	record.ExpiryHeight = expiry
 	record.RenewalHeight = msg.Height
 	record.UpdatedHeight = msg.Height
-	next := cloneGenesis(k.genesis)
-	next.State.Records[index] = record.Normalize(next.IdentityParams)
-	next.State = next.State.Export()
-	if err := next.Validate(); err != nil {
+	next := cloneGenesisUnsorted(k.genesis)
+	// next.State.Records is an independent deep copy (cloneGenesisUnsorted
+	// still clones every collection; it only skips the sort -- see
+	// types.IdentityRootState.ExportUnsortedHot), so an index captured against
+	// k.genesis.State.Records before the clone is not guaranteed to still point
+	// at the same slot in next. Re-resolve the index against next itself.
+	idx, _, found := recordIndex(next.State.Records, record.Name)
+	if !found {
+		return types.NameRecord{}, errors.New("identity name vanished during renewal")
+	}
+	next.State.Records[idx] = record.Normalize(next.IdentityParams)
+	if err := validateGlobal(next); err != nil {
+		return types.NameRecord{}, err
+	}
+	if err := next.State.Records[idx].Validate(next.IdentityParams); err != nil {
 		return types.NameRecord{}, err
 	}
 	if err := k.persistLocked(next); err != nil {
@@ -352,7 +414,7 @@ func (k *Keeper) TransferName(msg types.MsgTransferName) (types.NameRecord, erro
 	if err := k.requireEnabled(); err != nil {
 		return types.NameRecord{}, err
 	}
-	index, record, err := k.requireOwnedName(msg.Name, msg.Owner, msg.Height, true)
+	_, record, err := k.requireOwnedName(msg.Name, msg.Owner, msg.Height, true)
 	if err != nil {
 		return types.NameRecord{}, err
 	}
@@ -367,22 +429,47 @@ func (k *Keeper) TransferName(msg types.MsgTransferName) (types.NameRecord, erro
 	record.Owner = msg.NewOwner
 	record.NFTBinding = binding
 	record.UpdatedHeight = msg.Height
-	next := cloneGenesis(k.genesis)
-	next.State.Records[index] = record.Normalize(next.IdentityParams)
+	next := cloneGenesisUnsorted(k.genesis)
+	// See RenewName: the index must be resolved against next.State.Records (an
+	// independent copy), not against any index captured before the clone.
+	idx, _, found := recordIndex(next.State.Records, record.Name)
+	if !found {
+		return types.NameRecord{}, errors.New("identity name vanished during transfer")
+	}
+	next.State.Records[idx] = record.Normalize(next.IdentityParams)
 	next.State.ReverseRecords = removeReverseByName(next.State.ReverseRecords, record.Name)
 	// A domain SALE must not carry the reputation fee discount to the seller: the
 	// attachment is exactly what AccountHoldsDomain (the ante fee gate) reads, so
 	// clearing it on transfer drops the old target's discount and forces the new
-	// owner to re-attach to gain it. removeAttachmentByName + Export() deletes the
-	// AttachKey store entry, the same diff mechanism as the reverse-record clear
-	// above. (Audit: reputation must be gated on live ownership, not carried on sale.)
+	// owner to re-attach to gain it. removeAttachmentByName deletes the AttachKey
+	// store entry via the same diff mechanism as the reverse-record clear above.
+	// (Audit: reputation must be gated on live ownership, not carried on sale.)
 	next.State.Attachments = removeAttachmentByName(next.State.Attachments, record.Name)
 	if next.IdentityParams.NFTBindingEnabled {
 		next.State.NFTBindings = upsertBinding(next.State.NFTBindings, binding, next.IdentityParams)
 	}
-	next.State = next.State.Export()
-	if err := next.Validate(); err != nil {
+	updated := next.State.Records[idx]
+	// Incremental validation (FD-02): the reserved-owner and subdomain-policy
+	// cross-checks below are the ONLY-caught-by-full-Validate invariants a
+	// TransferName can newly break (a reserved name transferred to a
+	// non-authority; an owner_only child moved off its parent's owner; a
+	// parent moved out from under its owner_only children).
+	if err := validateGlobal(next); err != nil {
 		return types.NameRecord{}, err
+	}
+	if err := updated.Validate(next.IdentityParams); err != nil {
+		return types.NameRecord{}, err
+	}
+	if err := checkReservedOwnership(next, updated.Name); err != nil {
+		return types.NameRecord{}, err
+	}
+	if err := transferPreservesSubdomainOwnershipPolicy(next, updated.Name); err != nil {
+		return types.NameRecord{}, err
+	}
+	if next.IdentityParams.NFTBindingEnabled {
+		if err := binding.Validate(next.IdentityParams); err != nil {
+			return types.NameRecord{}, err
+		}
 	}
 	if err := k.persistLocked(next); err != nil {
 		return types.NameRecord{}, err
@@ -396,7 +483,7 @@ func (k *Keeper) SetResolver(msg types.MsgSetResolver) (types.ResolverRecord, er
 	if err := k.requireEnabled(); err != nil {
 		return types.ResolverRecord{}, err
 	}
-	index, record, err := k.requireOwnedName(msg.Name, msg.Owner, msg.Height, true)
+	_, record, err := k.requireOwnedName(msg.Name, msg.Owner, msg.Height, true)
 	if err != nil {
 		return types.ResolverRecord{}, err
 	}
@@ -407,11 +494,21 @@ func (k *Keeper) SetResolver(msg types.MsgSetResolver) (types.ResolverRecord, er
 	record.ResolverRoot = msg.ResolverRoot
 	record.UpdatedHeight = msg.Height
 	resolver := types.ResolverRecord{Name: record.Name, ResolverRoot: msg.ResolverRoot, UpdatedHeight: msg.Height}.Normalize(k.genesis.IdentityParams)
-	next := cloneGenesis(k.genesis)
-	next.State.Records[index] = record.Normalize(next.IdentityParams)
+	next := cloneGenesisUnsorted(k.genesis)
+	// See RenewName: resolve the index against next, not a pre-clone index.
+	idx, _, found := recordIndex(next.State.Records, record.Name)
+	if !found {
+		return types.ResolverRecord{}, errors.New("identity name vanished during resolver update")
+	}
+	next.State.Records[idx] = record.Normalize(next.IdentityParams)
 	next.State.Resolvers = upsertResolver(next.State.Resolvers, resolver, next.IdentityParams)
-	next.State = next.State.Export()
-	if err := next.Validate(); err != nil {
+	if err := validateGlobal(next); err != nil {
+		return types.ResolverRecord{}, err
+	}
+	if err := next.State.Records[idx].Validate(next.IdentityParams); err != nil {
+		return types.ResolverRecord{}, err
+	}
+	if err := resolver.Validate(next.IdentityParams); err != nil {
 		return types.ResolverRecord{}, err
 	}
 	if err := k.persistLocked(next); err != nil {
@@ -434,10 +531,12 @@ func (k *Keeper) SetReverseRecord(msg types.MsgSetReverseRecord) (types.ReverseR
 		return types.ReverseRecord{}, err
 	}
 	reverse := types.ReverseRecord{Address: msg.Address, Name: record.Name, Owner: record.Owner, UpdatedHeight: msg.Height}.Normalize(k.genesis.IdentityParams)
-	next := cloneGenesis(k.genesis)
+	next := cloneGenesisUnsorted(k.genesis)
 	next.State.ReverseRecords = upsertReverse(next.State.ReverseRecords, reverse, next.IdentityParams)
-	next.State = next.State.Export()
-	if err := next.Validate(); err != nil {
+	if err := validateGlobal(next); err != nil {
+		return types.ReverseRecord{}, err
+	}
+	if err := reverse.Validate(next.IdentityParams); err != nil {
 		return types.ReverseRecord{}, err
 	}
 	if err := k.persistLocked(next); err != nil {
@@ -498,14 +597,28 @@ func (k *Keeper) CreateSubdomain(msg types.MsgCreateSubdomain) (types.NameRecord
 		CreatedHeight:			msg.Height,
 		UpdatedHeight:			msg.Height,
 	}.Normalize(k.genesis.IdentityParams)
-	next := cloneGenesis(k.genesis)
+	next := cloneGenesisUnsorted(k.genesis)
 	next.State.Records = append(next.State.Records, record)
 	if binding.Enabled {
 		next.State.NFTBindings = upsertBinding(next.State.NFTBindings, binding, next.IdentityParams)
 	}
-	next.State = next.State.Export()
-	if err := next.Validate(); err != nil {
+	// Incremental validation (FD-02): the parent-policy match for THIS child
+	// was already checked above (:469-474) before any state was built. The
+	// reserved-owner cross-check is scoped here because CreateSubdomain can
+	// mint a child whose FQDN happens to already be reserved.
+	if err := validateGlobal(next); err != nil {
 		return types.NameRecord{}, err
+	}
+	if err := record.Validate(next.IdentityParams); err != nil {
+		return types.NameRecord{}, err
+	}
+	if err := checkReservedOwnership(next, record.Name); err != nil {
+		return types.NameRecord{}, err
+	}
+	if binding.Enabled {
+		if err := binding.Validate(next.IdentityParams); err != nil {
+			return types.NameRecord{}, err
+		}
 	}
 	if err := k.persistLocked(next); err != nil {
 		return types.NameRecord{}, err
@@ -523,10 +636,19 @@ func (k *Keeper) ReserveName(msg types.MsgReserveName) (types.ReservedName, erro
 	if isReserved(k.genesis.State.ReservedNames, reserved.Name) {
 		return types.ReservedName{}, errors.New("identity name already reserved")
 	}
-	next := cloneGenesis(k.genesis)
+	next := cloneGenesisUnsorted(k.genesis)
 	next.State.ReservedNames = append(next.State.ReservedNames, reserved)
-	next.State = next.State.Export()
-	if err := next.Validate(); err != nil {
+	// Incremental validation (FD-02): reservation uniqueness is already
+	// enforced above (isReserved guard); the ONLY-caught-by-full-Validate
+	// invariant here is that this name may already be a registered record
+	// owned by a normal user (see checkReservedOwnership).
+	if err := validateGlobal(next); err != nil {
+		return types.ReservedName{}, err
+	}
+	if err := reserved.Validate(next.IdentityParams); err != nil {
+		return types.ReservedName{}, err
+	}
+	if err := checkReservedOwnership(next, reserved.Name); err != nil {
 		return types.ReservedName{}, err
 	}
 	if err := k.persistLocked(next); err != nil {
@@ -545,14 +667,16 @@ func (k *Keeper) ReleaseReservedName(msg types.MsgReleaseReservedName) error {
 	if err != nil {
 		return err
 	}
-	next := cloneGenesis(k.genesis)
+	next := cloneGenesisUnsorted(k.genesis)
 	var removed bool
 	next.State.ReservedNames, removed = removeReserved(next.State.ReservedNames, name)
 	if !removed {
 		return errors.New("identity reserved name not found")
 	}
-	next.State = next.State.Export()
-	if err := next.Validate(); err != nil {
+	// Removal-only mutation: releasing a reserved name cannot newly violate any
+	// invariant (see incremental_validate.go), so only the O(1) global guard
+	// applies.
+	if err := validateGlobal(next); err != nil {
 		return err
 	}
 	if err := k.persistLocked(next); err != nil {
@@ -866,5 +990,29 @@ func removeReserved(names []types.ReservedName, name string) ([]types.ReservedNa
 
 func cloneGenesis(gs GenesisState) GenesisState {
 	gs.State = gs.State.Export()
+	return gs
+}
+
+// cloneGenesisUnsorted is cloneGenesis's cheap variant (FD-02 perf follow-up):
+// used ONLY at a hot mutation handler's entry point (the `next :=
+// cloneGenesisUnsorted(k.genesis)` line at the top of every RegisterName /
+// RenewName / ... / AttachDomain / ... / SendToNameCollection / ... handler in
+// this package). It still deep-clones all 8 collections -- preserving the
+// discard-the-clone-on-error rollback safety net every handler relies on when
+// it returns an error after building `next` but before persistLocked -- but
+// skips the sort.SliceStable pass over the five collections whose in-memory
+// order is not wire-significant (see
+// types.IdentityRootState.ExportUnsortedHot's doc comment for why: each is
+// stored as its own per-name/per-address KV key by persistence.go's writeDiff,
+// which re-derives its bytes from ITS OWN cloneGenesis(next).Export() call
+// independent of whatever order the handler produced).
+//
+// Do NOT use this at a genesis/import/migration boundary (InitGenesis,
+// InitGenesisState, ExportGenesis(State), Migrate1to2/Migrate2to3State,
+// GenesisState.Validate, module.ValidateGenesis) or in loadForBlock -- those
+// remain on the fully-sorted cloneGenesis, where correctness against
+// arbitrary/external state (not speed) is what matters.
+func cloneGenesisUnsorted(gs GenesisState) GenesisState {
+	gs.State = gs.State.ExportUnsortedHot()
 	return gs
 }

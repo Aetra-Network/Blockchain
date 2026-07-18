@@ -68,10 +68,15 @@ func (k *Keeper) AttachDomain(msg types.MsgAttachDomain) (types.Attachment, erro
 		CreatedHeight:		msg.Height,
 		UpdatedHeight:		msg.Height,
 	}.Normalize(k.genesis.IdentityParams)
-	next := cloneGenesis(k.genesis)
+	next := cloneGenesisUnsorted(k.genesis)
 	next.State.Attachments = upsertAttachment(next.State.Attachments, attachment)
-	next.State = next.State.Export()
-	if err := next.Validate(); err != nil {
+	// Incremental validation (FD-02): one-per-wallet and one-per-name
+	// uniqueness are already enforced above; only the attachment's own field
+	// validity is scoped here.
+	if err := validateGlobal(next); err != nil {
+		return types.Attachment{}, err
+	}
+	if err := attachment.Validate(next.IdentityParams); err != nil {
 		return types.Attachment{}, err
 	}
 	if err := k.persistLocked(next); err != nil {
@@ -99,10 +104,10 @@ func (k *Keeper) DetachDomain(msg types.MsgDetachDomain) (types.Attachment, erro
 	if !found {
 		return types.Attachment{}, errors.New("identity name has no attachment to detach")
 	}
-	next := cloneGenesis(k.genesis)
+	next := cloneGenesisUnsorted(k.genesis)
 	next.State.Attachments = removeAttachmentByName(next.State.Attachments, record.Name)
-	next.State = next.State.Export()
-	if err := next.Validate(); err != nil {
+	// Removal-only mutation: cannot newly violate any invariant.
+	if err := validateGlobal(next); err != nil {
 		return types.Attachment{}, err
 	}
 	if err := k.persistLocked(next); err != nil {
@@ -146,10 +151,10 @@ func (k *Keeper) DisownAttachment(msg types.MsgDisownAttachment) (types.Attachme
 	if !found {
 		return types.Attachment{}, errors.New("identity target wallet holds no attachment to disown")
 	}
-	next := cloneGenesis(k.genesis)
+	next := cloneGenesisUnsorted(k.genesis)
 	next.State.Attachments = removeAttachmentByTargetHex(next.State.Attachments, targetIdentityHex)
-	next.State = next.State.Export()
-	if err := next.Validate(); err != nil {
+	// Removal-only mutation: cannot newly violate any invariant.
+	if err := validateGlobal(next); err != nil {
 		return types.Attachment{}, err
 	}
 	if err := k.persistLocked(next); err != nil {

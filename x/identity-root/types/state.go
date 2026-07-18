@@ -321,6 +321,44 @@ func (s IdentityRootState) Export() IdentityRootState {
 	return out
 }
 
+// ExportUnsortedHot is Export's cheap variant (FD-02 perf follow-up), meant
+// for a mutation handler's entry-point clone rather than a genesis/import
+// boundary. It deep-clones all 8 collections exactly like Export -- so the
+// discard-the-clone-on-error rollback pattern every keeper handler relies on
+// still works -- but skips sort.SliceStable on the five HOT collections
+// (Records, Resolvers, ReverseRecords, Auctions, Attachments).
+//
+// Their in-memory order is not wire-significant: x/identity-root/keeper's
+// persistence.go stores each of the five as its own per-name/per-address KV
+// key (keyed by content, never by slice position) via writeDiff's OWN
+// cloneGenesis(next).Export() call, which re-sorts independently of whatever
+// order the handler produced -- so the committed bytes are identical either
+// way. Every handler that appends to one of the five without its own re-sort
+// only ever reads it back through a linear-scan-by-name/address lookup
+// (recordIndex and friends), never through an assumption of sorted order.
+//
+// The three residual collections -- NFTBindings, RootAuthorities,
+// ReservedNames -- ARE wire-significant: persistence.go keeps them inside the
+// single JSON blob at genesisKey, where slice order affects the marshaled
+// bytes directly, so they stay sorted here exactly as Export does.
+func (s IdentityRootState) ExportUnsortedHot() IdentityRootState {
+	out := IdentityRootState{
+		Records:		cloneRecords(s.Records),
+		Resolvers:		cloneResolvers(s.Resolvers),
+		ReverseRecords:		cloneReverseRecords(s.ReverseRecords),
+		NFTBindings:		cloneBindings(s.NFTBindings),
+		RootAuthorities:	cloneAuthorities(s.RootAuthorities),
+		ReservedNames:		cloneReserved(s.ReservedNames),
+		Auctions:		cloneAuctions(s.Auctions),
+		Attachments:		cloneAttachments(s.Attachments),
+		SweepState:		s.SweepState,
+	}
+	SortBindings(out.NFTBindings)
+	SortAuthorities(out.RootAuthorities)
+	SortReserved(out.ReservedNames)
+	return out
+}
+
 func (s IdentityRootState) Validate(params IdentityRootParams) error {
 	if err := params.Validate(); err != nil {
 		return err
