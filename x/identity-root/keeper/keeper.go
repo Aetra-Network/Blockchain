@@ -370,6 +370,13 @@ func (k *Keeper) TransferName(msg types.MsgTransferName) (types.NameRecord, erro
 	next := cloneGenesis(k.genesis)
 	next.State.Records[index] = record.Normalize(next.IdentityParams)
 	next.State.ReverseRecords = removeReverseByName(next.State.ReverseRecords, record.Name)
+	// A domain SALE must not carry the reputation fee discount to the seller: the
+	// attachment is exactly what AccountHoldsDomain (the ante fee gate) reads, so
+	// clearing it on transfer drops the old target's discount and forces the new
+	// owner to re-attach to gain it. removeAttachmentByName + Export() deletes the
+	// AttachKey store entry, the same diff mechanism as the reverse-record clear
+	// above. (Audit: reputation must be gated on live ownership, not carried on sale.)
+	next.State.Attachments = removeAttachmentByName(next.State.Attachments, record.Name)
 	if next.IdentityParams.NFTBindingEnabled {
 		next.State.NFTBindings = upsertBinding(next.State.NFTBindings, binding, next.IdentityParams)
 	}

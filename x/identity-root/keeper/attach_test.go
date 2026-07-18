@@ -199,3 +199,39 @@ func TestAccountHoldsDomainReadsCommittedStore(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, holds, "detach must clear the fee-gate index in the committed store")
 }
+
+// TestTransferNameClearsAttachment is the regression for the audit finding that a
+// domain SALE carried the reputation fee discount to the seller. The attachment
+// is exactly what the ante fee gate (AccountHoldsDomain) reads, so a transfer
+// must clear it: the old target loses the discount and the buyer must re-attach.
+func TestTransferNameClearsAttachment(t *testing.T) {
+	svc := kvtest.NewStoreService()
+	kv := NewPersistentKeeper(svc)
+	k := &kv
+	gs := DefaultGenesis()
+	gs.Params = prototype.TestnetParams()
+	gs.IdentityParams.RegistrationPeriod = 100
+	ctx := context.Background()
+	require.NoError(t, k.InitGenesisState(ctx, gs))
+	require.NoError(t, k.loadForBlock(ctx))
+
+	_, err := k.RegisterName(types.MsgRegisterName{Owner: ownerA, Name: "alice", Height: 10})
+	require.NoError(t, err)
+	_, err = k.AttachDomain(types.MsgAttachDomain{Owner: ownerA, Fqdn: "alice", Target: targetUser, Height: 11})
+	require.NoError(t, err)
+
+	targetAddr := accAddr(t, targetUser)
+	holds, err := k.AccountHoldsDomain(ctx, targetAddr)
+	require.NoError(t, err)
+	require.True(t, holds, "target holds the attached domain before the sale")
+
+	// Sell alice.aet to a new owner.
+	_, err = k.TransferName(types.MsgTransferName{Owner: ownerA, Name: "alice", NewOwner: ownerB, Height: 12})
+	require.NoError(t, err)
+
+	// The reputation discount must NOT survive the sale: the attachment (and its
+	// AttachKey store entry) is gone, so the old target no longer reads as holding.
+	holds, err = k.AccountHoldsDomain(ctx, targetAddr)
+	require.NoError(t, err)
+	require.False(t, holds, "reputation discount must not carry to the seller after a domain sale")
+}
