@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
@@ -18,6 +19,12 @@ import (
 
 	sdkmath "cosmossdk.io/math"
 	sdk "github.com/cosmos/cosmos-sdk/types"
+	secp256k1 "github.com/decred/dcrd/dcrec/secp256k1/v4"
+	"github.com/decred/dcrd/dcrec/secp256k1/v4/ecdsa"
+	"github.com/hdevalence/ed25519consensus"
+	"golang.org/x/crypto/blake2b"
+	"golang.org/x/crypto/ripemd160"
+	"golang.org/x/crypto/sha3"
 
 	"github.com/sovereign-l1/l1/app/addressing"
 	appparams "github.com/sovereign-l1/l1/app/params"
@@ -132,6 +139,47 @@ const (
 	// deterministic across validators — distinct from the forbidden 0xf1
 	// OpRandom, which drew from process entropy.
 	OpReadRandom Opcode = 0x46
+
+	// Byte-exact hash opcodes. Unlike OpHash (0x38) — which returns the BLAKE3
+	// chunk-tree Merkle root over a TAG+LENGTH-prefixed canonical encoding and is
+	// used for the chain's own content-addressing — these hash the RAW operand
+	// bytes with a standard algorithm, so a contract can recompute a foreign
+	// chain's digest (bridge headers, Bitcoin-style PoW). Each pops one
+	// bytes/string/hash value, charges base + 1 gas per input byte BEFORE
+	// hashing, and pushes the digest.
+	OpSha256    Opcode = 0x47
+	OpKeccak256 Opcode = 0x48
+	OpRipemd160 Opcode = 0x49
+	OpSha512    Opcode = 0x4a
+	OpBlake2b   Opcode = 0x4b
+
+	// Byte-manipulation opcodes for building hash preimages (nonce||challenge for
+	// PoW, header bytes for a bridge) and parsing them back. Every out-of-range
+	// index/length or overflow is a deterministic trap (rollback), never a panic,
+	// so all validators reject identical inputs identically.
+	OpConcat      Opcode = 0x4c
+	OpSlice       Opcode = 0x4d
+	OpByteAt      Opcode = 0x4e
+	OpToBytesBE   Opcode = 0x4f
+	OpFromBytesBE Opcode = 0x50
+
+	// Full-width fused multiply-divide. mulDiv(a,b,c) = floor(a*b/c) and
+	// mulDivRoundUp(a,b,c) = ceil(a*b/c), each computing the a*b product in an
+	// unbounded big.Int intermediate so a*b may exceed 2^256 as long as the
+	// final quotient fits uint256 — the constant-product AMM needs this
+	// (reserveIn*reserveOut overflows u64/u256 at real reserves, but the
+	// quotient does not). Traps on c==0 and on a quotient that overflows u256.
+	OpMulDiv        Opcode = 0x51
+	OpMulDivRoundUp Opcode = 0x52
+
+	// secp256k1 signature verification and public-key recovery over a
+	// PRE-COMPUTED 32-byte digest (Ethereum/bridge style — the opcode never
+	// re-hashes the message). Both enforce canonical low-S so a malleated
+	// high-S signature is rejected identically on every validator. Malformed
+	// inputs soft-fail (false / empty bytes), matching Ethereum's ecrecover;
+	// traps are reserved for gas exhaustion.
+	OpVerifySecp256k1 Opcode = 0x53
+	OpEcrecover       Opcode = 0x54
 
 	OpWallClock Opcode = 0xf0
 	OpRandom    Opcode = 0xf1
@@ -332,6 +380,38 @@ func DefaultParams() Params {
 			OpReadMsgField:                10,
 			OpCastCoins:                   2,
 			OpReadRandom:                  25,
+			// Byte-exact hashes: flat base here + 1 gas/input byte charged inside
+			// the handler (chargeOperandUnits) BEFORE hashing, mirroring OpHash so
+			// an oversized preimage cannot be hashed at a flat price (invisible
+			// DoS). sha256 is cheapest; the sponge/legacy constructions cost a
+			// touch more.
+			OpSha256:    80,
+			OpKeccak256: 90,
+			OpRipemd160: 90,
+			OpSha512:    90,
+			OpBlake2b:   90,
+			// Byte ops. concat/slice/toBytesBE also charge 1 gas per OUTPUT byte
+			// inside the handler before allocating; byteAt/fromBytesBE are O(1)
+			// (index / <=32-byte parse) so the flat base is the whole cost.
+			OpConcat:      8,
+			OpSlice:       8,
+			OpByteAt:      4,
+			OpToBytesBE:   8,
+			OpFromBytesBE: 8,
+			// Fused multiply-divide: a big.Int multiply + divide (+ one add for
+			// the round-up variant) on <=512-bit intermediates. Flat — operands
+			// are fixed-width integers (0 operand-size units), so there is no
+			// per-byte component.
+			OpMulDiv:        12,
+			OpMulDivRoundUp: 13,
+			// Elliptic-curve crypto over secp256k1. Flat and inputs are
+			// fixed-size, so no per-byte term; priced well above the hashes
+			// because a curve verify/recover is orders of magnitude more work,
+			// and an under-priced crypto op is an invisible DoS. ecrecover costs
+			// more than a bare verify (it adds a field inversion + point mul to
+			// reconstruct the public key).
+			OpVerifySecp256k1: 6_000,
+			OpEcrecover:       8_000,
 		},
 		// See the GasPerOperandUnit doc comment: 1 extra gas per map entry /
 		// tuple element / byte cloned or iterated, on top of the flat
@@ -454,6 +534,20 @@ func (p Params) Validate() error {
 		OpReadMsgBody,
 		OpIsEmpty,
 		OpReadRandom,
+		OpSha256,
+		OpKeccak256,
+		OpRipemd160,
+		OpSha512,
+		OpBlake2b,
+		OpConcat,
+		OpSlice,
+		OpByteAt,
+		OpToBytesBE,
+		OpFromBytesBE,
+		OpMulDiv,
+		OpMulDivRoundUp,
+		OpVerifySecp256k1,
+		OpEcrecover,
 	} {
 		if p.GasSchedule[op] == 0 {
 			return fmt.Errorf("gas schedule missing opcode 0x%02x", byte(op))
@@ -1094,6 +1188,236 @@ func (r *Runner) Run(module Module, storage Storage, ctx RuntimeContext) (Execut
 				return rollback(async.ResultExecutionFailed, err)
 			}
 			stack = append(stack, ValueBool(verified))
+		case OpSha256, OpKeccak256, OpRipemd160, OpSha512, OpBlake2b:
+			value, ok := pop(&stack)
+			if !ok {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on byte hash"))
+			}
+			// Charge base (flat, already added at the loop top) + 1 gas per input
+			// byte BEFORE hashing, so an oversized preimage cannot be hashed at a
+			// flat price. runtimeValueSizeUnits(value) is the raw byte length for
+			// bytes/string and 0 for the fixed 32-byte hash tag (covered by base).
+			if !chargeOperandGas(&exec.GasUsed, gasLimit, r.params.GasPerOperandUnit, value) {
+				return rollback(async.ResultLimitExceeded, nil)
+			}
+			raw, err := runtimeRawBytes(value)
+			if err != nil {
+				return rollback(async.ResultExecutionFailed, err)
+			}
+			result, err := runtimeByteHash(ins.Op, raw)
+			if err != nil {
+				return rollback(async.ResultExecutionFailed, err)
+			}
+			stack = append(stack, result)
+		case OpConcat:
+			// concat(a, b): b is on top (pushed last). TRAP if the result would
+			// exceed MaxBytesLength; charge 1 gas per output byte before the copy.
+			right, ok := pop(&stack)
+			if !ok {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on concat"))
+			}
+			left, ok := pop(&stack)
+			if !ok {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on concat"))
+			}
+			la, err := runtimeRawBytes(left)
+			if err != nil {
+				return rollback(async.ResultExecutionFailed, err)
+			}
+			lb, err := runtimeRawBytes(right)
+			if err != nil {
+				return rollback(async.ResultExecutionFailed, err)
+			}
+			total := uint64(len(la)) + uint64(len(lb))
+			if total > uint64(MaxBytesLength) {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM concat result exceeds max bytes length"))
+			}
+			if !chargeOperandUnits(&exec.GasUsed, gasLimit, r.params.GasPerOperandUnit, total) {
+				return rollback(async.ResultLimitExceeded, nil)
+			}
+			out := make([]byte, 0, total)
+			out = append(out, la...)
+			out = append(out, lb...)
+			stack = append(stack, ValueBytes(out))
+		case OpSlice:
+			// slice(b, start, len): len on top, then start, then b. TRAP if the
+			// window runs past the end; charge 1 gas per output byte.
+			lenVal, ok := pop(&stack)
+			if !ok {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on slice length"))
+			}
+			startVal, ok := pop(&stack)
+			if !ok {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on slice start"))
+			}
+			bVal, ok := pop(&stack)
+			if !ok {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on slice bytes"))
+			}
+			data, err := runtimeRawBytes(bVal)
+			if err != nil {
+				return rollback(async.ResultExecutionFailed, err)
+			}
+			start, err := runtimeByteIndex(startVal, "slice start")
+			if err != nil {
+				return rollback(async.ResultExecutionFailed, err)
+			}
+			length, err := runtimeByteIndex(lenVal, "slice length")
+			if err != nil {
+				return rollback(async.ResultExecutionFailed, err)
+			}
+			// start and length are each <= MaxUint32, so the sum cannot overflow
+			// uint64; the single bounds check below is exact.
+			end := uint64(start) + uint64(length)
+			if end > uint64(len(data)) {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM slice out of range"))
+			}
+			if !chargeOperandUnits(&exec.GasUsed, gasLimit, r.params.GasPerOperandUnit, uint64(length)) {
+				return rollback(async.ResultLimitExceeded, nil)
+			}
+			out := make([]byte, length)
+			copy(out, data[start:end])
+			stack = append(stack, ValueBytes(out))
+		case OpByteAt:
+			// byteAt(b, i): i on top. O(1) — flat base only. TRAP if out of range.
+			iVal, ok := pop(&stack)
+			if !ok {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on byteAt index"))
+			}
+			bVal, ok := pop(&stack)
+			if !ok {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on byteAt bytes"))
+			}
+			data, err := runtimeRawBytes(bVal)
+			if err != nil {
+				return rollback(async.ResultExecutionFailed, err)
+			}
+			i, err := runtimeByteIndex(iVal, "byteAt index")
+			if err != nil {
+				return rollback(async.ResultExecutionFailed, err)
+			}
+			if uint64(i) >= uint64(len(data)) {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM byteAt index out of range"))
+			}
+			stack = append(stack, ValueUint8(data[i]))
+		case OpToBytesBE:
+			// toBytesBE(v, n): n on top. Big-endian, zero-padded, fixed width n.
+			// TRAP if v is negative, n exceeds MaxBytesLength, or v does not fit in
+			// n bytes. Charge 1 gas per output byte before allocating.
+			nVal, ok := pop(&stack)
+			if !ok {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on toBytesBE length"))
+			}
+			vVal, ok := pop(&stack)
+			if !ok {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on toBytesBE value"))
+			}
+			num, err := runtimeNumeric(vVal)
+			if err != nil {
+				return rollback(async.ResultExecutionFailed, err)
+			}
+			if num.Sign() < 0 {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM toBytesBE requires a non-negative value"))
+			}
+			n, err := runtimeByteIndex(nVal, "toBytesBE length")
+			if err != nil {
+				return rollback(async.ResultExecutionFailed, err)
+			}
+			if uint64(n) > uint64(MaxBytesLength) {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM toBytesBE length exceeds max bytes length"))
+			}
+			if num.BitLen() > int(n)*8 {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM toBytesBE value does not fit in n bytes"))
+			}
+			if !chargeOperandUnits(&exec.GasUsed, gasLimit, r.params.GasPerOperandUnit, uint64(n)) {
+				return rollback(async.ResultLimitExceeded, nil)
+			}
+			buf := make([]byte, n)
+			num.FillBytes(buf)
+			stack = append(stack, ValueBytes(buf))
+		case OpFromBytesBE:
+			// fromBytesBE(b): big-endian decode into uint256 (widest lossless
+			// target). TRAP if the input exceeds 32 bytes. O(<=32) — flat base.
+			bVal, ok := pop(&stack)
+			if !ok {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on fromBytesBE"))
+			}
+			data, err := runtimeRawBytes(bVal)
+			if err != nil {
+				return rollback(async.ResultExecutionFailed, err)
+			}
+			if len(data) > 32 {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM fromBytesBE requires <= 32 bytes"))
+			}
+			result, err := runtimeFromBigIntChecked(TagUint256, new(big.Int).SetBytes(data))
+			if err != nil {
+				return rollback(async.ResultExecutionFailed, err)
+			}
+			stack = append(stack, result)
+		case OpMulDiv, OpMulDivRoundUp:
+			// mulDiv(a, b, c): c on top (pushed last), then b, then a. Computes
+			// floor(a*b/c) — or ceil for the round-up variant — with the a*b
+			// product held in an unbounded big.Int so it never overflows; only
+			// the narrowed uint256 result is width-checked. TRAP on c==0 or a
+			// result that does not fit uint256.
+			cVal, ok := pop(&stack)
+			if !ok {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on mulDiv divisor"))
+			}
+			bVal, ok := pop(&stack)
+			if !ok {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on mulDiv multiplicand"))
+			}
+			aVal, ok := pop(&stack)
+			if !ok {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on mulDiv multiplier"))
+			}
+			result, err := runtimeMulDiv(aVal, bVal, cVal, ins.Op == OpMulDivRoundUp)
+			if err != nil {
+				return rollback(async.ResultExecutionFailed, err)
+			}
+			stack = append(stack, result)
+		case OpVerifySecp256k1:
+			// verifySecp256k1(msgHash, sig, pubkey): pubkey on top (pushed last),
+			// then sig, then msgHash. Verifies a 64-byte compact R‖S signature
+			// against a 33-byte compressed key over a 32-byte digest, enforcing
+			// canonical low-S. Malformed input soft-fails to false.
+			pubVal, ok := pop(&stack)
+			if !ok {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on secp256k1 public key"))
+			}
+			sigVal, ok := pop(&stack)
+			if !ok {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on secp256k1 signature"))
+			}
+			hashVal, ok := pop(&stack)
+			if !ok {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on secp256k1 message hash"))
+			}
+			verified, err := runtimeVerifySecp256k1(hashVal, sigVal, pubVal)
+			if err != nil {
+				return rollback(async.ResultExecutionFailed, err)
+			}
+			stack = append(stack, ValueBool(verified))
+		case OpEcrecover:
+			// ecrecover(msgHash, sig): sig on top (pushed last), then msgHash.
+			// Recovers the 64-byte uncompressed public-key body (X‖Y) from a
+			// 65-byte Ethereum-layout signature (R‖S‖v) over a 32-byte digest,
+			// enforcing canonical low-S. Malformed input or a failed recovery
+			// soft-fails to empty bytes.
+			sigVal, ok := pop(&stack)
+			if !ok {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on ecrecover signature"))
+			}
+			hashVal, ok := pop(&stack)
+			if !ok {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on ecrecover message hash"))
+			}
+			recovered, err := runtimeEcrecover(hashVal, sigVal)
+			if err != nil {
+				return rollback(async.ResultExecutionFailed, err)
+			}
+			stack = append(stack, ValueBytes(recovered))
 		case OpCounterfactualAddress, OpAutoDeployAddress:
 			value, ok := pop(&stack)
 			if !ok {
@@ -1766,6 +2090,39 @@ func runtimeFromBigIntChecked(tag ValueTag, v *big.Int) (RuntimeValue, error) {
 	return runtimeFromBigInt(tag, v), nil
 }
 
+// runtimeMulDiv computes floor(a*b/c) — or ceil(a*b/c) when roundUp is set — as
+// a uint256. The a*b product is formed in an unbounded big.Int, so it may exceed
+// 2^256 (as the constant-product AMM's reserveIn*reserveOut does at real
+// reserves); only the final quotient is width-checked. Traps on a zero divisor
+// (reusing the "AVM division by zero" error so it is indistinguishable from an
+// ordinary integer divide-by-zero) and on a quotient that overflows uint256
+// (via runtimeFromBigIntChecked/enforceIntWidth, e.g. c==1 with a*b >= 2^256).
+func runtimeMulDiv(a, b, c RuntimeValue, roundUp bool) (RuntimeValue, error) {
+	ai, err := runtimeNumeric(a)
+	if err != nil {
+		return RuntimeValue{}, err
+	}
+	bi, err := runtimeNumeric(b)
+	if err != nil {
+		return RuntimeValue{}, err
+	}
+	ci, err := runtimeNumeric(c)
+	if err != nil {
+		return RuntimeValue{}, err
+	}
+	if ci.Sign() == 0 {
+		return RuntimeValue{}, errors.New("AVM division by zero")
+	}
+	prod := new(big.Int).Mul(ai, bi)
+	quo := new(big.Int)
+	rem := new(big.Int)
+	quo.QuoRem(prod, ci, rem)
+	if roundUp && rem.Sign() != 0 {
+		quo.Add(quo, big.NewInt(1))
+	}
+	return runtimeFromBigIntChecked(TagUint256, quo)
+}
+
 func runtimeMessageFieldValue(body []byte, field string) (RuntimeValue, error) {
 	type codecFieldValue struct {
 		Name  string          `json:"name"`
@@ -2106,6 +2463,70 @@ func runtimeValueBytes(v RuntimeValue) ([]byte, error) {
 	}
 }
 
+// runtimeRawBytes returns the EXACT bytes a byte-exact hash or byte op operates
+// on: the raw payload of a bytes/string value, or the 32 bytes of a hash value.
+// Unlike runtimeHashValue / CanonicalEncode it never prepends a tag or a length
+// prefix, so a digest computed over these bytes matches what a foreign chain
+// computes over the same bytes (the whole point of the byte-exact opcodes). Any
+// other tag is a deterministic type error, i.e. a trap on every validator.
+func runtimeRawBytes(v RuntimeValue) ([]byte, error) {
+	switch v.Tag {
+	case TagBytes, TagString:
+		return v.AsBytes()
+	case TagHash:
+		return append([]byte(nil), v.hashVal[:]...), nil
+	default:
+		return nil, fmt.Errorf("AVM byte operation requires bytes/string/hash, got %s", v.Tag)
+	}
+}
+
+// runtimeByteHash applies one standard, byte-exact, deterministic hash to raw
+// input bytes. 32-byte digests (sha256/keccak256/blake2b) return as TagHash;
+// ripemd160 (20B) and sha512 (64B) return as TagBytes because there is no
+// 20-/64-byte hash tag. Keccak256 MUST use the legacy (pre-NIST) Keccak padding
+// so a bridge contract's digest matches Ethereum — sha3.New256 (FIPS SHA3-256)
+// uses different padding and would silently mismatch.
+func runtimeByteHash(op Opcode, data []byte) (RuntimeValue, error) {
+	switch op {
+	case OpSha256:
+		sum := sha256.Sum256(data)
+		return ValueHash(sum), nil
+	case OpKeccak256:
+		h := sha3.NewLegacyKeccak256()
+		h.Write(data)
+		var out [32]byte
+		copy(out[:], h.Sum(nil))
+		return ValueHash(out), nil
+	case OpBlake2b:
+		sum := blake2b.Sum256(data)
+		return ValueHash(sum), nil
+	case OpRipemd160:
+		h := ripemd160.New()
+		h.Write(data)
+		return ValueBytes(h.Sum(nil)), nil
+	case OpSha512:
+		sum := sha512.Sum512(data)
+		return ValueBytes(sum[:]), nil
+	default:
+		return RuntimeValue{}, fmt.Errorf("AVM opcode 0x%02x is not a byte hash", byte(op))
+	}
+}
+
+// runtimeByteIndex extracts a non-negative index/length that must fit in a
+// uint32 from a runtime numeric value, trapping otherwise. Bounding it to uint32
+// keeps start+length additions overflow-free in uint64 and matches the
+// uint32-typed slice/index builtins in the language surface.
+func runtimeByteIndex(v RuntimeValue, what string) (uint32, error) {
+	n, err := runtimeNumeric(v)
+	if err != nil {
+		return 0, err
+	}
+	if n.Sign() < 0 || !n.IsUint64() || n.Uint64() > 0xFFFFFFFF {
+		return 0, fmt.Errorf("AVM %s must fit uint32", what)
+	}
+	return uint32(n.Uint64()), nil
+}
+
 func runtimeVerifySignature(data, signature, publicKey RuntimeValue) (bool, error) {
 	message, err := runtimeValueBytes(data)
 	if err != nil {
@@ -2125,7 +2546,149 @@ func runtimeVerifySignature(data, signature, publicKey RuntimeValue) (bool, erro
 	if len(sig) != ed25519.SignatureSize {
 		return false, errors.New("AVM ed25519 signature must be 64 bytes")
 	}
-	return ed25519.Verify(ed25519.PublicKey(pub), message, sig), nil
+	// Verify under ZIP-215 (ed25519consensus) rather than crypto/ed25519. ZIP-215
+	// fixes ONE canonical accept/reject for every (pubkey, sig, message) triple,
+	// removing the cofactor / non-canonical-encoding edge cases where stdlib's
+	// answer can differ from other implementations. That guarantees every
+	// validator — and a foreign chain verifying the same triple — agrees, which
+	// is exactly what cross-chain signature checks require. Same opcode, gas, and
+	// 32/64-byte length contract as before; only the verify routine changed.
+	return ed25519consensus.Verify(ed25519.PublicKey(pub), message, sig), nil
+}
+
+// secp256k1CompactSigSize is the byte length of a compact R‖S ECDSA signature
+// (two 32-byte scalars), the form verifySecp256k1 accepts.
+const secp256k1CompactSigSize = 64
+
+// secp256k1RecoverableSigSize is the byte length of an Ethereum-layout
+// recoverable signature: 32-byte R, 32-byte S, then a 1-byte recovery id v.
+const secp256k1RecoverableSigSize = 65
+
+// runtimeSecpDigest extracts the fixed 32-byte message digest a secp256k1 op
+// operates on. A hash value is always 32 bytes; a bytes/string value must be
+// exactly 32 bytes (the caller passes a pre-computed digest). A wrong length
+// soft-fails (ok=false) so the caller returns the canonical false/empty result
+// rather than trapping; only a non-byte tag is a type error (trap).
+func runtimeSecpDigest(v RuntimeValue) (digest []byte, ok bool, err error) {
+	raw, err := runtimeRawBytes(v)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(raw) != 32 {
+		return nil, false, nil
+	}
+	return raw, true, nil
+}
+
+// runtimeSecpLowSSignature parses a 64-byte compact R‖S signature into a decred
+// ecdsa.Signature, enforcing canonical encoding: R and S must each be below the
+// group order N, and S must be in the lower half (<= N/2). Rejecting high-S
+// makes signature malleability a deterministic reject on every validator (the
+// same rule cosmos's secp256k1.VerifySignature applies). ok=false on any
+// non-canonical or malformed component; the caller soft-fails.
+func runtimeSecpLowSSignature(sig []byte) (parsed *ecdsa.Signature, ok bool) {
+	if len(sig) != secp256k1CompactSigSize {
+		return nil, false
+	}
+	var r, s secp256k1.ModNScalar
+	if overflow := r.SetByteSlice(sig[:32]); overflow {
+		return nil, false
+	}
+	if overflow := s.SetByteSlice(sig[32:64]); overflow {
+		return nil, false
+	}
+	if s.IsOverHalfOrder() {
+		return nil, false
+	}
+	return ecdsa.NewSignature(&r, &s), true
+}
+
+// runtimeVerifySecp256k1 verifies a 64-byte compact R‖S signature over a 32-byte
+// digest against a 33-byte compressed SEC1 public key. Uncompressed/hybrid keys
+// are rejected up front (the 33-byte length gate) so acceptance is deterministic
+// and a bridge cannot smuggle a differently-encoded key past one validator. Any
+// malformed input (wrong lengths, non-canonical signature, high-S, unparsable
+// key) returns false rather than trapping, mirroring Ethereum's ecrecover
+// soft-fail; traps are reserved for gas exhaustion.
+func runtimeVerifySecp256k1(msgHash, signature, publicKey RuntimeValue) (bool, error) {
+	digest, ok, err := runtimeSecpDigest(msgHash)
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		return false, nil
+	}
+	sig, err := runtimeRawBytes(signature)
+	if err != nil {
+		return false, err
+	}
+	pub, err := runtimeRawBytes(publicKey)
+	if err != nil {
+		return false, err
+	}
+	if len(pub) != secp256k1.PubKeyBytesLenCompressed {
+		return false, nil
+	}
+	parsedSig, ok := runtimeSecpLowSSignature(sig)
+	if !ok {
+		return false, nil
+	}
+	parsedPub, err := secp256k1.ParsePubKey(pub)
+	if err != nil {
+		return false, nil
+	}
+	return parsedSig.Verify(digest, parsedPub), nil
+}
+
+// runtimeEcrecover recovers the signer's public key from a 65-byte
+// Ethereum-layout recoverable signature (R‖S‖v) over a 32-byte digest and
+// returns the 64-byte uncompressed public-key body X‖Y (so a contract can
+// derive an Ethereum address via keccak256(pub) then slice(_, 12, 20)). The v
+// byte is accepted as {0,1} or {27,28} and normalized; low-S is enforced so
+// recovery is canonical. Any malformed input or failed recovery returns empty
+// bytes (soft-fail), never a trap, matching Ethereum's ecrecover.
+func runtimeEcrecover(msgHash, signature RuntimeValue) ([]byte, error) {
+	digest, ok, err := runtimeSecpDigest(msgHash)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return []byte{}, nil
+	}
+	sig, err := runtimeRawBytes(signature)
+	if err != nil {
+		return nil, err
+	}
+	if len(sig) != secp256k1RecoverableSigSize {
+		return []byte{}, nil
+	}
+	// Enforce canonical low-S on R‖S before recovery so a malleated signature is
+	// rejected identically everywhere (RecoverCompact itself does not reject
+	// high-S).
+	if _, ok := runtimeSecpLowSSignature(sig[:64]); !ok {
+		return []byte{}, nil
+	}
+	// Normalize the Ethereum recovery id (v last, {0,1} or {27,28}) to decred's
+	// compact layout (recovery code FIRST, 27 + recid, no compressed bit because
+	// we return the uncompressed body).
+	v := sig[64]
+	if v >= 27 {
+		v -= 27
+	}
+	if v > 1 {
+		return []byte{}, nil
+	}
+	compact := make([]byte, secp256k1RecoverableSigSize)
+	compact[0] = 27 + v
+	copy(compact[1:], sig[:64])
+	pub, _, err := ecdsa.RecoverCompact(compact, digest)
+	if err != nil {
+		return []byte{}, nil
+	}
+	// SerializeUncompressed is 0x04 ‖ X(32) ‖ Y(32); drop the 0x04 tag so the
+	// result is the bare 64-byte X‖Y body.
+	uncompressed := pub.SerializeUncompressed()
+	return append([]byte(nil), uncompressed[1:]...), nil
 }
 
 func runtimeCounterfactualAddress(ctx RuntimeContext, value RuntimeValue) (*contracttypes.StateInit, string, error) {
@@ -3009,7 +3572,21 @@ func IsAllowedOpcode(op Opcode) bool {
 		OpIsEmpty,
 		OpReadMsgField,
 		OpCastCoins,
-		OpReadRandom:
+		OpReadRandom,
+		OpSha256,
+		OpKeccak256,
+		OpRipemd160,
+		OpSha512,
+		OpBlake2b,
+		OpConcat,
+		OpSlice,
+		OpByteAt,
+		OpToBytesBE,
+		OpFromBytesBE,
+		OpMulDiv,
+		OpMulDivRoundUp,
+		OpVerifySecp256k1,
+		OpEcrecover:
 		return true
 	default:
 		return false

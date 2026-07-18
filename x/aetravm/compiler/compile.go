@@ -2366,11 +2366,112 @@ func (c *Compiler) inferExprType(expr Expr, env map[string]TypeRef, storage *Str
 				return TypeRef{}, fail("E_CALL_ARITY", expr.Pos, "hash() requires one argument")
 			}
 			return TypeRef{Name: "hash32"}, nil
+		case "sha256", "keccak256", "blake2b":
+			// Byte-exact 32-byte hashes over raw bytes (distinct from hash()).
+			if len(expr.Args) != 1 {
+				return TypeRef{}, fail("E_CALL_ARITY", expr.Pos, expr.Text+"() requires one argument")
+			}
+			if _, err := c.inferExprType(expr.Args[0], env, storage, structs, enums, types, functions, consts, inPure); err != nil {
+				return TypeRef{}, err
+			}
+			return TypeRef{Name: "hash32"}, nil
+		case "ripemd160", "sha512":
+			// Byte-exact hashes whose digest is not 32 bytes (20 / 64), returned
+			// as bytes since there is no 20-/64-byte hash tag.
+			if len(expr.Args) != 1 {
+				return TypeRef{}, fail("E_CALL_ARITY", expr.Pos, expr.Text+"() requires one argument")
+			}
+			if _, err := c.inferExprType(expr.Args[0], env, storage, structs, enums, types, functions, consts, inPure); err != nil {
+				return TypeRef{}, err
+			}
+			return TypeRef{Name: "bytes"}, nil
+		case "concat":
+			if len(expr.Args) != 2 {
+				return TypeRef{}, fail("E_CALL_ARITY", expr.Pos, "concat() requires two arguments")
+			}
+			for _, arg := range expr.Args {
+				if _, err := c.inferExprType(arg, env, storage, structs, enums, types, functions, consts, inPure); err != nil {
+					return TypeRef{}, err
+				}
+			}
+			return TypeRef{Name: "bytes"}, nil
+		case "slice":
+			if len(expr.Args) != 3 {
+				return TypeRef{}, fail("E_CALL_ARITY", expr.Pos, "slice() requires three arguments")
+			}
+			for _, arg := range expr.Args {
+				if _, err := c.inferExprType(arg, env, storage, structs, enums, types, functions, consts, inPure); err != nil {
+					return TypeRef{}, err
+				}
+			}
+			return TypeRef{Name: "bytes"}, nil
+		case "byteat":
+			if len(expr.Args) != 2 {
+				return TypeRef{}, fail("E_CALL_ARITY", expr.Pos, "byteAt() requires two arguments")
+			}
+			for _, arg := range expr.Args {
+				if _, err := c.inferExprType(arg, env, storage, structs, enums, types, functions, consts, inPure); err != nil {
+					return TypeRef{}, err
+				}
+			}
+			return TypeRef{Name: "uint8"}, nil
+		case "tobytesbe":
+			if len(expr.Args) != 2 {
+				return TypeRef{}, fail("E_CALL_ARITY", expr.Pos, "toBytesBE() requires two arguments")
+			}
+			for _, arg := range expr.Args {
+				if _, err := c.inferExprType(arg, env, storage, structs, enums, types, functions, consts, inPure); err != nil {
+					return TypeRef{}, err
+				}
+			}
+			return TypeRef{Name: "bytes"}, nil
+		case "frombytesbe":
+			if len(expr.Args) != 1 {
+				return TypeRef{}, fail("E_CALL_ARITY", expr.Pos, "fromBytesBE() requires one argument")
+			}
+			if _, err := c.inferExprType(expr.Args[0], env, storage, structs, enums, types, functions, consts, inPure); err != nil {
+				return TypeRef{}, err
+			}
+			return TypeRef{Name: "uint256"}, nil
 		case "issignaturevalid", "verifysignature":
 			if len(expr.Args) != 3 {
 				return TypeRef{}, fail("E_CALL_ARITY", expr.Pos, expr.Text+"() requires three arguments")
 			}
 			return TypeRef{Name: "bool"}, nil
+		case "muldiv", "muldivroundup":
+			// Full-width a*b/c on uint256; the a*b product cannot overflow (it is
+			// computed in an unbounded intermediate), only the uint256 result.
+			if len(expr.Args) != 3 {
+				return TypeRef{}, fail("E_CALL_ARITY", expr.Pos, expr.Text+"() requires three arguments")
+			}
+			for _, arg := range expr.Args {
+				if _, err := c.inferExprType(arg, env, storage, structs, enums, types, functions, consts, inPure); err != nil {
+					return TypeRef{}, err
+				}
+			}
+			return TypeRef{Name: "uint256"}, nil
+		case "verifysecp256k1":
+			// verifySecp256k1(msgHash: hash, sig: bytes, pubkey: bytes) -> bool.
+			if len(expr.Args) != 3 {
+				return TypeRef{}, fail("E_CALL_ARITY", expr.Pos, "verifySecp256k1() requires three arguments")
+			}
+			for _, arg := range expr.Args {
+				if _, err := c.inferExprType(arg, env, storage, structs, enums, types, functions, consts, inPure); err != nil {
+					return TypeRef{}, err
+				}
+			}
+			return TypeRef{Name: "bool"}, nil
+		case "ecrecover":
+			// ecrecover(msgHash: hash, sig: bytes) -> bytes (64-byte X‖Y pubkey).
+			if len(expr.Args) != 2 {
+				return TypeRef{}, fail("E_CALL_ARITY", expr.Pos, "ecrecover() requires two arguments")
+			}
+			for _, arg := range expr.Args {
+				if _, err := c.inferExprType(arg, env, storage, structs, enums, types, functions, consts, inPure); err != nil {
+					return TypeRef{}, err
+				}
+			}
+			return TypeRef{Name: "bytes"}, nil
 		case "len":
 			return TypeRef{Name: "uint64"}, nil
 		case "aet":
@@ -4418,6 +4519,22 @@ func constValueType(v constValue) TypeRef {
 	}
 }
 
+// lowerExprArgs lowers a positional argument list to IR in source order,
+// preserving order so the emitter can push operands in the sequence the VM
+// dispatch pops them (last-pushed-first). Used by the multi-operand byte
+// builtins (concat/slice/byteAt/toBytesBE).
+func lowerExprArgs(args []Expr, env loweringEnv, functions map[string]*FunctionDecl, seen map[string]bool) ([]*IRExpr, error) {
+	out := make([]*IRExpr, len(args))
+	for i, arg := range args {
+		lowered, err := lowerExprToIR(arg, env, functions, seen)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = lowered
+	}
+	return out, nil
+}
+
 func lowerExprToIR(expr Expr, env loweringEnv, functions map[string]*FunctionDecl, seen map[string]bool) (*IRExpr, error) {
 	switch expr.Kind {
 	case ExprNumber:
@@ -4451,6 +4568,16 @@ func lowerExprToIR(expr Expr, env loweringEnv, functions map[string]*FunctionDec
 			}
 			if v.Kind == constKindAddr {
 				return &IRExpr{Kind: IRExprConstAddress, Text: v.Text, Pos: expr.Pos}, nil
+			}
+			if v.Kind == constKindBytes {
+				return &IRExpr{Kind: IRExprConstBytes, Data: append([]byte(nil), v.Bytes...), Pos: expr.Pos}, nil
+			}
+			if v.Kind == constKindText && (strings.EqualFold(v.Type, "hash32") || strings.EqualFold(v.Type, "hash")) {
+				decoded, err := hex.DecodeString(strings.TrimSpace(v.Text))
+				if err != nil {
+					return nil, fail("E_LOWER_IDENT", expr.Pos, "invalid hex hash constant")
+				}
+				return &IRExpr{Kind: IRExprConstBytes, Data: decoded, Pos: expr.Pos}, nil
 			}
 		}
 		if mode, ok := builtinSendModeValue(expr.Text); ok {
@@ -4834,6 +4961,76 @@ func lowerExprToIR(expr Expr, env loweringEnv, functions map[string]*FunctionDec
 				return nil, err
 			}
 			return &IRExpr{Kind: IRExprHash, Left: left, Pos: expr.Pos}, nil
+		case "sha256", "keccak256", "ripemd160", "sha512", "blake2b":
+			// Byte-exact hashes over the raw operand bytes. Distinct from hash()
+			// (IRExprHash / OpHash), which is the BLAKE3 chunk-tree root over a
+			// tagged canonical encoding.
+			if len(expr.Args) != 1 {
+				return nil, fail("E_LOWER_CALL", expr.Pos, expr.Text+"() requires one argument")
+			}
+			left, err := lowerExprToIR(expr.Args[0], env, functions, seen)
+			if err != nil {
+				return nil, err
+			}
+			kind := IRExprSha256
+			switch strings.ToLower(expr.Text) {
+			case "sha256":
+				kind = IRExprSha256
+			case "keccak256":
+				kind = IRExprKeccak256
+			case "ripemd160":
+				kind = IRExprRipemd160
+			case "sha512":
+				kind = IRExprSha512
+			case "blake2b":
+				kind = IRExprBlake2b
+			}
+			return &IRExpr{Kind: kind, Left: left, Pos: expr.Pos}, nil
+		case "concat":
+			if len(expr.Args) != 2 {
+				return nil, fail("E_LOWER_CALL", expr.Pos, "concat() requires two arguments")
+			}
+			args, err := lowerExprArgs(expr.Args, env, functions, seen)
+			if err != nil {
+				return nil, err
+			}
+			return &IRExpr{Kind: IRExprConcat, Args: args, Pos: expr.Pos}, nil
+		case "slice":
+			if len(expr.Args) != 3 {
+				return nil, fail("E_LOWER_CALL", expr.Pos, "slice() requires three arguments")
+			}
+			args, err := lowerExprArgs(expr.Args, env, functions, seen)
+			if err != nil {
+				return nil, err
+			}
+			return &IRExpr{Kind: IRExprSlice, Args: args, Pos: expr.Pos}, nil
+		case "byteat":
+			if len(expr.Args) != 2 {
+				return nil, fail("E_LOWER_CALL", expr.Pos, "byteAt() requires two arguments")
+			}
+			args, err := lowerExprArgs(expr.Args, env, functions, seen)
+			if err != nil {
+				return nil, err
+			}
+			return &IRExpr{Kind: IRExprByteAt, Args: args, Pos: expr.Pos}, nil
+		case "tobytesbe":
+			if len(expr.Args) != 2 {
+				return nil, fail("E_LOWER_CALL", expr.Pos, "toBytesBE() requires two arguments")
+			}
+			args, err := lowerExprArgs(expr.Args, env, functions, seen)
+			if err != nil {
+				return nil, err
+			}
+			return &IRExpr{Kind: IRExprToBytesBE, Args: args, Pos: expr.Pos}, nil
+		case "frombytesbe":
+			if len(expr.Args) != 1 {
+				return nil, fail("E_LOWER_CALL", expr.Pos, "fromBytesBE() requires one argument")
+			}
+			left, err := lowerExprToIR(expr.Args[0], env, functions, seen)
+			if err != nil {
+				return nil, err
+			}
+			return &IRExpr{Kind: IRExprFromBytesBE, Left: left, Pos: expr.Pos}, nil
 		case "address":
 			if len(expr.Args) != 1 || expr.Args[0].Kind != ExprString {
 				return nil, fail("E_LOWER_CALL", expr.Pos, "address() requires one string argument")
@@ -4890,6 +5087,37 @@ func lowerExprToIR(expr Expr, env loweringEnv, functions map[string]*FunctionDec
 				return nil, err
 			}
 			return &IRExpr{Kind: IRExprSignatureVerify, Args: []*IRExpr{data, signature, publicKey}, Pos: expr.Pos}, nil
+		case "muldiv", "muldivroundup":
+			if len(expr.Args) != 3 {
+				return nil, fail("E_LOWER_CALL", expr.Pos, expr.Text+"() requires three arguments")
+			}
+			args, err := lowerExprArgs(expr.Args, env, functions, seen)
+			if err != nil {
+				return nil, err
+			}
+			kind := IRExprMulDiv
+			if strings.EqualFold(expr.Text, "muldivroundup") {
+				kind = IRExprMulDivRoundUp
+			}
+			return &IRExpr{Kind: kind, Args: args, Pos: expr.Pos}, nil
+		case "verifysecp256k1":
+			if len(expr.Args) != 3 {
+				return nil, fail("E_LOWER_CALL", expr.Pos, "verifySecp256k1() requires three arguments")
+			}
+			args, err := lowerExprArgs(expr.Args, env, functions, seen)
+			if err != nil {
+				return nil, err
+			}
+			return &IRExpr{Kind: IRExprVerifySecp256k1, Args: args, Pos: expr.Pos}, nil
+		case "ecrecover":
+			if len(expr.Args) != 2 {
+				return nil, fail("E_LOWER_CALL", expr.Pos, "ecrecover() requires two arguments")
+			}
+			args, err := lowerExprArgs(expr.Args, env, functions, seen)
+			if err != nil {
+				return nil, err
+			}
+			return &IRExpr{Kind: IRExprEcrecover, Args: args, Pos: expr.Pos}, nil
 		case "counterfactualaddress", "autodeployaddress":
 			if len(expr.Args) != 1 || expr.Args[0].Kind != ExprStruct {
 				return nil, fail("E_LOWER_CALL", expr.Pos, expr.Text+"() requires one struct literal argument")
@@ -5266,6 +5494,49 @@ func emitIRExpr(expr *IRExpr, code *[]avm.Instruction) error {
 			return err
 		}
 		*code = append(*code, avm.Instruction{Op: avm.OpHash})
+	case IRExprSha256, IRExprKeccak256, IRExprRipemd160, IRExprSha512, IRExprBlake2b:
+		if err := emitIRExpr(expr.Left, code); err != nil {
+			return err
+		}
+		op := avm.OpSha256
+		switch expr.Kind {
+		case IRExprSha256:
+			op = avm.OpSha256
+		case IRExprKeccak256:
+			op = avm.OpKeccak256
+		case IRExprRipemd160:
+			op = avm.OpRipemd160
+		case IRExprSha512:
+			op = avm.OpSha512
+		case IRExprBlake2b:
+			op = avm.OpBlake2b
+		}
+		*code = append(*code, avm.Instruction{Op: op})
+	case IRExprConcat, IRExprSlice, IRExprByteAt, IRExprToBytesBE:
+		// Operands are pushed in source order; the VM dispatch pops them
+		// last-pushed-first (e.g. slice pops len, start, b).
+		for _, arg := range expr.Args {
+			if err := emitIRExpr(arg, code); err != nil {
+				return err
+			}
+		}
+		op := avm.OpConcat
+		switch expr.Kind {
+		case IRExprConcat:
+			op = avm.OpConcat
+		case IRExprSlice:
+			op = avm.OpSlice
+		case IRExprByteAt:
+			op = avm.OpByteAt
+		case IRExprToBytesBE:
+			op = avm.OpToBytesBE
+		}
+		*code = append(*code, avm.Instruction{Op: op})
+	case IRExprFromBytesBE:
+		if err := emitIRExpr(expr.Left, code); err != nil {
+			return err
+		}
+		*code = append(*code, avm.Instruction{Op: avm.OpFromBytesBE})
 	case IRExprSignatureVerify:
 		if len(expr.Args) != 3 {
 			return fail("E_LOWER_EXPR", expr.Pos, "signature verify expects exactly three arguments")
@@ -5280,6 +5551,27 @@ func emitIRExpr(expr *IRExpr, code *[]avm.Instruction) error {
 			return err
 		}
 		*code = append(*code, avm.Instruction{Op: avm.OpVerifySignature})
+	case IRExprMulDiv, IRExprMulDivRoundUp, IRExprVerifySecp256k1, IRExprEcrecover:
+		// Operands are pushed in source order; the VM dispatch pops them
+		// last-pushed-first (mulDiv pops c, b, a; verifySecp256k1 pops pubkey,
+		// sig, msgHash; ecrecover pops sig, msgHash).
+		for _, arg := range expr.Args {
+			if err := emitIRExpr(arg, code); err != nil {
+				return err
+			}
+		}
+		op := avm.OpMulDiv
+		switch expr.Kind {
+		case IRExprMulDiv:
+			op = avm.OpMulDiv
+		case IRExprMulDivRoundUp:
+			op = avm.OpMulDivRoundUp
+		case IRExprVerifySecp256k1:
+			op = avm.OpVerifySecp256k1
+		case IRExprEcrecover:
+			op = avm.OpEcrecover
+		}
+		*code = append(*code, avm.Instruction{Op: op})
 	case IRExprCoinsCast:
 		if err := emitIRExpr(expr.Left, code); err != nil {
 			return err
@@ -5835,7 +6127,12 @@ func evalConstValue(expr Expr, env loweringEnv, functions map[string]*FunctionDe
 			method := strings.ToLower(expr.Path[len(expr.Path)-1])
 			receiver := strings.ToLower(expr.Path[0])
 			switch receiver {
-			case "chunk", "code":
+			// bytes/hash32 join chunk/code here so a byte constant can be declared
+			// at compile time via `const X = bytes.fromHex("...")` — exactly the
+			// domain-separation tags, magic prefixes, and expected digests that
+			// bridge/PoW contracts need. fromHex/fromBase64 are pure decodes of a
+			// string literal, so they are compile-time constant.
+			case "chunk", "code", "bytes", "hash32":
 				switch method {
 				case "fromhex":
 					if len(expr.Args) != 1 || expr.Args[0].Kind != ExprString {

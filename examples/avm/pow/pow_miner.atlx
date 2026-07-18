@@ -1,0 +1,185 @@
+// Proof-of-work miner reference contract for ATLX / AVM.
+//
+// This example proves the AVM's new byte-exact crypto/byte primitives are
+// enough to express Bitcoin-style proof of work as an ordinary contract
+// feature — the single most-requested capability the language previously
+// lacked, because hash() returns the chain's own BLAKE3 chunk-tree Merkle root
+// (over a tag+length-prefixed canonical encoding), which a miner cannot line up
+// against a foreign, byte-exact digest.
+//
+// The PoW predicate is the canonical one:
+//
+//     digest = sha256(nonce || challenge)          // byte-exact preimage
+//     accept iff bigEndianUint(digest[0:8]) < TARGET
+//
+// built from:
+//   - concat()      to assemble the raw nonce||challenge preimage,
+//   - sha256()      the byte-exact hash (NOT hash(), which is the chunk-tree
+//                   root and would never match an external verifier),
+//   - slice()       to take the leading bytes of the digest,
+//   - fromBytesBE() to read those bytes as a big-endian number, and
+//   - a plain numeric "< TARGET" comparison (bytewise magnitude).
+//
+// The getters additionally exercise every other new primitive — keccak256
+// (Ethereum/bridge padding), blake2b, ripemd160, sha512, byteAt, slice and
+// toBytesBE — over the fixed challenge, so a test can check each against a
+// known-answer vector end to end through the compiled contract.
+//
+// This is application-level only; it never touches PoS/consensus.
+
+const ERR_BAD_MSG = 0xFFFF
+const ERR_TOO_EASY = 2001
+const ERR_NOT_RESET = 2002
+
+// A fixed 32-byte mining challenge (stand-in for a foreign block-header
+// commitment). Declared byte-exactly via bytes.fromHex so the digest a miner
+// computes matches what an external verifier computes over the same bytes.
+const CHALLENGE = bytes.fromHex("00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff")
+
+// Difficulty: the top 8 bytes of sha256(nonce||challenge), read big-endian,
+// must be strictly below this threshold. Smaller TARGET = harder. 0x0000... in
+// the high bytes means the digest must begin with two zero bytes.
+const POW_TARGET = 0x0000ffffffffffff
+
+@storage
+struct MinerStorage {
+    solved: uint64
+    attempts: uint64
+    winningNonce: bytes
+}
+
+@message(0x9101)
+struct SubmitNonce {
+    nonce: bytes
+}
+
+@message(0x9102)
+struct ResetMiner {
+    confirm: uint32
+}
+
+type MinerMsg = SubmitNonce | ResetMiner
+
+contract PowMiner {
+    author: "Aetralis example"
+    description: "Proof-of-work miner: sha256(nonce||challenge) below a target"
+    version: "0.01.0"
+
+    storage: MinerStorage
+    incomingMessages: MinerMsg
+
+    @store
+    func MinerStorage.load() {
+        return MinerStorage.fromChunk(contract.getData())
+    }
+
+    @store
+    func MinerStorage.save(self) {
+        contract.setData(self.toChunk())
+    }
+
+    // The canonical PoW predicate. The whole check is one expression (so this
+    // helper stays inlinable): assemble the preimage with concat(), hash it
+    // byte-exactly with sha256(), read the leading 8 bytes as a big-endian
+    // number with fromBytesBE(slice(...)), and compare it against the target.
+    @pure
+    func meetsTarget(nonce: bytes): uint64 {
+        return (fromBytesBE(slice(sha256(concat(nonce, CHALLENGE)), 0, 8)) < POW_TARGET) ? 1 : 0
+    }
+
+    @internal
+    func onInternalMessage(in: InMessage) {
+        const msg = lazy MinerMsg.fromSegment(in.body)
+
+        match (msg) {
+            SubmitNonce => {
+                var st = lazy MinerStorage.load()
+                st.attempts += 1
+                // Reject any nonce whose digest does not clear the target: the
+                // preimage is rebuilt and rehashed byte-for-byte on-chain, so a
+                // submitter cannot cheat the difficulty.
+                assert (meetsTarget(msg.nonce) == 1) throw ERR_TOO_EASY
+                st.solved = 1
+                st.winningNonce = msg.nonce
+                st.save()
+            }
+
+            ResetMiner => {
+                var st = lazy MinerStorage.load()
+                assert (msg.confirm == 1) throw ERR_NOT_RESET
+                st.solved = 0
+                st.attempts = 0
+                st.save()
+            }
+
+            else => {
+                assert (in.body.isEmpty()) throw ERR_BAD_MSG
+            }
+        }
+    }
+
+    @bounced
+    func onBouncedMessage(in: InMessageBounced) {
+        // No outbound messages are sent, so there is nothing to reconcile.
+    }
+
+    // --- Getters: each computes one byte-exact primitive over the fixed
+    //     CHALLENGE, so an off-chain caller (or a test) can check it against a
+    //     known-answer vector without submitting a transaction. ---
+
+    // sha256 — the byte-exact hash the PoW predicate uses.
+    @get
+    func challengeSha256(): hash32 {
+        return sha256(CHALLENGE)
+    }
+
+    // keccak256 — legacy (pre-NIST) padding, so a bridge contract's digest
+    // matches Ethereum.
+    @get
+    func challengeKeccak256(): hash32 {
+        return keccak256(CHALLENGE)
+    }
+
+    // blake2b-256.
+    @get
+    func challengeBlake2b(): hash32 {
+        return blake2b(CHALLENGE)
+    }
+
+    // ripemd160 — 20-byte digest, returned as bytes.
+    @get
+    func challengeRipemd160(): bytes {
+        return ripemd160(CHALLENGE)
+    }
+
+    // sha512 — 64-byte digest, returned as bytes.
+    @get
+    func challengeSha512(): bytes {
+        return sha512(CHALLENGE)
+    }
+
+    // byteAt — the first byte of the challenge.
+    @get
+    func challengeByte0(): uint8 {
+        return byteAt(CHALLENGE, 0)
+    }
+
+    // slice — the 4-byte prefix of the challenge.
+    @get
+    func challengePrefix(): bytes {
+        return slice(CHALLENGE, 0, 4)
+    }
+
+    // toBytesBE — the difficulty target serialized to 8 big-endian bytes.
+    @get
+    func targetBytes(): bytes {
+        return toBytesBE(POW_TARGET, 8)
+    }
+
+    // The stored solved flag (1 once a valid nonce has been accepted).
+    @get
+    func solved(): uint64 {
+        const st = lazy MinerStorage.load()
+        return st.solved
+    }
+}

@@ -1,0 +1,169 @@
+// Dual-scheme signature multisig reference contract for ATLX / AVM.
+//
+// This example proves the AVM can verify BOTH of the two signature schemes a
+// serious cross-chain account needs — Ed25519 (this chain / Solana / Cosmos
+// family) and secp256k1 ECDSA (Ethereum / Bitcoin family) — over one owner
+// message before taking any action, and can RECOVER a secp256k1 signer's public
+// key from a recoverable (R‖S‖v) signature the way `ecrecover` does on Ethereum.
+//
+// It is a cross-scheme 2-of-2 multisig: an action is authorized only when the
+// SAME owner message is signed by the Ed25519 key AND the secp256k1 key.
+//   - verifySignature(message, edSig, edPubKey)      -- Ed25519, ZIP-215 canonical
+//   - verifySecp256k1(sha256(message), secpSig, key) -- secp256k1 over the digest
+// Both must hold; either failing aborts before the guarded action runs.
+//
+// The getters exercise each primitive over the fixed vectors so a test can check
+// them end to end against an independent Go computation:
+//   - verifyEd25519 / verifySecp / dualGuard : the accept path,
+//   - verifyHighS                             : a malleated high-S signature is
+//                                               rejected (canonical low-S rule),
+//   - recoverSigner                           : ecrecover returns the 64-byte
+//                                               uncompressed X‖Y public-key body.
+//
+// The signature vectors are DETERMINISTIC (Ed25519 is seed-deterministic; the
+// secp256k1 ECDSA uses RFC6979), so the acceptance test regenerates identical
+// bytes from the same fixed private keys and message.
+//
+// This is application-level only; it never touches PoS/consensus.
+
+const ERR_BAD_MSG = 0xFFFF
+const ERR_BAD_SIG = 3001
+
+// The 32-byte owner message both keys sign. secp256k1 signs its sha256 digest;
+// Ed25519 signs the message bytes directly (Ed25519 hashes internally).
+const OWNER_MESSAGE = bytes.fromHex("101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f")
+
+// Ed25519 owner key + signature over OWNER_MESSAGE.
+const ED_PUBKEY = bytes.fromHex("4fd099ccd47d7893dfe9ec24414ecb0d9b5420232aad30d91c465be33cbe65c4")
+const ED_SIGNATURE = bytes.fromHex("07418c805d790a6bb16b61e3de8c989414b258c3d46aefe0ac9caf51218a7769ed7c2c7db66e27864b14ab2f6dd417a389f4551c10fa124752f1582f7dc28803")
+
+// secp256k1 owner key (33-byte compressed) + 64-byte compact R‖S signature over
+// sha256(OWNER_MESSAGE), in canonical lower-S form.
+const SECP_PUBKEY = bytes.fromHex("0284bf7562262bbd6940085748f3be6afa52ae317155181ece31b66351ccffa4b0")
+const SECP_SIGNATURE = bytes.fromHex("74df6d66f99057611d51983ca3b8d816598df7a023e9e95df749fcbea8efba7b68a4da63bfe7123c992a911faa7936273fcda7cff66f816c8053ad810548ec47")
+
+// The same signature in 65-byte Ethereum recoverable layout (R‖S‖v, v = 0x1c),
+// used to recover the signer's public key with ecrecover().
+const SECP_RECOVERABLE = bytes.fromHex("74df6d66f99057611d51983ca3b8d816598df7a023e9e95df749fcbea8efba7b68a4da63bfe7123c992a911faa7936273fcda7cff66f816c8053ad810548ec471c")
+
+// A malleated variant of SECP_SIGNATURE with S replaced by N-S (high-S). It is a
+// valid curve signature but non-canonical; verifySecp256k1 must reject it so
+// signature malleability cannot fork the validator set.
+const SECP_SIGNATURE_HIGH_S = bytes.fromHex("74df6d66f99057611d51983ca3b8d816598df7a023e9e95df749fcbea8efba7b975b259c4018edc366d56ee05586c9d77ae13516b8d91ecf3f7eb10bcaed54fa")
+
+@storage
+struct MultisigStorage {
+    authorizedCount: uint64
+}
+
+@message(0xA101)
+struct Authorize {
+    edSig: bytes
+    secpSig: bytes
+}
+
+type MultisigMsg = Authorize
+
+contract DualSigMultisig {
+    author: "Aetralis example"
+    description: "Cross-scheme 2-of-2 (Ed25519 + secp256k1) signature multisig with ecrecover"
+    version: "0.01.0"
+
+    storage: MultisigStorage
+    incomingMessages: MultisigMsg
+
+    @store
+    func MultisigStorage.load() {
+        return MultisigStorage.fromChunk(contract.getData())
+    }
+
+    @store
+    func MultisigStorage.save(self) {
+        contract.setData(self.toChunk())
+    }
+
+    // Both schemes must validate over the owner message before an action runs:
+    // Ed25519 over the raw message, secp256k1 over its sha256 digest. Written as
+    // one boolean expression so the helper stays inlinable.
+    @pure
+    func dualVerify(edSig: bytes, secpSig: bytes): uint64 {
+        return (verifySignature(OWNER_MESSAGE, edSig, ED_PUBKEY) && verifySecp256k1(sha256(OWNER_MESSAGE), secpSig, SECP_PUBKEY)) ? 1 : 0
+    }
+
+    @internal
+    func onInternalMessage(in: InMessage) {
+        const msg = lazy MultisigMsg.fromSegment(in.body)
+
+        match (msg) {
+            Authorize => {
+                var st = lazy MultisigStorage.load()
+                // Verify BOTH signatures over the owner message BEFORE acting.
+                // A single failed check aborts the whole action.
+                assert (dualVerify(msg.edSig, msg.secpSig) == 1) throw ERR_BAD_SIG
+                st.authorizedCount += 1
+                st.save()
+            }
+
+            else => {
+                assert (in.body.isEmpty()) throw ERR_BAD_MSG
+            }
+        }
+    }
+
+    @bounced
+    func onBouncedMessage(in: InMessageBounced) {
+        // No outbound messages are sent, so there is nothing to reconcile.
+    }
+
+    // --- Getters: each exercises one primitive over the fixed vectors so a test
+    //     can check it against an independent Go computation. ---
+
+    // Ed25519 verify (ZIP-215) of the owner signature: 1 on accept.
+    @get
+    func verifyEd25519(): uint64 {
+        return verifySignature(OWNER_MESSAGE, ED_SIGNATURE, ED_PUBKEY) ? 1 : 0
+    }
+
+    // secp256k1 verify of the owner signature over sha256(message): 1 on accept.
+    @get
+    func verifySecp(): uint64 {
+        return verifySecp256k1(sha256(OWNER_MESSAGE), SECP_SIGNATURE, SECP_PUBKEY) ? 1 : 0
+    }
+
+    // Both schemes together: 1 iff Ed25519 AND secp256k1 accept.
+    @get
+    func dualGuard(): uint64 {
+        return dualVerify(ED_SIGNATURE, SECP_SIGNATURE)
+    }
+
+    // Canonical low-S enforcement: the high-S malleated signature must be
+    // rejected, so this returns 0.
+    @get
+    func verifyHighS(): uint64 {
+        return verifySecp256k1(sha256(OWNER_MESSAGE), SECP_SIGNATURE_HIGH_S, SECP_PUBKEY) ? 1 : 0
+    }
+
+    // ecrecover: the 64-byte uncompressed public-key body (X‖Y) recovered from
+    // the recoverable signature over the digest. A caller can keccak256() this
+    // and take the low 20 bytes to derive an Ethereum address.
+    @get
+    func recoverSigner(): bytes {
+        return ecrecover(sha256(OWNER_MESSAGE), SECP_RECOVERABLE)
+    }
+
+    // The Ethereum-style address of the recovered signer: the low 20 bytes of
+    // keccak256(pubKeyXY). This composes THREE new primitives — ecrecover,
+    // byte-exact keccak256, and slice — exactly as an Ethereum-bridge contract
+    // would to authenticate a foreign-chain signer.
+    @get
+    func recoveredEthAddress(): bytes {
+        return slice(keccak256(ecrecover(sha256(OWNER_MESSAGE), SECP_RECOVERABLE)), 12, 20)
+    }
+
+    // The number of authorized actions performed (guarded by dualVerify).
+    @get
+    func authorizedCount(): uint64 {
+        const st = lazy MultisigStorage.load()
+        return st.authorizedCount
+    }
+}

@@ -3,23 +3,29 @@
 // Model:
 // - A single DexAmm contract holds a two-token pool (tokenA / tokenB) and the
 //   book of liquidity-provider (LP) balances.
-// - The LP book is a real on-chain dictionary: Map<address, uint64>. Provider
+// - The LP book is a real on-chain dictionary: Map<address, uint256>. Provider
 //   balances are minted on addLiquidity and burned on removeLiquidity, and the
 //   contract exercises the full map surface — get / set / has / delete / keys /
 //   entries — plus len() on the returned lists.
+// - Token quantities are uint256. Real pools hold reserves far larger than a
+//   uint64 can express (e.g. 1e9 tokens at 1e18 base units ≈ 1e27), and — more
+//   importantly — the constant-product math forms the product of two reserves,
+//   which overflows both u64 AND u256 at realistic sizes. Every product-then-
+//   divide is therefore computed with mulDiv(a, b, c) = floor(a*b/c), which
+//   holds the a*b product in an unbounded intermediate and only range-checks the
+//   final quotient, so the pool never traps on an intermediate overflow.
 // - Swaps use the classic constant-product formula with a 0.3% fee:
 //       amountInWithFee = amountIn * 997 / 1000
 //       amountOut       = reserveOut * amountInWithFee
 //                         / (reserveIn + amountInWithFee)
 //   The invariant reserveIn * reserveOut only grows (fee accrues to LPs).
-// - Token amounts are modeled as uint64 quantities carried in message bodies,
-//   the same way the token/stake examples model balances; a swap or a
-//   withdrawal pays the trader/provider back with an outgoing internal message
-//   built via buildMessage({...}), demonstrating the mode: and textComment:
-//   envelope fields (mode: SEND_FEE_FROM_BALANCE, textComment: "swap payout").
+// - A swap or a withdrawal pays the trader/provider back with an outgoing
+//   internal message built via buildMessage({...}), demonstrating the mode: and
+//   textComment: envelope fields (mode: SEND_FEE_FROM_BALANCE).
 //
 // This example proves the ATLX surface can express a full DEX protocol using
-// dictionaries; it is application-level only and never touches PoS/consensus.
+// dictionaries AND 256-bit fixed-point-free integer math; it is application-
+// level only and never touches PoS/consensus.
 
 const ERR_NOT_OWNER = 1001
 const ERR_BAD_MSG = 0xFFFF
@@ -47,33 +53,33 @@ struct DexStorage {
     owner: address
     tokenA: address
     tokenB: address
-    reserveA: uint64
-    reserveB: uint64
-    totalLpSupply: uint64
-    lpBalances: Map<address, uint64>
+    reserveA: uint256
+    reserveB: uint256
+    totalLpSupply: uint256
+    lpBalances: Map<address, uint256>
 }
 
 @message(0x7101)
 struct AddLiquidity {
-    amountA: uint64
-    amountB: uint64
+    amountA: uint256
+    amountB: uint256
 }
 
 @message(0x7102)
 struct RemoveLiquidity {
-    lpAmount: uint64
+    lpAmount: uint256
 }
 
 @message(0x7103)
 struct SwapAToB {
-    amountIn: uint64
-    minOut: uint64
+    amountIn: uint256
+    minOut: uint256
 }
 
 @message(0x7104)
 struct SwapBToA {
-    amountIn: uint64
-    minOut: uint64
+    amountIn: uint256
+    minOut: uint256
 }
 
 // Outgoing: swap output paid back to the trader.
@@ -81,23 +87,23 @@ struct SwapBToA {
 struct SwapPayout {
     token: address
     to: address
-    amount: uint64
+    amount: uint256
 }
 
 // Outgoing: both token legs returned to a liquidity provider on burn.
 @message(0x7106)
 struct LiquidityWithdrawn {
     to: address
-    amountA: uint64
-    amountB: uint64
+    amountA: uint256
+    amountB: uint256
 }
 
 type DexInternalMsg = AddLiquidity | RemoveLiquidity | SwapAToB | SwapBToA
 
 contract DexAmm {
     author: "Aetralis example"
-    description: "Constant-product AMM DEX with an LP dictionary"
-    version: "0.01.0"
+    description: "Constant-product AMM DEX with an LP dictionary and 256-bit mulDiv math"
+    version: "0.02.0"
 
     storage: DexStorage
     incomingMessages: DexInternalMsg
@@ -113,15 +119,15 @@ contract DexAmm {
     }
 
     // Constant-product output for a swap of `amountIn` into a pool with the
-    // given reserves, after applying the 0.3% fee.
-    // Constant-product output for `amountIn` into a pool with the given
-    // reserves, after the 0.3% fee. Written as one expression (the fee is
-    // folded into the numerator/denominator, deferring the single division)
-    // because inlinable helpers may only be a single return:
-    //     out = amountIn*997*reserveOut / (reserveIn*1000 + amountIn*997)
+    // given reserves, after the 0.3% fee. Written as one expression (so this
+    // helper stays inlinable): the fee is folded into the numerator/denominator
+    // and the single division is done by mulDiv, which forms the full-width
+    // product amountInWithFee * reserveOut before dividing so a realistic-sized
+    // pool cannot overflow the intermediate:
+    //     out = mulDiv(amountIn*997, reserveOut, reserveIn*1000 + amountIn*997)
     @pure
-    func quoteOut(amountIn: uint64, reserveIn: uint64, reserveOut: uint64): uint64 {
-        return amountIn * FEE_NUM * reserveOut / (reserveIn * FEE_DEN + amountIn * FEE_NUM)
+    func quoteOut(amountIn: uint256, reserveIn: uint256, reserveOut: uint256): uint256 {
+        return mulDiv(amountIn * FEE_NUM, reserveOut, reserveIn * FEE_DEN + amountIn * FEE_NUM)
     }
 
     @internal
@@ -141,15 +147,17 @@ contract DexAmm {
 
                 // First provision seeds the pool; later provisions mint LP
                 // proportional to the smaller of the two contributed legs so a
-                // lopsided deposit cannot dilute existing providers. The
+                // lopsided deposit cannot dilute existing providers. mulDiv keeps
+                // the (amount * totalSupply) product overflow-free. The
                 // totalLpSupply == 0 guard also avoids dividing by an empty
-                // reserve on the very first deposit.
+                // reserve on the very first deposit (that branch is never taken
+                // when reserveA/reserveB are zero).
                 const lpFromA = (st.totalLpSupply == 0)
                     ? msg.amountA
-                    : msg.amountA * st.totalLpSupply / st.reserveA
+                    : mulDiv(msg.amountA, st.totalLpSupply, st.reserveA)
                 const lpFromB = (st.totalLpSupply == 0)
                     ? msg.amountB
-                    : msg.amountB * st.totalLpSupply / st.reserveB
+                    : mulDiv(msg.amountB, st.totalLpSupply, st.reserveB)
                 const minted = (lpFromA < lpFromB) ? lpFromA : lpFromB
                 assert (minted > 0) throw ERR_ZERO_MINT
 
@@ -177,9 +185,10 @@ contract DexAmm {
                 const current = existing!
                 assert (current >= msg.lpAmount) throw ERR_INSUFFICIENT_LP
 
-                // Pro-rata share of both reserves for the burned LP.
-                const outA = msg.lpAmount * st.reserveA / st.totalLpSupply
-                const outB = msg.lpAmount * st.reserveB / st.totalLpSupply
+                // Pro-rata share of both reserves for the burned LP. mulDiv keeps
+                // the (lpAmount * reserve) product overflow-free.
+                const outA = mulDiv(msg.lpAmount, st.reserveA, st.totalLpSupply)
+                const outB = mulDiv(msg.lpAmount, st.reserveB, st.totalLpSupply)
 
                 st.reserveA -= outA
                 st.reserveB -= outB
@@ -282,26 +291,26 @@ contract DexAmm {
     }
 
     @get
-    func reserveA(): uint64 {
+    func reserveA(): uint256 {
         const st = lazy DexStorage.load()
         return st.reserveA
     }
 
     @get
-    func reserveB(): uint64 {
+    func reserveB(): uint256 {
         const st = lazy DexStorage.load()
         return st.reserveB
     }
 
     @get
-    func totalLpSupply(): uint64 {
+    func totalLpSupply(): uint256 {
         const st = lazy DexStorage.load()
         return st.totalLpSupply
     }
 
     // Dictionary read: an LP's balance, defaulting to 0 for a non-member.
     @get
-    func lpBalanceOf(provider: address): uint64 {
+    func lpBalanceOf(provider: address): uint256 {
         const st = lazy DexStorage.load()
         const found = st.lpBalances.get(provider)
         return (found == null) ? 0 : found!
@@ -332,8 +341,18 @@ contract DexAmm {
 
     // Read-only quote helper for off-chain UIs.
     @get
-    func quoteAToB(amountIn: uint64): uint64 {
+    func quoteAToB(amountIn: uint256): uint256 {
         const st = lazy DexStorage.load()
         return quoteOut(amountIn, st.reserveA, st.reserveB)
+    }
+
+    // Pure quote against EXPLICIT reserves (does not read the pool), useful for
+    // off-chain simulation. Because the reserves are arguments it can be
+    // evaluated at any 256-bit size — including sizes the old uint64 pool could
+    // neither store nor multiply without trapping — which makes it the direct
+    // read-only proof that the constant-product math is overflow-safe.
+    @get
+    func quoteWithReserves(amountIn: uint256, reserveIn: uint256, reserveOut: uint256): uint256 {
+        return quoteOut(amountIn, reserveIn, reserveOut)
     }
 }

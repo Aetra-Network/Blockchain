@@ -147,6 +147,14 @@ func OpcodeName(op Opcode) string {
 		return "verify_signature"
 	case OpCastCoins:
 		return "cast_coins"
+	case OpMulDiv:
+		return "mul_div"
+	case OpMulDivRoundUp:
+		return "mul_div_round_up"
+	case OpVerifySecp256k1:
+		return "verify_secp256k1"
+	case OpEcrecover:
+		return "ecrecover"
 	case OpWallClock:
 		return "wall_clock"
 	case OpRandom:

@@ -123,6 +123,36 @@ const (
 	// field initialized with a bare literal encodes identically to a coins
 	// value sourced from a message or storage field.
 	IRExprCoinsCast IRExprKind = "coins_cast"
+
+	// Byte-exact hashes over raw operand bytes (distinct from IRExprHash, which
+	// is the BLAKE3 chunk-tree root over a tagged canonical encoding). Single
+	// operand in Left. sha256/keccak256/blake2b yield hash32; ripemd160 (20B)
+	// and sha512 (64B) yield bytes.
+	IRExprSha256    IRExprKind = "sha256"
+	IRExprKeccak256 IRExprKind = "keccak256"
+	IRExprRipemd160 IRExprKind = "ripemd160"
+	IRExprSha512    IRExprKind = "sha512"
+	IRExprBlake2b   IRExprKind = "blake2b"
+
+	// Byte manipulation for building/parsing hash preimages. concat/slice/byteAt/
+	// toBytesBE carry their operands in Args (in source order); fromBytesBE uses
+	// Left.
+	IRExprConcat      IRExprKind = "concat"
+	IRExprSlice       IRExprKind = "slice"
+	IRExprByteAt      IRExprKind = "byte_at"
+	IRExprToBytesBE   IRExprKind = "to_bytes_be"
+	IRExprFromBytesBE IRExprKind = "from_bytes_be"
+
+	// Full-width fused multiply-divide (mulDiv / mulDivRoundUp). Three uint256
+	// operands carried in Args (source order a, b, c); yields uint256.
+	IRExprMulDiv        IRExprKind = "mul_div"
+	IRExprMulDivRoundUp IRExprKind = "mul_div_round_up"
+
+	// secp256k1 signature verification / public-key recovery. verifySecp256k1
+	// carries (msgHash, sig, pubkey) in Args and yields bool; ecrecover carries
+	// (msgHash, sig) in Args and yields bytes (the 64-byte X‖Y pubkey body).
+	IRExprVerifySecp256k1 IRExprKind = "verify_secp256k1"
+	IRExprEcrecover       IRExprKind = "ecrecover"
 )
 
 type IRStructField struct {
