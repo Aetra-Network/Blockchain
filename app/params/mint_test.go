@@ -21,8 +21,8 @@ func TestAetraMintPolicyMatchesEconomicsSpec(t *testing.T) {
 	require.True(t, params.InflationMax.IsZero(), "x/mint max inflation must be zero")
 	require.Equal(t, BpsToLegacyDec(DefaultTargetStakeBps), params.GoalBonded)
 	require.Equal(t, int64(150), MinInflationBps)
-	require.Equal(t, int64(500), MaxInflationBps)
-	require.Equal(t, int64(6_000), DefaultTargetStakeBps)
+	require.Equal(t, int64(800), MaxInflationBps)
+	require.Equal(t, int64(6_500), DefaultTargetStakeBps)
 	require.True(t, params.MaxSupply.IsZero(), "zero max supply means uncapped issuance")
 	require.NoError(t, params.Validate())
 

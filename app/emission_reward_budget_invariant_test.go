@@ -104,7 +104,7 @@ func TestNativeInvariantStaleBudgetWouldRejectHonestRewards(t *testing.T) {
 }
 
 // The budget math must stay in sdkmath.Int. In uint64 the pre-divide product
-// anchor*MaxAnnualInflationBps wraps above ~36.9M AET at 500bps -- well inside
+// anchor*MaxAnnualInflationBps wraps above ~23.1M AET at 800bps -- well inside
 // this network's real supply -- yielding a plausible-looking budget many times
 // too small, which would fire the check against honest rewards.
 func TestNativeInvariantInputRewardBudgetDoesNotWrapAtRealSupply(t *testing.T) {

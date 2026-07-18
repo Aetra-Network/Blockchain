@@ -37,7 +37,7 @@ func TestDefaultNetworkProfileMatchesAetraBaseModel(t *testing.T) {
 
 	require.Equal(t, int64(5_500), profile.TargetBondedRatioMinBps)
 	require.Equal(t, int64(6_500), profile.TargetBondedRatioMaxBps)
-	require.Equal(t, int64(6_000), profile.TargetBondedRatioDefaultBps)
+	require.Equal(t, int64(6_500), profile.TargetBondedRatioDefaultBps)
 	require.Equal(t, int64(300), profile.NormalInflationMinBps)
 	require.Equal(t, int64(400), profile.NormalInflationMaxBps)
 	require.Equal(t, int64(400), profile.DelegatorAPRTargetMinBps)
