@@ -2386,10 +2386,14 @@ func runtimeFromBigIntChecked(tag ValueTag, v *big.Int) (RuntimeValue, error) {
 // runtimeMulDiv computes floor(a*b/c) — or ceil(a*b/c) when roundUp is set — as
 // a uint256. The a*b product is formed in an unbounded big.Int, so it may exceed
 // 2^256 (as the constant-product AMM's reserveIn*reserveOut does at real
-// reserves); only the final quotient is width-checked. Traps on a zero divisor
-// (reusing the "AVM division by zero" error so it is indistinguishable from an
-// ordinary integer divide-by-zero) and on a quotient that overflows uint256
-// (via runtimeFromBigIntChecked/enforceIntWidth, e.g. c==1 with a*b >= 2^256).
+// reserves); only the final quotient is width-checked. Traps on a negative
+// operand (the verifier does no stack-type analysis, so a validated program can
+// reach mulDiv with a signed negative value via OpNeg or a decoded int256
+// field — the operands are unsigned by contract, exactly like mulCmp), on a
+// zero divisor (reusing the "AVM division by zero" error so it is
+// indistinguishable from an ordinary integer divide-by-zero), and on a
+// quotient that overflows uint256 (via runtimeFromBigIntChecked/
+// enforceIntWidth, e.g. c==1 with a*b >= 2^256).
 func runtimeMulDiv(a, b, c RuntimeValue, roundUp bool) (RuntimeValue, error) {
 	ai, err := runtimeNumeric(a)
 	if err != nil {
@@ -2402,6 +2406,9 @@ func runtimeMulDiv(a, b, c RuntimeValue, roundUp bool) (RuntimeValue, error) {
 	ci, err := runtimeNumeric(c)
 	if err != nil {
 		return RuntimeValue{}, err
+	}
+	if ai.Sign() < 0 || bi.Sign() < 0 || ci.Sign() < 0 {
+		return RuntimeValue{}, errors.New("AVM mulDiv requires non-negative operands")
 	}
 	if ci.Sign() == 0 {
 		return RuntimeValue{}, errDivisionByZero
@@ -2420,9 +2427,9 @@ func runtimeMulDiv(a, b, c RuntimeValue, roundUp bool) (RuntimeValue, error) {
 // floor(a*b/c) and remainder are formed in the same unbounded big.Int shape as
 // runtimeMulDiv, then the quotient is rounded up iff the remainder, doubled,
 // is >= c (i.e. the true quotient's fractional part is >= 1/2). Traps on a
-// zero divisor (reusing errDivisionByZero, indistinguishable from an ordinary
-// integer divide-by-zero) and on a quotient that overflows uint256, exactly
-// like runtimeMulDiv/runtimeMulDiv(roundUp=true).
+// negative operand, a zero divisor (reusing errDivisionByZero,
+// indistinguishable from an ordinary integer divide-by-zero), and a quotient
+// that overflows uint256, exactly like runtimeMulDiv/runtimeMulDiv(roundUp=true).
 func runtimeMulDivNearest(a, b, c RuntimeValue) (RuntimeValue, error) {
 	ai, err := runtimeNumeric(a)
 	if err != nil {
@@ -2435,6 +2442,9 @@ func runtimeMulDivNearest(a, b, c RuntimeValue) (RuntimeValue, error) {
 	ci, err := runtimeNumeric(c)
 	if err != nil {
 		return RuntimeValue{}, err
+	}
+	if ai.Sign() < 0 || bi.Sign() < 0 || ci.Sign() < 0 {
+		return RuntimeValue{}, errors.New("AVM mulDivNearest requires non-negative operands")
 	}
 	if ci.Sign() == 0 {
 		return RuntimeValue{}, errDivisionByZero

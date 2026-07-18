@@ -114,6 +114,32 @@ func TestAVMMulDivResultOverflowTraps(t *testing.T) {
 	require.Equal(t, async.ResultOutOfRange, exec.ResultCode)
 }
 
+// TestAVMMulDivNegativeOperandTraps is the regression for the mulDiv/
+// mulDivRoundUp sign gap: mulDiv's operands are unsigned by contract (like
+// mulCmp's), but the verifier does no stack-type analysis, so a validated
+// program can reach mulDiv with a signed negative value via OpNeg or a
+// decoded int256 field. Before the guard, a negative operand type-checked and
+// lowered cleanly and runtimeMulDiv computed a silently WRONG uint256 result
+// instead of trapping (confirmed concretely: mulDiv(int8(-1), 1, 2) returned
+// 0 with err=nil). Any negative operand -- a, b, or c -- must now trap
+// deterministically, for both the floor and round-up variants.
+func TestAVMMulDivNegativeOperandTraps(t *testing.T) {
+	neg := ValueInt8(-1)
+	one := ValueBigInt256(big.NewInt(1))
+	two := ValueBigInt256(big.NewInt(2))
+
+	for _, roundUp := range []bool{false, true} {
+		_, err := runtimeMulDiv(neg, one, two, roundUp)
+		require.Error(t, err, "a negative first operand must trap (roundUp=%v)", roundUp)
+
+		_, err = runtimeMulDiv(one, neg, two, roundUp)
+		require.Error(t, err, "a negative second operand must trap (roundUp=%v)", roundUp)
+
+		_, err = runtimeMulDiv(one, one, neg, roundUp)
+		require.Error(t, err, "a negative divisor must trap (roundUp=%v)", roundUp)
+	}
+}
+
 func mulDivNearestCode(t *testing.T, a, b, c *big.Int) []Instruction {
 	code := append([]Instruction(nil), pushU256(t, a)...)
 	code = append(code, pushU256(t, b)...)
@@ -181,6 +207,26 @@ func TestAVMMulDivNearestResultOverflowTraps(t *testing.T) {
 	exec, err := runByteCode(t, mulDivNearestCode(t, a, big.NewInt(4), big.NewInt(1)))
 	require.Error(t, err)
 	require.Equal(t, async.ResultOutOfRange, exec.ResultCode)
+}
+
+// TestAVMMulDivNearestNegativeOperandTraps mirrors
+// TestAVMMulDivNegativeOperandTraps for mulDivNearest: confirmed concretely
+// before this fix (mulDivNearest(int8(-1), int8(1), 2) returned {uint256, 0}
+// with err=nil instead of trapping) as the reproduction for the same
+// pre-existing gap in mulDiv/mulDivRoundUp.
+func TestAVMMulDivNearestNegativeOperandTraps(t *testing.T) {
+	neg := ValueInt8(-1)
+	one := ValueBigInt256(big.NewInt(1))
+	two := ValueBigInt256(big.NewInt(2))
+
+	_, err := runtimeMulDivNearest(neg, one, two)
+	require.Error(t, err, "a negative first operand must trap")
+
+	_, err = runtimeMulDivNearest(one, neg, two)
+	require.Error(t, err, "a negative second operand must trap")
+
+	_, err = runtimeMulDivNearest(one, one, neg)
+	require.Error(t, err, "a negative divisor must trap")
 }
 
 // TestAVMBitwiseWidthCheckTraps is the regression for Stage 1(b): OpBitAnd/
