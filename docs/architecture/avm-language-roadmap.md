@@ -24,6 +24,27 @@ concat/slice/byteAt/toBytesBE/fromBytesBE; mulDiv(u256); secp256k1 verify + ecre
   accumulated-reward-per-share -- Ratio alone is wrong for these).
 - Reference: lending health-factor math, perpetual PnL (signed, EntryPrice/ExitPrice), CL-AMM tick math.
 
+### Phase B status (finance numeric library — examples/avm/finance/)
+The NUMERIC PRIMITIVES are implemented and execute through the real VM under gas, proven by
+`x/aetravm/conformance/finance_acceptance_test.go`: BasisPoints (scale 10000), Ratio256 (unreduced
+num/den compared by cross-multiply), Decimal18 (UFixed<18>: mul/div/fromInt/toInt/decSqrt), and signed
+PnL (int256 subtract/multiply/add + `< 0` and `<` compare). They ship as free `@pure` namespaces on a
+host contract plus three demonstration contracts — a same-numeraire lending health factor, a perpetual
+mark-PnL + maintenance-margin liquidation check, and a sqrt-price / geometric-mean price helper.
+
+These are DEMONSTRATIONS of the primitives, not full protocols. The FULL reference contracts named above
+(production CL-AMM with per-tick liquidity, a perpetual with periodic funding, lending with a price oracle
+and real liquidations) remain BLOCKED on language upgrades surfaced by the AVM v1 capability probe:
+- (a) struct field access on VALUE types (today only storage-struct fields are readable; value structs
+  cannot carry data, which is why Ratio/Decimal are naming conventions over raw scalars rather than types);
+- (b) a `fullMul512` / `mulCmp512` intrinsic so a Ratio compare is correct over the FULL uint256 range
+  (the current cross-multiply `ratioGtBounded` is only overflow-safe when each operand is below 2^128);
+- (c) signed `mulDiv` (signed scaled multiply/divide) for scaled signed math — funding indices, signed
+  Decimal accumulation — which today has no intrinsic (only unsigned `mulDiv` exists).
+
+These are concrete Phase E / follow-up items; until they land, the finance library stays a
+primitive-level demonstration, honestly labelled as such in each contract header.
+
 ## Phase C — bridge / light-client primitives
 merkle_verify (parameterized by hash algo), batched signature verification, validator-set-change
 verification helpers. Reference: a light-client verify stub (verify a foreign header's sig-set + a merkle

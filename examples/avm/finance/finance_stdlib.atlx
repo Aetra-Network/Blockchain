@@ -1,0 +1,247 @@
+// Aetralis financial standard library — the canonical source of the Phase B
+// DeFi numeric namespaces. Because the AVM requires exactly one contract per
+// compiled unit (a bare library of @pure funcs fails "package must declare
+// exactly one contract"), the stdlib ships as a HOST CONTRACT: the namespaces
+// are free @pure functions and each is exercised through a parameterless- or
+// parametric @get so a conformance test can compile AND execute every routine
+// through the real VM.
+//
+// DESIGN CONSTRAINTS (from the AVM v1 capability probe, encoded here as fact):
+//   - Value structs cannot carry data: reading a field off any non-storage
+//     struct value / struct parameter is rejected ("local field access is not
+//     supported in AVM v1"). So BasisPoints / Ratio / Decimal are NOT structs;
+//     they are a naming CONVENTION over raw uintN / int256.
+//   - Single-member type aliases are nominal but have no coercion surface, so a
+//     literal cannot be passed where the alias is expected. Newtypes are
+//     therefore not usable today; the "namespace" is a function-name prefix.
+//   - Inlinable @pure helpers must be exactly one return expression (nesting
+//     calls is fine; intermediate `const` locals are not). Multi-step
+//     orchestration lives in @get / @internal bodies, which DO allow locals.
+//   - Integer literals are always unsigned (OpPushU64). Signed int256 values
+//     can only originate from decoded int256 storage / message fields — never a
+//     negative literal. Every signed getter below takes its operands as int256
+//     arguments so the sign survives the message-field decode.
+//   - mulDiv(a,b,c) = floor(a*b/c) forms the a*b product at unbounded width and
+//     range-checks the FINAL quotient to uint256 (traps if it overflows).
+//     isqrt(x) = floor(sqrt(x)). Both are unsigned-only.
+//
+// Namespaces (prefix = namespace):
+//   bp*   BasisPoints   scale 10000 = 100%
+//   ratio* Ratio256     an unreduced (num, den) pair passed as two scalars
+//   dec*  Decimal18     UFixed<18>, implicit scale 1e18
+//   pnl*  SignedDecimal / PnL (int256)
+
+const ERR_BAD_MSG = 0xFFFF
+
+// 100% in basis points.
+const MAX_BPS = 10000
+
+// The Decimal18 scale: 1.0 == 1e18. Written as an explicit 19-digit integer
+// literal (fits uint64, emitted as OpPushU64); `1e18` float syntax is BANNED.
+const ONE_1E18 = 1000000000000000000
+
+@storage
+struct StdlibStorage {
+    owner: address
+}
+
+// A no-op message so the contract satisfies the "internal or external handler"
+// requirement; the stdlib carries no mutable protocol state of its own.
+@message(0x9001)
+struct Noop {}
+
+type StdlibMsg = Noop
+
+contract FinanceStdlib {
+    author: "Aetralis example"
+    description: "Canonical Phase B financial numeric library (BasisPoints / Ratio256 / Decimal18 / signed PnL) as free @pure namespaces"
+    version: "0.01.0"
+
+    storage: StdlibStorage
+    incomingMessages: StdlibMsg
+
+    @store
+    func StdlibStorage.load() {
+        return StdlibStorage.fromChunk(contract.getData())
+    }
+
+    // ---- BasisPoints namespace -------------------------------------------
+
+    // Apply `bps` (out of 10000) to `amount`: floor(amount * bps / 10000).
+    @pure
+    func bpApplyTo(bps: uint256, amount: uint256): uint256 {
+        return mulDiv(amount, bps, MAX_BPS)
+    }
+
+    // The complementary rate: 10000 - bps (e.g. a 30bps fee leaves 9970bps).
+    @pure
+    func bpComplement(bps: uint256): uint256 {
+        return MAX_BPS - bps
+    }
+
+    // Apply the complement of `bps` to `amount` in one shot (net-of-fee amount).
+    @pure
+    func bpApplyComplement(bps: uint256, amount: uint256): uint256 {
+        return mulDiv(amount, MAX_BPS - bps, MAX_BPS)
+    }
+
+    // ---- Ratio256 namespace ----------------------------------------------
+    // A ratio is a (num, den) pair passed as two raw uint256 scalars — never a
+    // struct, since struct fields are unreadable. Held unreduced.
+
+    // Multiply `x` by the ratio num/den: floor(x * num / den).
+    @pure
+    func ratioMulBy(num: uint256, den: uint256, x: uint256): uint256 {
+        return mulDiv(x, num, den)
+    }
+
+    // Multiply `x` by the INVERSE ratio den/num (swap the operands).
+    @pure
+    func ratioMulByInv(num: uint256, den: uint256, x: uint256): uint256 {
+        return mulDiv(x, den, num)
+    }
+
+    // Cross-multiply compare: is numA/denA > numC/denC ? 1 : 0.
+    // SAFE ONLY when each cross operand fits below 2^128 (the caller must bound
+    // its inputs); otherwise mulDiv(...,1) forms a > u256 product and TRAPS.
+    @pure
+    func ratioGtBounded(numA: uint256, denA: uint256, numC: uint256, denC: uint256): uint64 {
+        return (mulDiv(numA, denC, 1) > mulDiv(numC, denA, 1)) ? 1 : 0
+    }
+
+    // ---- Decimal18 (UFixed<18>) namespace --------------------------------
+
+    // Lift an integer n into 1e18 fixed-point: n * 1e18.
+    @pure
+    func decFromInt(n: uint256): uint256 {
+        return mulDiv(n, ONE_1E18, 1)
+    }
+
+    // Truncate a 1e18 fixed-point value back to an integer: floor(d / 1e18).
+    @pure
+    func decToInt(d: uint256): uint256 {
+        return mulDiv(d, 1, ONE_1E18)
+    }
+
+    // Fixed-point multiply: floor(a * b / 1e18) (both operands 1e18-scaled).
+    @pure
+    func decMul(a: uint256, b: uint256): uint256 {
+        return mulDiv(a, b, ONE_1E18)
+    }
+
+    // Fixed-point divide: floor(a * 1e18 / b).
+    @pure
+    func decDiv(a: uint256, b: uint256): uint256 {
+        return mulDiv(a, ONE_1E18, b)
+    }
+
+    // Decimal18 square root: input and output are BOTH 1e18-scaled.
+    // decSqrt(4.0) = 2.0, i.e. decSqrt(4e18) = 2e18. For a Decimal18 input
+    // a = r*1e18, isqrt(a * 1e18) = isqrt(r*1e36) = sqrt(r)*1e18, which is the
+    // Decimal18 square root of the input. (This is DISTINCT from taking a raw
+    // isqrt of a Decimal18 to get a 1e9-scaled root, as sqrt_price.atlx does.)
+    @pure
+    func decSqrt(a: uint256): uint256 {
+        return isqrt(mulDiv(a, ONE_1E18, 1))
+    }
+
+    // ---- Signed PnL namespace (int256) -----------------------------------
+
+    // Realized/mark PnL for a position: (exitPrice - entryPrice) * size. All
+    // operands are int256 (decoded from int256 fields), so the result carries a
+    // real sign — a long that exits below entry yields a negative value.
+    @pure
+    func pnlOf(entryPrice: int256, exitPrice: int256, size: int256): int256 {
+        return (exitPrice - entryPrice) * size
+    }
+
+    @internal
+    func onInternalMessage(in: InMessage) {
+        const msg = lazy StdlibMsg.fromSegment(in.body)
+        match (msg) {
+            Noop => {
+                // Pure library contract: nothing to mutate.
+            }
+            else => {
+                assert (in.body.isEmpty()) throw ERR_BAD_MSG
+            }
+        }
+    }
+
+    // ---- Getters: one thin @get per routine so a conformance test can drive
+    // every namespace through the real VM with exact numeric assertions. ----
+
+    @get
+    func bpApply(bps: uint256, amount: uint256): uint256 {
+        return bpApplyTo(bps, amount)
+    }
+
+    @get
+    func bpComp(bps: uint256): uint256 {
+        return bpComplement(bps)
+    }
+
+    @get
+    func bpApplyComp(bps: uint256, amount: uint256): uint256 {
+        return bpApplyComplement(bps, amount)
+    }
+
+    @get
+    func ratioMul(num: uint256, den: uint256, x: uint256): uint256 {
+        // Zero-denominator guard: den == 0 would trap mulDiv, so return 0.
+        const safeDen = (den == 0) ? 1 : den
+        const q = ratioMulBy(num, safeDen, x)
+        return (den == 0) ? 0 : q
+    }
+
+    @get
+    func ratioMulInv(num: uint256, den: uint256, x: uint256): uint256 {
+        // The inverse ratio divides by `num`; guard num == 0 -> 0.
+        const safeNum = (num == 0) ? 1 : num
+        const q = ratioMulByInv(safeNum, den, x)
+        return (num == 0) ? 0 : q
+    }
+
+    @get
+    func ratioGt(numA: uint256, denA: uint256, numC: uint256, denC: uint256): uint64 {
+        return ratioGtBounded(numA, denA, numC, denC)
+    }
+
+    @get
+    func decMulG(a: uint256, b: uint256): uint256 {
+        return decMul(a, b)
+    }
+
+    @get
+    func decDivG(a: uint256, b: uint256): uint256 {
+        // Zero-denominator guard: decDiv by 0 would trap mulDiv, so return 0.
+        const safeB = (b == 0) ? 1 : b
+        const q = decDiv(a, safeB)
+        return (b == 0) ? 0 : q
+    }
+
+    @get
+    func decFromIntG(n: uint256): uint256 {
+        return decFromInt(n)
+    }
+
+    @get
+    func decToIntG(d: uint256): uint256 {
+        return decToInt(d)
+    }
+
+    @get
+    func decSqrtG(a: uint256): uint256 {
+        return decSqrt(a)
+    }
+
+    @get
+    func pnl(entryPrice: int256, exitPrice: int256, size: int256): int256 {
+        return pnlOf(entryPrice, exitPrice, size)
+    }
+
+    @get
+    func pnlIsNegative(entryPrice: int256, exitPrice: int256, size: int256): uint64 {
+        return (pnlOf(entryPrice, exitPrice, size) < 0) ? 1 : 0
+    }
+}

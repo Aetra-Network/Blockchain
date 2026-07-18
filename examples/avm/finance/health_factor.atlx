@@ -1,0 +1,140 @@
+// Acceptance contract 1 — LENDING HEALTH FACTOR (numeric-primitive demo).
+//
+// Demonstrates the BasisPoints + Decimal18 numeric primitives on a single
+// collateralized borrow position; it is NOT a full lending protocol. Computes
+// the position's health factor at 1e18 fixed-point scale using the finance
+// stdlib namespaces (embedded here as @pure helpers — the stdlib is not an
+// importable library, so reference contracts embed the routines they use).
+//
+//   adjustedCollateral = collateral * liqThresholdBps / 10000   (BasisPoints)
+//   healthFactor(1e18) = adjustedCollateral * 1e18 / debt        (Decimal18 div)
+//   liquidatable       = healthFactor < 1e18
+//
+// A position is healthy when the liquidation-threshold-adjusted collateral
+// still covers the debt (HF >= 1.0).
+//
+// NUMERAIRE ASSUMPTION (load-bearing): collateral and debt are expressed in the
+// SAME numeraire, so they are directly comparable. A PRODUCTION lender holds
+// collateral and debt in DIFFERENT assets and needs a price ORACLE to convert
+// one into the other before the health factor is meaningful; oracle integration
+// is out of scope here (see the AVM language roadmap, Phase B status).
+//
+// Zero-debt guard: the pure getters return 0 for debt == 0 (the divide would
+// otherwise trap); a zero-debt position is treated as NOT liquidatable.
+//
+// PROVEN target: collateral 1500, debt 1000, threshold 8000bps => adjusted 1200
+// => HF = 1.2e18, not liquidatable.
+
+const ERR_BAD_MSG = 0xFFFF
+const ERR_NOT_OWNER = 1001
+const MAX_BPS = 10000
+const ONE_1E18 = 1000000000000000000
+
+@storage
+struct Acct {
+    owner: address
+    collateral: uint256
+    debt: uint256
+    liqThresholdBps: uint256
+}
+
+@message(0x8101)
+struct SetPosition {
+    collateral: uint256
+    debt: uint256
+    liqThresholdBps: uint256
+}
+
+type AcctMsg = SetPosition
+
+contract LendingHealth {
+    author: "Aetralis example"
+    description: "Collateralized-debt health factor via BasisPoints + Decimal18 namespaces"
+    version: "0.01.0"
+
+    storage: Acct
+    incomingMessages: AcctMsg
+
+    @store
+    func Acct.load() {
+        return Acct.fromChunk(contract.getData())
+    }
+
+    @store
+    func Acct.save(self) {
+        contract.setData(self.toChunk())
+    }
+
+    // BasisPoints.applyTo — embedded stdlib routine (single-return, inlinable).
+    @pure
+    func bpApplyTo(bps: uint256, amount: uint256): uint256 {
+        return mulDiv(amount, bps, MAX_BPS)
+    }
+
+    // Decimal18.div — floor(a * 1e18 / b).
+    @pure
+    func decDiv(a: uint256, b: uint256): uint256 {
+        return mulDiv(a, ONE_1E18, b)
+    }
+
+    // Health factor at 1e18 scale for EXPLICIT operands (pure, no storage) —
+    // the direct proof the numeric composition is correct for any 256-bit size.
+    @pure
+    func healthOf(collateral: uint256, debt: uint256, thresholdBps: uint256): uint256 {
+        return decDiv(bpApplyTo(thresholdBps, collateral), debt)
+    }
+
+    @internal
+    func onInternalMessage(in: InMessage) {
+        const msg = lazy AcctMsg.fromSegment(in.body)
+        match (msg) {
+            SetPosition => {
+                var st = lazy Acct.load()
+                assert (in.senderAddress == st.owner) throw ERR_NOT_OWNER
+                assert (msg.debt > 0) throw ERR_BAD_MSG
+                st.collateral = msg.collateral
+                st.debt = msg.debt
+                st.liqThresholdBps = msg.liqThresholdBps
+                st.save()
+            }
+            else => {
+                assert (in.body.isEmpty()) throw ERR_BAD_MSG
+            }
+        }
+    }
+
+    // Storage-backed health factor (reads the stored position).
+    @get
+    func healthFactor1e18(): uint256 {
+        const st = lazy Acct.load()
+        return decDiv(bpApplyTo(st.liqThresholdBps, st.collateral), st.debt)
+    }
+
+    // Storage-backed liquidation predicate.
+    @get
+    func liquidatable(): uint64 {
+        const st = lazy Acct.load()
+        const hf = decDiv(bpApplyTo(st.liqThresholdBps, st.collateral), st.debt)
+        return (hf < ONE_1E18) ? 1 : 0
+    }
+
+    // Pure health factor over explicit operands — driven by the conformance
+    // test at exact reserve sizes with a concrete numeric assertion. Guards a
+    // zero debt (which would trap the Decimal18 divide) by returning 0.
+    @get
+    func healthFactorOf(collateral: uint256, debt: uint256, thresholdBps: uint256): uint256 {
+        const safeDebt = (debt == 0) ? 1 : debt
+        const hf = healthOf(collateral, safeDebt, thresholdBps)
+        return (debt == 0) ? 0 : hf
+    }
+
+    // Pure liquidation predicate over explicit operands. A zero debt is treated
+    // as NOT liquidatable (0) rather than trapping the divide.
+    @get
+    func liquidatableOf(collateral: uint256, debt: uint256, thresholdBps: uint256): uint64 {
+        const safeDebt = (debt == 0) ? 1 : debt
+        const hf = healthOf(collateral, safeDebt, thresholdBps)
+        const eff = (debt == 0) ? ONE_1E18 : hf
+        return (eff < ONE_1E18) ? 1 : 0
+    }
+}

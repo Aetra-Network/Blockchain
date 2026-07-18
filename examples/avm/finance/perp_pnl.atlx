@@ -1,0 +1,156 @@
+// Acceptance contract 2 — PERPETUAL mark PnL + maintenance-margin liquidation
+// (signed int256).
+//
+// Models a single perpetual-futures position: unrealized MARK PnL computed with
+// SIGNED int256 arithmetic from the finance stdlib's PnL namespace, plus an
+// equity-versus-maintenance-margin liquidation check:
+//
+//   pnl          = (exitPrice - entryPrice) * size    (signed mark PnL)
+//   equity       = margin + pnl                        (posted margin + PnL)
+//   liquidatable = equity < maintenanceMargin
+//
+// LIQUIDATION IS EQUITY-BASED, not "any loss". A small loss with adequate margin
+// is NOT liquidatable; a position is liquidatable only when its equity (posted
+// margin plus unrealized PnL) falls below the maintenance-margin requirement.
+// This is the standard isolated/cross margin liquidation trigger.
+//
+// SCOPE: this models UNREALIZED mark PnL and the maintenance-margin check only.
+// A PRODUCTION perpetual additionally requires periodic FUNDING payments — the
+// long/short funding-rate exchange that tethers the perp price to the index —
+// which are NOT modeled here. Funding needs an accumulating funding index and a
+// time source and is future work (see the AVM language roadmap, Phase B status).
+//
+// The result carries a real sign: a long (size > 0) that exits below entry, or a
+// short (size < 0) that exits above entry, produces a NEGATIVE pnl. Signed int256
+// subtraction, multiplication, addition and `<` comparison all run through the
+// VM on int256-tagged values.
+//
+// CRITICAL AVM FACT: integer literals are always unsigned, so signed operands
+// cannot be written as negative literals — they MUST arrive from decoded int256
+// storage or message fields. The storage struct below stores int256
+// prices/size/margins and the pure getters take int256 arguments; both feed
+// genuinely signed values into the math.
+//
+// PROVEN target: entry 3000, exit 2500, size 10 => pnl = -5000; margin 6000,
+// maintenance 2000 => equity 1000 < 2000 => liquidatable = 1. With margin 8000
+// => equity 3000 >= 2000 => liquidatable = 0.
+
+const ERR_BAD_MSG = 0xFFFF
+const ERR_NOT_OWNER = 1001
+
+@storage
+struct Position {
+    owner: address
+    entryPrice: int256
+    exitPrice: int256
+    size: int256
+    margin: int256
+    maintenanceMargin: int256
+}
+
+@message(0x8201)
+struct SetPosition {
+    entryPrice: int256
+    exitPrice: int256
+    size: int256
+    margin: int256
+    maintenanceMargin: int256
+}
+
+type PositionMsg = SetPosition
+
+contract PerpPnl {
+    author: "Aetralis example"
+    description: "Perpetual-futures signed mark PnL + equity/maintenance-margin liquidation over int256 (funding not modeled)"
+    version: "0.02.0"
+
+    storage: Position
+    incomingMessages: PositionMsg
+
+    @store
+    func Position.load() {
+        return Position.fromChunk(contract.getData())
+    }
+
+    @store
+    func Position.save(self) {
+        contract.setData(self.toChunk())
+    }
+
+    // PnL.of — embedded stdlib routine. Signed int256: (exit - entry) * size.
+    @pure
+    func pnlOf(entryPrice: int256, exitPrice: int256, size: int256): int256 {
+        return (exitPrice - entryPrice) * size
+    }
+
+    // Account equity = posted margin + unrealized mark PnL (all signed int256).
+    @pure
+    func equityOf(entryPrice: int256, exitPrice: int256, size: int256, margin: int256): int256 {
+        return margin + pnlOf(entryPrice, exitPrice, size)
+    }
+
+    @internal
+    func onInternalMessage(in: InMessage) {
+        const msg = lazy PositionMsg.fromSegment(in.body)
+        match (msg) {
+            SetPosition => {
+                var st = lazy Position.load()
+                assert (in.senderAddress == st.owner) throw ERR_NOT_OWNER
+                st.entryPrice = msg.entryPrice
+                st.exitPrice = msg.exitPrice
+                st.size = msg.size
+                st.margin = msg.margin
+                st.maintenanceMargin = msg.maintenanceMargin
+                st.save()
+            }
+            else => {
+                assert (in.body.isEmpty()) throw ERR_BAD_MSG
+            }
+        }
+    }
+
+    // Storage-backed signed mark PnL (reads int256 fields from storage).
+    @get
+    func pnl(): int256 {
+        const st = lazy Position.load()
+        return (st.exitPrice - st.entryPrice) * st.size
+    }
+
+    // Storage-backed equity = posted margin + unrealized mark PnL (signed).
+    @get
+    func equity(): int256 {
+        const st = lazy Position.load()
+        return st.margin + (st.exitPrice - st.entryPrice) * st.size
+    }
+
+    // Storage-backed liquidation predicate: equity below the maintenance margin.
+    // A small loss with adequate margin is NOT liquidatable.
+    @get
+    func liquidatable(): uint64 {
+        const st = lazy Position.load()
+        const eq = st.margin + (st.exitPrice - st.entryPrice) * st.size
+        return (eq < st.maintenanceMargin) ? 1 : 0
+    }
+
+    // Pure signed mark PnL over explicit int256 operands — driven by the
+    // conformance test with concrete signed assertions (sign + magnitude).
+    @get
+    func pnlOfArgs(entryPrice: int256, exitPrice: int256, size: int256): int256 {
+        return pnlOf(entryPrice, exitPrice, size)
+    }
+
+    // Pure LOSS predicate (pnl < 0) over explicit int256 operands. This is a raw
+    // profitability test, NOT a liquidation test — a loss with adequate margin is
+    // not liquidatable (use liquidatableArgs for the margin check).
+    @get
+    func isLoss(entryPrice: int256, exitPrice: int256, size: int256): uint64 {
+        return (pnlOf(entryPrice, exitPrice, size) < 0) ? 1 : 0
+    }
+
+    // Pure equity-based liquidation predicate over explicit int256 operands:
+    // equity (margin + mark PnL) below the maintenance-margin requirement.
+    @get
+    func liquidatableArgs(entryPrice: int256, exitPrice: int256, size: int256, margin: int256, maintenanceMargin: int256): uint64 {
+        return (equityOf(entryPrice, exitPrice, size, margin) < maintenanceMargin) ? 1 : 0
+    }
+}

@@ -1,0 +1,177 @@
+// Acceptance contract 3 — SQRT-PRICE / GEOMETRIC-MEAN PRICE HELPER (Decimal18 sqrt).
+//
+// Demonstrates the sqrt-price price representation (the square-root-of-price form
+// popularized by concentrated-liquidity AMMs) using the Decimal18 + Ratio256
+// namespaces plus the isqrt intrinsic. This is a NUMERIC-PRIMITIVE demonstration,
+// NOT a concentrated-liquidity AMM: true CL-AMM TICK math — per-tick liquidity,
+// the tick <-> sqrtPrice mapping, tick-crossing on swaps, and fee-growth
+// accounting — is NOT expressible in AVM v1 (it needs value-type struct fields
+// and signed scaled math) and is future work (see the AVM language roadmap,
+// Phase B status).
+//
+//   price(1e18)      = reserve1 * 1e18 / reserve0          (Decimal18 div / Ratio)
+//   sqrtPrice(1e9)   = isqrt(price * 1e18) = sqrt(price) * 1e9
+//   priceBack(1e18)  = sqrtPrice * sqrtPrice               (round-trip check)
+//
+// sqrtPrice is carried at 1e9 scale precisely because squaring a 1e9-scaled
+// value yields a 1e18-scaled value, so the price round-trips through the sqrt
+// with no scale drift. (This raw isqrt of a Decimal18 yields a 1e9-scaled root,
+// DISTINCT from the stdlib decSqrt, which is a Decimal18 -> Decimal18 sqrt.)
+//
+// A cross-multiply ratio compare (ratioGtBounded) is included to price-compare
+// two pools without materializing a quotient; per the mulDiv overflow trap it
+// is only overflow-safe when each cross operand is below 2^128, which the getter
+// asserts before comparing.
+//
+// The pure argument getters guard a zero reserve0 (which would trap the divide)
+// by returning 0.
+//
+// PROVEN target: reserve0 = 1e18, reserve1 = 4e18 => price 4.0 =>
+// sqrtPrice = isqrt(4e18) = 2_000_000_000 (2e9) => priceBack = 4e18.
+
+const ERR_BAD_MSG = 0xFFFF
+const ERR_NO_LIQUIDITY = 1040
+const ERR_UNSAFE_RATIO = 1044
+const ONE_1E18 = 1000000000000000000
+
+@storage
+struct Pool {
+    reserve0: uint256
+    reserve1: uint256
+}
+
+@message(0x8301)
+struct SetReserves {
+    reserve0: uint256
+    reserve1: uint256
+}
+
+type PoolMsg = SetReserves
+
+contract ClammSqrtPrice {
+    author: "Aetralis example"
+    description: "sqrt-price / geometric-mean price helper (Decimal18 sqrt) via Decimal18 + Ratio256 + isqrt; not full CL-AMM tick math"
+    version: "0.01.0"
+
+    storage: Pool
+    incomingMessages: PoolMsg
+
+    @store
+    func Pool.load() {
+        return Pool.fromChunk(contract.getData())
+    }
+
+    @store
+    func Pool.save(self) {
+        contract.setData(self.toChunk())
+    }
+
+    // Decimal18.div — floor(a * 1e18 / b).
+    @pure
+    func decDiv(a: uint256, b: uint256): uint256 {
+        return mulDiv(a, ONE_1E18, b)
+    }
+
+    // Price at 1e18 scale = reserve1 / reserve0 as a Decimal18.
+    @pure
+    func priceOf(reserve0: uint256, reserve1: uint256): uint256 {
+        return decDiv(reserve1, reserve0)
+    }
+
+    // sqrtPrice at 1e9 scale = isqrt(price1e18) where price1e18 = r1/r0 * 1e18.
+    // decDiv already produces the 1e18-scaled price, so isqrt of it gives the
+    // 1e9-scaled square root directly.
+    @pure
+    func sqrtPriceOf(reserve0: uint256, reserve1: uint256): uint256 {
+        return isqrt(decDiv(reserve1, reserve0))
+    }
+
+    // Ratio256.gtBounded cross-multiply compare (num/den ordering), safe only
+    // for operands < 2^128.
+    @pure
+    func ratioGtBounded(numA: uint256, denA: uint256, numC: uint256, denC: uint256): uint64 {
+        return (mulDiv(numA, denC, 1) > mulDiv(numC, denA, 1)) ? 1 : 0
+    }
+
+    @internal
+    func onInternalMessage(in: InMessage) {
+        const msg = lazy PoolMsg.fromSegment(in.body)
+        match (msg) {
+            SetReserves => {
+                var st = lazy Pool.load()
+                assert (msg.reserve0 > 0 && msg.reserve1 > 0) throw ERR_NO_LIQUIDITY
+                st.reserve0 = msg.reserve0
+                st.reserve1 = msg.reserve1
+                st.save()
+            }
+            else => {
+                assert (in.body.isEmpty()) throw ERR_BAD_MSG
+            }
+        }
+    }
+
+    // Storage-backed 1e18-scaled price.
+    @get
+    func price1e18(): uint256 {
+        const st = lazy Pool.load()
+        assert (st.reserve0 > 0) throw ERR_NO_LIQUIDITY
+        return decDiv(st.reserve1, st.reserve0)
+    }
+
+    // Storage-backed 1e9-scaled sqrtPrice.
+    @get
+    func sqrtPriceX1e9(): uint256 {
+        const st = lazy Pool.load()
+        assert (st.reserve0 > 0) throw ERR_NO_LIQUIDITY
+        return isqrt(decDiv(st.reserve1, st.reserve0))
+    }
+
+    // Round-trip: square the 1e9-scaled sqrtPrice back to a 1e18-scaled price.
+    @get
+    func priceBack1e18(): uint256 {
+        const st = lazy Pool.load()
+        assert (st.reserve0 > 0) throw ERR_NO_LIQUIDITY
+        const sp = isqrt(decDiv(st.reserve1, st.reserve0))
+        return mulDiv(sp, sp, 1)
+    }
+
+    // Pure 1e18-scaled price over explicit reserves — driven by the conformance
+    // test with an exact assertion at reserve sizes a uint64 pool could not hold.
+    // Guards a zero reserve0 (which would trap the divide) by returning 0.
+    @get
+    func priceOfArgs(reserve0: uint256, reserve1: uint256): uint256 {
+        const safeR0 = (reserve0 == 0) ? 1 : reserve0
+        const p = priceOf(safeR0, reserve1)
+        return (reserve0 == 0) ? 0 : p
+    }
+
+    // Pure 1e9-scaled sqrtPrice over explicit reserves. Guards a zero reserve0.
+    @get
+    func sqrtPriceOfArgs(reserve0: uint256, reserve1: uint256): uint256 {
+        const safeR0 = (reserve0 == 0) ? 1 : reserve0
+        const sp = sqrtPriceOf(safeR0, reserve1)
+        return (reserve0 == 0) ? 0 : sp
+    }
+
+    // Round-trip over explicit reserves: (sqrtPrice)^2 back to a 1e18 price.
+    // Guards a zero reserve0 (which would trap the divide) by returning 0.
+    @get
+    func priceRoundTripArgs(reserve0: uint256, reserve1: uint256): uint256 {
+        const safeR0 = (reserve0 == 0) ? 1 : reserve0
+        const sp = sqrtPriceOf(safeR0, reserve1)
+        const rt = mulDiv(sp, sp, 1)
+        return (reserve0 == 0) ? 0 : rt
+    }
+
+    // Compare two pool prices r1a/r0a vs r1c/r0c via cross-multiply, guarding
+    // each operand against the caller-supplied safety bound (2^128, which cannot
+    // be written as an integer literal since literals are OpPushU64-only, so it
+    // is passed in as a uint256 argument). Above this bound mulDiv(a, d, 1) can
+    // form a > uint256 product and trap.
+    @get
+    func priceGt(r0a: uint256, r1a: uint256, r0c: uint256, r1c: uint256, safeMax: uint256): uint64 {
+        assert (r1a < safeMax && r0c < safeMax) throw ERR_UNSAFE_RATIO
+        assert (r1c < safeMax && r0a < safeMax) throw ERR_UNSAFE_RATIO
+        return ratioGtBounded(r1a, r0a, r1c, r0c)
+    }
+}
