@@ -80,3 +80,41 @@ func MsgDisownAttachmentSigners(msg proto.Message) ([][]byte, error) {
 func MsgCreateSubdomainSigners(msg proto.Message) ([][]byte, error) {
 	return msgSignerFromAddressField(msg, "owner")
 }
+
+// MsgRenewNameSigners resolves the signer to the domain owner (ANS Phase C).
+func MsgRenewNameSigners(msg proto.Message) ([][]byte, error) {
+	return msgSignerFromAddressField(msg, "owner")
+}
+
+// MsgTransferNameSigners resolves the signer to the CURRENT owner (the party
+// giving the domain away), not the new owner -- matches keeper.TransferName's
+// requireOwnedName(msg.Owner, ...) check (ANS Phase C).
+func MsgTransferNameSigners(msg proto.Message) ([][]byte, error) {
+	return msgSignerFromAddressField(msg, "owner")
+}
+
+// MsgSetResolverSigners resolves the signer to the domain owner (ANS Phase C).
+func MsgSetResolverSigners(msg proto.Message) ([][]byte, error) {
+	return msgSignerFromAddressField(msg, "owner")
+}
+
+// MsgSetReverseRecordSigners resolves the signer to the domain owner (ANS Phase
+// C).
+func MsgSetReverseRecordSigners(msg proto.Message) ([][]byte, error) {
+	return msgSignerFromAddressField(msg, "owner")
+}
+
+// MsgReserveNameSigners resolves the signer to the governance authority.
+// ReserveName is a governance-gated action -- keeper.ReserveName's
+// requireAuthority(msg.Authority) call is the actual safety check; this signer
+// resolver only ensures the tx is signed by whatever address the message
+// claims as authority, exactly like MsgUpdatePriceTableSigners (ANS Phase C).
+func MsgReserveNameSigners(msg proto.Message) ([][]byte, error) {
+	return msgSignerFromAddressField(msg, "authority")
+}
+
+// MsgReleaseReservedNameSigners resolves the signer to the governance
+// authority, mirroring MsgReserveNameSigners (ANS Phase C).
+func MsgReleaseReservedNameSigners(msg proto.Message) ([][]byte, error) {
+	return msgSignerFromAddressField(msg, "authority")
+}

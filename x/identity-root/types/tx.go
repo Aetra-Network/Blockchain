@@ -146,6 +146,47 @@ type MsgCreateSubdomainResponse struct {
 	ExpiryHeight	uint64	`protobuf:"varint,2,opt,name=expiry_height,json=expiryHeight,proto3" json:"expiry_height,omitempty"`
 }
 
+// MsgRenewNameResponse is the wire response for MsgRenewName (request struct
+// lives in state.go).
+type MsgRenewNameResponse struct {
+	Name		string	`protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	ExpiryHeight	uint64	`protobuf:"varint,2,opt,name=expiry_height,json=expiryHeight,proto3" json:"expiry_height,omitempty"`
+}
+
+// MsgTransferNameResponse is the wire response for MsgTransferName (request
+// struct lives in state.go).
+type MsgTransferNameResponse struct {
+	Name	string	`protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Owner	string	`protobuf:"bytes,2,opt,name=owner,proto3" json:"owner,omitempty"`
+}
+
+// MsgSetResolverResponse is the wire response for MsgSetResolver (request
+// struct lives in state.go).
+type MsgSetResolverResponse struct {
+	Name		string	`protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	ResolverRoot	string	`protobuf:"bytes,2,opt,name=resolver_root,json=resolverRoot,proto3" json:"resolver_root,omitempty"`
+}
+
+// MsgSetReverseRecordResponse is the wire response for MsgSetReverseRecord
+// (request struct lives in state.go).
+type MsgSetReverseRecordResponse struct {
+	Address	string	`protobuf:"bytes,1,opt,name=address,proto3" json:"address,omitempty"`
+	Name	string	`protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+}
+
+// MsgReserveNameResponse is the wire response for MsgReserveName (request
+// struct lives in state.go).
+type MsgReserveNameResponse struct {
+	Name		string	`protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Authority	string	`protobuf:"bytes,2,opt,name=authority,proto3" json:"authority,omitempty"`
+}
+
+// MsgReleaseReservedNameResponse is the wire response for
+// MsgReleaseReservedName (request struct lives in state.go).
+type MsgReleaseReservedNameResponse struct {
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+}
+
 // PriceTiersFromMsg reconstructs the []PriceTier from the parallel arrays.
 func PriceTiersFromMsg(msg *MsgUpdatePriceTable) []PriceTier {
 	if msg == nil {
@@ -171,6 +212,12 @@ type MsgServer interface {
 	DetachDomain(context.Context, *MsgDetachDomain) (*MsgDetachDomainResponse, error)
 	DisownAttachment(context.Context, *MsgDisownAttachment) (*MsgDisownAttachmentResponse, error)
 	CreateSubdomain(context.Context, *MsgCreateSubdomain) (*MsgCreateSubdomainResponse, error)
+	RenewName(context.Context, *MsgRenewName) (*MsgRenewNameResponse, error)
+	TransferName(context.Context, *MsgTransferName) (*MsgTransferNameResponse, error)
+	SetResolver(context.Context, *MsgSetResolver) (*MsgSetResolverResponse, error)
+	SetReverseRecord(context.Context, *MsgSetReverseRecord) (*MsgSetReverseRecordResponse, error)
+	ReserveName(context.Context, *MsgReserveName) (*MsgReserveNameResponse, error)
+	ReleaseReservedName(context.Context, *MsgReleaseReservedName) (*MsgReleaseReservedNameResponse, error)
 }
 
 type UnimplementedMsgServer struct{}
@@ -199,6 +246,24 @@ func (UnimplementedMsgServer) DisownAttachment(context.Context, *MsgDisownAttach
 func (UnimplementedMsgServer) CreateSubdomain(context.Context, *MsgCreateSubdomain) (*MsgCreateSubdomainResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method CreateSubdomain not implemented")
 }
+func (UnimplementedMsgServer) RenewName(context.Context, *MsgRenewName) (*MsgRenewNameResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RenewName not implemented")
+}
+func (UnimplementedMsgServer) TransferName(context.Context, *MsgTransferName) (*MsgTransferNameResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method TransferName not implemented")
+}
+func (UnimplementedMsgServer) SetResolver(context.Context, *MsgSetResolver) (*MsgSetResolverResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SetResolver not implemented")
+}
+func (UnimplementedMsgServer) SetReverseRecord(context.Context, *MsgSetReverseRecord) (*MsgSetReverseRecordResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SetReverseRecord not implemented")
+}
+func (UnimplementedMsgServer) ReserveName(context.Context, *MsgReserveName) (*MsgReserveNameResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ReserveName not implemented")
+}
+func (UnimplementedMsgServer) ReleaseReservedName(context.Context, *MsgReleaseReservedName) (*MsgReleaseReservedNameResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ReleaseReservedName not implemented")
+}
 
 func RegisterMsgServer(s grpc.Server, srv MsgServer) { s.RegisterService(&Msg_serviceDesc, srv) }
 
@@ -214,6 +279,12 @@ var Msg_serviceDesc = grpcgo.ServiceDesc{
 		{MethodName: "DetachDomain", Handler: _Msg_DetachDomain_Handler},
 		{MethodName: "DisownAttachment", Handler: _Msg_DisownAttachment_Handler},
 		{MethodName: "CreateSubdomain", Handler: _Msg_CreateSubdomain_Handler},
+		{MethodName: "RenewName", Handler: _Msg_RenewName_Handler},
+		{MethodName: "TransferName", Handler: _Msg_TransferName_Handler},
+		{MethodName: "SetResolver", Handler: _Msg_SetResolver_Handler},
+		{MethodName: "SetReverseRecord", Handler: _Msg_SetReverseRecord_Handler},
+		{MethodName: "ReserveName", Handler: _Msg_ReserveName_Handler},
+		{MethodName: "ReleaseReservedName", Handler: _Msg_ReleaseReservedName_Handler},
 	},
 	Streams:	[]grpcgo.StreamDesc{},
 	Metadata:	"l1/identityroot/v1/tx.proto",
@@ -335,6 +406,96 @@ func _Msg_CreateSubdomain_Handler(srv interface{}, ctx context.Context, dec func
 	info := &grpcgo.UnaryServerInfo{Server: srv, FullMethod: "/l1.identityroot.v1.Msg/CreateSubdomain"}
 	handler := func(ctx context.Context, request interface{}) (interface{}, error) {
 		return srv.(MsgServer).CreateSubdomain(ctx, request.(*MsgCreateSubdomain))
+	}
+	return interceptor(ctx, req, info, handler)
+}
+
+func _Msg_RenewName_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpcgo.UnaryServerInterceptor) (interface{}, error) {
+	req := new(MsgRenewName)
+	if err := dec(req); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(MsgServer).RenewName(ctx, req)
+	}
+	info := &grpcgo.UnaryServerInfo{Server: srv, FullMethod: "/l1.identityroot.v1.Msg/RenewName"}
+	handler := func(ctx context.Context, request interface{}) (interface{}, error) {
+		return srv.(MsgServer).RenewName(ctx, request.(*MsgRenewName))
+	}
+	return interceptor(ctx, req, info, handler)
+}
+
+func _Msg_TransferName_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpcgo.UnaryServerInterceptor) (interface{}, error) {
+	req := new(MsgTransferName)
+	if err := dec(req); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(MsgServer).TransferName(ctx, req)
+	}
+	info := &grpcgo.UnaryServerInfo{Server: srv, FullMethod: "/l1.identityroot.v1.Msg/TransferName"}
+	handler := func(ctx context.Context, request interface{}) (interface{}, error) {
+		return srv.(MsgServer).TransferName(ctx, request.(*MsgTransferName))
+	}
+	return interceptor(ctx, req, info, handler)
+}
+
+func _Msg_SetResolver_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpcgo.UnaryServerInterceptor) (interface{}, error) {
+	req := new(MsgSetResolver)
+	if err := dec(req); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(MsgServer).SetResolver(ctx, req)
+	}
+	info := &grpcgo.UnaryServerInfo{Server: srv, FullMethod: "/l1.identityroot.v1.Msg/SetResolver"}
+	handler := func(ctx context.Context, request interface{}) (interface{}, error) {
+		return srv.(MsgServer).SetResolver(ctx, request.(*MsgSetResolver))
+	}
+	return interceptor(ctx, req, info, handler)
+}
+
+func _Msg_SetReverseRecord_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpcgo.UnaryServerInterceptor) (interface{}, error) {
+	req := new(MsgSetReverseRecord)
+	if err := dec(req); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(MsgServer).SetReverseRecord(ctx, req)
+	}
+	info := &grpcgo.UnaryServerInfo{Server: srv, FullMethod: "/l1.identityroot.v1.Msg/SetReverseRecord"}
+	handler := func(ctx context.Context, request interface{}) (interface{}, error) {
+		return srv.(MsgServer).SetReverseRecord(ctx, request.(*MsgSetReverseRecord))
+	}
+	return interceptor(ctx, req, info, handler)
+}
+
+func _Msg_ReserveName_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpcgo.UnaryServerInterceptor) (interface{}, error) {
+	req := new(MsgReserveName)
+	if err := dec(req); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(MsgServer).ReserveName(ctx, req)
+	}
+	info := &grpcgo.UnaryServerInfo{Server: srv, FullMethod: "/l1.identityroot.v1.Msg/ReserveName"}
+	handler := func(ctx context.Context, request interface{}) (interface{}, error) {
+		return srv.(MsgServer).ReserveName(ctx, request.(*MsgReserveName))
+	}
+	return interceptor(ctx, req, info, handler)
+}
+
+func _Msg_ReleaseReservedName_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpcgo.UnaryServerInterceptor) (interface{}, error) {
+	req := new(MsgReleaseReservedName)
+	if err := dec(req); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(MsgServer).ReleaseReservedName(ctx, req)
+	}
+	info := &grpcgo.UnaryServerInfo{Server: srv, FullMethod: "/l1.identityroot.v1.Msg/ReleaseReservedName"}
+	handler := func(ctx context.Context, request interface{}) (interface{}, error) {
+		return srv.(MsgServer).ReleaseReservedName(ctx, request.(*MsgReleaseReservedName))
 	}
 	return interceptor(ctx, req, info, handler)
 }
@@ -487,6 +648,97 @@ func buildIdentityRootTxFileDescriptor() []byte {
 				txField("target", 2, str),
 			},
 		},
+		{
+			Name: txDescriptorString("MsgRenewName"),
+			Field: []*descriptorpb.FieldDescriptorProto{
+				txField("owner", 1, str),
+				txField("name", 2, str),
+				txField("height", 3, u64),
+			},
+		},
+		{
+			Name: txDescriptorString("MsgRenewNameResponse"),
+			Field: []*descriptorpb.FieldDescriptorProto{
+				txField("name", 1, str),
+				txField("expiry_height", 2, u64),
+			},
+		},
+		{
+			Name: txDescriptorString("MsgTransferName"),
+			Field: []*descriptorpb.FieldDescriptorProto{
+				txField("owner", 1, str),
+				txField("name", 2, str),
+				txField("new_owner", 3, str),
+				txField("height", 4, u64),
+			},
+		},
+		{
+			Name: txDescriptorString("MsgTransferNameResponse"),
+			Field: []*descriptorpb.FieldDescriptorProto{
+				txField("name", 1, str),
+				txField("owner", 2, str),
+			},
+		},
+		{
+			Name: txDescriptorString("MsgSetResolver"),
+			Field: []*descriptorpb.FieldDescriptorProto{
+				txField("owner", 1, str),
+				txField("name", 2, str),
+				txField("resolver_root", 3, str),
+				txField("height", 4, u64),
+			},
+		},
+		{
+			Name: txDescriptorString("MsgSetResolverResponse"),
+			Field: []*descriptorpb.FieldDescriptorProto{
+				txField("name", 1, str),
+				txField("resolver_root", 2, str),
+			},
+		},
+		{
+			Name: txDescriptorString("MsgSetReverseRecord"),
+			Field: []*descriptorpb.FieldDescriptorProto{
+				txField("owner", 1, str),
+				txField("address", 2, str),
+				txField("name", 3, str),
+				txField("height", 4, u64),
+			},
+		},
+		{
+			Name: txDescriptorString("MsgSetReverseRecordResponse"),
+			Field: []*descriptorpb.FieldDescriptorProto{
+				txField("address", 1, str),
+				txField("name", 2, str),
+			},
+		},
+		{
+			Name: txDescriptorString("MsgReserveName"),
+			Field: []*descriptorpb.FieldDescriptorProto{
+				txField("authority", 1, str),
+				txField("name", 2, str),
+				txField("reason", 3, str),
+			},
+		},
+		{
+			Name: txDescriptorString("MsgReserveNameResponse"),
+			Field: []*descriptorpb.FieldDescriptorProto{
+				txField("name", 1, str),
+				txField("authority", 2, str),
+			},
+		},
+		{
+			Name: txDescriptorString("MsgReleaseReservedName"),
+			Field: []*descriptorpb.FieldDescriptorProto{
+				txField("authority", 1, str),
+				txField("name", 2, str),
+			},
+		},
+		{
+			Name: txDescriptorString("MsgReleaseReservedNameResponse"),
+			Field: []*descriptorpb.FieldDescriptorProto{
+				txField("name", 1, str),
+			},
+		},
 	}
 	fd := &descriptorpb.FileDescriptorProto{
 		Name:		txDescriptorString("l1/identityroot/v1/tx.proto"),
@@ -535,6 +787,36 @@ func buildIdentityRootTxFileDescriptor() []byte {
 					Name:		txDescriptorString("CreateSubdomain"),
 					InputType:	txDescriptorString(".l1.identityroot.v1.MsgCreateSubdomain"),
 					OutputType:	txDescriptorString(".l1.identityroot.v1.MsgCreateSubdomainResponse"),
+				},
+				{
+					Name:		txDescriptorString("RenewName"),
+					InputType:	txDescriptorString(".l1.identityroot.v1.MsgRenewName"),
+					OutputType:	txDescriptorString(".l1.identityroot.v1.MsgRenewNameResponse"),
+				},
+				{
+					Name:		txDescriptorString("TransferName"),
+					InputType:	txDescriptorString(".l1.identityroot.v1.MsgTransferName"),
+					OutputType:	txDescriptorString(".l1.identityroot.v1.MsgTransferNameResponse"),
+				},
+				{
+					Name:		txDescriptorString("SetResolver"),
+					InputType:	txDescriptorString(".l1.identityroot.v1.MsgSetResolver"),
+					OutputType:	txDescriptorString(".l1.identityroot.v1.MsgSetResolverResponse"),
+				},
+				{
+					Name:		txDescriptorString("SetReverseRecord"),
+					InputType:	txDescriptorString(".l1.identityroot.v1.MsgSetReverseRecord"),
+					OutputType:	txDescriptorString(".l1.identityroot.v1.MsgSetReverseRecordResponse"),
+				},
+				{
+					Name:		txDescriptorString("ReserveName"),
+					InputType:	txDescriptorString(".l1.identityroot.v1.MsgReserveName"),
+					OutputType:	txDescriptorString(".l1.identityroot.v1.MsgReserveNameResponse"),
+				},
+				{
+					Name:		txDescriptorString("ReleaseReservedName"),
+					InputType:	txDescriptorString(".l1.identityroot.v1.MsgReleaseReservedName"),
+					OutputType:	txDescriptorString(".l1.identityroot.v1.MsgReleaseReservedNameResponse"),
 				},
 			},
 			Options: &descriptorpb.ServiceOptions{
@@ -603,6 +885,18 @@ func registerTxTypes() {
 	gogoproto.RegisterType((*MsgDisownAttachmentResponse)(nil), "l1.identityroot.v1.MsgDisownAttachmentResponse")
 	gogoproto.RegisterType((*MsgCreateSubdomain)(nil), "l1.identityroot.v1.MsgCreateSubdomain")
 	gogoproto.RegisterType((*MsgCreateSubdomainResponse)(nil), "l1.identityroot.v1.MsgCreateSubdomainResponse")
+	gogoproto.RegisterType((*MsgRenewName)(nil), "l1.identityroot.v1.MsgRenewName")
+	gogoproto.RegisterType((*MsgRenewNameResponse)(nil), "l1.identityroot.v1.MsgRenewNameResponse")
+	gogoproto.RegisterType((*MsgTransferName)(nil), "l1.identityroot.v1.MsgTransferName")
+	gogoproto.RegisterType((*MsgTransferNameResponse)(nil), "l1.identityroot.v1.MsgTransferNameResponse")
+	gogoproto.RegisterType((*MsgSetResolver)(nil), "l1.identityroot.v1.MsgSetResolver")
+	gogoproto.RegisterType((*MsgSetResolverResponse)(nil), "l1.identityroot.v1.MsgSetResolverResponse")
+	gogoproto.RegisterType((*MsgSetReverseRecord)(nil), "l1.identityroot.v1.MsgSetReverseRecord")
+	gogoproto.RegisterType((*MsgSetReverseRecordResponse)(nil), "l1.identityroot.v1.MsgSetReverseRecordResponse")
+	gogoproto.RegisterType((*MsgReserveName)(nil), "l1.identityroot.v1.MsgReserveName")
+	gogoproto.RegisterType((*MsgReserveNameResponse)(nil), "l1.identityroot.v1.MsgReserveNameResponse")
+	gogoproto.RegisterType((*MsgReleaseReservedName)(nil), "l1.identityroot.v1.MsgReleaseReservedName")
+	gogoproto.RegisterType((*MsgReleaseReservedNameResponse)(nil), "l1.identityroot.v1.MsgReleaseReservedNameResponse")
 }
 
 func (m *MsgSendToNameCollection) Reset()		{ *m = MsgSendToNameCollection{} }
@@ -621,6 +915,18 @@ func (m *MsgDisownAttachment) Reset()			{ *m = MsgDisownAttachment{} }
 func (m *MsgDisownAttachmentResponse) Reset()		{ *m = MsgDisownAttachmentResponse{} }
 func (m *MsgCreateSubdomain) Reset()			{ *m = MsgCreateSubdomain{} }
 func (m *MsgCreateSubdomainResponse) Reset()		{ *m = MsgCreateSubdomainResponse{} }
+func (m *MsgRenewName) Reset()				{ *m = MsgRenewName{} }
+func (m *MsgRenewNameResponse) Reset()			{ *m = MsgRenewNameResponse{} }
+func (m *MsgTransferName) Reset()			{ *m = MsgTransferName{} }
+func (m *MsgTransferNameResponse) Reset()		{ *m = MsgTransferNameResponse{} }
+func (m *MsgSetResolver) Reset()			{ *m = MsgSetResolver{} }
+func (m *MsgSetResolverResponse) Reset()		{ *m = MsgSetResolverResponse{} }
+func (m *MsgSetReverseRecord) Reset()			{ *m = MsgSetReverseRecord{} }
+func (m *MsgSetReverseRecordResponse) Reset()		{ *m = MsgSetReverseRecordResponse{} }
+func (m *MsgReserveName) Reset()			{ *m = MsgReserveName{} }
+func (m *MsgReserveNameResponse) Reset()		{ *m = MsgReserveNameResponse{} }
+func (m *MsgReleaseReservedName) Reset()		{ *m = MsgReleaseReservedName{} }
+func (m *MsgReleaseReservedNameResponse) Reset()	{ *m = MsgReleaseReservedNameResponse{} }
 
 func (m *MsgSendToNameCollection) String() string		{ return gogoproto.CompactTextString(m) }
 func (m *MsgSendToNameCollectionResponse) String() string	{ return gogoproto.CompactTextString(m) }
@@ -638,6 +944,18 @@ func (m *MsgDisownAttachment) String() string			{ return gogoproto.CompactTextSt
 func (m *MsgDisownAttachmentResponse) String() string		{ return gogoproto.CompactTextString(m) }
 func (m *MsgCreateSubdomain) String() string			{ return gogoproto.CompactTextString(m) }
 func (m *MsgCreateSubdomainResponse) String() string		{ return gogoproto.CompactTextString(m) }
+func (m *MsgRenewName) String() string				{ return gogoproto.CompactTextString(m) }
+func (m *MsgRenewNameResponse) String() string			{ return gogoproto.CompactTextString(m) }
+func (m *MsgTransferName) String() string			{ return gogoproto.CompactTextString(m) }
+func (m *MsgTransferNameResponse) String() string		{ return gogoproto.CompactTextString(m) }
+func (m *MsgSetResolver) String() string			{ return gogoproto.CompactTextString(m) }
+func (m *MsgSetResolverResponse) String() string		{ return gogoproto.CompactTextString(m) }
+func (m *MsgSetReverseRecord) String() string			{ return gogoproto.CompactTextString(m) }
+func (m *MsgSetReverseRecordResponse) String() string		{ return gogoproto.CompactTextString(m) }
+func (m *MsgReserveName) String() string			{ return gogoproto.CompactTextString(m) }
+func (m *MsgReserveNameResponse) String() string		{ return gogoproto.CompactTextString(m) }
+func (m *MsgReleaseReservedName) String() string		{ return gogoproto.CompactTextString(m) }
+func (m *MsgReleaseReservedNameResponse) String() string	{ return gogoproto.CompactTextString(m) }
 
 func (*MsgSendToNameCollection) ProtoMessage()		{}
 func (*MsgSendToNameCollectionResponse) ProtoMessage()	{}
@@ -655,6 +973,18 @@ func (*MsgDisownAttachment) ProtoMessage()		{}
 func (*MsgDisownAttachmentResponse) ProtoMessage()	{}
 func (*MsgCreateSubdomain) ProtoMessage()		{}
 func (*MsgCreateSubdomainResponse) ProtoMessage()	{}
+func (*MsgRenewName) ProtoMessage()			{}
+func (*MsgRenewNameResponse) ProtoMessage()		{}
+func (*MsgTransferName) ProtoMessage()			{}
+func (*MsgTransferNameResponse) ProtoMessage()		{}
+func (*MsgSetResolver) ProtoMessage()			{}
+func (*MsgSetResolverResponse) ProtoMessage()		{}
+func (*MsgSetReverseRecord) ProtoMessage()		{}
+func (*MsgSetReverseRecordResponse) ProtoMessage()	{}
+func (*MsgReserveName) ProtoMessage()			{}
+func (*MsgReserveNameResponse) ProtoMessage()		{}
+func (*MsgReleaseReservedName) ProtoMessage()		{}
+func (*MsgReleaseReservedNameResponse) ProtoMessage()	{}
 
 // Descriptor returns the gzipped file descriptor and this message's index in the
 // file's message list. The v0.54.3 tx decoder's RejectUnknownFields walker calls
@@ -710,4 +1040,40 @@ func (*MsgDisownAttachment) Descriptor() ([]byte, []int) {
 }
 func (*MsgDisownAttachmentResponse) Descriptor() ([]byte, []int) {
 	return fileDescriptorIdentityRootTx, []int{15}
+}
+func (*MsgRenewName) Descriptor() ([]byte, []int) {
+	return fileDescriptorIdentityRootTx, []int{16}
+}
+func (*MsgRenewNameResponse) Descriptor() ([]byte, []int) {
+	return fileDescriptorIdentityRootTx, []int{17}
+}
+func (*MsgTransferName) Descriptor() ([]byte, []int) {
+	return fileDescriptorIdentityRootTx, []int{18}
+}
+func (*MsgTransferNameResponse) Descriptor() ([]byte, []int) {
+	return fileDescriptorIdentityRootTx, []int{19}
+}
+func (*MsgSetResolver) Descriptor() ([]byte, []int) {
+	return fileDescriptorIdentityRootTx, []int{20}
+}
+func (*MsgSetResolverResponse) Descriptor() ([]byte, []int) {
+	return fileDescriptorIdentityRootTx, []int{21}
+}
+func (*MsgSetReverseRecord) Descriptor() ([]byte, []int) {
+	return fileDescriptorIdentityRootTx, []int{22}
+}
+func (*MsgSetReverseRecordResponse) Descriptor() ([]byte, []int) {
+	return fileDescriptorIdentityRootTx, []int{23}
+}
+func (*MsgReserveName) Descriptor() ([]byte, []int) {
+	return fileDescriptorIdentityRootTx, []int{24}
+}
+func (*MsgReserveNameResponse) Descriptor() ([]byte, []int) {
+	return fileDescriptorIdentityRootTx, []int{25}
+}
+func (*MsgReleaseReservedName) Descriptor() ([]byte, []int) {
+	return fileDescriptorIdentityRootTx, []int{26}
+}
+func (*MsgReleaseReservedNameResponse) Descriptor() ([]byte, []int) {
+	return fileDescriptorIdentityRootTx, []int{27}
 }

@@ -48,6 +48,12 @@ type Keeper struct {
 	written		hotRecords
 	writtenResidual	[]byte
 	bankKeeper	BankKeeper
+	// zoneResolver resolves the AEZ zone of a registered name (see
+	// x/identity-root/keeper/zone.go's NameZoneResolver and WithZoneResolver).
+	// A nil value is the default for every existing test keeper and degrades
+	// NameZone to Resolved=false rather than failing, the same rule
+	// x/native-account's zoneResolver follows.
+	zoneResolver	NameZoneResolver
 	runtimeCtx	context.Context
 	// mu guards genesis (and the written baseline) against the concurrent
 	// gRPC/REST query goroutines AND the Simulate RPC path racing the
@@ -425,7 +431,10 @@ func (k *Keeper) TransferName(msg types.MsgTransferName) (types.NameRecord, erro
 	if err != nil {
 		return types.NameRecord{}, err
 	}
-	binding := prepareBinding(record.Name, msg.NewOwner, msg.NewNFTBinding, k.genesis.IdentityParams)
+	// MsgTransferName carries no NewNFTBinding field on the wire (see its doc
+	// comment in types/state.go); prepareBinding degrades an empty reference
+	// safely and is a no-op while NFTBindingEnabled stays false (the default).
+	binding := prepareBinding(record.Name, msg.NewOwner, types.IdentityNFTBindingReference{}, k.genesis.IdentityParams)
 	record.Owner = msg.NewOwner
 	record.NFTBinding = binding
 	record.UpdatedHeight = msg.Height

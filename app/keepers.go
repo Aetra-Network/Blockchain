@@ -267,7 +267,14 @@ func (app *L1App) initKeepers(
 	// escrows via its own bank module account (SendCoinsFromAccountToModule /
 	// refunds / SendCoinsFromModuleToModule treasury sweep). app.BankKeeper
 	// satisfies the narrow identity-root BankKeeper interface.
-	app.IdentityRootKeeper = persistentKeepers.IdentityRootKeeper.WithBankKeeper(app.BankKeeper)
+	//
+	// WithZoneResolver wires each registered name's AEZ zone (Task: give ANS
+	// names a genuine, computed AEZ zone) through the same narrow structural
+	// interface used for app.FeesKeeper below (x/identity-root imports x/aez
+	// not at all). app.AEZKeeper is already assigned above.
+	app.IdentityRootKeeper = persistentKeepers.IdentityRootKeeper.
+		WithBankKeeper(app.BankKeeper).
+		WithZoneResolver(&app.AEZKeeper)
 	app.BridgeHubKeeper = persistentKeepers.BridgeHubKeeper
 	app.CrossChainRegistryKeeper = persistentKeepers.CrossChainRegistryKeeper
 	app.ShardingCoordinatorKeeper = persistentKeepers.ShardingCoordinatorKeeper

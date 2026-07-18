@@ -120,3 +120,44 @@ func (k Keeper) ZoneOfAddress(ctx context.Context, address string) (uint32, erro
 	}
 	return uint32(resolution.Zone), nil
 }
+
+// ZoneOfName resolves the home zone of an ANS name and returns it as a plain
+// uint32. Mirrors ZoneOfAddress in every respect that matters:
+//
+//   - The signature names no x/aez type, so a consumer (x/identity-root)
+//     declares its own narrow interface of this exact shape and imports x/aez
+//     not at all -- see x/identity-root/keeper/zone.go's NameZoneResolver.
+//   - The caller MUST pass an already-normalized FQDN (identityroottypes.
+//     NormalizeName). CanonicalEntityID's EntityKindName branch documents why:
+//     ComputeBucket hashes the string as-is, so an un-normalized name would
+//     bucket differently from the same name in its canonical form (I-6's name
+//     analogue).
+func (k Keeper) ZoneOfName(ctx context.Context, name string) (uint32, error) {
+	resolution, err := k.ZoneOfEntity(ctx, types.EntityKindName, name)
+	if err != nil {
+		return uint32(types.ZoneIDCore), err
+	}
+	return uint32(resolution.Zone), nil
+}
+
+// BucketOfName returns the canonical AEZ bucket (0..255) a name's canonical
+// entity id hashes into, via the exact same CanonicalEntityID + ComputeBucket
+// construction every other entity kind uses -- it is what
+// x/aez/types/bucket_test.go's "name/alice.aet" golden vector (bucket 220)
+// freezes.
+//
+// This is DELIBERATELY NOT ZoneOfName/ZoneOfEntity: NamespaceName is
+// Core-pinned (I-9, types.CorePinned), so ResolveZone short-circuits BEFORE
+// ComputeBucket is ever entered for a name -- ZoneOfName always answers Core,
+// and its ZoneResolution.Bucket is the zero value, never the real hash.
+// BucketOfName exists precisely to still answer "which of the 256 buckets
+// would this name occupy", the same query x/aez answers for every other
+// namespace, without pretending that answer changes the zone: it never can,
+// by design, for names.
+func (k Keeper) BucketOfName(ctx context.Context, name string) (uint32, error) {
+	ns, entityID, err := types.CanonicalEntityID(types.EntityKindName, name)
+	if err != nil {
+		return 0, err
+	}
+	return uint32(types.ComputeBucket(ns, entityID)), nil
+}

@@ -176,32 +176,48 @@ type MsgRegisterName struct {
 	NFTBinding	IdentityNFTBindingReference
 }
 
+// MsgRenewName (ANS Phase C) is BOTH the keeper input and the wire type exposed
+// on the live Msg server, following the MsgCreateSubdomain convention: flat
+// scalar fields with protobuf struct tags, no nested messages. Field NUMBERS
+// must match tx.go's descriptor.
 type MsgRenewName struct {
-	Owner	string
-	Name	string
-	Height	uint64
+	Owner	string	`protobuf:"bytes,1,opt,name=owner,proto3" json:"owner,omitempty"`
+	Name	string	`protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	Height	uint64	`protobuf:"varint,3,opt,name=height,proto3" json:"height,omitempty"`
 }
 
+// MsgTransferName (ANS Phase C) is BOTH the keeper input and the wire type. It
+// carries NO NewNFTBinding field (unlike the pre-wiring keeper-only shape this
+// type used to have): exactly as MsgCreateSubdomain's doc comment explains for
+// its own dropped NFTBinding field, gogoproto's table (un)marshaler panics on an
+// untagged nested-message struct field, and a tagged nested message would need
+// its own descriptor this hand-rolled tree has no toolchain to produce. Since
+// NFTBindingEnabled defaults false (prepareBinding ignores the reference
+// entirely while disabled) and no existing caller ever set it, dropping it here
+// changes no observable behavior today; a future NFTBindingEnabled=true
+// deployment would need a dedicated follow-up, same as CreateSubdomain already
+// does. Field NUMBERS must match tx.go's descriptor.
 type MsgTransferName struct {
-	Owner		string
-	Name		string
-	NewOwner	string
-	Height		uint64
-	NewNFTBinding	IdentityNFTBindingReference
+	Owner		string	`protobuf:"bytes,1,opt,name=owner,proto3" json:"owner,omitempty"`
+	Name		string	`protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	NewOwner	string	`protobuf:"bytes,3,opt,name=new_owner,json=newOwner,proto3" json:"new_owner,omitempty"`
+	Height		uint64	`protobuf:"varint,4,opt,name=height,proto3" json:"height,omitempty"`
 }
 
+// MsgSetResolver (ANS Phase C) is BOTH the keeper input and the wire type.
 type MsgSetResolver struct {
-	Owner		string
-	Name		string
-	ResolverRoot	string
-	Height		uint64
+	Owner		string	`protobuf:"bytes,1,opt,name=owner,proto3" json:"owner,omitempty"`
+	Name		string	`protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	ResolverRoot	string	`protobuf:"bytes,3,opt,name=resolver_root,json=resolverRoot,proto3" json:"resolver_root,omitempty"`
+	Height		uint64	`protobuf:"varint,4,opt,name=height,proto3" json:"height,omitempty"`
 }
 
+// MsgSetReverseRecord (ANS Phase C) is BOTH the keeper input and the wire type.
 type MsgSetReverseRecord struct {
-	Owner	string
-	Address	string
-	Name	string
-	Height	uint64
+	Owner	string	`protobuf:"bytes,1,opt,name=owner,proto3" json:"owner,omitempty"`
+	Address	string	`protobuf:"bytes,2,opt,name=address,proto3" json:"address,omitempty"`
+	Name	string	`protobuf:"bytes,3,opt,name=name,proto3" json:"name,omitempty"`
+	Height	uint64	`protobuf:"varint,4,opt,name=height,proto3" json:"height,omitempty"`
 }
 
 // MsgCreateSubdomain is BOTH the keeper input and (ANS Phase B) the wire type
@@ -223,15 +239,22 @@ type MsgCreateSubdomain struct {
 	SubdomainPolicy	string	`protobuf:"bytes,7,opt,name=subdomain_policy,json=subdomainPolicy,proto3" json:"subdomain_policy,omitempty"`
 }
 
+// MsgReserveName (ANS Phase C) is BOTH the keeper input and the wire type. It is
+// governance-gated: the keeper's requireAuthority check (see keeper.go's
+// ReserveName) already enforces Authority == the module's configured governance
+// authority, so the wire signer resolving to "authority" is the safety
+// mechanism, not an open user-facing action -- mirrors MsgUpdatePriceTable.
 type MsgReserveName struct {
-	Authority	string
-	Name		string
-	Reason		string
+	Authority	string	`protobuf:"bytes,1,opt,name=authority,proto3" json:"authority,omitempty"`
+	Name		string	`protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	Reason		string	`protobuf:"bytes,3,opt,name=reason,proto3" json:"reason,omitempty"`
 }
 
+// MsgReleaseReservedName (ANS Phase C) is BOTH the keeper input and the wire
+// type. Governance-gated exactly like MsgReserveName above.
 type MsgReleaseReservedName struct {
-	Authority	string
-	Name		string
+	Authority	string	`protobuf:"bytes,1,opt,name=authority,proto3" json:"authority,omitempty"`
+	Name		string	`protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
 }
 
 func DefaultIdentityRootParams() IdentityRootParams {

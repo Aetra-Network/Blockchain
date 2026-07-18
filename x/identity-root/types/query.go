@@ -141,6 +141,35 @@ type QuerySubdomainsResponse struct {
 	Names []string `protobuf:"bytes,1,rep,name=names,proto3" json:"names,omitempty"`
 }
 
+// QueryNameZoneRequest/Response expose the AEZ zone/bucket a name's canonical
+// entity id resolves to (x/aez EntityKindName), computed on-demand rather than
+// stored on NameRecord. Name need not already be registered -- it only needs
+// to normalize -- since both values are a pure function of the normalized
+// FQDN. Zone is NOT routing-table-dependent (NamespaceName is Core-pinned,
+// see QueryNameZoneResponse.Zone below); only Bucket is a real hash
+// computation, and even it does not consult the routing table.
+type QueryNameZoneRequest struct {
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+}
+type QueryNameZoneResponse struct {
+	// Resolved is false when no AEZ zone resolver is wired (x/aez absent or
+	// disabled); Zone and Bucket are meaningless in that case. This mirrors
+	// x/native-account/keeper.AccountZone's Resolved field for the identical
+	// reason: 0 must never be mistaken for "computed and it's zone/bucket 0".
+	Resolved	bool	`protobuf:"varint,1,opt,name=resolved,proto3" json:"resolved,omitempty"`
+	// Zone is the name's ACTUAL AEZ zone. It is unconditionally the Core Zone
+	// (0) for every name: x/aez's NamespaceName is Core-pinned (I-9, "the
+	// Core Zone owns the whole registry"), so this can never change under any
+	// routing-table update -- see x/identity-root/keeper/zone.go's NameZone
+	// doc for the full explanation and the x/aez test that freezes it.
+	Zone	uint32	`protobuf:"varint,2,opt,name=zone,proto3" json:"zone,omitempty"`
+	// Bucket is the canonical AEZ bucket (0..255) the name's entity id hashes
+	// into -- the SAME construction x/aez/types/bucket_test.go's golden
+	// vector freezes at 220 for "alice.aet" -- even though, per Zone above,
+	// this bucket is never actually consulted for routing.
+	Bucket	uint32	`protobuf:"varint,3,opt,name=bucket,proto3" json:"bucket,omitempty"`
+}
+
 type QueryServer interface {
 	CollectionParams(context.Context, *QueryCollectionParamsRequest) (*QueryCollectionParamsResponse, error)
 	CollectionBalance(context.Context, *QueryCollectionBalanceRequest) (*QueryCollectionBalanceResponse, error)
@@ -152,6 +181,7 @@ type QueryServer interface {
 	ResolveName(context.Context, *QueryResolveNameRequest) (*QueryResolveNameResponse, error)
 	ReverseRecord(context.Context, *QueryReverseRecordRequest) (*QueryReverseRecordResponse, error)
 	Subdomains(context.Context, *QuerySubdomainsRequest) (*QuerySubdomainsResponse, error)
+	NameZone(context.Context, *QueryNameZoneRequest) (*QueryNameZoneResponse, error)
 }
 
 func RegisterQueryServer(s grpc.Server, srv QueryServer) {
@@ -194,6 +224,9 @@ var Query_serviceDesc = grpcgo.ServiceDesc{
 		queryMethodDesc("Subdomains", queryHandler("Subdomains", func() interface{} { return new(QuerySubdomainsRequest) }, func(ctx context.Context, srv interface{}, req interface{}) (interface{}, error) {
 			return srv.(QueryServer).Subdomains(ctx, req.(*QuerySubdomainsRequest))
 		})),
+		queryMethodDesc("NameZone", queryHandler("NameZone", func() interface{} { return new(QueryNameZoneRequest) }, func(ctx context.Context, srv interface{}, req interface{}) (interface{}, error) {
+			return srv.(QueryServer).NameZone(ctx, req.(*QueryNameZoneRequest))
+		})),
 	},
 	Metadata:	"l1/identityroot/v1/query.proto",
 }
@@ -232,6 +265,7 @@ func init() {
 			"QueryResolveNameRequest", "QueryResolveNameResponse",
 			"QueryReverseRecordRequest", "QueryReverseRecordResponse",
 			"QuerySubdomainsRequest", "QuerySubdomainsResponse",
+			"QueryNameZoneRequest", "QueryNameZoneResponse",
 		},
 		[][3]string{
 			{"CollectionParams", "QueryCollectionParamsRequest", "QueryCollectionParamsResponse"},
@@ -244,6 +278,7 @@ func init() {
 			{"ResolveName", "QueryResolveNameRequest", "QueryResolveNameResponse"},
 			{"ReverseRecord", "QueryReverseRecordRequest", "QueryReverseRecordResponse"},
 			{"Subdomains", "QuerySubdomainsRequest", "QuerySubdomainsResponse"},
+			{"NameZone", "QueryNameZoneRequest", "QueryNameZoneResponse"},
 		}))
 }
 
@@ -301,6 +336,8 @@ func registerQueryTypes() {
 		{(*QueryReverseRecordResponse)(nil), "l1.identityroot.v1.QueryReverseRecordResponse"},
 		{(*QuerySubdomainsRequest)(nil), "l1.identityroot.v1.QuerySubdomainsRequest"},
 		{(*QuerySubdomainsResponse)(nil), "l1.identityroot.v1.QuerySubdomainsResponse"},
+		{(*QueryNameZoneRequest)(nil), "l1.identityroot.v1.QueryNameZoneRequest"},
+		{(*QueryNameZoneResponse)(nil), "l1.identityroot.v1.QueryNameZoneResponse"},
 	} {
 		gogoproto.RegisterType(item.msg, item.name)
 	}
@@ -327,6 +364,8 @@ func (m *QueryReverseRecordRequest) Reset()	{ *m = QueryReverseRecordRequest{} }
 func (m *QueryReverseRecordResponse) Reset()	{ *m = QueryReverseRecordResponse{} }
 func (m *QuerySubdomainsRequest) Reset()	{ *m = QuerySubdomainsRequest{} }
 func (m *QuerySubdomainsResponse) Reset()	{ *m = QuerySubdomainsResponse{} }
+func (m *QueryNameZoneRequest) Reset()		{ *m = QueryNameZoneRequest{} }
+func (m *QueryNameZoneResponse) Reset()	{ *m = QueryNameZoneResponse{} }
 
 func (m *QueryCollectionParamsRequest) String() string	{ return gogoproto.CompactTextString(m) }
 func (m *QueryCollectionParamsResponse) String() string	{ return gogoproto.CompactTextString(m) }
@@ -349,6 +388,8 @@ func (m *QueryReverseRecordRequest) String() string	{ return gogoproto.CompactTe
 func (m *QueryReverseRecordResponse) String() string	{ return gogoproto.CompactTextString(m) }
 func (m *QuerySubdomainsRequest) String() string	{ return gogoproto.CompactTextString(m) }
 func (m *QuerySubdomainsResponse) String() string	{ return gogoproto.CompactTextString(m) }
+func (m *QueryNameZoneRequest) String() string		{ return gogoproto.CompactTextString(m) }
+func (m *QueryNameZoneResponse) String() string	{ return gogoproto.CompactTextString(m) }
 
 func (*QueryCollectionParamsRequest) ProtoMessage()	{}
 func (*QueryCollectionParamsResponse) ProtoMessage()	{}
@@ -371,3 +412,5 @@ func (*QueryReverseRecordRequest) ProtoMessage()	{}
 func (*QueryReverseRecordResponse) ProtoMessage()	{}
 func (*QuerySubdomainsRequest) ProtoMessage()		{}
 func (*QuerySubdomainsResponse) ProtoMessage()		{}
+func (*QueryNameZoneRequest) ProtoMessage()		{}
+func (*QueryNameZoneResponse) ProtoMessage()		{}

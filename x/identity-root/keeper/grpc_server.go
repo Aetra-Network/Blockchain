@@ -179,6 +179,98 @@ func (m grpcMsgServer) CreateSubdomain(ctx context.Context, msg *types.MsgCreate
 	return &types.MsgCreateSubdomainResponse{Name: record.Name, ExpiryHeight: record.ExpiryHeight}, nil
 }
 
+func (m grpcMsgServer) RenewName(ctx context.Context, msg *types.MsgRenewName) (*types.MsgRenewNameResponse, error) {
+	if msg == nil {
+		return nil, errors.New("empty identity renew message")
+	}
+	if err := m.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
+	msg.Height = blockHeight(ctx)
+	record, err := m.keeper.RenewName(*msg)
+	if err != nil {
+		return nil, err
+	}
+	return &types.MsgRenewNameResponse{Name: record.Name, ExpiryHeight: record.ExpiryHeight}, nil
+}
+
+func (m grpcMsgServer) TransferName(ctx context.Context, msg *types.MsgTransferName) (*types.MsgTransferNameResponse, error) {
+	if msg == nil {
+		return nil, errors.New("empty identity transfer message")
+	}
+	if err := m.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
+	msg.Height = blockHeight(ctx)
+	record, err := m.keeper.TransferName(*msg)
+	if err != nil {
+		return nil, err
+	}
+	return &types.MsgTransferNameResponse{Name: record.Name, Owner: record.Owner}, nil
+}
+
+func (m grpcMsgServer) SetResolver(ctx context.Context, msg *types.MsgSetResolver) (*types.MsgSetResolverResponse, error) {
+	if msg == nil {
+		return nil, errors.New("empty identity set-resolver message")
+	}
+	if err := m.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
+	msg.Height = blockHeight(ctx)
+	resolver, err := m.keeper.SetResolver(*msg)
+	if err != nil {
+		return nil, err
+	}
+	return &types.MsgSetResolverResponse{Name: resolver.Name, ResolverRoot: resolver.ResolverRoot}, nil
+}
+
+func (m grpcMsgServer) SetReverseRecord(ctx context.Context, msg *types.MsgSetReverseRecord) (*types.MsgSetReverseRecordResponse, error) {
+	if msg == nil {
+		return nil, errors.New("empty identity set-reverse-record message")
+	}
+	if err := m.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
+	msg.Height = blockHeight(ctx)
+	reverse, err := m.keeper.SetReverseRecord(*msg)
+	if err != nil {
+		return nil, err
+	}
+	return &types.MsgSetReverseRecordResponse{Address: reverse.Address, Name: reverse.Name}, nil
+}
+
+// ReserveName and ReleaseReservedName carry no Height field: the keeper methods
+// they call are governance-authority actions (requireAuthority), not
+// block-timed domain operations, so there is no msg.Height to overwrite with
+// blockHeight(ctx) here -- unlike every owner-signed handler above.
+
+func (m grpcMsgServer) ReserveName(ctx context.Context, msg *types.MsgReserveName) (*types.MsgReserveNameResponse, error) {
+	if msg == nil {
+		return nil, errors.New("empty identity reserve message")
+	}
+	if err := m.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
+	reserved, err := m.keeper.ReserveName(*msg)
+	if err != nil {
+		return nil, err
+	}
+	return &types.MsgReserveNameResponse{Name: reserved.Name, Authority: reserved.Authority}, nil
+}
+
+func (m grpcMsgServer) ReleaseReservedName(ctx context.Context, msg *types.MsgReleaseReservedName) (*types.MsgReleaseReservedNameResponse, error) {
+	if msg == nil {
+		return nil, errors.New("empty identity release-reserved message")
+	}
+	if err := m.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
+	if err := m.keeper.ReleaseReservedName(*msg); err != nil {
+		return nil, err
+	}
+	return &types.MsgReleaseReservedNameResponse{Name: msg.Name}, nil
+}
+
 // --- Query server. Read-only; the keeper accessors take the read lock. ---
 
 func (q grpcQueryServer) CollectionParams(_ context.Context, req *types.QueryCollectionParamsRequest) (*types.QueryCollectionParamsResponse, error) {
@@ -309,6 +401,17 @@ func (q grpcQueryServer) ReverseRecord(_ context.Context, req *types.QueryRevers
 		return &types.QueryReverseRecordResponse{Found: false}, nil
 	}
 	return &types.QueryReverseRecordResponse{Found: true, Name: reverse.Name, Owner: reverse.Owner}, nil
+}
+
+func (q grpcQueryServer) NameZone(ctx context.Context, req *types.QueryNameZoneRequest) (*types.QueryNameZoneResponse, error) {
+	if req == nil {
+		return nil, errors.New("empty identity name zone query")
+	}
+	nz, err := q.keeper.NameZone(ctx, req.Name)
+	if err != nil {
+		return nil, err
+	}
+	return &types.QueryNameZoneResponse{Resolved: nz.Resolved, Zone: nz.Zone, Bucket: nz.Bucket}, nil
 }
 
 func (q grpcQueryServer) Subdomains(_ context.Context, req *types.QuerySubdomainsRequest) (*types.QuerySubdomainsResponse, error) {

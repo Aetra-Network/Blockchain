@@ -2,6 +2,7 @@ package app_test
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
@@ -233,4 +234,118 @@ func TestIdentityRootDisownAttachmentDecodesAndResolvesTarget(t *testing.T) {
 	expected, err := addressing.Parse(targetAE)
 	require.NoError(t, err)
 	require.Equal(t, expected, signers[0], "signer must be the parsed bytes of the target field")
+}
+
+// TestIdentityRootPhaseCOwnerMsgsDecodeAndResolveSigner is the ANS Phase C
+// wire-format guard for the four owned-domain messages (RenewName,
+// TransferName, SetResolver, SetReverseRecord): each must survive the real
+// TxConfig encode -> TxDecoder round trip (Descriptor() present) and resolve
+// its signer to the "owner" field -- the CURRENT owner for MsgTransferName, not
+// the new owner, matching keeper.TransferName's requireOwnedName(msg.Owner, ...)
+// check.
+func TestIdentityRootPhaseCOwnerMsgsDecodeAndResolveSigner(t *testing.T) {
+	testApp := app.Setup(t, false)
+	txConfig := testApp.TxConfig()
+
+	ownerAE, err := addressing.FormatUserFriendly(bytes.Repeat([]byte{0x71}, 20))
+	require.NoError(t, err)
+	newOwnerAE, err := addressing.FormatUserFriendly(bytes.Repeat([]byte{0x72}, 20))
+	require.NoError(t, err)
+
+	cases := []struct {
+		name string
+		msg  sdk.Msg
+	}{
+		{
+			name: "MsgRenewName",
+			msg:  &identityroottypes.MsgRenewName{Owner: ownerAE, Name: "alice.aet", Height: 1},
+		},
+		{
+			name: "MsgTransferName",
+			msg:  &identityroottypes.MsgTransferName{Owner: ownerAE, Name: "alice.aet", NewOwner: newOwnerAE, Height: 1},
+		},
+		{
+			name: "MsgSetResolver",
+			msg:  &identityroottypes.MsgSetResolver{Owner: ownerAE, Name: "alice.aet", ResolverRoot: strings.Repeat("ab", 32), Height: 1},
+		},
+		{
+			name: "MsgSetReverseRecord",
+			msg:  &identityroottypes.MsgSetReverseRecord{Owner: ownerAE, Address: ownerAE, Name: "alice.aet", Height: 1},
+		},
+	}
+	expectedSigner, err := addressing.Parse(ownerAE)
+	require.NoError(t, err)
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			builder := txConfig.NewTxBuilder()
+			require.NoError(t, builder.SetMsgs(tc.msg))
+
+			txBytes, err := txConfig.TxEncoder()(builder.GetTx())
+			require.NoError(t, err)
+			require.NotEmpty(t, txBytes, "%s encoded to empty bytes; struct tags/descriptor missing", tc.name)
+
+			decodedTx, err := txConfig.TxDecoder()(txBytes)
+			require.NoError(t, err, "%s must decode over the wire; a missing Descriptor() rejects it here", tc.name)
+
+			msgs := decodedTx.GetMsgs()
+			require.Len(t, msgs, 1)
+
+			signers, _, err := testApp.AppCodec().GetMsgV1Signers(msgs[0])
+			require.NoError(t, err, "%s signer must resolve for a routable tx", tc.name)
+			require.Len(t, signers, 1)
+			require.Equal(t, expectedSigner, signers[0], "%s signer must be the parsed bytes of the owner field", tc.name)
+		})
+	}
+}
+
+// TestIdentityRootPhaseCGovernanceMsgsDecodeAndResolveSigner covers
+// MsgReserveName and MsgReleaseReservedName: both are governance-gated (the
+// keeper's requireAuthority check is the real safety mechanism, see
+// keeper.ReserveName/ReleaseReservedName), so their signer resolves to the
+// "authority" field, exactly like MsgUpdatePriceTable.
+func TestIdentityRootPhaseCGovernanceMsgsDecodeAndResolveSigner(t *testing.T) {
+	testApp := app.Setup(t, false)
+	txConfig := testApp.TxConfig()
+
+	authorityAE, err := addressing.FormatUserFriendly(bytes.Repeat([]byte{0x73}, 20))
+	require.NoError(t, err)
+
+	cases := []struct {
+		name string
+		msg  sdk.Msg
+	}{
+		{
+			name: "MsgReserveName",
+			msg:  &identityroottypes.MsgReserveName{Authority: authorityAE, Name: "admin.aet", Reason: "root"},
+		},
+		{
+			name: "MsgReleaseReservedName",
+			msg:  &identityroottypes.MsgReleaseReservedName{Authority: authorityAE, Name: "admin.aet"},
+		},
+	}
+	expectedSigner, err := addressing.Parse(authorityAE)
+	require.NoError(t, err)
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			builder := txConfig.NewTxBuilder()
+			require.NoError(t, builder.SetMsgs(tc.msg))
+
+			txBytes, err := txConfig.TxEncoder()(builder.GetTx())
+			require.NoError(t, err)
+			require.NotEmpty(t, txBytes, "%s encoded to empty bytes; struct tags/descriptor missing", tc.name)
+
+			decodedTx, err := txConfig.TxDecoder()(txBytes)
+			require.NoError(t, err, "%s must decode over the wire; a missing Descriptor() rejects it here", tc.name)
+
+			msgs := decodedTx.GetMsgs()
+			require.Len(t, msgs, 1)
+
+			signers, _, err := testApp.AppCodec().GetMsgV1Signers(msgs[0])
+			require.NoError(t, err, "%s signer must resolve for a routable tx", tc.name)
+			require.Len(t, signers, 1)
+			require.Equal(t, expectedSigner, signers[0], "%s signer must be the parsed bytes of the authority field", tc.name)
+		})
+	}
 }

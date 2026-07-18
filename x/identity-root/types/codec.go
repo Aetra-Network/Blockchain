@@ -17,6 +17,12 @@ func RegisterLegacyAminoCodec(cdc *codec.LegacyAmino) {
 	cdc.RegisterConcrete(&MsgDetachDomain{}, "l1/identityroot/MsgDetachDomain", nil)
 	cdc.RegisterConcrete(&MsgDisownAttachment{}, "l1/identityroot/MsgDisownAttachment", nil)
 	cdc.RegisterConcrete(&MsgCreateSubdomain{}, "l1/identityroot/MsgCreateSubdomain", nil)
+	cdc.RegisterConcrete(&MsgRenewName{}, "l1/identityroot/MsgRenewName", nil)
+	cdc.RegisterConcrete(&MsgTransferName{}, "l1/identityroot/MsgTransferName", nil)
+	cdc.RegisterConcrete(&MsgSetResolver{}, "l1/identityroot/MsgSetResolver", nil)
+	cdc.RegisterConcrete(&MsgSetReverseRecord{}, "l1/identityroot/MsgSetReverseRecord", nil)
+	cdc.RegisterConcrete(&MsgReserveName{}, "l1/identityroot/MsgReserveName", nil)
+	cdc.RegisterConcrete(&MsgReleaseReservedName{}, "l1/identityroot/MsgReleaseReservedName", nil)
 }
 
 // RegisterInterfaces registers the Msg service descriptor and the Phase-A Msg
@@ -34,6 +40,12 @@ func RegisterInterfaces(registry codectypes.InterfaceRegistry) {
 		&MsgDetachDomain{},
 		&MsgDisownAttachment{},
 		&MsgCreateSubdomain{},
+		&MsgRenewName{},
+		&MsgTransferName{},
+		&MsgSetResolver{},
+		&MsgSetReverseRecord{},
+		&MsgReserveName{},
+		&MsgReleaseReservedName{},
 	)
 	registry.RegisterImplementations(
 		(*txtypes.MsgResponse)(nil),
@@ -45,5 +57,11 @@ func RegisterInterfaces(registry codectypes.InterfaceRegistry) {
 		&MsgDetachDomainResponse{},
 		&MsgDisownAttachmentResponse{},
 		&MsgCreateSubdomainResponse{},
+		&MsgRenewNameResponse{},
+		&MsgTransferNameResponse{},
+		&MsgSetResolverResponse{},
+		&MsgSetReverseRecordResponse{},
+		&MsgReserveNameResponse{},
+		&MsgReleaseReservedNameResponse{},
 	)
 }

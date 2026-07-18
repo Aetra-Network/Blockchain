@@ -71,6 +71,23 @@ func CustomGetSigners() map[protoreflect.FullName]signing.GetSignersFunc {
 		// its own wallet. See x/identity-root/types/signing.go.
 		"l1.identityroot.v1.MsgDisownAttachment":	identityroottypes.MsgDisownAttachmentSigners,
 		"l1.identityroot.v1.MsgCreateSubdomain":	identityroottypes.MsgCreateSubdomainSigners,
+		// ANS Phase C. Renew/transfer/resolver/reverse-record are ordinary
+		// owned-domain operations, each resolving to the caller's plain "owner"
+		// field like the Phase B messages above. Reserve/release are
+		// governance-gated (the keeper's requireAuthority check enforces this,
+		// not the signer resolver) and resolve to "authority", like
+		// MsgUpdatePriceTable. RegisterName is DELIBERATELY not wired here: it
+		// has no fee/payment check of its own and would let any caller register
+		// an unreserved name for free, bypassing the .aet collection's auction
+		// pricing entirely -- domains are meant to be acquired only through
+		// MsgSendToNameCollection's auction flow. See
+		// x/identity-root/keeper/keeper.go's RegisterName doc.
+		"l1.identityroot.v1.MsgRenewName":		identityroottypes.MsgRenewNameSigners,
+		"l1.identityroot.v1.MsgTransferName":		identityroottypes.MsgTransferNameSigners,
+		"l1.identityroot.v1.MsgSetResolver":		identityroottypes.MsgSetResolverSigners,
+		"l1.identityroot.v1.MsgSetReverseRecord":	identityroottypes.MsgSetReverseRecordSigners,
+		"l1.identityroot.v1.MsgReserveName":		identityroottypes.MsgReserveNameSigners,
+		"l1.identityroot.v1.MsgReleaseReservedName":	identityroottypes.MsgReleaseReservedNameSigners,
 	}
 }
 
