@@ -281,6 +281,29 @@ func TestAuctionCloseGrantsFreshTerm(t *testing.T) {
 	require.False(t, closed, "auction is removed after close")
 }
 
+// TestGrantAuctionNameClearsStaleAttachment is the regression for the blocker the
+// ANS-hardening verify pass found: an auction RE-GRANT of a name must clear any
+// attachment left dangling by the prior owner -- exactly as TransferName does on
+// a sale -- or the expiry-aware reputation fee gate revives off the new owner's
+// freshly-acquired, now-active name for a wallet unrelated to them.
+func TestGrantAuctionNameClearsStaleAttachment(t *testing.T) {
+	gs := DefaultGenesis()
+	gs.Params = prototype.TestnetParams()
+	gs.State.Records = []types.NameRecord{{Name: "alice.aet", Owner: ownerA, ExpiryHeight: 110}}
+	gs.State.Attachments = []types.Attachment{{
+		Fqdn: "alice.aet", Target: targetUser, TargetIdentityHex: "dead", Owner: ownerA,
+	}}
+
+	// A closing auction won by a DIFFERENT owner re-grants alice.
+	require.NoError(t, grantAuctionName(&gs, types.Auction{Name: "alice.aet", HighBidder: ownerB}, 210))
+
+	_, rec, found := recordIndex(gs.State.Records, "alice.aet")
+	require.True(t, found)
+	require.Equal(t, ownerB, rec.Owner, "name re-granted to the auction winner")
+	_, _, stillAttached := attachmentIndexByName(gs.State.Attachments, "alice.aet")
+	require.False(t, stillAttached, "auction re-grant must clear the prior owner's stale attachment")
+}
+
 func TestPurchaseResetsTermTransferDoesNot(t *testing.T) {
 	k, bank := setupCollectionKeeper(t)
 	fund(bank, accAddr(t, ownerA), 1_000_000)

@@ -420,6 +420,15 @@ func grantAuctionName(next *GenesisState, auction types.Auction, height uint64) 
 	if err != nil {
 		return err
 	}
+	// An auction RE-GRANTS the name to a new owner. Any attachment left dangling
+	// by the prior owner (passive expiry never clears the attachment record, only
+	// the expiry-aware fee gate ignores it) MUST be cleared here -- exactly as
+	// TransferName does on a sale -- or the reputation fee gate revives off the new
+	// owner's freshly-acquired, now-active name for a wallet unrelated to them.
+	// Idempotent, so it also covers the fresh-grant branch below where a record
+	// was swept but its attachment lingered. Audit: reputation is gated on LIVE
+	// ownership and never carried across an ownership change.
+	next.State.Attachments = removeAttachmentByName(next.State.Attachments, auction.Name)
 	if idx, record, found := recordIndex(next.State.Records, auction.Name); found {
 		record.Owner = auction.HighBidder
 		record.ExpiryHeight = expiry

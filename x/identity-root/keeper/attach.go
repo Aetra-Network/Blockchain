@@ -3,6 +3,7 @@ package keeper
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -110,12 +111,66 @@ func (k *Keeper) DetachDomain(msg types.MsgDetachDomain) (types.Attachment, erro
 	return attachment, nil
 }
 
+// DisownAttachment lets the TARGET wallet of an attachment clear it without the
+// FQDN owner's cooperation -- the anti-griefing self-detach. AttachDomain lets an
+// owner point a name at any allowed wallet without consent, occupying that
+// wallet's single one-domain-per-wallet slot; only the owner could DetachDomain,
+// so a victim could not clear an unwanted attachment. Here the signer is the
+// target itself (see MsgDisownAttachmentSigners), so no owned-name check is
+// performed: the target need not own the FQDN, it is disowning an attachment
+// aimed at its own account. The target identity is derived with the SAME
+// normalization AccountHoldsDomain uses, so the record removed is exactly the one
+// the fee gate would have read.
+func (k *Keeper) DisownAttachment(msg types.MsgDisownAttachment) (types.Attachment, error) {
+	k.lockW()
+	defer k.unlockW()
+	if err := k.requireEnabled(); err != nil {
+		return types.Attachment{}, err
+	}
+	if msg.Height == 0 {
+		return types.Attachment{}, errors.New("identity disown height must be positive")
+	}
+	if err := types.ValidateUserFacingAEAddress("identity disown target", msg.Target); err != nil {
+		return types.Attachment{}, err
+	}
+	raw, err := addressing.Parse(msg.Target)
+	if err != nil {
+		return types.Attachment{}, fmt.Errorf("identity disown target: %w", err)
+	}
+	identity, err := addressing.NormalizeToAccountIdentity(raw)
+	if err != nil {
+		return types.Attachment{}, fmt.Errorf("identity disown target: %w", err)
+	}
+	targetIdentityHex := hex.EncodeToString(identity)
+	_, attachment, found := attachmentIndexByTarget(k.genesis.State.Attachments, targetIdentityHex)
+	if !found {
+		return types.Attachment{}, errors.New("identity target wallet holds no attachment to disown")
+	}
+	next := cloneGenesis(k.genesis)
+	next.State.Attachments = removeAttachmentByTargetHex(next.State.Attachments, targetIdentityHex)
+	next.State = next.State.Export()
+	if err := next.Validate(); err != nil {
+		return types.Attachment{}, err
+	}
+	if err := k.persistLocked(next); err != nil {
+		return types.Attachment{}, err
+	}
+	return attachment, nil
+}
+
 // AccountHoldsDomain reports whether addr currently holds an attached domain. It
 // is the reputation fee gate's reader: a value receiver that reads a SINGLE
 // committed store key directly (never k.genesis, since the ante path does not
 // loadForBlock), takes no lock, and loads no full state -- an O(1) deterministic
 // Get so the ante gas stays flat and identical on every node. Any address or
 // store error degrades to false (not-gated) so the gate can never block a tx.
+// It reads the attachment's referenced domain RECORD from the committed store and
+// returns true ONLY if that domain still exists AND is ACTIVE at the current
+// block height (types.IsActive, the same predicate requireOwnedName uses). This
+// closes the passive-expiry hole: an attachment is never cleared when its domain
+// lapses (expiry fires no transfer), so a stale len>0 read would have carried the
+// fee discount past expiry. The height comes from the ctx's sdk.Context; any
+// missing/short-circuit condition degrades to false so the gate never blocks a tx.
 func (k Keeper) AccountHoldsDomain(ctx context.Context, addr sdk.AccAddress) (bool, error) {
 	if k.storeService == nil || len(addr) == 0 {
 		return false, nil
@@ -124,11 +179,57 @@ func (k Keeper) AccountHoldsDomain(ctx context.Context, addr sdk.AccAddress) (bo
 	if err != nil {
 		return false, nil
 	}
-	bz, err := k.storeService.OpenKVStore(ctx).Get(types.AttachKey(hex.EncodeToString(identity)))
+	store := k.storeService.OpenKVStore(ctx)
+	bz, err := store.Get(types.AttachKey(hex.EncodeToString(identity)))
 	if err != nil {
 		return false, err
 	}
-	return len(bz) > 0, nil
+	if len(bz) == 0 {
+		return false, nil
+	}
+	var attachment types.Attachment
+	if err := json.Unmarshal(bz, &attachment); err != nil {
+		// A corrupt index entry degrades to not-gated rather than blocking the tx.
+		return false, nil
+	}
+	recordBz, err := store.Get(types.NameKey(attachment.Fqdn))
+	if err != nil {
+		return false, err
+	}
+	if len(recordBz) == 0 {
+		// The referenced domain record is gone: not an active holding.
+		return false, nil
+	}
+	var record types.NameRecord
+	if err := json.Unmarshal(recordBz, &record); err != nil {
+		return false, nil
+	}
+	return types.IsActive(record, currentBlockHeight(ctx)), nil
+}
+
+// currentBlockHeight extracts the deterministic block height from ctx without
+// panicking. It mirrors sdk.UnwrapSDKContext's two-branch lookup (a direct
+// sdk.Context, or one stashed under SdkContextKey) but returns 0 when neither is
+// present -- height 0 makes types.IsActive report false, the safe (un-gated)
+// direction, honoring the "any error degrades to false" contract for a caller
+// that did not supply a block context.
+func currentBlockHeight(ctx context.Context) uint64 {
+	if sdkCtx, ok := ctx.(sdk.Context); ok {
+		return heightAsUint64(sdkCtx.BlockHeight())
+	}
+	if v := ctx.Value(sdk.SdkContextKey); v != nil {
+		if sdkCtx, ok := v.(sdk.Context); ok {
+			return heightAsUint64(sdkCtx.BlockHeight())
+		}
+	}
+	return 0
+}
+
+func heightAsUint64(height int64) uint64 {
+	if height <= 0 {
+		return 0
+	}
+	return uint64(height)
 }
 
 // classifyAttachTarget parses and classifies an attach target, returning its
@@ -195,6 +296,17 @@ func removeAttachmentByName(attachments []types.Attachment, fqdn string) []types
 	out := make([]types.Attachment, 0, len(attachments))
 	for _, a := range attachments {
 		if a.Fqdn == fqdn {
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+func removeAttachmentByTargetHex(attachments []types.Attachment, targetIdentityHex string) []types.Attachment {
+	out := make([]types.Attachment, 0, len(attachments))
+	for _, a := range attachments {
+		if a.TargetIdentityHex == targetIdentityHex {
 			continue
 		}
 		out = append(out, a)

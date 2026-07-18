@@ -66,6 +66,10 @@ func CustomGetSigners() map[protoreflect.FullName]signing.GetSignersFunc {
 		// the caller's plain wallet address in its "owner" field.
 		"l1.identityroot.v1.MsgAttachDomain":		identityroottypes.MsgAttachDomainSigners,
 		"l1.identityroot.v1.MsgDetachDomain":		identityroottypes.MsgDetachDomainSigners,
+		// Anti-griefing self-detach: the signer is the attachment's TARGET, not
+		// the FQDN owner -- the target authorizes clearing an attachment aimed at
+		// its own wallet. See x/identity-root/types/signing.go.
+		"l1.identityroot.v1.MsgDisownAttachment":	identityroottypes.MsgDisownAttachmentSigners,
 		"l1.identityroot.v1.MsgCreateSubdomain":	identityroottypes.MsgCreateSubdomainSigners,
 	}
 }

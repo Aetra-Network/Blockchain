@@ -1,9 +1,9 @@
 package keeper
 
 import (
-	"context"
 	"testing"
 
+	sdk "github.com/cosmos/cosmos-sdk/types"
 	authtypes "github.com/cosmos/cosmos-sdk/x/auth/types"
 	stakingtypes "github.com/cosmos/cosmos-sdk/x/staking/types"
 	"github.com/stretchr/testify/require"
@@ -30,6 +30,13 @@ func moduleAddrUF(t *testing.T, moduleName string) string {
 	uf, err := addressing.FormatUserFriendly(authtypes.NewModuleAddress(moduleName))
 	require.NoError(t, err)
 	return uf
+}
+
+// blockCtx builds an sdk.Context carrying only a block height -- enough for the
+// expiry-aware fee gate (AccountHoldsDomain reads the height off it). The kvtest
+// store service ignores the context, so no multistore is needed.
+func blockCtx(height int64) sdk.Context {
+	return sdk.Context{}.WithBlockHeight(height)
 }
 
 // TestAttachDomainAllowsNativeAccount is the happy path: an owned, active FQDN
@@ -167,7 +174,9 @@ func TestAccountHoldsDomainReadsCommittedStore(t *testing.T) {
 	gs := DefaultGenesis()
 	gs.Params = prototype.TestnetParams()
 	gs.IdentityParams.RegistrationPeriod = 100
-	ctx := context.Background()
+	// The fee gate is expiry-aware, so it needs a block height. Registration at
+	// msg-height 10 with period 100 yields ExpiryHeight 110; height 50 is active.
+	ctx := blockCtx(50)
 	require.NoError(t, k.InitGenesisState(ctx, gs))
 	require.NoError(t, k.loadForBlock(ctx))
 
@@ -200,6 +209,127 @@ func TestAccountHoldsDomainReadsCommittedStore(t *testing.T) {
 	require.False(t, holds, "detach must clear the fee-gate index in the committed store")
 }
 
+// TestDisownAttachmentClearsGriefAttach is FIX A: an FQDN owner grief-attaches to
+// a victim wallet (occupying its one-domain slot without consent); the victim,
+// who does NOT own the FQDN, self-disowns the attachment aimed at its own wallet,
+// and the fee gate reads false afterward. The victim never touches the domain.
+func TestDisownAttachmentClearsGriefAttach(t *testing.T) {
+	svc := kvtest.NewStoreService()
+	kv := NewPersistentKeeper(svc)
+	k := &kv
+	gs := DefaultGenesis()
+	gs.Params = prototype.TestnetParams()
+	gs.IdentityParams.RegistrationPeriod = 100
+	ctx := blockCtx(50)
+	require.NoError(t, k.InitGenesisState(ctx, gs))
+	require.NoError(t, k.loadForBlock(ctx))
+
+	// ownerA owns alice.aet and grief-attaches it to the victim wallet.
+	_, err := k.RegisterName(types.MsgRegisterName{Owner: ownerA, Name: "alice", Height: 10})
+	require.NoError(t, err)
+	_, err = k.AttachDomain(types.MsgAttachDomain{Owner: ownerA, Fqdn: "alice", Target: targetUser, Height: 11})
+	require.NoError(t, err)
+
+	victimAddr := accAddr(t, targetUser)
+	holds, err := k.AccountHoldsDomain(ctx, victimAddr)
+	require.NoError(t, err)
+	require.True(t, holds, "the grief attach must occupy the victim's one-domain slot")
+
+	// The victim self-disowns -- no owned-name check, the signer is the target.
+	disowned, err := k.DisownAttachment(types.MsgDisownAttachment{Target: targetUser, Height: 12})
+	require.NoError(t, err)
+	require.Equal(t, "alice.aet", disowned.Fqdn)
+
+	holds, err = k.AccountHoldsDomain(ctx, victimAddr)
+	require.NoError(t, err)
+	require.False(t, holds, "after the victim disowns, the fee-gate index must be clear")
+
+	// The name is freed too: ownerA can attach alice.aet somewhere else again.
+	_, err = k.AttachDomain(types.MsgAttachDomain{Owner: ownerA, Fqdn: "alice", Target: mustAE("44"), Height: 13})
+	require.NoError(t, err)
+}
+
+// TestDisownAttachmentByNonTargetFails proves only the wallet an attachment
+// points AT can disown it: a different wallet's disown finds no attachment under
+// its own identity and errors, so it cannot clear someone else's slot. (The
+// signer resolver binds the signature to the target field, so on the wire a
+// non-target could not even author this message for the victim's identity.)
+func TestDisownAttachmentByNonTargetFails(t *testing.T) {
+	svc := kvtest.NewStoreService()
+	kv := NewPersistentKeeper(svc)
+	k := &kv
+	gs := DefaultGenesis()
+	gs.Params = prototype.TestnetParams()
+	gs.IdentityParams.RegistrationPeriod = 100
+	ctx := blockCtx(50)
+	require.NoError(t, k.InitGenesisState(ctx, gs))
+	require.NoError(t, k.loadForBlock(ctx))
+
+	_, err := k.RegisterName(types.MsgRegisterName{Owner: ownerA, Name: "alice", Height: 10})
+	require.NoError(t, err)
+	_, err = k.AttachDomain(types.MsgAttachDomain{Owner: ownerA, Fqdn: "alice", Target: targetUser, Height: 11})
+	require.NoError(t, err)
+
+	// A wallet that is NOT the attachment target has no attachment under its own
+	// identity, so its disown errors and the victim's slot stays occupied.
+	_, err = k.DisownAttachment(types.MsgDisownAttachment{Target: mustAE("55"), Height: 12})
+	require.ErrorContains(t, err, "no attachment")
+
+	holds, err := k.AccountHoldsDomain(ctx, accAddr(t, targetUser))
+	require.NoError(t, err)
+	require.True(t, holds, "a non-target disown must not clear the victim's attachment")
+
+	// The victim itself can still disown.
+	_, err = k.DisownAttachment(types.MsgDisownAttachment{Target: targetUser, Height: 13})
+	require.NoError(t, err)
+}
+
+// TestAccountHoldsDomainExpiryAware is FIX B: the fee gate reads the LIVE domain
+// record and returns false once the referenced domain lapses by passive expiry
+// (no detach, no transfer event) -- and true again after a renewal. Same
+// persistent-store harness as TestAccountHoldsDomainReadsCommittedStore.
+func TestAccountHoldsDomainExpiryAware(t *testing.T) {
+	svc := kvtest.NewStoreService()
+	kv := NewPersistentKeeper(svc)
+	k := &kv
+	gs := DefaultGenesis()
+	gs.Params = prototype.TestnetParams()
+	gs.IdentityParams.RegistrationPeriod = 100
+	gs.IdentityParams.RenewalWindowBlocks = 100
+	// Register at height 10 -> ExpiryHeight 110. The block context supplies the
+	// height the gate compares against.
+	require.NoError(t, k.InitGenesisState(blockCtx(50), gs))
+	require.NoError(t, k.loadForBlock(blockCtx(50)))
+
+	_, err := k.RegisterName(types.MsgRegisterName{Owner: ownerA, Name: "alice", Height: 10})
+	require.NoError(t, err)
+	_, err = k.AttachDomain(types.MsgAttachDomain{Owner: ownerA, Fqdn: "alice", Target: targetUser, Height: 11})
+	require.NoError(t, err)
+
+	targetAddr := accAddr(t, targetUser)
+
+	// Active domain (height 50 < expiry 110): gate true.
+	holds, err := k.AccountHoldsDomain(blockCtx(50), targetAddr)
+	require.NoError(t, err)
+	require.True(t, holds, "an attached, active domain must gate true")
+
+	// Height advanced past ExpiryHeight 110: the attachment is untouched, but the
+	// domain has passively expired, so the gate must read false.
+	holds, err = k.AccountHoldsDomain(blockCtx(150), targetAddr)
+	require.NoError(t, err)
+	require.False(t, holds, "a lapsed domain must un-gate even though the attachment was never cleared")
+
+	// Renew inside the window (before expiry 110): ExpiryHeight -> 210.
+	require.NoError(t, k.loadForBlock(blockCtx(105)))
+	_, err = k.RenewName(types.MsgRenewName{Owner: ownerA, Name: "alice", Height: 105})
+	require.NoError(t, err)
+
+	// Same height 150 now reads active again (150 < new expiry 210): gate true.
+	holds, err = k.AccountHoldsDomain(blockCtx(150), targetAddr)
+	require.NoError(t, err)
+	require.True(t, holds, "a renewed domain must gate true again at a height it previously failed")
+}
+
 // TestTransferNameClearsAttachment is the regression for the audit finding that a
 // domain SALE carried the reputation fee discount to the seller. The attachment
 // is exactly what the ante fee gate (AccountHoldsDomain) reads, so a transfer
@@ -211,7 +341,7 @@ func TestTransferNameClearsAttachment(t *testing.T) {
 	gs := DefaultGenesis()
 	gs.Params = prototype.TestnetParams()
 	gs.IdentityParams.RegistrationPeriod = 100
-	ctx := context.Background()
+	ctx := blockCtx(50)
 	require.NoError(t, k.InitGenesisState(ctx, gs))
 	require.NoError(t, k.loadForBlock(ctx))
 

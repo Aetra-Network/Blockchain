@@ -149,6 +149,21 @@ func (m grpcMsgServer) DetachDomain(ctx context.Context, msg *types.MsgDetachDom
 	return &types.MsgDetachDomainResponse{Fqdn: attachment.Fqdn}, nil
 }
 
+func (m grpcMsgServer) DisownAttachment(ctx context.Context, msg *types.MsgDisownAttachment) (*types.MsgDisownAttachmentResponse, error) {
+	if msg == nil {
+		return nil, errors.New("empty identity disown message")
+	}
+	if err := m.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
+	msg.Height = blockHeight(ctx)
+	attachment, err := m.keeper.DisownAttachment(*msg)
+	if err != nil {
+		return nil, err
+	}
+	return &types.MsgDisownAttachmentResponse{Fqdn: attachment.Fqdn, Target: attachment.Target}, nil
+}
+
 func (m grpcMsgServer) CreateSubdomain(ctx context.Context, msg *types.MsgCreateSubdomain) (*types.MsgCreateSubdomainResponse, error) {
 	if msg == nil {
 		return nil, errors.New("empty identity create-subdomain message")

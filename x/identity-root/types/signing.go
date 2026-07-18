@@ -68,6 +68,14 @@ func MsgDetachDomainSigners(msg proto.Message) ([][]byte, error) {
 	return msgSignerFromAddressField(msg, "owner")
 }
 
+// MsgDisownAttachmentSigners resolves the signer to the attachment's TARGET
+// wallet: the target authorizes clearing the attachment that points at its own
+// account (ANS Phase B anti-griefing self-detach). The target field carries a
+// plain AE address, exactly like the owner fields above.
+func MsgDisownAttachmentSigners(msg proto.Message) ([][]byte, error) {
+	return msgSignerFromAddressField(msg, "target")
+}
+
 // MsgCreateSubdomainSigners resolves the signer to the parent-domain owner.
 func MsgCreateSubdomainSigners(msg proto.Message) ([][]byte, error) {
 	return msgSignerFromAddressField(msg, "owner")

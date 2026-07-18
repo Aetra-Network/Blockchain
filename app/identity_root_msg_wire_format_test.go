@@ -195,3 +195,42 @@ func TestIdentityRootPhaseBMsgsDecodeAndResolveSigner(t *testing.T) {
 		})
 	}
 }
+
+// TestIdentityRootDisownAttachmentDecodesAndResolvesTarget is the wire-format
+// guard for FIX A's MsgDisownAttachment. Unlike the owner-signed Phase B
+// messages, its signer resolves to the TARGET field (the wallet authorizing the
+// self-detach of an attachment aimed at its own account), so this both proves the
+// message decodes over the wire (Descriptor() present) and that CustomGetSigners
+// routes the signer to "target" rather than an owner field it does not have.
+func TestIdentityRootDisownAttachmentDecodesAndResolvesTarget(t *testing.T) {
+	testApp := app.Setup(t, false)
+	txConfig := testApp.TxConfig()
+
+	targetAE, err := addressing.FormatUserFriendly(bytes.Repeat([]byte{0x63}, 20))
+	require.NoError(t, err)
+
+	msg := &identityroottypes.MsgDisownAttachment{Target: targetAE, Height: 1}
+
+	builder := txConfig.NewTxBuilder()
+	require.NoError(t, builder.SetMsgs(msg))
+
+	txBytes, err := txConfig.TxEncoder()(builder.GetTx())
+	require.NoError(t, err)
+	require.NotEmpty(t, txBytes, "MsgDisownAttachment encoded to empty bytes; struct tags/descriptor missing")
+
+	decodedTx, err := txConfig.TxDecoder()(txBytes)
+	require.NoError(t, err, "MsgDisownAttachment must decode over the wire; a missing Descriptor() rejects it here")
+
+	msgs := decodedTx.GetMsgs()
+	require.Len(t, msgs, 1)
+	decoded, ok := msgs[0].(*identityroottypes.MsgDisownAttachment)
+	require.True(t, ok, "decoded message must route back to the concrete MsgDisownAttachment type")
+	require.Equal(t, targetAE, decoded.Target)
+
+	signers, _, err := testApp.AppCodec().GetMsgV1Signers(decoded)
+	require.NoError(t, err, "MsgDisownAttachment signer must resolve for a routable tx")
+	require.Len(t, signers, 1)
+	expected, err := addressing.Parse(targetAE)
+	require.NoError(t, err)
+	require.Equal(t, expected, signers[0], "signer must be the parsed bytes of the target field")
+}

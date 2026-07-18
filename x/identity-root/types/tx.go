@@ -122,6 +122,23 @@ type MsgDetachDomainResponse struct {
 	Fqdn	string	`protobuf:"bytes,1,opt,name=fqdn,proto3" json:"fqdn,omitempty"`
 }
 
+// MsgDisownAttachment (ANS Phase B, anti-griefing) lets the TARGET wallet of an
+// attachment clear it without the FQDN owner's cooperation. AttachDomain lets an
+// FQDN owner point a name at ANY allowed wallet without that wallet's consent,
+// occupying its single one-domain-per-wallet slot; only the FQDN owner can
+// DetachDomain. This message closes that grief: the signer is the Target itself,
+// authorizing removal of the attachment that points at its OWN wallet. No
+// owned-name check -- the target need not own the FQDN.
+type MsgDisownAttachment struct {
+	Target	string	`protobuf:"bytes,1,opt,name=target,proto3" json:"target,omitempty"`
+	Height	uint64	`protobuf:"varint,2,opt,name=height,proto3" json:"height,omitempty"`
+}
+
+type MsgDisownAttachmentResponse struct {
+	Fqdn	string	`protobuf:"bytes,1,opt,name=fqdn,proto3" json:"fqdn,omitempty"`
+	Target	string	`protobuf:"bytes,2,opt,name=target,proto3" json:"target,omitempty"`
+}
+
 // MsgCreateSubdomainResponse is the wire response for MsgCreateSubdomain (whose
 // request struct lives in state.go, promoted to the wire with protobuf tags).
 type MsgCreateSubdomainResponse struct {
@@ -152,6 +169,7 @@ type MsgServer interface {
 	UpdatePriceTable(context.Context, *MsgUpdatePriceTable) (*MsgUpdatePriceTableResponse, error)
 	AttachDomain(context.Context, *MsgAttachDomain) (*MsgAttachDomainResponse, error)
 	DetachDomain(context.Context, *MsgDetachDomain) (*MsgDetachDomainResponse, error)
+	DisownAttachment(context.Context, *MsgDisownAttachment) (*MsgDisownAttachmentResponse, error)
 	CreateSubdomain(context.Context, *MsgCreateSubdomain) (*MsgCreateSubdomainResponse, error)
 }
 
@@ -175,6 +193,9 @@ func (UnimplementedMsgServer) AttachDomain(context.Context, *MsgAttachDomain) (*
 func (UnimplementedMsgServer) DetachDomain(context.Context, *MsgDetachDomain) (*MsgDetachDomainResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method DetachDomain not implemented")
 }
+func (UnimplementedMsgServer) DisownAttachment(context.Context, *MsgDisownAttachment) (*MsgDisownAttachmentResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method DisownAttachment not implemented")
+}
 func (UnimplementedMsgServer) CreateSubdomain(context.Context, *MsgCreateSubdomain) (*MsgCreateSubdomainResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method CreateSubdomain not implemented")
 }
@@ -191,6 +212,7 @@ var Msg_serviceDesc = grpcgo.ServiceDesc{
 		{MethodName: "UpdatePriceTable", Handler: _Msg_UpdatePriceTable_Handler},
 		{MethodName: "AttachDomain", Handler: _Msg_AttachDomain_Handler},
 		{MethodName: "DetachDomain", Handler: _Msg_DetachDomain_Handler},
+		{MethodName: "DisownAttachment", Handler: _Msg_DisownAttachment_Handler},
 		{MethodName: "CreateSubdomain", Handler: _Msg_CreateSubdomain_Handler},
 	},
 	Streams:	[]grpcgo.StreamDesc{},
@@ -283,6 +305,21 @@ func _Msg_DetachDomain_Handler(srv interface{}, ctx context.Context, dec func(in
 	info := &grpcgo.UnaryServerInfo{Server: srv, FullMethod: "/l1.identityroot.v1.Msg/DetachDomain"}
 	handler := func(ctx context.Context, request interface{}) (interface{}, error) {
 		return srv.(MsgServer).DetachDomain(ctx, request.(*MsgDetachDomain))
+	}
+	return interceptor(ctx, req, info, handler)
+}
+
+func _Msg_DisownAttachment_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpcgo.UnaryServerInterceptor) (interface{}, error) {
+	req := new(MsgDisownAttachment)
+	if err := dec(req); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(MsgServer).DisownAttachment(ctx, req)
+	}
+	info := &grpcgo.UnaryServerInfo{Server: srv, FullMethod: "/l1.identityroot.v1.Msg/DisownAttachment"}
+	handler := func(ctx context.Context, request interface{}) (interface{}, error) {
+		return srv.(MsgServer).DisownAttachment(ctx, request.(*MsgDisownAttachment))
 	}
 	return interceptor(ctx, req, info, handler)
 }
@@ -436,6 +473,20 @@ func buildIdentityRootTxFileDescriptor() []byte {
 				txField("expiry_height", 2, u64),
 			},
 		},
+		{
+			Name: txDescriptorString("MsgDisownAttachment"),
+			Field: []*descriptorpb.FieldDescriptorProto{
+				txField("target", 1, str),
+				txField("height", 2, u64),
+			},
+		},
+		{
+			Name: txDescriptorString("MsgDisownAttachmentResponse"),
+			Field: []*descriptorpb.FieldDescriptorProto{
+				txField("fqdn", 1, str),
+				txField("target", 2, str),
+			},
+		},
 	}
 	fd := &descriptorpb.FileDescriptorProto{
 		Name:		txDescriptorString("l1/identityroot/v1/tx.proto"),
@@ -474,6 +525,11 @@ func buildIdentityRootTxFileDescriptor() []byte {
 					Name:		txDescriptorString("DetachDomain"),
 					InputType:	txDescriptorString(".l1.identityroot.v1.MsgDetachDomain"),
 					OutputType:	txDescriptorString(".l1.identityroot.v1.MsgDetachDomainResponse"),
+				},
+				{
+					Name:		txDescriptorString("DisownAttachment"),
+					InputType:	txDescriptorString(".l1.identityroot.v1.MsgDisownAttachment"),
+					OutputType:	txDescriptorString(".l1.identityroot.v1.MsgDisownAttachmentResponse"),
 				},
 				{
 					Name:		txDescriptorString("CreateSubdomain"),
@@ -543,6 +599,8 @@ func registerTxTypes() {
 	gogoproto.RegisterType((*MsgAttachDomainResponse)(nil), "l1.identityroot.v1.MsgAttachDomainResponse")
 	gogoproto.RegisterType((*MsgDetachDomain)(nil), "l1.identityroot.v1.MsgDetachDomain")
 	gogoproto.RegisterType((*MsgDetachDomainResponse)(nil), "l1.identityroot.v1.MsgDetachDomainResponse")
+	gogoproto.RegisterType((*MsgDisownAttachment)(nil), "l1.identityroot.v1.MsgDisownAttachment")
+	gogoproto.RegisterType((*MsgDisownAttachmentResponse)(nil), "l1.identityroot.v1.MsgDisownAttachmentResponse")
 	gogoproto.RegisterType((*MsgCreateSubdomain)(nil), "l1.identityroot.v1.MsgCreateSubdomain")
 	gogoproto.RegisterType((*MsgCreateSubdomainResponse)(nil), "l1.identityroot.v1.MsgCreateSubdomainResponse")
 }
@@ -559,6 +617,8 @@ func (m *MsgAttachDomain) Reset()			{ *m = MsgAttachDomain{} }
 func (m *MsgAttachDomainResponse) Reset()		{ *m = MsgAttachDomainResponse{} }
 func (m *MsgDetachDomain) Reset()			{ *m = MsgDetachDomain{} }
 func (m *MsgDetachDomainResponse) Reset()		{ *m = MsgDetachDomainResponse{} }
+func (m *MsgDisownAttachment) Reset()			{ *m = MsgDisownAttachment{} }
+func (m *MsgDisownAttachmentResponse) Reset()		{ *m = MsgDisownAttachmentResponse{} }
 func (m *MsgCreateSubdomain) Reset()			{ *m = MsgCreateSubdomain{} }
 func (m *MsgCreateSubdomainResponse) Reset()		{ *m = MsgCreateSubdomainResponse{} }
 
@@ -574,6 +634,8 @@ func (m *MsgAttachDomain) String() string			{ return gogoproto.CompactTextString
 func (m *MsgAttachDomainResponse) String() string		{ return gogoproto.CompactTextString(m) }
 func (m *MsgDetachDomain) String() string			{ return gogoproto.CompactTextString(m) }
 func (m *MsgDetachDomainResponse) String() string		{ return gogoproto.CompactTextString(m) }
+func (m *MsgDisownAttachment) String() string			{ return gogoproto.CompactTextString(m) }
+func (m *MsgDisownAttachmentResponse) String() string		{ return gogoproto.CompactTextString(m) }
 func (m *MsgCreateSubdomain) String() string			{ return gogoproto.CompactTextString(m) }
 func (m *MsgCreateSubdomainResponse) String() string		{ return gogoproto.CompactTextString(m) }
 
@@ -589,6 +651,8 @@ func (*MsgAttachDomain) ProtoMessage()			{}
 func (*MsgAttachDomainResponse) ProtoMessage()		{}
 func (*MsgDetachDomain) ProtoMessage()			{}
 func (*MsgDetachDomainResponse) ProtoMessage()		{}
+func (*MsgDisownAttachment) ProtoMessage()		{}
+func (*MsgDisownAttachmentResponse) ProtoMessage()	{}
 func (*MsgCreateSubdomain) ProtoMessage()		{}
 func (*MsgCreateSubdomainResponse) ProtoMessage()	{}
 
@@ -640,4 +704,10 @@ func (*MsgCreateSubdomain) Descriptor() ([]byte, []int) {
 }
 func (*MsgCreateSubdomainResponse) Descriptor() ([]byte, []int) {
 	return fileDescriptorIdentityRootTx, []int{13}
+}
+func (*MsgDisownAttachment) Descriptor() ([]byte, []int) {
+	return fileDescriptorIdentityRootTx, []int{14}
+}
+func (*MsgDisownAttachmentResponse) Descriptor() ([]byte, []int) {
+	return fileDescriptorIdentityRootTx, []int{15}
 }

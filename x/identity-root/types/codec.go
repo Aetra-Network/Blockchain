@@ -15,6 +15,7 @@ func RegisterLegacyAminoCodec(cdc *codec.LegacyAmino) {
 	cdc.RegisterConcrete(&MsgUpdatePriceTable{}, "l1/identityroot/MsgUpdatePriceTable", nil)
 	cdc.RegisterConcrete(&MsgAttachDomain{}, "l1/identityroot/MsgAttachDomain", nil)
 	cdc.RegisterConcrete(&MsgDetachDomain{}, "l1/identityroot/MsgDetachDomain", nil)
+	cdc.RegisterConcrete(&MsgDisownAttachment{}, "l1/identityroot/MsgDisownAttachment", nil)
 	cdc.RegisterConcrete(&MsgCreateSubdomain{}, "l1/identityroot/MsgCreateSubdomain", nil)
 }
 
@@ -31,6 +32,7 @@ func RegisterInterfaces(registry codectypes.InterfaceRegistry) {
 		&MsgUpdatePriceTable{},
 		&MsgAttachDomain{},
 		&MsgDetachDomain{},
+		&MsgDisownAttachment{},
 		&MsgCreateSubdomain{},
 	)
 	registry.RegisterImplementations(
@@ -41,6 +43,7 @@ func RegisterInterfaces(registry codectypes.InterfaceRegistry) {
 		&MsgUpdatePriceTableResponse{},
 		&MsgAttachDomainResponse{},
 		&MsgDetachDomainResponse{},
+		&MsgDisownAttachmentResponse{},
 		&MsgCreateSubdomainResponse{},
 	)
 }
