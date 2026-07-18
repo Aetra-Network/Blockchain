@@ -1,0 +1,237 @@
+// Multi-token (ERC-1155-style) balance ledger for ATLX / AVM.
+//
+// This is the canonical proof-of-life for a GENUINELY NESTED dictionary type:
+// storage holds Map<address, Map<uint64, uint256>> -- an outer per-owner map
+// whose *value* is itself a whole second map, keyed by numeric token id, whose
+// value is the uint256 balance. Every parser/compiler/runtime layer (parser's
+// generic type-argument grammar, the map-method type inference in the
+// compiler, and CanonicalEncode/CanonicalDecode + OpMapGet/OpMapSet in the
+// VM) is fully generic over TagMap values, so a Map-of-Map was never expected
+// to need special-casing -- this contract is the first one that actually
+// exercises that claim end to end instead of only asserting it by reading the
+// implementation.
+//
+// Surface exercised on the nested dictionary:
+//   - get/set/delete at the OUTER level (per-owner sub-ledger).
+//   - get/set/delete at the INNER level (per-token-id balance).
+//   - the "get the inner map, mutate a value inside it, write the whole inner
+//     map back into the outer map" pattern that is the only way to mutate a
+//     nested map's contents in ATLX today: unlike some host languages, ATLX's
+//     method-call grammar does not support chaining a further `.method(...)`
+//     onto the result of a call (`x.get(a).set(b, c)` does not parse -- this
+//     is a general grammar limitation, not something specific to nested maps;
+//     see x/aetravm/conformance/nested_map_test.go), so the idiom below always
+//     names the intermediate inner map with a local const/var, exactly as
+//     dex_amm.atlx already does for its single-level LP dictionary.
+//   - a storage round-trip: the whole ledger (including live nested map
+//     entries) is written with toChunk() and re-read with fromChunk() on
+//     every message via the standard @store load()/save() pair, so any
+//     multi-message scenario is implicitly a toChunk/fromChunk round-trip
+//     proof for the nested field.
+//
+// Note: this contract inlines the "outer get, default to an empty inner map"
+// pattern at every call site rather than factoring it into a shared @pure
+// helper function. AVM v1 only inlines a user-defined function call whose
+// body is zero-or-more `lazy` storage bindings followed by a single return
+// (see E_LOWER_CALL in compile.go); a helper with an ordinary `const found =
+// st.balances.get(owner)` binding does not qualify, so the pattern is
+// repeated inline instead, matching the existing dex_amm.atlx style.
+
+const ERR_NO_OWNER = 3001
+const ERR_NO_TOKEN = 3002
+const ERR_INSUFFICIENT = 3003
+
+// Upper bound when scanning a dictionary in a read-only getter.
+const MAX_SCAN = 255
+
+// Inner per-token-id balance table. Naming it lets the contract construct a
+// fresh empty inner map with InnerLedger.empty() when an owner has no
+// sub-ledger yet (a bare `Map<uint64, uint256>.empty()` literal is not valid
+// call syntax -- the receiver of a builtin method call must be a value or a
+// named type, and a single-member type alias resolves to its underlying Map
+// type for that purpose, the same mechanism used for @message unions).
+type InnerLedger = Map<uint64, uint256>
+
+@storage
+struct LedgerStorage {
+    // Outer map: owner address -> that owner's per-token-id balance table.
+    balances: Map<address, InnerLedger>
+}
+
+@message(0x7401)
+struct Credit {
+    tokenId: uint64
+    amount: uint256
+}
+
+@message(0x7402)
+struct Burn {
+    tokenId: uint64
+    amount: uint256
+}
+
+@message(0x7403)
+struct Transfer {
+    to: address
+    tokenId: uint64
+    amount: uint256
+}
+
+type LedgerMsg = Credit | Burn | Transfer
+
+contract MultiIdLedger {
+    author: "Aetralis example"
+    description: "Per-owner, per-token-id balance registry backed by a nested Map<address, Map<uint64, uint256>>"
+    version: "0.01.0"
+
+    storage: LedgerStorage
+    incomingMessages: LedgerMsg
+
+    @store
+    func LedgerStorage.load() {
+        return LedgerStorage.fromChunk(contract.getData())
+    }
+
+    @store
+    func LedgerStorage.save(self) {
+        contract.setData(self.toChunk())
+    }
+
+    @internal
+    func onInternalMessage(in: InMessage) {
+        const msg = lazy LedgerMsg.fromSegment(in.body)
+        const owner = in.senderAddress
+
+        match (msg) {
+            Credit => {
+                var st = lazy LedgerStorage.load()
+
+                // --- outer get, defaulting to an empty inner map ---
+                const existingInner = st.balances.get(owner)
+                const inner = (existingInner == null) ? InnerLedger.empty() : existingInner!
+
+                // --- inner get, defaulting to zero ---
+                const existingAmount = inner.get(msg.tokenId)
+                const current = (existingAmount == null) ? 0 : existingAmount!
+
+                // --- inner set ---
+                const updatedInner = inner.set(msg.tokenId, current + msg.amount)
+
+                // --- outer set (write the whole inner map back) ---
+                st.balances = st.balances.set(owner, updatedInner)
+                st.save()
+            }
+
+            Burn => {
+                var st = lazy LedgerStorage.load()
+                assert (st.balances.has(owner)) throw ERR_NO_OWNER
+
+                const inner = st.balances.get(owner)!
+                const existingAmount = inner.get(msg.tokenId)
+                assert (existingAmount != null) throw ERR_NO_TOKEN
+                const currentAmount = existingAmount!
+                assert (currentAmount >= msg.amount) throw ERR_INSUFFICIENT
+
+                const remaining = currentAmount - msg.amount
+
+                // --- inner delete when the position is fully burned,
+                //     otherwise inner set with the remainder ---
+                const updatedInner = (remaining == 0)
+                    ? inner.delete(msg.tokenId)
+                    : inner.set(msg.tokenId, remaining)
+
+                // --- outer delete when the owner's whole sub-ledger is now
+                //     empty, otherwise outer set with the updated sub-ledger ---
+                st.balances = (updatedInner.len() == 0)
+                    ? st.balances.delete(owner)
+                    : st.balances.set(owner, updatedInner)
+                st.save()
+            }
+
+            Transfer => {
+                var st = lazy LedgerStorage.load()
+                assert (st.balances.has(owner)) throw ERR_NO_OWNER
+
+                // Sender side: inner get -> inner mutate -> outer writeback.
+                const senderInner = st.balances.get(owner)!
+                const senderExisting = senderInner.get(msg.tokenId)
+                assert (senderExisting != null) throw ERR_NO_TOKEN
+                const senderAmount = senderExisting!
+                assert (senderAmount >= msg.amount) throw ERR_INSUFFICIENT
+
+                const senderRemaining = senderAmount - msg.amount
+                const updatedSenderInner = (senderRemaining == 0)
+                    ? senderInner.delete(msg.tokenId)
+                    : senderInner.set(msg.tokenId, senderRemaining)
+                st.balances = (updatedSenderInner.len() == 0)
+                    ? st.balances.delete(owner)
+                    : st.balances.set(owner, updatedSenderInner)
+
+                // Receiver side: outer get-or-empty -> inner mutate -> outer
+                // writeback. Same nested get/set idiom as Credit, on a
+                // second, independent outer key within the same message.
+                const existingReceiverInner = st.balances.get(msg.to)
+                const receiverInner = (existingReceiverInner == null) ? InnerLedger.empty() : existingReceiverInner!
+                const existingReceiverAmount = receiverInner.get(msg.tokenId)
+                const receiverAmount = (existingReceiverAmount == null) ? 0 : existingReceiverAmount!
+                const updatedReceiverInner = receiverInner.set(msg.tokenId, receiverAmount + msg.amount)
+                st.balances = st.balances.set(msg.to, updatedReceiverInner)
+
+                st.save()
+            }
+
+            else => {
+                assert (in.body.isEmpty()) throw 0xFFFF
+            }
+        }
+    }
+
+    @bounced
+    func onBouncedMessage(in: InMessageBounced) {
+    }
+
+    // Nested read: a single owner/token-id balance, defaulting to 0.
+    @get
+    func balanceOf(owner: address, tokenId: uint64): uint256 {
+        const st = lazy LedgerStorage.load()
+        const existingInner = st.balances.get(owner)
+        const inner = (existingInner == null) ? InnerLedger.empty() : existingInner!
+        const existingAmount = inner.get(tokenId)
+        return (existingAmount == null) ? 0 : existingAmount!
+    }
+
+    // Outer membership test: does this owner have any sub-ledger at all.
+    @get
+    func hasOwner(owner: address): uint64 {
+        const st = lazy LedgerStorage.load()
+        return st.balances.has(owner) ? 1 : 0
+    }
+
+    // Inner membership test: does this owner hold this specific token id.
+    @get
+    func hasToken(owner: address, tokenId: uint64): uint64 {
+        const st = lazy LedgerStorage.load()
+        const existingInner = st.balances.get(owner)
+        const inner = (existingInner == null) ? InnerLedger.empty() : existingInner!
+        return inner.has(tokenId) ? 1 : 0
+    }
+
+    // Cardinality of an owner's inner ledger (how many distinct token ids).
+    @get
+    func tokenCountForOwner(owner: address): uint64 {
+        const st = lazy LedgerStorage.load()
+        const existingInner = st.balances.get(owner)
+        const inner = (existingInner == null) ? InnerLedger.empty() : existingInner!
+        return inner.len()
+    }
+
+    // Cardinality of the outer ledger (how many distinct owners), exercised
+    // via keys() -- proving the outer map's list/scan surface is unaffected
+    // by its value type being itself a map.
+    @get
+    func ownerCount(): uint64 {
+        const st = lazy LedgerStorage.load()
+        const keys = st.balances.keys(MAX_SCAN)
+        return keys.len()
+    }
+}
