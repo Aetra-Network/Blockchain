@@ -9,7 +9,7 @@ network/fs/threads); crypto and heavy math are VM intrinsics with explicit gas, 
 Worked in adversarially-verified phases; each phase ships reference contracts proven to compile AND
 execute through the real VM, not just parse.
 
-## Phase A — byte-exact crypto + safe mulDiv (IN PROGRESS)
+## Phase A — byte-exact crypto + safe mulDiv (DONE)
 sha256/keccak256/ripemd160/sha512/blake2b opcodes (distinct from the chunk-tree hash()); byte ops
 concat/slice/byteAt/toBytesBE/fromBytesBE; mulDiv(u256); secp256k1 verify + ecrecover; ed25519 -> ZIP-215
 (ed25519consensus). Gas per input byte. Reference: PoW miner, sig wallet (ed25519+secp256k1), DEX on u256.
@@ -35,20 +35,28 @@ mark-PnL + maintenance-margin liquidation check, and a sqrt-price / geometric-me
 These are DEMONSTRATIONS of the primitives, not full protocols. The FULL reference contracts named above
 (production CL-AMM with per-tick liquidity, a perpetual with periodic funding, lending with a price oracle
 and real liquidations) remain BLOCKED on language upgrades surfaced by the AVM v1 capability probe:
-- (a) struct field access on VALUE types (today only storage-struct fields are readable; value structs
-  cannot carry data, which is why Ratio/Decimal are naming conventions over raw scalars rather than types);
-- (b) a `fullMul512` / `mulCmp512` intrinsic so a Ratio compare is correct over the FULL uint256 range
-  (the current cross-multiply `ratioGtBounded` is only overflow-safe when each operand is below 2^128);
-- (c) signed `mulDiv` (signed scaled multiply/divide) for scaled signed math — funding indices, signed
-  Decimal accumulation — which today has no intrinsic (only unsigned `mulDiv` exists).
+- (a) struct field access on VALUE types -- STILL OPEN, and more specific than first scoped: a LOCAL
+  variable of struct type can already read/write a field today (a struct literal lowers to a runtime map,
+  and OpReadField has a map-keyed-field branch), but a struct-typed FUNCTION PARAMETER cannot -- parameters
+  are always decoded as scalar message-body fields, and the field-access path has no case for a parameter
+  binding. This is the one gap left before Ratio256/BasisPoints/Decimal can be real, invariant-enforcing
+  structs instead of raw-scalar naming conventions (a shared library function taking one as an argument
+  needs exactly the blocked case).
+- (b) DONE -- `mulCmp` (opcode 0x56, full-range sign(a*b-c*d) at unbounded width) shipped; `ratioCmp` /
+  `ratioGtFull` in the finance stdlib now compare over the FULL uint256 range, not just below 2^128.
+- (c) DONE -- `mulDivSigned` (opcode 0x57, signed (a*b)/c truncated toward zero) shipped; `decMulSigned` /
+  `pnlScale` use it for signed scaled math.
 
-These are concrete Phase E / follow-up items; until they land, the finance library stays a
+(a) is the one remaining Phase E / follow-up item; until it lands, the finance library stays a
 primitive-level demonstration, honestly labelled as such in each contract header.
 
-## Phase C — bridge / light-client primitives
-merkle_verify (parameterized by hash algo), batched signature verification, validator-set-change
-verification helpers. Reference: a light-client verify stub (verify a foreign header's sig-set + a merkle
-proof).
+## Phase C — bridge / light-client primitives (DONE)
+merkle_verify (RFC-6962 domain-separated: leaf = H(0x00||data), internal node = H(0x01||left||right), so
+an internal node can never be replayed as a leaf), parameterized by hash algo (sha256/keccak256); batched
+secp256k1 verification over a validator set with distinct-signer dedup and a strict >2/3 threshold.
+Reference: `examples/avm/bridge/bridge_verify.atlx` — a light-client accept path requiring BOTH signature
+quorum AND merkle inclusion against a header's stateRoot, proven via known-answer + adversarial (forged-leaf,
+tampered-proof, duplicate-signer) conformance vectors.
 
 ## Phase D — advanced crypto (ZK / pairing)
 BLS12-381, BN254, pairing_check, Poseidon hash, KZG verification, Groth16/PLONK verify intrinsics.
