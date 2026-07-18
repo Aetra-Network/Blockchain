@@ -376,3 +376,105 @@ func TestDrainResultIsIdenticalRegardlessOfEnqueueOrder(t *testing.T) {
 	require.Equal(t, svcA.RawStore().Snapshot(), svcB.RawStore().Snapshot(),
 		"the committed result must be identical regardless of enqueue order")
 }
+
+// --- 6. genesis round-trip of in-flight message-bus state -------------------
+
+// TestGenesisRoundTripsInFlightMessageBusState is the regression proof for the
+// completeness gap in the original 3-field GenesisState (Params/RoutingTable/
+// Zones only): a genesis export taken while a cross-zone message was enqueued
+// but not yet drained silently dropped the message -- and, separately, a
+// genesis export taken after delivery silently dropped the committed
+// exactly-once marker -- with no error, no bounce, no event. GenesisState now
+// also carries the outbox, its per-(zone,sender) sequence counters, the
+// inbox, and the processed-marker set, so both round-trip exactly.
+//
+// It drives the whole lifecycle across TWO restores (a chain upgrade while a
+// message is in flight, and a second one after it is terminal), because the
+// two failure modes -- losing an in-flight message vs. losing a dedupe marker
+// -- are independent and each needs its own export/import to exercise.
+func TestGenesisRoundTripsInFlightMessageBusState(t *testing.T) {
+	k, _ := busKeeper(t)
+	msg, sender, _ := enqueueCross(t, k, 21000)
+	senderID, err := addressing.NormalizeToAccountIdentity(sender)
+	require.NoError(t, err)
+
+	// Export at H (10000): scheduled for 10001, so the message is enqueued
+	// (outbox + inbox + its sequence counter) but not yet drained.
+	exported, err := k.ExportGenesisState(busCtx(10000))
+	require.NoError(t, err)
+	require.NoError(t, exported.Validate())
+	require.Len(t, exported.PendingOutboxMessages, 1, "the in-flight message must be exported, not dropped")
+	require.Equal(t, msg.ID, exported.PendingOutboxMessages[0].ID)
+	require.Len(t, exported.PendingInboxMessages, 1)
+	require.Equal(t, msg.ID, exported.PendingInboxMessages[0].ID)
+	require.Len(t, exported.OutboxSequences, 1)
+	require.Empty(t, exported.ProcessedMarkers, "nothing is terminal yet")
+
+	// Init a FRESH keeper/store from that export -- a chain-upgrade genesis
+	// while the message is in flight. Before the fix this produced an empty
+	// bus with no error, no bounce, and no event: the message was simply gone.
+	freshSvc := kvtest.NewStoreService()
+	fresh := NewPersistentKeeper(freshSvc)
+	require.NoError(t, fresh.InitGenesisState(busCtx(1), exported))
+
+	restoredMsg, found, err := fresh.GetOutboxMessage(busCtx(10000), msg.SourceZone, senderID, msg.SourceSeq)
+	require.NoError(t, err)
+	require.True(t, found, "the outbox audit record must survive the round-trip")
+	require.Equal(t, msg.ID, restoredMsg.ID)
+
+	due, err := fresh.scanDueInbox(busCtx(10000), 10000)
+	require.NoError(t, err)
+	require.Empty(t, due, "same-block delivery must still be impossible at H on the restored keeper")
+
+	// H+1: the restored keeper's BeginBlocker delivers the message exactly as
+	// the original keeper would have.
+	require.NoError(t, fresh.BeginBlocker(busCtx(10001)))
+	m, found, err := fresh.GetProcessedMarker(busCtx(10001), msg.ID)
+	require.NoError(t, err)
+	require.True(t, found, "the message must arrive at H+1 on the restored keeper")
+	require.Equal(t, types.ReceiptStatusSuccess, m.Status)
+
+	due, err = fresh.scanDueInbox(busCtx(10001), 10001)
+	require.NoError(t, err)
+	require.Empty(t, due, "the restored inbox must drain")
+
+	_, found, err = fresh.GetOutboxMessage(busCtx(10001), msg.SourceZone, senderID, msg.SourceSeq)
+	require.NoError(t, err)
+	require.False(t, found, "the outbox record must be pruned once terminal")
+
+	// A replay of the SAME message injected directly against the restored
+	// keeper must be deduped by the restored ProcessedMarker set, not
+	// redelivered.
+	require.NoError(t, fresh.putInbox(busCtx(10002), msg))
+	require.NoError(t, fresh.BeginBlocker(busCtx(10002)))
+	due, err = fresh.scanDueInbox(busCtx(10002), 10002)
+	require.NoError(t, err)
+	require.Empty(t, due, "a replayed message against the restored keeper must be consumed, not redelivered")
+	m2, _, err := fresh.GetProcessedMarker(busCtx(10002), msg.ID)
+	require.NoError(t, err)
+	require.Equal(t, m, m2, "the marker must stay the original SUCCESS, not record a second delivery")
+
+	// A SECOND genesis export/import, now that the message is terminal: the
+	// dedupe marker must round-trip too, or a second chain upgrade would
+	// silently re-open the door to redelivery.
+	finalExport, err := fresh.ExportGenesisState(busCtx(10002))
+	require.NoError(t, err)
+	require.NoError(t, finalExport.Validate())
+	require.Empty(t, finalExport.PendingOutboxMessages, "the terminal message must not still be in the outbox")
+	require.Empty(t, finalExport.PendingInboxMessages, "the terminal message must not still be in the inbox")
+	require.Len(t, finalExport.ProcessedMarkers, 1, "the terminal marker must be exported")
+	require.Equal(t, msg.ID, finalExport.ProcessedMarkers[0].MessageID)
+
+	secondSvc := kvtest.NewStoreService()
+	second := NewPersistentKeeper(secondSvc)
+	require.NoError(t, second.InitGenesisState(busCtx(1), finalExport))
+	require.NoError(t, second.putInbox(busCtx(10003), msg))
+	require.NoError(t, second.BeginBlocker(busCtx(10003)))
+	due, err = second.scanDueInbox(busCtx(10003), 10003)
+	require.NoError(t, err)
+	require.Empty(t, due, "a second-generation restored keeper must still dedupe the original message")
+	m3, found, err := second.GetProcessedMarker(busCtx(10003), msg.ID)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, types.ReceiptStatusSuccess, m3.Status, "no second delivery, no bounce, across two restores")
+}
