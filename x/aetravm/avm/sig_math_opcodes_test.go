@@ -261,6 +261,27 @@ func TestAVMIsqrt(t *testing.T) {
 	require.Equal(t, 0, got.Cmp(max128), "isqrt(2^256-1)=2^128-1")
 }
 
+// TestAVMIsqrtNegativeTraps is the regression for the audit finding on OpIsqrt
+// (0x55): a negative SIGNED operand is reachable in a validated program (the
+// verifier does no stack-type analysis, so isqrt can be fed int256(-1) via OpNeg
+// or a signed message field), and big.Int.Sqrt PANICS on a negative value. The
+// guard must instead TRAP with a returned error, exactly like mulDiv's zero
+// divisor, so the Run loop can never panic on this opcode.
+func TestAVMIsqrtNegativeTraps(t *testing.T) {
+	// int256(-1) is a constructible signed operand: enforceIntWidth permits
+	// negatives for signed tags, which is precisely why the guard is required.
+	neg, err := runtimeFromBigIntChecked(TagInt256, big.NewInt(-1))
+	require.NoError(t, err)
+	got, err := neg.AsBigInt()
+	require.NoError(t, err)
+	require.Equal(t, -1, got.Sign(), "sanity: the operand is negative")
+
+	require.NotPanics(t, func() {
+		_, ierr := runtimeIsqrt(neg)
+		require.Error(t, ierr, "isqrt(negative) must trap with an error, not panic")
+	})
+}
+
 // TestAVMEd25519ConsensusVerify proves the ed25519 opcode (now backed by
 // ed25519consensus / ZIP-215) still verifies an ordinary stdlib-produced
 // signature and rejects a tampered one, so the verification-set change did not

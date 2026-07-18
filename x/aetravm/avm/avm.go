@@ -2153,8 +2153,16 @@ func runtimeIsqrt(a RuntimeValue) (RuntimeValue, error) {
 	if err != nil {
 		return RuntimeValue{}, err
 	}
-	// Operands are unsigned (uint256), so Sqrt is always defined; floor(sqrt(ai))
-	// is at most 128-bit and therefore always fits the checked uint256 result.
+	// A signed operand can be negative: the verifier does no stack-type analysis,
+	// so a validated program can reach isqrt with e.g. int256(-1) (via OpNeg or a
+	// signed message field). big.Int.Sqrt PANICS on a negative value, which would
+	// violate the VM's trap-don't-panic contract, so guard it and TRAP
+	// deterministically -- exactly like the zero divisor in runtimeMulDiv. For a
+	// non-negative operand floor(sqrt(ai)) is at most 128-bit and therefore always
+	// fits the checked uint256 result.
+	if ai.Sign() < 0 {
+		return RuntimeValue{}, errors.New("AVM isqrt requires a non-negative value")
+	}
 	root := new(big.Int).Sqrt(ai)
 	return runtimeFromBigIntChecked(TagUint256, root)
 }
