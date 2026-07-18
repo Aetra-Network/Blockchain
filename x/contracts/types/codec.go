@@ -19,6 +19,10 @@ func RegisterLegacyAminoCodec(cdc *codec.LegacyAmino) {
 	cdc.RegisterConcrete(&MsgTopUpContract{}, "l1/contracts/MsgTopUpContract", nil)
 	cdc.RegisterConcrete(&MsgPayContractStorageDebt{}, "l1/contracts/MsgPayContractStorageDebt", nil)
 	cdc.RegisterConcrete(&MsgUnfreezeContract{}, "l1/contracts/MsgUnfreezeContract", nil)
+	cdc.RegisterConcrete(&MsgUpgradeContractCode{}, "l1/contracts/MsgUpgradeContractCode", nil)
+	cdc.RegisterConcrete(&MsgMigrateContractState{}, "l1/contracts/MsgMigrateContractState", nil)
+	cdc.RegisterConcrete(&MsgSetContractAdmin{}, "l1/contracts/MsgSetContractAdmin", nil)
+	cdc.RegisterConcrete(&MsgDisableContractUpgrades{}, "l1/contracts/MsgDisableContractUpgrades", nil)
 }
 
 func RegisterInterfaces(registry codectypes.InterfaceRegistry) {
@@ -35,6 +39,10 @@ func RegisterInterfaces(registry codectypes.InterfaceRegistry) {
 		&MsgTopUpContract{},
 		&MsgPayContractStorageDebt{},
 		&MsgUnfreezeContract{},
+		&MsgUpgradeContractCode{},
+		&MsgMigrateContractState{},
+		&MsgSetContractAdmin{},
+		&MsgDisableContractUpgrades{},
 	)
 	registry.RegisterImplementations(
 		(*txtypes.MsgResponse)(nil),
@@ -48,5 +56,9 @@ func RegisterInterfaces(registry codectypes.InterfaceRegistry) {
 		&MsgTopUpContractResponse{},
 		&MsgPayContractStorageDebtResponse{},
 		&MsgUnfreezeContractResponse{},
+		&MsgUpgradeContractCodeResponse{},
+		&MsgMigrateContractStateResponse{},
+		&MsgSetContractAdminResponse{},
+		&MsgDisableContractUpgradesResponse{},
 	)
 }

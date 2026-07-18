@@ -189,6 +189,87 @@ func (m grpcMsgServer) UnfreezeContract(ctx context.Context, msg *types.MsgUnfre
 	return &types.MsgUnfreezeContractResponse{Contract: contract}, nil
 }
 
+// UpgradeContractCode, MigrateContractState, SetContractAdmin, and
+// DisableContractUpgrades below compose the keeper's existing (already
+// authorized, already unit-tested) business-logic methods with writeGenesis
+// inline, the same way ExecuteInternal/SendInternalMessage/
+// UpdateContractParams/SubmitSecurityAttestation/RevokeSecurityAttestation do
+// above -- rather than adding a dedicated "...State" keeper wrapper (the
+// InstantiateContractState/ExecuteExternalState pattern) -- because the
+// keeper's own method here is already named MigrateContractState, so a
+// wrapper following that convention would have to be named
+// "MigrateContractStateState". Composing in the msg server avoids that and
+// stays exactly consistent with the five sibling handlers already using this
+// shape in this file.
+
+func (m grpcMsgServer) UpgradeContractCode(ctx context.Context, msg *types.MsgUpgradeContractCode) (*types.MsgUpgradeContractCodeResponse, error) {
+	if msg == nil {
+		return nil, errors.New("empty contracts upgrade-code request")
+	}
+	if err := m.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
+	receipt, err := m.keeper.UpgradeContractCode(*msg)
+	if err != nil {
+		return nil, err
+	}
+	if err := m.keeper.writeGenesis(ctx); err != nil {
+		return nil, err
+	}
+	return &types.MsgUpgradeContractCodeResponse{Receipt: receipt}, nil
+}
+
+func (m grpcMsgServer) MigrateContractState(ctx context.Context, msg *types.MsgMigrateContractState) (*types.MsgMigrateContractStateResponse, error) {
+	if msg == nil {
+		return nil, errors.New("empty contracts migrate-state request")
+	}
+	if err := m.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
+	receipt, err := m.keeper.MigrateContractState(*msg)
+	if err != nil {
+		return nil, err
+	}
+	if err := m.keeper.writeGenesis(ctx); err != nil {
+		return nil, err
+	}
+	return &types.MsgMigrateContractStateResponse{Receipt: receipt}, nil
+}
+
+func (m grpcMsgServer) SetContractAdmin(ctx context.Context, msg *types.MsgSetContractAdmin) (*types.MsgSetContractAdminResponse, error) {
+	if msg == nil {
+		return nil, errors.New("empty contracts set-admin request")
+	}
+	if err := m.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
+	receipt, err := m.keeper.SetContractAdmin(*msg)
+	if err != nil {
+		return nil, err
+	}
+	if err := m.keeper.writeGenesis(ctx); err != nil {
+		return nil, err
+	}
+	return &types.MsgSetContractAdminResponse{Receipt: receipt}, nil
+}
+
+func (m grpcMsgServer) DisableContractUpgrades(ctx context.Context, msg *types.MsgDisableContractUpgrades) (*types.MsgDisableContractUpgradesResponse, error) {
+	if msg == nil {
+		return nil, errors.New("empty contracts disable-upgrades request")
+	}
+	if err := m.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
+	receipt, err := m.keeper.DisableContractUpgrades(*msg)
+	if err != nil {
+		return nil, err
+	}
+	if err := m.keeper.writeGenesis(ctx); err != nil {
+		return nil, err
+	}
+	return &types.MsgDisableContractUpgradesResponse{Receipt: receipt}, nil
+}
+
 func (q grpcQueryServer) Params(context.Context, *types.QueryParamsRequest) (*types.QueryParamsResponse, error) {
 	return &types.QueryParamsResponse{Params: q.keeper.Params()}, nil
 }

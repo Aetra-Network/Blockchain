@@ -28,6 +28,10 @@ const (
 	MsgTopUpContractTypeURL             = "/l1.contracts.v1.MsgTopUpContract"
 	MsgPayContractStorageDebtTypeURL    = "/l1.contracts.v1.MsgPayContractStorageDebt"
 	MsgUnfreezeContractTypeURL          = "/l1.contracts.v1.MsgUnfreezeContract"
+	MsgUpgradeContractCodeTypeURL       = "/l1.contracts.v1.MsgUpgradeContractCode"
+	MsgMigrateContractStateTypeURL      = "/l1.contracts.v1.MsgMigrateContractState"
+	MsgSetContractAdminTypeURL          = "/l1.contracts.v1.MsgSetContractAdmin"
+	MsgDisableContractUpgradesTypeURL   = "/l1.contracts.v1.MsgDisableContractUpgrades"
 )
 
 type GRPCMsgServer interface {
@@ -42,6 +46,10 @@ type GRPCMsgServer interface {
 	TopUpContract(context.Context, *MsgTopUpContract) (*MsgTopUpContractResponse, error)
 	PayContractStorageDebt(context.Context, *MsgPayContractStorageDebt) (*MsgPayContractStorageDebtResponse, error)
 	UnfreezeContract(context.Context, *MsgUnfreezeContract) (*MsgUnfreezeContractResponse, error)
+	UpgradeContractCode(context.Context, *MsgUpgradeContractCode) (*MsgUpgradeContractCodeResponse, error)
+	MigrateContractState(context.Context, *MsgMigrateContractState) (*MsgMigrateContractStateResponse, error)
+	SetContractAdmin(context.Context, *MsgSetContractAdmin) (*MsgSetContractAdminResponse, error)
+	DisableContractUpgrades(context.Context, *MsgDisableContractUpgrades) (*MsgDisableContractUpgradesResponse, error)
 }
 
 type UnimplementedGRPCMsgServer struct{}
@@ -78,6 +86,18 @@ func (UnimplementedGRPCMsgServer) PayContractStorageDebt(context.Context, *MsgPa
 }
 func (UnimplementedGRPCMsgServer) UnfreezeContract(context.Context, *MsgUnfreezeContract) (*MsgUnfreezeContractResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method UnfreezeContract not implemented")
+}
+func (UnimplementedGRPCMsgServer) UpgradeContractCode(context.Context, *MsgUpgradeContractCode) (*MsgUpgradeContractCodeResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method UpgradeContractCode not implemented")
+}
+func (UnimplementedGRPCMsgServer) MigrateContractState(context.Context, *MsgMigrateContractState) (*MsgMigrateContractStateResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method MigrateContractState not implemented")
+}
+func (UnimplementedGRPCMsgServer) SetContractAdmin(context.Context, *MsgSetContractAdmin) (*MsgSetContractAdminResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SetContractAdmin not implemented")
+}
+func (UnimplementedGRPCMsgServer) DisableContractUpgrades(context.Context, *MsgDisableContractUpgrades) (*MsgDisableContractUpgradesResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method DisableContractUpgrades not implemented")
 }
 
 type GRPCQueryServer interface {
@@ -183,6 +203,18 @@ var Msg_serviceDesc = grpcgo.ServiceDesc{
 		{MethodName: "UnfreezeContract", Handler: msgHandler(func(s GRPCMsgServer, ctx context.Context, req any) (any, error) {
 			return s.UnfreezeContract(ctx, req.(*MsgUnfreezeContract))
 		}, newMsgUnfreezeContract)},
+		{MethodName: "UpgradeContractCode", Handler: msgHandler(func(s GRPCMsgServer, ctx context.Context, req any) (any, error) {
+			return s.UpgradeContractCode(ctx, req.(*MsgUpgradeContractCode))
+		}, newMsgUpgradeContractCode)},
+		{MethodName: "MigrateContractState", Handler: msgHandler(func(s GRPCMsgServer, ctx context.Context, req any) (any, error) {
+			return s.MigrateContractState(ctx, req.(*MsgMigrateContractState))
+		}, newMsgMigrateContractState)},
+		{MethodName: "SetContractAdmin", Handler: msgHandler(func(s GRPCMsgServer, ctx context.Context, req any) (any, error) {
+			return s.SetContractAdmin(ctx, req.(*MsgSetContractAdmin))
+		}, newMsgSetContractAdmin)},
+		{MethodName: "DisableContractUpgrades", Handler: msgHandler(func(s GRPCMsgServer, ctx context.Context, req any) (any, error) {
+			return s.DisableContractUpgrades(ctx, req.(*MsgDisableContractUpgrades))
+		}, newMsgDisableContractUpgrades)},
 	},
 	Streams:  []grpcgo.StreamDesc{},
 	Metadata: "l1/contracts/v1/tx.proto",
@@ -283,6 +315,10 @@ func newMsgRevokeSecurityAttestation() any { return new(MsgRevokeSecurityAttesta
 func newMsgTopUpContract() any             { return new(MsgTopUpContract) }
 func newMsgPayContractStorageDebt() any    { return new(MsgPayContractStorageDebt) }
 func newMsgUnfreezeContract() any          { return new(MsgUnfreezeContract) }
+func newMsgUpgradeContractCode() any       { return new(MsgUpgradeContractCode) }
+func newMsgMigrateContractState() any      { return new(MsgMigrateContractState) }
+func newMsgSetContractAdmin() any          { return new(MsgSetContractAdmin) }
+func newMsgDisableContractUpgrades() any   { return new(MsgDisableContractUpgrades) }
 func newQueryParamsRequest() any           { return new(QueryParamsRequest) }
 func newQueryCodeRequest() any             { return new(QueryCodeRequest) }
 func newQueryCodesRequest() any            { return new(QueryCodesRequest) }
@@ -311,6 +347,10 @@ func init() {
 	gogoproto.RegisterType((*MsgTopUpContract)(nil), "l1.contracts.v1.MsgTopUpContract")
 	gogoproto.RegisterType((*MsgPayContractStorageDebt)(nil), "l1.contracts.v1.MsgPayContractStorageDebt")
 	gogoproto.RegisterType((*MsgUnfreezeContract)(nil), "l1.contracts.v1.MsgUnfreezeContract")
+	gogoproto.RegisterType((*MsgUpgradeContractCode)(nil), "l1.contracts.v1.MsgUpgradeContractCode")
+	gogoproto.RegisterType((*MsgMigrateContractState)(nil), "l1.contracts.v1.MsgMigrateContractState")
+	gogoproto.RegisterType((*MsgSetContractAdmin)(nil), "l1.contracts.v1.MsgSetContractAdmin")
+	gogoproto.RegisterType((*MsgDisableContractUpgrades)(nil), "l1.contracts.v1.MsgDisableContractUpgrades")
 	gogoproto.RegisterType((*StoreCodeResponse)(nil), "l1.contracts.v1.MsgStoreCodeResponse")
 	gogoproto.RegisterType((*InstantiateContractResponse)(nil), "l1.contracts.v1.MsgDeployContractResponse")
 	gogoproto.RegisterType((*ExecuteContractResponse)(nil), "l1.contracts.v1.MsgExecuteExternalResponse")
@@ -321,6 +361,10 @@ func init() {
 	gogoproto.RegisterType((*MsgTopUpContractResponse)(nil), "l1.contracts.v1.MsgTopUpContractResponse")
 	gogoproto.RegisterType((*MsgPayContractStorageDebtResponse)(nil), "l1.contracts.v1.MsgPayContractStorageDebtResponse")
 	gogoproto.RegisterType((*MsgUnfreezeContractResponse)(nil), "l1.contracts.v1.MsgUnfreezeContractResponse")
+	gogoproto.RegisterType((*MsgUpgradeContractCodeResponse)(nil), "l1.contracts.v1.MsgUpgradeContractCodeResponse")
+	gogoproto.RegisterType((*MsgMigrateContractStateResponse)(nil), "l1.contracts.v1.MsgMigrateContractStateResponse")
+	gogoproto.RegisterType((*MsgSetContractAdminResponse)(nil), "l1.contracts.v1.MsgSetContractAdminResponse")
+	gogoproto.RegisterType((*MsgDisableContractUpgradesResponse)(nil), "l1.contracts.v1.MsgDisableContractUpgradesResponse")
 	gogoproto.RegisterType((*QueryParamsRequest)(nil), "l1.contracts.v1.QueryParamsRequest")
 	gogoproto.RegisterType((*QueryParamsResponse)(nil), "l1.contracts.v1.QueryParamsResponse")
 	gogoproto.RegisterType((*QueryCodeRequest)(nil), "l1.contracts.v1.QueryCodeRequest")
@@ -672,6 +716,70 @@ func (*MsgUnfreezeContractResponse) XXX_MessageName() string {
 	return "l1.contracts.v1.MsgUnfreezeContractResponse"
 }
 
+func (m *MsgUpgradeContractCode) Reset()                { *m = MsgUpgradeContractCode{} }
+func (m *MsgUpgradeContractCode) String() string        { return gogoproto.CompactTextString(m) }
+func (*MsgUpgradeContractCode) ProtoMessage()           {}
+func (*MsgUpgradeContractCode) XXX_MessageName() string { return "l1.contracts.v1.MsgUpgradeContractCode" }
+func (*MsgUpgradeContractCode) Descriptor() ([]byte, []int) {
+	return fileDescriptorContractsTx, []int{27}
+}
+
+func (m *MsgUpgradeContractCodeResponse) Reset()         { *m = MsgUpgradeContractCodeResponse{} }
+func (m *MsgUpgradeContractCodeResponse) String() string { return gogoproto.CompactTextString(m) }
+func (*MsgUpgradeContractCodeResponse) ProtoMessage()    {}
+func (*MsgUpgradeContractCodeResponse) XXX_MessageName() string {
+	return "l1.contracts.v1.MsgUpgradeContractCodeResponse"
+}
+
+func (m *MsgMigrateContractState) Reset()         { *m = MsgMigrateContractState{} }
+func (m *MsgMigrateContractState) String() string { return gogoproto.CompactTextString(m) }
+func (*MsgMigrateContractState) ProtoMessage()    {}
+func (*MsgMigrateContractState) XXX_MessageName() string {
+	return "l1.contracts.v1.MsgMigrateContractState"
+}
+func (*MsgMigrateContractState) Descriptor() ([]byte, []int) {
+	return fileDescriptorContractsTx, []int{29}
+}
+
+func (m *MsgMigrateContractStateResponse) Reset()         { *m = MsgMigrateContractStateResponse{} }
+func (m *MsgMigrateContractStateResponse) String() string { return gogoproto.CompactTextString(m) }
+func (*MsgMigrateContractStateResponse) ProtoMessage()    {}
+func (*MsgMigrateContractStateResponse) XXX_MessageName() string {
+	return "l1.contracts.v1.MsgMigrateContractStateResponse"
+}
+
+func (m *MsgSetContractAdmin) Reset()                { *m = MsgSetContractAdmin{} }
+func (m *MsgSetContractAdmin) String() string        { return gogoproto.CompactTextString(m) }
+func (*MsgSetContractAdmin) ProtoMessage()           {}
+func (*MsgSetContractAdmin) XXX_MessageName() string { return "l1.contracts.v1.MsgSetContractAdmin" }
+func (*MsgSetContractAdmin) Descriptor() ([]byte, []int) {
+	return fileDescriptorContractsTx, []int{31}
+}
+
+func (m *MsgSetContractAdminResponse) Reset()         { *m = MsgSetContractAdminResponse{} }
+func (m *MsgSetContractAdminResponse) String() string { return gogoproto.CompactTextString(m) }
+func (*MsgSetContractAdminResponse) ProtoMessage()    {}
+func (*MsgSetContractAdminResponse) XXX_MessageName() string {
+	return "l1.contracts.v1.MsgSetContractAdminResponse"
+}
+
+func (m *MsgDisableContractUpgrades) Reset()         { *m = MsgDisableContractUpgrades{} }
+func (m *MsgDisableContractUpgrades) String() string { return gogoproto.CompactTextString(m) }
+func (*MsgDisableContractUpgrades) ProtoMessage()    {}
+func (*MsgDisableContractUpgrades) XXX_MessageName() string {
+	return "l1.contracts.v1.MsgDisableContractUpgrades"
+}
+func (*MsgDisableContractUpgrades) Descriptor() ([]byte, []int) {
+	return fileDescriptorContractsTx, []int{33}
+}
+
+func (m *MsgDisableContractUpgradesResponse) Reset()         { *m = MsgDisableContractUpgradesResponse{} }
+func (m *MsgDisableContractUpgradesResponse) String() string { return gogoproto.CompactTextString(m) }
+func (*MsgDisableContractUpgradesResponse) ProtoMessage()    {}
+func (*MsgDisableContractUpgradesResponse) XXX_MessageName() string {
+	return "l1.contracts.v1.MsgDisableContractUpgradesResponse"
+}
+
 var fileDescriptorContractsTx = buildContractsTxFileDescriptor()
 var fileDescriptorContractsQuery = buildContractsQueryFileDescriptor()
 
@@ -886,6 +994,47 @@ func buildContractsTxFileDescriptor() []byte {
 				uint64Field("height", 3),
 			), "sender"),
 			messageDescriptor("MsgUnfreezeContractResponse"),
+			// Contract-lifecycle messages below (upgrade/migrate/set-admin/
+			// disable-upgrades): the keeper logic (UpgradeContractCode/
+			// MigrateContractState/SetContractAdmin/DisableContractUpgrades in
+			// x/contracts/keeper/keeper.go) already existed and was already
+			// unit-tested, but had no descriptor entry -- so no live transaction
+			// could ever carry one. All four sign with "actor", matching
+			// authorizeContractUpgradeActor's msg.Actor authorization check.
+			withSigner(messageDescriptorFields("MsgUpgradeContractCode",
+				stringField("actor", 1),
+				stringField("contract_address", 2),
+				stringField("new_code_id", 3),
+				stringField("migration_handler", 4),
+				uint64Field("height", 5),
+			), "actor"),
+			// MsgUpgradeContractCodeResponse wraps ContractReceipt (defined in
+			// query.proto); see the comment on MsgTopUpContractResponse above for
+			// why this descriptor entry is registry metadata only.
+			messageDescriptor("MsgUpgradeContractCodeResponse"),
+			withSigner(messageDescriptorFields("MsgMigrateContractState",
+				stringField("actor", 1),
+				stringField("contract_address", 2),
+				uint64Field("from_schema_version", 3),
+				uint64Field("to_schema_version", 4),
+				stringField("migration_handler", 5),
+				bytesField("payload", 6),
+				uint64Field("height", 7),
+			), "actor"),
+			messageDescriptor("MsgMigrateContractStateResponse"),
+			withSigner(messageDescriptorFields("MsgSetContractAdmin",
+				stringField("actor", 1),
+				stringField("contract_address", 2),
+				stringField("new_admin", 3),
+				uint64Field("height", 4),
+			), "actor"),
+			messageDescriptor("MsgSetContractAdminResponse"),
+			withSigner(messageDescriptorFields("MsgDisableContractUpgrades",
+				stringField("actor", 1),
+				stringField("contract_address", 2),
+				uint64Field("height", 3),
+			), "actor"),
+			messageDescriptor("MsgDisableContractUpgradesResponse"),
 		},
 		Service: []*descriptorpb.ServiceDescriptorProto{
 			{
@@ -902,6 +1051,10 @@ func buildContractsTxFileDescriptor() []byte {
 					serviceMethodDescriptor("TopUpContract", "MsgTopUpContract", "MsgTopUpContractResponse"),
 					serviceMethodDescriptor("PayContractStorageDebt", "MsgPayContractStorageDebt", "MsgPayContractStorageDebtResponse"),
 					serviceMethodDescriptor("UnfreezeContract", "MsgUnfreezeContract", "MsgUnfreezeContractResponse"),
+					serviceMethodDescriptor("UpgradeContractCode", "MsgUpgradeContractCode", "MsgUpgradeContractCodeResponse"),
+					serviceMethodDescriptor("MigrateContractState", "MsgMigrateContractState", "MsgMigrateContractStateResponse"),
+					serviceMethodDescriptor("SetContractAdmin", "MsgSetContractAdmin", "MsgSetContractAdminResponse"),
+					serviceMethodDescriptor("DisableContractUpgrades", "MsgDisableContractUpgrades", "MsgDisableContractUpgradesResponse"),
 				},
 				Options: &descriptorpb.ServiceOptions{
 					UninterpretedOption: []*descriptorpb.UninterpretedOption{{

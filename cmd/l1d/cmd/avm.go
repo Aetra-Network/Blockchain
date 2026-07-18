@@ -59,6 +59,14 @@ const (
 	flagAVMReceiptJSON    = "receipt-json"
 	flagAVMReceiptFile    = "receipt-file"
 	flagAVMAmount         = "amount"
+
+	flagAVMActor             = "actor"
+	flagAVMNewCodeID         = "new-code-id"
+	flagAVMMigrationHandler  = "migration-handler"
+	flagAVMFromSchemaVersion = "from-schema-version"
+	flagAVMToSchemaVersion   = "to-schema-version"
+	flagAVMPayloadHex        = "payload-hex"
+	flagAVMNewAdmin          = "new-admin"
 )
 
 const (
@@ -76,6 +84,11 @@ const (
 	avmMsgTopUpContractTypeURL          = "/l1.contracts.v1.MsgTopUpContract"
 	avmMsgPayContractStorageDebtTypeURL = "/l1.contracts.v1.MsgPayContractStorageDebt"
 	avmMsgUnfreezeContractTypeURL       = "/l1.contracts.v1.MsgUnfreezeContract"
+
+	avmMsgUpgradeContractCodeTypeURL     = "/l1.contracts.v1.MsgUpgradeContractCode"
+	avmMsgMigrateContractStateTypeURL    = "/l1.contracts.v1.MsgMigrateContractState"
+	avmMsgSetContractAdminTypeURL        = "/l1.contracts.v1.MsgSetContractAdmin"
+	avmMsgDisableContractUpgradesTypeURL = "/l1.contracts.v1.MsgDisableContractUpgrades"
 )
 
 // avmTxConfirmPollInterval and avmTxConfirmMaxAttempts bound how long
@@ -161,6 +174,37 @@ type avmUnfreezeRequest struct {
 	Height          uint64 `json:"height"`
 }
 
+type avmUpgradeCodeRequest struct {
+	Actor            string `json:"actor"`
+	ContractAddress  string `json:"contract_address"`
+	NewCodeID        string `json:"new_code_id"`
+	MigrationHandler string `json:"migration_handler,omitempty"`
+	Height           uint64 `json:"height"`
+}
+
+type avmMigrateStateRequest struct {
+	Actor             string `json:"actor"`
+	ContractAddress   string `json:"contract_address"`
+	FromSchemaVersion uint64 `json:"from_schema_version"`
+	ToSchemaVersion   uint64 `json:"to_schema_version"`
+	MigrationHandler  string `json:"migration_handler"`
+	Payload           string `json:"payload_hex,omitempty"`
+	Height            uint64 `json:"height"`
+}
+
+type avmSetAdminRequest struct {
+	Actor           string `json:"actor"`
+	ContractAddress string `json:"contract_address"`
+	NewAdmin        string `json:"new_admin"`
+	Height          uint64 `json:"height"`
+}
+
+type avmDisableUpgradesRequest struct {
+	Actor           string `json:"actor"`
+	ContractAddress string `json:"contract_address"`
+	Height          uint64 `json:"height"`
+}
+
 type avmQueryRequest struct {
 	ContractAddress string `json:"contract_address,omitempty"`
 	CodeID          string `json:"code_id,omitempty"`
@@ -190,6 +234,10 @@ func NewAVMTxCmd() *cobra.Command {
 		newAVMTopUpCmd(),
 		newAVMPayDebtCmd(),
 		newAVMUnfreezeCmd(),
+		newAVMUpgradeCodeCmd(),
+		newAVMMigrateStateCmd(),
+		newAVMSetAdminCmd(),
+		newAVMDisableUpgradesCmd(),
 	)
 	return cmd
 }
@@ -686,6 +734,286 @@ func newAVMUnfreezeCmd() *cobra.Command {
 	addAVMTxFlags(cmd)
 	addBroadcastFlag(cmd)
 	cmd.Flags().String(flagAVMSender, "", "unfreeze sender AE address; defaults to --from (only usable if --from is itself a valid AE address)")
+	cmd.Flags().Uint64(flagAVMHeight, 1, "execution height (with --broadcast, defaults to the chain's current height when not set explicitly)")
+	return cmd
+}
+
+func newAVMUpgradeCodeCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "upgrade-code [contract-address]",
+		Short: "Build l1.contracts.v1.Msg/UpgradeContractCode request",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateAVMTxFees(cmd); err != nil {
+				return err
+			}
+			actor, err := avmAddressOverride(cmd, flagAVMActor, "upgrade actor")
+			if err != nil {
+				return err
+			}
+			broadcast, _ := cmd.Flags().GetBool(flagBroadcast)
+			var clientCtx client.Context
+			height, _ := cmd.Flags().GetUint64(flagAVMHeight)
+			if broadcast {
+				clientCtx, err = client.GetClientTxContext(cmd)
+				if err != nil {
+					return err
+				}
+				height, err = avmBroadcastHeight(cmd, clientCtx)
+				if err != nil {
+					return err
+				}
+			}
+			newCodeID, _ := cmd.Flags().GetString(flagAVMNewCodeID)
+			migrationHandler, _ := cmd.Flags().GetString(flagAVMMigrationHandler)
+			req := avmUpgradeCodeRequest{
+				Actor:            actor,
+				ContractAddress:  strings.TrimSpace(args[0]),
+				NewCodeID:        strings.TrimSpace(newCodeID),
+				MigrationHandler: strings.TrimSpace(migrationHandler),
+				Height:           height,
+			}
+			if req.ContractAddress == "" {
+				return errors.New("upgrade-code contract address is required")
+			}
+			if req.NewCodeID == "" {
+				return errors.New("upgrade-code new code id is required")
+			}
+			if req.Height == 0 {
+				return errors.New("upgrade-code height must be positive")
+			}
+			if broadcast {
+				return runAVMBroadcast(cmd, &contractstypes.MsgUpgradeContractCode{
+					Actor:            req.Actor,
+					ContractAddress:  req.ContractAddress,
+					NewCodeID:        req.NewCodeID,
+					MigrationHandler: req.MigrationHandler,
+					Height:           req.Height,
+				})
+			}
+			return writeCommandJSON(cmd, avmServicePayload{
+				Service:    avmMsgService,
+				Method:     "UpgradeContractCode",
+				FullMethod: "/" + avmMsgService + "/UpgradeContractCode",
+				TypeURL:    avmMsgUpgradeContractCodeTypeURL,
+				Request:    req,
+			})
+		},
+	}
+	addAVMTxFlags(cmd)
+	addBroadcastFlag(cmd)
+	cmd.Flags().String(flagAVMActor, "", "upgrade actor AE address (must be the contract's admin, or the governance authority for a system-owned contract); defaults to --from")
+	cmd.Flags().String(flagAVMNewCodeID, "", "code id of the previously stored code to upgrade to")
+	cmd.Flags().String(flagAVMMigrationHandler, "", "migration handler name; required if the new code's hash differs from the contract's current code hash")
+	cmd.Flags().Uint64(flagAVMHeight, 1, "execution height (with --broadcast, defaults to the chain's current height when not set explicitly)")
+	return cmd
+}
+
+func newAVMMigrateStateCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "migrate-state [contract-address]",
+		Short: "Build l1.contracts.v1.Msg/MigrateContractState request",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateAVMTxFees(cmd); err != nil {
+				return err
+			}
+			actor, err := avmAddressOverride(cmd, flagAVMActor, "migration actor")
+			if err != nil {
+				return err
+			}
+			broadcast, _ := cmd.Flags().GetBool(flagBroadcast)
+			var clientCtx client.Context
+			height, _ := cmd.Flags().GetUint64(flagAVMHeight)
+			if broadcast {
+				clientCtx, err = client.GetClientTxContext(cmd)
+				if err != nil {
+					return err
+				}
+				height, err = avmBroadcastHeight(cmd, clientCtx)
+				if err != nil {
+					return err
+				}
+			}
+			fromVersion, _ := cmd.Flags().GetUint64(flagAVMFromSchemaVersion)
+			toVersion, _ := cmd.Flags().GetUint64(flagAVMToSchemaVersion)
+			migrationHandler, _ := cmd.Flags().GetString(flagAVMMigrationHandler)
+			payload, err := optionalHexFlag(cmd, flagAVMPayloadHex)
+			if err != nil {
+				return fmt.Errorf("decode migration payload: %w", err)
+			}
+			req := avmMigrateStateRequest{
+				Actor:             actor,
+				ContractAddress:   strings.TrimSpace(args[0]),
+				FromSchemaVersion: fromVersion,
+				ToSchemaVersion:   toVersion,
+				MigrationHandler:  strings.TrimSpace(migrationHandler),
+				Payload:           base64OrEmpty(payload),
+				Height:            height,
+			}
+			if req.ContractAddress == "" {
+				return errors.New("migrate-state contract address is required")
+			}
+			if req.MigrationHandler == "" {
+				return errors.New("migrate-state migration handler is required")
+			}
+			if req.Height == 0 {
+				return errors.New("migrate-state height must be positive")
+			}
+			if broadcast {
+				return runAVMBroadcast(cmd, &contractstypes.MsgMigrateContractState{
+					Actor:             req.Actor,
+					ContractAddress:   req.ContractAddress,
+					FromSchemaVersion: req.FromSchemaVersion,
+					ToSchemaVersion:   req.ToSchemaVersion,
+					MigrationHandler:  req.MigrationHandler,
+					Payload:           payload,
+					Height:            req.Height,
+				})
+			}
+			return writeCommandJSON(cmd, avmServicePayload{
+				Service:    avmMsgService,
+				Method:     "MigrateContractState",
+				FullMethod: "/" + avmMsgService + "/MigrateContractState",
+				TypeURL:    avmMsgMigrateContractStateTypeURL,
+				Request:    req,
+			})
+		},
+	}
+	addAVMTxFlags(cmd)
+	addBroadcastFlag(cmd)
+	cmd.Flags().String(flagAVMActor, "", "migration actor AE address (must be the contract's admin, or the governance authority for a system-owned contract); defaults to --from")
+	cmd.Flags().Uint64(flagAVMFromSchemaVersion, 0, "contract's current storage schema version")
+	cmd.Flags().Uint64(flagAVMToSchemaVersion, 0, "target storage schema version (must exceed from-schema-version)")
+	cmd.Flags().String(flagAVMMigrationHandler, "", "migration handler: schema_only, replace, or append")
+	cmd.Flags().String(flagAVMPayloadHex, "", "hex-encoded migration payload")
+	cmd.Flags().Uint64(flagAVMHeight, 1, "execution height (with --broadcast, defaults to the chain's current height when not set explicitly)")
+	return cmd
+}
+
+func newAVMSetAdminCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "set-admin [contract-address]",
+		Short: "Build l1.contracts.v1.Msg/SetContractAdmin request",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateAVMTxFees(cmd); err != nil {
+				return err
+			}
+			actor, err := avmAddressOverride(cmd, flagAVMActor, "set-admin actor")
+			if err != nil {
+				return err
+			}
+			broadcast, _ := cmd.Flags().GetBool(flagBroadcast)
+			var clientCtx client.Context
+			height, _ := cmd.Flags().GetUint64(flagAVMHeight)
+			if broadcast {
+				clientCtx, err = client.GetClientTxContext(cmd)
+				if err != nil {
+					return err
+				}
+				height, err = avmBroadcastHeight(cmd, clientCtx)
+				if err != nil {
+					return err
+				}
+			}
+			newAdmin, _ := cmd.Flags().GetString(flagAVMNewAdmin)
+			req := avmSetAdminRequest{
+				Actor:           actor,
+				ContractAddress: strings.TrimSpace(args[0]),
+				NewAdmin:        strings.TrimSpace(newAdmin),
+				Height:          height,
+			}
+			if req.ContractAddress == "" {
+				return errors.New("set-admin contract address is required")
+			}
+			if req.NewAdmin == "" {
+				return errors.New("set-admin new admin address is required")
+			}
+			if req.Height == 0 {
+				return errors.New("set-admin height must be positive")
+			}
+			if broadcast {
+				return runAVMBroadcast(cmd, &contractstypes.MsgSetContractAdmin{
+					Actor:           req.Actor,
+					ContractAddress: req.ContractAddress,
+					NewAdmin:        req.NewAdmin,
+					Height:          req.Height,
+				})
+			}
+			return writeCommandJSON(cmd, avmServicePayload{
+				Service:    avmMsgService,
+				Method:     "SetContractAdmin",
+				FullMethod: "/" + avmMsgService + "/SetContractAdmin",
+				TypeURL:    avmMsgSetContractAdminTypeURL,
+				Request:    req,
+			})
+		},
+	}
+	addAVMTxFlags(cmd)
+	addBroadcastFlag(cmd)
+	cmd.Flags().String(flagAVMActor, "", "set-admin actor AE address (must be the contract's current admin, or the governance authority for a system-owned contract); defaults to --from")
+	cmd.Flags().String(flagAVMNewAdmin, "", "new contract admin AE address")
+	cmd.Flags().Uint64(flagAVMHeight, 1, "execution height (with --broadcast, defaults to the chain's current height when not set explicitly)")
+	return cmd
+}
+
+func newAVMDisableUpgradesCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "disable-upgrades [contract-address]",
+		Short: "Build l1.contracts.v1.Msg/DisableContractUpgrades request",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateAVMTxFees(cmd); err != nil {
+				return err
+			}
+			actor, err := avmAddressOverride(cmd, flagAVMActor, "disable-upgrades actor")
+			if err != nil {
+				return err
+			}
+			broadcast, _ := cmd.Flags().GetBool(flagBroadcast)
+			var clientCtx client.Context
+			height, _ := cmd.Flags().GetUint64(flagAVMHeight)
+			if broadcast {
+				clientCtx, err = client.GetClientTxContext(cmd)
+				if err != nil {
+					return err
+				}
+				height, err = avmBroadcastHeight(cmd, clientCtx)
+				if err != nil {
+					return err
+				}
+			}
+			req := avmDisableUpgradesRequest{
+				Actor:           actor,
+				ContractAddress: strings.TrimSpace(args[0]),
+				Height:          height,
+			}
+			if req.ContractAddress == "" {
+				return errors.New("disable-upgrades contract address is required")
+			}
+			if req.Height == 0 {
+				return errors.New("disable-upgrades height must be positive")
+			}
+			if broadcast {
+				return runAVMBroadcast(cmd, &contractstypes.MsgDisableContractUpgrades{
+					Actor:           req.Actor,
+					ContractAddress: req.ContractAddress,
+					Height:          req.Height,
+				})
+			}
+			return writeCommandJSON(cmd, avmServicePayload{
+				Service:    avmMsgService,
+				Method:     "DisableContractUpgrades",
+				FullMethod: "/" + avmMsgService + "/DisableContractUpgrades",
+				TypeURL:    avmMsgDisableContractUpgradesTypeURL,
+				Request:    req,
+			})
+		},
+	}
+	addAVMTxFlags(cmd)
+	addBroadcastFlag(cmd)
+	cmd.Flags().String(flagAVMActor, "", "disable-upgrades actor AE address (must be the contract's admin, or the governance authority for a system-owned contract); defaults to --from")
 	cmd.Flags().Uint64(flagAVMHeight, 1, "execution height (with --broadcast, defaults to the chain's current height when not set explicitly)")
 	return cmd
 }

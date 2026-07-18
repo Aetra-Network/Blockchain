@@ -191,35 +191,73 @@ type ExecuteContractResponse struct {
 	Events              []ContractEvent `protobuf:"bytes,4,rep,name=events,proto3" json:"events"`
 }
 
+// MsgUpgradeContractCode, MsgMigrateContractState, MsgSetContractAdmin, and
+// MsgDisableContractUpgrades carry protobuf struct tags (Actor as field 1,
+// matching the withSigner(..., "actor") descriptor option registered in
+// service.go's buildContractsTxFileDescriptor) for the same reason
+// MsgDeployContract/MsgExecuteExternal above do: without them gogoproto.Marshal
+// silently produces empty bytes and no real signed transaction carrying one of
+// these messages can ever be built or broadcast, even though the keeper logic
+// behind them (UpgradeContractCode/MigrateContractState/SetContractAdmin/
+// DisableContractUpgrades in x/contracts/keeper/keeper.go) is fully implemented
+// and unit-tested. See TestAVMContractMsgsAreBroadcastable's doc comment for
+// the historical regression this guards against.
 type MsgUpgradeContractCode struct {
-	Actor            string
-	ContractAddress  string
-	NewCodeID        string
-	MigrationHandler string
-	Height           uint64
+	Actor            string `protobuf:"bytes,1,opt,name=actor,proto3" json:"actor,omitempty"`
+	ContractAddress  string `protobuf:"bytes,2,opt,name=contract_address,json=contractAddress,proto3" json:"contract_address,omitempty"`
+	NewCodeID        string `protobuf:"bytes,3,opt,name=new_code_id,json=newCodeId,proto3" json:"new_code_id,omitempty"`
+	MigrationHandler string `protobuf:"bytes,4,opt,name=migration_handler,json=migrationHandler,proto3" json:"migration_handler,omitempty"`
+	Height           uint64 `protobuf:"varint,5,opt,name=height,proto3" json:"height,omitempty"`
+}
+
+// MsgUpgradeContractCodeResponse wraps ContractReceipt, which is defined in
+// query.proto; tx.proto cannot import query.proto back (see the identical
+// comment on MsgTopUpContractResponse in service.go), so this response's
+// descriptor entry is registry metadata only -- wire marshaling uses the Go
+// struct's protobuf tag via gogoproto's reflection-based Marshal fallback.
+type MsgUpgradeContractCodeResponse struct {
+	Receipt ContractReceipt `protobuf:"bytes,1,opt,name=receipt,proto3" json:"receipt"`
 }
 
 type MsgMigrateContractState struct {
-	Actor             string
-	ContractAddress   string
-	FromSchemaVersion uint64
-	ToSchemaVersion   uint64
-	MigrationHandler  string
-	Payload           []byte
-	Height            uint64
+	Actor             string `protobuf:"bytes,1,opt,name=actor,proto3" json:"actor,omitempty"`
+	ContractAddress   string `protobuf:"bytes,2,opt,name=contract_address,json=contractAddress,proto3" json:"contract_address,omitempty"`
+	FromSchemaVersion uint64 `protobuf:"varint,3,opt,name=from_schema_version,json=fromSchemaVersion,proto3" json:"from_schema_version,omitempty"`
+	ToSchemaVersion   uint64 `protobuf:"varint,4,opt,name=to_schema_version,json=toSchemaVersion,proto3" json:"to_schema_version,omitempty"`
+	MigrationHandler  string `protobuf:"bytes,5,opt,name=migration_handler,json=migrationHandler,proto3" json:"migration_handler,omitempty"`
+	Payload           []byte `protobuf:"bytes,6,opt,name=payload,proto3" json:"payload,omitempty"`
+	Height            uint64 `protobuf:"varint,7,opt,name=height,proto3" json:"height,omitempty"`
+}
+
+// MsgMigrateContractStateResponse: see MsgUpgradeContractCodeResponse's doc
+// comment above.
+type MsgMigrateContractStateResponse struct {
+	Receipt ContractReceipt `protobuf:"bytes,1,opt,name=receipt,proto3" json:"receipt"`
 }
 
 type MsgSetContractAdmin struct {
-	Actor           string
-	ContractAddress string
-	NewAdmin        string
-	Height          uint64
+	Actor           string `protobuf:"bytes,1,opt,name=actor,proto3" json:"actor,omitempty"`
+	ContractAddress string `protobuf:"bytes,2,opt,name=contract_address,json=contractAddress,proto3" json:"contract_address,omitempty"`
+	NewAdmin        string `protobuf:"bytes,3,opt,name=new_admin,json=newAdmin,proto3" json:"new_admin,omitempty"`
+	Height          uint64 `protobuf:"varint,4,opt,name=height,proto3" json:"height,omitempty"`
+}
+
+// MsgSetContractAdminResponse: see MsgUpgradeContractCodeResponse's doc
+// comment above.
+type MsgSetContractAdminResponse struct {
+	Receipt ContractReceipt `protobuf:"bytes,1,opt,name=receipt,proto3" json:"receipt"`
 }
 
 type MsgDisableContractUpgrades struct {
-	Actor           string
-	ContractAddress string
-	Height          uint64
+	Actor           string `protobuf:"bytes,1,opt,name=actor,proto3" json:"actor,omitempty"`
+	ContractAddress string `protobuf:"bytes,2,opt,name=contract_address,json=contractAddress,proto3" json:"contract_address,omitempty"`
+	Height          uint64 `protobuf:"varint,3,opt,name=height,proto3" json:"height,omitempty"`
+}
+
+// MsgDisableContractUpgradesResponse: see MsgUpgradeContractCodeResponse's doc
+// comment above.
+type MsgDisableContractUpgradesResponse struct {
+	Receipt ContractReceipt `protobuf:"bytes,1,opt,name=receipt,proto3" json:"receipt"`
 }
 
 type MsgTopUpContract struct {
