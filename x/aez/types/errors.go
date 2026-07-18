@@ -50,4 +50,10 @@ var (
 	// Funds. Phase 4a moves messages, never money: the value leg is Phase 4b
 	// (aez.md §4.5/§4.8, I-10).
 	ErrValueTransferUnsupported	= errors.New("aez: cross-zone value transfer is not supported in phase 4a")
+
+	// ErrInvalidGasQuota is returned when the Phase 6 per-zone gas quota table
+	// is malformed: a capped Core Zone, an elastic zone with a reservation or
+	// no cap, a mis-ordered or wrong-length quota set, or a table whose elastic
+	// caps plus the Core reserve exceed MaxBlockGas (I-18/I-19).
+	ErrInvalidGasQuota	= errors.New("aez: invalid gas quota")
 )

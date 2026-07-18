@@ -51,6 +51,14 @@ type AdmissionInput struct {
 	BlockTxCount		uint64
 	SenderTxCount		uint64
 	SenderStake		sdkmath.Int
+	// AEZ Phase 6 per-zone budget. ZoneMaxGas == 0 is the Core / disabled
+	// sentinel: the per-zone check is skipped, so a single-zone chain (every
+	// tx resolves to Core, MaxGas 0) admits EXACTLY as before these fields
+	// existed. ZoneGasConsumed is the gas already reserved by earlier admitted
+	// txs in this zone this block (elastic zones only).
+	ZoneID			uint32
+	ZoneGasConsumed		uint64
+	ZoneMaxGas		uint64
 }
 
 type TxEnvelopeLimits struct {
@@ -170,6 +178,20 @@ func ValidateAdmission(params Params, in AdmissionInput) (FeeQuote, error) {
 	}
 	if in.BlockGasConsumed+in.GasLimit < in.BlockGasConsumed || in.BlockGasConsumed+in.GasLimit > params.MaxBlockGas {
 		return FeeQuote{}, ErrInvalidFee.Wrapf("block gas limit %d reached", params.MaxBlockGas)
+	}
+	// AEZ Phase 6 per-zone budget (I-18). The global check above stays
+	// authoritative and unchanged (I-19); this is an ADDITIONAL gate, never a
+	// replacement, and it never feeds QuoteFee -- fee AMOUNTS keep using the
+	// global utilization, so a Core-zone tx's fee is identical to before.
+	//
+	// ZoneMaxGas == 0 is the Core / disabled sentinel and skips the check, so
+	// with every bucket on zone 0 this branch is never entered and admission is
+	// bit-identical to the pre-Phase-6 function. The overflow guard mirrors the
+	// global check's form exactly.
+	if in.ZoneMaxGas > 0 {
+		if in.ZoneGasConsumed+in.GasLimit < in.ZoneGasConsumed || in.ZoneGasConsumed+in.GasLimit > in.ZoneMaxGas {
+			return FeeQuote{}, ErrInvalidFee.Wrapf("zone %d gas limit %d reached", in.ZoneID, in.ZoneMaxGas)
+		}
 	}
 	senderLimit, err := SenderTxLimit(params, in.SenderStake)
 	if err != nil {

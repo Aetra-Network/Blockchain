@@ -31,6 +31,10 @@ type Keeper struct {
 	// loadSink is optional; when set, EndBlocker feeds finalized block
 	// metrics into the x/load scorer for the zone/routing layer.
 	loadSink LoadSink
+	// zoneResolver is optional; when set, AdmitTx resolves each tx's home zone
+	// (AEZ Phase 6) and enforces that zone's per-block gas cap alongside the
+	// global budget. Nil = the single global-budget behaviour, fully inert.
+	zoneResolver ZoneResolver
 }
 
 func NewKeeper(

@@ -277,7 +277,14 @@ func (app *L1App) initKeepers(
 	// Feed finalized per-block metrics from the fees EndBlocker into the
 	// x/load scorer (silent no-op while x/load stays disabled); this is the
 	// live signal the zone/routing layer consumes for load distribution.
-	app.FeesKeeper = nativeKeepers.FeesKeeper.WithLoadSink(&app.LoadKeeper)
+	//
+	// WithZoneResolver wires AEZ Phase 6 per-zone gas quotas into the admission
+	// gate through a narrow structural interface (x/fees imports x/aez not at
+	// all). With every bucket on zone 0 every tx resolves to Core and the Core
+	// cap is 0 (uncapped), so this is fully inert while the chain is single-zone.
+	app.FeesKeeper = nativeKeepers.FeesKeeper.
+		WithLoadSink(&app.LoadKeeper).
+		WithZoneResolver(&app.AEZKeeper)
 	app.AetraStakingPolicyKeeper = nativeKeepers.AetraStakingPolicyKeeper
 	app.AetraEconomicsKeeper = nativeKeepers.AetraEconomicsKeeper
 	app.AetraValidatorScoreKeeper = nativeKeepers.AetraValidatorScoreKeeper

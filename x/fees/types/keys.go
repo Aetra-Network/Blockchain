@@ -15,6 +15,14 @@ var (
 	SenderTxCountPrefix	= []byte{0x04}
 	// CongestionStateKey stores the last-finalized block_utilization_bps (KV-backed, deterministic).
 	CongestionStateKey	= []byte{0x05}
+	// ZoneGasConsumedPrefix keys the AEZ Phase 6 per-zone gas reserved so far
+	// this block: 0x06 || zone_be4 -> [height_be8][gas_be8]. It self-resets by
+	// height stamp exactly like BlockTxCountKey/SenderTxCountPrefix (a stored
+	// height != the current height reads as 0), so it needs no EndBlock reset --
+	// an unconditional reset write would touch the fees-store root every block
+	// and break bit-identical AppHash in single-zone. It is written ONLY for
+	// elastic zones, so it never appears on a single-zone chain.
+	ZoneGasConsumedPrefix	= []byte{0x06}
 )
 
 const (

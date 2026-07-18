@@ -53,6 +53,12 @@ func GovAuthority() string {
 type Params struct {
 	Prototype		prototype.Params
 	RoutingEpochLength	uint64
+	// GasQuota is the Phase 6 per-zone block-gas budget: a Core reservation
+	// plus a per-elastic-zone cap, validated so the elastic caps can never eat
+	// into the Core floor (I-18/I-19). It is committed, governable state. With
+	// every bucket on zone 0 the Core cap is 0 (uncapped), so this table has no
+	// behavioural effect on a single-zone chain.
+	GasQuota	GasQuotaParams
 }
 
 // DefaultParams returns the genesis params: prototype-disabled, governed by the
@@ -68,6 +74,7 @@ func DefaultParams() Params {
 	return Params{
 		Prototype:		prototypeParams,
 		RoutingEpochLength:	DefaultRoutingEpochLength,
+		GasQuota:		DefaultGasQuotaParams(),
 	}
 }
 
@@ -79,12 +86,18 @@ func (p Params) Validate() error {
 	if p.RoutingEpochLength == 0 {
 		return fmt.Errorf("aez routing epoch length must be positive")
 	}
+	if err := p.GasQuota.Validate(); err != nil {
+		return err
+	}
 	return nil
 }
 
-// Zone is the stored descriptor for one zone. Phase 1 keeps it minimal: the
-// gas quotas and queue depths of aez.md §6 Phase 6 are deliberately absent
-// rather than stubbed, so no field exists that nothing writes.
+// Zone is the stored descriptor for one zone. It stays minimal: the Phase 6 gas
+// quotas landed as PARAMS (Params.GasQuota), not as a per-descriptor field,
+// because a quota is a governed, block-global budget validated as a set (the
+// reserved-Core invariant couples the zones), not an independent attribute of
+// one zone. Queue depths likewise live with the message bus, not here, so no
+// field exists on Zone that nothing writes.
 type Zone struct {
 	ID	ZoneID
 	Kind	ZoneKind

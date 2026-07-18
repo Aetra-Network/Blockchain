@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 
 	sdkmath "cosmossdk.io/math"
+	storetypes "github.com/cosmos/cosmos-sdk/store/v2/types"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 
 	aetraaddress "github.com/sovereign-l1/l1/app/addressing"
@@ -55,6 +56,49 @@ func (k Keeper) AdmitTx(ctx sdk.Context, tx sdk.FeeTx, sender sdk.AccAddress, si
 		gasConsumed = ctx.BlockGasMeter().GasConsumed()
 	}
 
+	// AEZ Phase 6: resolve this tx's home zone and that zone's per-block gas cap.
+	//
+	// The resolver reads x/aez state (routing table + params). Doing those reads
+	// on the tx's REAL metered gas meter would raise gasUsed for EVERY tx --
+	// including single-zone Core txs -- which feeds the block gas meter and thus
+	// the congestion bps the fees EndBlocker commits, breaking the bit-identical
+	// AppHash inertness guarantee. So resolution runs on an INFINITE-meter child
+	// ctx (the reads are read-only and deterministic), leaving the metered
+	// gasUsed byte-for-byte unchanged -- the analogue of Phase 4's gas-free inbox
+	// scan.
+	//
+	// A nil resolver, a nil sender, or any resolver error is NON-FATAL: the tx
+	// falls through as Core (zone 0, uncapped), so a broken or disabled x/aez can
+	// never reject a tx that admits today (I-23).
+	zone := zoneCore
+	zoneMaxGas := uint64(0)
+	if k.zoneResolver != nil && sender != nil {
+		// FormatUserFriendly (not FormatAccAddress) so a malformed sender is a
+		// returned error, never a panic: a bad address must degrade to Core, not
+		// halt the block (I-23).
+		if senderText, ferr := aetraaddress.FormatUserFriendly(sender); ferr == nil {
+			rc := ctx.WithGasMeter(storetypes.NewInfiniteGasMeter())
+			if z, zerr := k.zoneResolver.ZoneOfAddress(rc, senderText); zerr == nil {
+				zone = z
+				if z != zoneCore {
+					zoneMaxGas, _ = k.zoneResolver.GasQuotaForZone(rc, z)
+				}
+			}
+		}
+	}
+
+	// Per-zone gas reserved so far this block. Read ONLY for an elastic zone: a
+	// Core tx performs no new fees-store read here, which -- together with the
+	// elastic-only write below -- is what keeps single-zone admission
+	// bit-identical (the height-keyed counter is never touched).
+	zoneGasConsumed := uint64(0)
+	if zone != zoneCore {
+		zoneGasConsumed, err = k.getZoneGasConsumed(ctx, zone)
+		if err != nil {
+			return types.FeeQuote{}, err
+		}
+	}
+
 	quote, err := types.ValidateAdmission(params, types.AdmissionInput{
 		Fee:			tx.GetFee(),
 		GasLimit:		tx.GetGas(),
@@ -62,6 +106,9 @@ func (k Keeper) AdmitTx(ctx sdk.Context, tx sdk.FeeTx, sender sdk.AccAddress, si
 		BlockTxCount:		blockCount,
 		SenderTxCount:		senderCount,
 		SenderStake:		sdkmath.ZeroInt(),
+		ZoneID:			zone,
+		ZoneGasConsumed:	zoneGasConsumed,
+		ZoneMaxGas:		zoneMaxGas,
 	})
 	if err != nil {
 		return types.FeeQuote{}, err
@@ -172,6 +219,18 @@ func (k Keeper) AdmitTx(ctx sdk.Context, tx sdk.FeeTx, sender sdk.AccAddress, si
 		if err := k.setSenderTxCount(ctx, sender, senderCount+1); err != nil {
 			return types.FeeQuote{}, err
 		}
+		// AEZ Phase 6: reserve this tx's gas LIMIT against its zone's per-block
+		// budget. Reservation is by LIMIT, not actual: actual usage is unknown
+		// at ante time and the global check itself projects with GasLimit, so
+		// this is deterministic and strictly conservative (limits >= actual, so
+		// it can only ever reject MORE, never fewer, than an actual-based cap).
+		// Written ONLY for an elastic zone -- a Core tx writes nothing new, which
+		// is the other half of single-zone bit-identity.
+		if zone != zoneCore {
+			if err := k.setZoneGasConsumed(ctx, zone, zoneGasConsumed+tx.GetGas()); err != nil {
+				return types.FeeQuote{}, err
+			}
+		}
 	}
 	return quote, nil
 }
@@ -223,4 +282,24 @@ func senderTxCountKey(sender sdk.AccAddress) []byte {
 	key = append(key, types.SenderTxCountPrefix...)
 	key = append(key, sender...)
 	return key
+}
+
+// getZoneGasConsumed reads the AEZ Phase 6 per-zone gas reserved so far this
+// block. It reuses the height-keyed self-resetting counter (getHeightCounter):
+// a stored height that is not the current height reads as 0, so the value resets
+// each block with no EndBlock write.
+func (k Keeper) getZoneGasConsumed(ctx sdk.Context, zone uint32) (uint64, error) {
+	return k.getHeightCounter(ctx, zoneGasConsumedKey(zone))
+}
+
+func (k Keeper) setZoneGasConsumed(ctx sdk.Context, zone uint32, gas uint64) error {
+	return k.setHeightCounter(ctx, zoneGasConsumedKey(zone), gas)
+}
+
+func zoneGasConsumedKey(zone uint32) []byte {
+	key := make([]byte, 0, len(types.ZoneGasConsumedPrefix)+4)
+	key = append(key, types.ZoneGasConsumedPrefix...)
+	var z [4]byte
+	binary.BigEndian.PutUint32(z[:], zone)
+	return append(key, z[:]...)
 }

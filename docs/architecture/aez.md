@@ -572,21 +572,59 @@ This is the keeper rewrite. There is no incremental version of it.
 Only after this do contracts have per-zone state. Before this, "an Aetralis
 contract in zone 3" is not a thing that can exist.
 
-### Phase 6 — per-zone gas quotas
+### Phase 6 — per-zone gas quotas (landed)
 
-- **New:** `x/aez/keeper/quota.go`; `x/aez/types/quota.go`
-- **Edit:** `x/fees/types/fee_model.go:157-172` `ValidateAdmission` — add a
-  per-zone cumulative check beside the existing `MaxBlockGas` check (`:171-173`)
-- **Edit:** `x/fees/keeper/congestion.go:35-61` — per-zone utilization, fed to
-  `x/load` (`:53-59`) per zone
+The global block gas budget is split into per-zone quotas with a guaranteed Core
+reservation elastic zones can never consume. Static quotas in v1: no borrowing,
+no dynamic rebalancing.
 
-Starting split of `MaxBlockGas = 20,000,000` (`x/fees/types/fee_model.go:23`):
-Core reserved 8,000,000; each of 4 elastic zones 3,000,000. Sum = 20,000,000.
-With `MaxTxGas = 1,000,000` (`:22`) an elastic zone still fits at least 3
-maximum-gas transactions per block. **The Core reservation is the point** — a
-contract storm in zone 2 must never be able to starve a slashing or governance
-transaction. Quota params are committed state; per-block consumption is
-transient and recomputed each block, so it never enters the AppHash by itself.
+- **New:** `x/aez/types/quota.go` — `GasQuotaParams`/`ZoneGasQuota` with a
+  deterministic, integer-only `Validate` enforcing the reserved-Core invariant;
+  carried inside `x/aez` `Params.GasQuota` (`x/aez/types/params.go`), so it is
+  governed, committed, consensus state validated through `Params.Validate`.
+- **New:** `x/aez/keeper/quota.go` — `GasQuotaForZone(ctx, zoneID) (uint64, err)`,
+  reading committed params on every call (no cache; the F-17 guard). Core reads
+  as `0` — the uncapped sentinel.
+- **New:** `x/fees/keeper/zone.go` — the narrow `ZoneResolver` interface
+  (`ZoneOfAddress` + `GasQuotaForZone`, stdlib types only) declared on the
+  CONSUMER side, plus `WithZoneResolver`. `x/aez/keeper.Keeper` satisfies it
+  structurally, so `x/fees` imports `x/aez` **not at all** — the same discipline
+  `LoadSink` and `x/native-account`'s `ZoneResolver` already follow.
+- **Edit:** `x/fees/types/fee_model.go` `ValidateAdmission` — a per-zone
+  cumulative gate immediately after the existing global `MaxBlockGas` check
+  (which stays authoritative and unchanged, I-19). `ZoneMaxGas == 0` is the
+  Core/disabled sentinel: the gate is skipped, so the check is a no-op on a
+  single-zone chain. The gate is admission-only; it never feeds `QuoteFee`, so
+  fee amounts are unchanged.
+- **Edit:** `x/fees/keeper/fee_policy.go` `AdmitTx` — resolves the tx's home
+  zone (fee-payer, else first signer, via `ZoneOfAddress`) on an **infinite-meter
+  child ctx** so the routing-table reads are gas-neutral and cannot move the
+  metered `gasUsed` / block gas meter / committed congestion bps. Per-zone
+  reserved gas is a **height-keyed self-resetting counter** in the fees store
+  (`ZoneGasConsumedPrefix`), exactly like `BlockTxCount`/`SenderTxCount` — read
+  and written **only for elastic zones**, so a Core tx touches no new key. There
+  is deliberately **no EndBlock reset**: an unconditional reset write would touch
+  the fees-store root every block and break bit-identical AppHash under one zone.
+- **Edit:** `app/keepers.go` — `.WithZoneResolver(&app.AEZKeeper)` on the final
+  fees keeper (one line, beside `WithLoadSink`).
+- **Deferred (optional):** per-zone utilization fed to `x/load` in
+  `x/fees/keeper/congestion.go`. It is **not** on the admission critical path
+  (fee backpressure never depends on it) and the reserved-Core guarantee holds
+  without it, so it stays a no-op while `x/load` is disabled (I-23).
+
+Split of `MaxBlockGas = 20,000,000` (`x/fees/types/fee_model.go:23`): the Core
+Zone reserves 8,000,000 and each of the 4 elastic zones is **capped** at
+3,000,000. **Core is a FLOOR, never a cap** (`ZoneGasQuota.MaxGas == 0` for
+Core): capping Core at 8,000,000 would drop the single-zone block budget from
+20,000,000 to 8,000,000 and break inertness. The reservation is enforced instead
+by capping the **sum of elastic** quotas at `MaxBlockGas − CoreReserved`
+(validated with equality by the default split: 4×3M + 8M = 20M), so at least
+8,000,000 is always free for the Core Zone and a Core tx is gated only by the
+untouched global 20M check. With `MaxTxGas = 1,000,000` (`:22`) an elastic zone
+still fits 3 maximum-gas transactions per block. **The Core reservation is the
+point** — a contract storm in zone 2 must never starve a slashing or governance
+transaction. Quota params are committed state; per-block consumption is a
+height-keyed transient in the fees store that self-resets each block.
 
 ### Phase 7 — hybrid DNS
 
