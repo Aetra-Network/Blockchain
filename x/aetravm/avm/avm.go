@@ -187,6 +187,25 @@ const (
 	// AMM needs it for sqrt(k) LP minting and for sqrtPrice tick math.
 	OpIsqrt Opcode = 0x55
 
+	// Full-range cross-product comparison: mulCmp(a,b,c,d) = sign(a*b - c*d),
+	// pushing the small signed int256 -1, 0, or +1. Both a*b and c*d are formed
+	// at UNBOUNDED big.Int width, so unlike ratioGtBounded (which forms
+	// mulDiv(x,y,1) and TRAPS the moment a cross product exceeds uint256), it
+	// never traps on product width — it compares ratios a/b vs c/d over the FULL
+	// uint256 range via mulCmp(a,d,c,b). Operands are treated as unsigned: a
+	// negative operand (reachable because runtimeNumeric accepts signed tags)
+	// TRAPS deterministically rather than silently comparing signed magnitudes.
+	OpMulCmp Opcode = 0x56
+
+	// Signed fused multiply-divide: mulDivSigned(a,b,c) = (a*b)/c truncated
+	// TOWARD ZERO, over int256 signed operands (funding index * signed position
+	// size / scale). The a*b product is formed at unbounded big.Int width so it
+	// never overflows mid-computation; the sign is sign(a)*sign(b)*sign(c) and
+	// the magnitude |a|*|b|/|c| is a truncating (floor of non-negative) divide,
+	// so re-applying the sign yields truncation toward zero. TRAPS on c==0 and on
+	// a result that does not fit int256.
+	OpMulDivSigned Opcode = 0x57
+
 	OpWallClock Opcode = 0xf0
 	OpRandom    Opcode = 0xf1
 	OpFileRead  Opcode = 0xf2
@@ -422,6 +441,12 @@ func DefaultParams() Params {
 			// 256-bit operand -- well above the fused mul-div (fixed-width divides),
 			// far below any curve op. Flat, fixed-size operand, so no per-byte term.
 			OpIsqrt: 30,
+			// Full-range cross-product compare (two unbounded multiplies + one
+			// Cmp) and signed fused multiply-divide (an unbounded multiply + a
+			// divide). Priced alongside the unsigned fused mul-div: fixed-width
+			// operands, no per-byte term.
+			OpMulCmp:       13,
+			OpMulDivSigned: 13,
 		},
 		// See the GasPerOperandUnit doc comment: 1 extra gas per map entry /
 		// tuple element / byte cloned or iterated, on top of the flat
@@ -559,6 +584,8 @@ func (p Params) Validate() error {
 		OpVerifySecp256k1,
 		OpEcrecover,
 		OpIsqrt,
+		OpMulCmp,
+		OpMulDivSigned,
 	} {
 		if p.GasSchedule[op] == 0 {
 			return fmt.Errorf("gas schedule missing opcode 0x%02x", byte(op))
@@ -1402,6 +1429,57 @@ func (r *Runner) Run(module Module, storage Storage, ctx RuntimeContext) (Execut
 				return rollback(async.ResultExecutionFailed, err)
 			}
 			stack = append(stack, result)
+		case OpMulCmp:
+			// mulCmp(a, b, c, d): d on top (pushed last), then c, b, a. Pushes
+			// sign(a*b - c*d) as int256 (-1/0/+1). Both products are formed at
+			// unbounded big.Int width so it NEVER traps on product overflow — that
+			// is the whole point, letting a ratio compare a/b vs c/d cover the full
+			// uint256 range where mulDiv(x,y,1) would trap. Operands are unsigned;
+			// a negative operand TRAPS (deterministic rollback) rather than
+			// silently comparing signed magnitudes or panicking.
+			dVal, ok := pop(&stack)
+			if !ok {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on mulCmp operand d"))
+			}
+			cVal, ok := pop(&stack)
+			if !ok {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on mulCmp operand c"))
+			}
+			bVal, ok := pop(&stack)
+			if !ok {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on mulCmp operand b"))
+			}
+			aVal, ok := pop(&stack)
+			if !ok {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on mulCmp operand a"))
+			}
+			result, err := runtimeMulCmp(aVal, bVal, cVal, dVal)
+			if err != nil {
+				return rollback(async.ResultExecutionFailed, err)
+			}
+			stack = append(stack, result)
+		case OpMulDivSigned:
+			// mulDivSigned(a, b, c): c on top (pushed last), then b, then a.
+			// Computes (a*b)/c truncated TOWARD ZERO over signed int256 operands,
+			// forming a*b in an unbounded big.Int. TRAPS on c==0 and on a result
+			// that does not fit int256.
+			cVal, ok := pop(&stack)
+			if !ok {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on mulDivSigned divisor"))
+			}
+			bVal, ok := pop(&stack)
+			if !ok {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on mulDivSigned multiplicand"))
+			}
+			aVal, ok := pop(&stack)
+			if !ok {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on mulDivSigned multiplier"))
+			}
+			result, err := runtimeMulDivSigned(aVal, bVal, cVal)
+			if err != nil {
+				return rollback(async.ResultExecutionFailed, err)
+			}
+			stack = append(stack, result)
 		case OpVerifySecp256k1:
 			// verifySecp256k1(msgHash, sig, pubkey): pubkey on top (pushed last),
 			// then sig, then msgHash. Verifies a 64-byte compact R‖S signature
@@ -2165,6 +2243,81 @@ func runtimeIsqrt(a RuntimeValue) (RuntimeValue, error) {
 	}
 	root := new(big.Int).Sqrt(ai)
 	return runtimeFromBigIntChecked(TagUint256, root)
+}
+
+// runtimeMulCmp computes sign(a*b - c*d) and returns it as a small signed int256
+// (-1, 0, or +1). Both a*b and c*d are formed in unbounded big.Int intermediates,
+// so the comparison is exact over the FULL uint256 range and never traps on a
+// product wider than uint256 (that is the whole point — ratioGtBounded forms
+// mulDiv(x,y,1) and traps the moment a cross product exceeds uint256). The
+// operands are treated as unsigned: because runtimeNumeric accepts signed tags a
+// validated program can reach mulCmp with a negative operand (e.g. via OpNeg or a
+// decoded int256 field), so guard every operand and TRAP deterministically rather
+// than silently comparing signed magnitudes — big.Int.Mul/Cmp would not panic,
+// but a negative operand is outside the unsigned contract and must fail closed.
+func runtimeMulCmp(a, b, c, d RuntimeValue) (RuntimeValue, error) {
+	ai, err := runtimeNumeric(a)
+	if err != nil {
+		return RuntimeValue{}, err
+	}
+	bi, err := runtimeNumeric(b)
+	if err != nil {
+		return RuntimeValue{}, err
+	}
+	ci, err := runtimeNumeric(c)
+	if err != nil {
+		return RuntimeValue{}, err
+	}
+	di, err := runtimeNumeric(d)
+	if err != nil {
+		return RuntimeValue{}, err
+	}
+	if ai.Sign() < 0 || bi.Sign() < 0 || ci.Sign() < 0 || di.Sign() < 0 {
+		return RuntimeValue{}, errors.New("AVM mulCmp requires non-negative operands")
+	}
+	left := new(big.Int).Mul(ai, bi)
+	right := new(big.Int).Mul(ci, di)
+	return ValueBigInt256(big.NewInt(int64(left.Cmp(right)))), nil
+}
+
+// runtimeMulDivSigned computes (a*b)/c truncated TOWARD ZERO over signed int256
+// operands. The a*b product is formed in an unbounded big.Int so it never
+// overflows mid-computation; only the final quotient is width-checked against
+// int256. The sign is sign(a)*sign(b)*sign(c) and the magnitude |a|*|b|/|c| is a
+// truncating (floor of non-negative) divide, so re-applying the sign yields
+// truncation toward zero — e.g. mulDivSigned(-7,3,2) = -(21/2) = -10, not -11.
+// Traps on a zero divisor (reusing the "AVM division by zero" error so it is
+// indistinguishable from an ordinary integer divide-by-zero) and on a result
+// that overflows int256 (via runtimeFromBigIntChecked/enforceIntWidth).
+func runtimeMulDivSigned(a, b, c RuntimeValue) (RuntimeValue, error) {
+	ai, err := runtimeNumeric(a)
+	if err != nil {
+		return RuntimeValue{}, err
+	}
+	bi, err := runtimeNumeric(b)
+	if err != nil {
+		return RuntimeValue{}, err
+	}
+	ci, err := runtimeNumeric(c)
+	if err != nil {
+		return RuntimeValue{}, err
+	}
+	if ci.Sign() == 0 {
+		return RuntimeValue{}, errors.New("AVM division by zero")
+	}
+	// sign = sign(a)*sign(b)*sign(c); zero if any operand is zero.
+	sign := ai.Sign() * bi.Sign() * ci.Sign()
+	absA := new(big.Int).Abs(ai)
+	absB := new(big.Int).Abs(bi)
+	absC := new(big.Int).Abs(ci)
+	prod := new(big.Int).Mul(absA, absB)
+	// Quo of two non-negative magnitudes truncates the magnitude (floor); applying
+	// the combined sign afterward makes the whole result truncate toward zero.
+	quo := new(big.Int).Quo(prod, absC)
+	if sign < 0 {
+		quo.Neg(quo)
+	}
+	return runtimeFromBigIntChecked(TagInt256, quo)
 }
 
 func runtimeMessageFieldValue(body []byte, field string) (RuntimeValue, error) {
@@ -3631,7 +3784,9 @@ func IsAllowedOpcode(op Opcode) bool {
 		OpMulDivRoundUp,
 		OpVerifySecp256k1,
 		OpEcrecover,
-		OpIsqrt:
+		OpIsqrt,
+		OpMulCmp,
+		OpMulDivSigned:
 		return true
 	default:
 		return false

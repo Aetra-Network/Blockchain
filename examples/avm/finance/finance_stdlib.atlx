@@ -104,9 +104,28 @@ contract FinanceStdlib {
     // Cross-multiply compare: is numA/denA > numC/denC ? 1 : 0.
     // SAFE ONLY when each cross operand fits below 2^128 (the caller must bound
     // its inputs); otherwise mulDiv(...,1) forms a > u256 product and TRAPS.
+    // Kept for back-compat; prefer ratioGtFull below, which is overflow-safe.
     @pure
     func ratioGtBounded(numA: uint256, denA: uint256, numC: uint256, denC: uint256): uint64 {
         return (mulDiv(numA, denC, 1) > mulDiv(numC, denA, 1)) ? 1 : 0
+    }
+
+    // Full-range cross-multiply compare of two ratios numA/denA vs numC/denC as
+    // sign(numA*denC - numC*denA), returned as -1/0/+1. Because mulCmp forms both
+    // cross products at UNBOUNDED width, this is correct for ANY uint256 operands
+    // — no <2^128 caveat, and it never traps on product overflow the way
+    // ratioGtBounded does. (a/b vs c/d becomes mulCmp(a,d,c,b).)
+    @pure
+    func ratioCmp(numA: uint256, denA: uint256, numC: uint256, denC: uint256): int256 {
+        return mulCmp(numA, denC, numC, denA)
+    }
+
+    // Full-range strict-greater predicate: is numA/denA > numC/denC ? 1 : 0,
+    // correct for ANY uint256 operands (the overflow-safe replacement for
+    // ratioGtBounded — no <2^128 restriction).
+    @pure
+    func ratioGtFull(numA: uint256, denA: uint256, numC: uint256, denC: uint256): uint64 {
+        return (ratioCmp(numA, denA, numC, denC) > 0) ? 1 : 0
     }
 
     // ---- Decimal18 (UFixed<18>) namespace --------------------------------
@@ -153,6 +172,22 @@ contract FinanceStdlib {
     @pure
     func pnlOf(entryPrice: int256, exitPrice: int256, size: int256): int256 {
         return (exitPrice - entryPrice) * size
+    }
+
+    // Signed Decimal18 multiply: floor-toward-zero(a * b / 1e18) over SIGNED
+    // 1e18-scaled operands. Unlike decMul (unsigned mulDiv), this carries the
+    // sign through, so a negative funding index times a signed position size
+    // scales correctly. Truncates toward zero.
+    @pure
+    func decMulSigned(a: int256, b: int256): int256 {
+        return mulDivSigned(a, b, ONE_1E18)
+    }
+
+    // Funding/PnL scaling: apply a signed 1e18-scaled rate to a signed size,
+    // returning the signed scaled amount rate*size/1e18 truncated toward zero.
+    @pure
+    func pnlScale(rate: int256, size: int256): int256 {
+        return mulDivSigned(rate, size, ONE_1E18)
     }
 
     @internal
@@ -207,6 +242,33 @@ contract FinanceStdlib {
         return ratioGtBounded(numA, denA, numC, denC)
     }
 
+    // Full-range ratio compare getter: returns -1/0/+1 = sign(numA/denA - numC/denC)
+    // for ANY uint256 operands (including cross products above 2^128).
+    @get
+    func ratioCmpG(numA: uint256, denA: uint256, numC: uint256, denC: uint256): int256 {
+        return ratioCmp(numA, denA, numC, denC)
+    }
+
+    // Full-range strict-greater getter: 1 iff numA/denA > numC/denC, overflow-safe.
+    @get
+    func ratioGtFullG(numA: uint256, denA: uint256, numC: uint256, denC: uint256): uint64 {
+        return ratioGtFull(numA, denA, numC, denC)
+    }
+
+    // Raw mulCmp getter for direct sign(a*b - c*d) assertions (equal/less/greater).
+    @get
+    func mulCmpG(a: uint256, b: uint256, c: uint256, d: uint256): int256 {
+        return mulCmp(a, b, c, d)
+    }
+
+    // mulCmp with a SIGNED first operand: proves a negative operand reaches the
+    // op as a signed value (so the unsigned-only guard TRAPS deterministically
+    // rather than panicking), rather than being reinterpreted as a large uint256.
+    @get
+    func mulCmpSignedG(a: int256, b: uint256, c: uint256, d: uint256): int256 {
+        return mulCmp(a, b, c, d)
+    }
+
     @get
     func decMulG(a: uint256, b: uint256): uint256 {
         return decMul(a, b)
@@ -243,5 +305,26 @@ contract FinanceStdlib {
     @get
     func pnlIsNegative(entryPrice: int256, exitPrice: int256, size: int256): uint64 {
         return (pnlOf(entryPrice, exitPrice, size) < 0) ? 1 : 0
+    }
+
+    // Raw signed fused multiply-divide getter: (a*b)/c truncated toward zero over
+    // signed operands, for direct truncation/sign assertions.
+    @get
+    func mulDivSignedG(a: int256, b: int256, c: int256): int256 {
+        return mulDivSigned(a, b, c)
+    }
+
+    // Signed Decimal18 multiply getter: (a * b) / 1e18 with sign, truncated
+    // toward zero. Both operands and the result are int256 1e18-scaled.
+    @get
+    func decMulSignedG(a: int256, b: int256): int256 {
+        return decMulSigned(a, b)
+    }
+
+    // Funding/PnL scaling getter: rate * size / 1e18 with sign, truncated toward
+    // zero.
+    @get
+    func pnlScaleG(rate: int256, size: int256): int256 {
+        return pnlScale(rate, size)
     }
 }

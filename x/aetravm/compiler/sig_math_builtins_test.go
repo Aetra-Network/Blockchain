@@ -64,6 +64,8 @@ contract SigMathDemo {
   @get func gIsqrt(): uint256 { return isqrt(144) }
   @get func gVerifySecp(): uint64 { return verifySecp256k1(sha256(INPUT), INPUT, INPUT) ? 1 : 0 }
   @get func gEcrecover(): bytes { return ecrecover(sha256(INPUT), INPUT) }
+  @get func gMulCmp(): int256 { return mulCmp(3, 4, 2, 5) }
+  @get func gMulDivSigned(): int256 { return mulDivSigned(6, 7, 3) }
 }
 `
 
@@ -84,6 +86,8 @@ func TestSigMathBuiltinsLowerToOpcodes(t *testing.T) {
 		avm.OpVerifySecp256k1,
 		avm.OpEcrecover,
 		avm.OpIsqrt,
+		avm.OpMulCmp,
+		avm.OpMulDivSigned,
 	} {
 		require.Truef(t, hasOpcode(res.Module.Code, op),
 			"builtin must lower to opcode 0x%02x", byte(op))
@@ -112,6 +116,7 @@ func TestSigMathBuiltinsModuleRoundTrips(t *testing.T) {
 
 	for _, op := range []avm.Opcode{
 		avm.OpMulDiv, avm.OpMulDivRoundUp, avm.OpVerifySecp256k1, avm.OpEcrecover, avm.OpIsqrt,
+		avm.OpMulCmp, avm.OpMulDivSigned,
 	} {
 		require.Truef(t, hasOpcode(decoded.Code, op), "opcode 0x%02x must survive decode", byte(op))
 	}

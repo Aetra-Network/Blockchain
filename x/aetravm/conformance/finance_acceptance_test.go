@@ -59,6 +59,32 @@ func callGetter(t *testing.T, runner *avm.Runner, res *compiler.Result, storage 
 	return exec.ReturnValue
 }
 
+// callGetterExpectTrap drives a getter with the given positional argument values
+// and asserts it TRAPPED (ResultCode != OK) rather than returning — used to prove
+// deterministic rollbacks (division by zero, negative operand) instead of panics.
+func callGetterExpectTrap(t *testing.T, runner *avm.Runner, res *compiler.Result, storage avm.Storage, name string, types []string, args ...*big.Int) {
+	t.Helper()
+	require.Len(t, args, len(types), "arg count must match type count for %s", name)
+	codec := financeArgCodec(name, types...)
+	values := make(map[string]any, len(args))
+	for i, a := range args {
+		values[fmt.Sprintf("arg%d", i)] = a
+	}
+	var body []byte
+	if len(args) > 0 {
+		body = mustCodecBody(t, codec, values)
+	}
+	op := opcodeForGetter(t, res, name)
+	exec, err := runner.Run(res.Module, storage, avm.RuntimeContext{
+		Entry:    avm.EntryQuery,
+		Message:  async.MessageEnvelope{Opcode: op, Body: body, GasLimit: 10_000_000},
+		GasLimit: 10_000_000,
+	})
+	// A trap is a deterministic rollback: Run returns a non-OK ResultCode (and,
+	// for an execution failure, a non-nil error) — never a Go panic.
+	require.NotEqualf(t, async.ResultOK, exec.ResultCode, "getter %s should have trapped but returned (result=%d, err=%v)", name, exec.ResultCode, err)
+}
+
 func bigResult(t *testing.T, v avm.RuntimeValue) *big.Int {
 	t.Helper()
 	got, err := v.AsBigInt()
@@ -127,6 +153,48 @@ func TestAcceptanceFinanceStdlib(t *testing.T) {
 	require.Equal(t, uint64(1), u64Result(t, callGetter(t, runner, res, avm.Storage{}, "pnlIsNegative", []string{i256, i256, i256}, bi(3000), bi(2500), bi(10))), "pnl negative")
 	requireBigEq(t, bi(5000), bigResult(t, callGetter(t, runner, res, avm.Storage{}, "pnl", []string{i256, i256, i256}, bi(3000), bi(3500), bi(10))), "pnl long profit")
 	require.Equal(t, uint64(0), u64Result(t, callGetter(t, runner, res, avm.Storage{}, "pnlIsNegative", []string{i256, i256, i256}, bi(3000), bi(3500), bi(10))), "pnl positive")
+
+	// ---- mulCmp: sign(a*b - c*d) equal / less / greater -------------------
+	requireBigEq(t, bi(0), bigResult(t, callGetter(t, runner, res, avm.Storage{}, "mulCmpG", []string{u256, u256, u256, u256}, bi(2), bi(3), bi(3), bi(2))), "mulCmp 2*3 == 3*2 => 0")
+	requireBigEq(t, bi(-1), bigResult(t, callGetter(t, runner, res, avm.Storage{}, "mulCmpG", []string{u256, u256, u256, u256}, bi(2), bi(3), bi(3), bi(3))), "mulCmp 2*3 < 3*3 => -1")
+	requireBigEq(t, bi(1), bigResult(t, callGetter(t, runner, res, avm.Storage{}, "mulCmpG", []string{u256, u256, u256, u256}, bi(3), bi(3), bi(2), bi(3))), "mulCmp 3*3 > 2*3 => +1")
+
+	// ---- ratioGtFull: FULL-RANGE ratio compare where a cross operand EXCEEDS
+	// 2^128 (so the old bounded path's mulDiv(num,den,1) forms a > uint256
+	// product and TRAPS). numA/denA = 3*2^100, numC/denC = 2^100, so numA/denA >
+	// numC/denC; the full-range op returns the right answer, the bounded op traps.
+	p200 := new(big.Int).Lsh(big.NewInt(1), 200)
+	p100 := new(big.Int).Lsh(big.NewInt(1), 100)
+	numA := new(big.Int).Mul(big.NewInt(3), p200) // 3*2^200
+	denA := new(big.Int).Set(p100)                // 2^100
+	numC := new(big.Int).Set(p200)                // 2^200
+	denC := new(big.Int).Set(p100)                // 2^100
+	// Cross products numA*denC = 3*2^300 and numC*denA = 2^300 each exceed 2^256.
+	require.Equal(t, uint64(1), u64Result(t, callGetter(t, runner, res, avm.Storage{}, "ratioGtFullG", []string{u256, u256, u256, u256}, numA, denA, numC, denC)), "ratioGtFull 3*2^100 > 2^100 (cross operand > 2^128)")
+	require.Equal(t, uint64(0), u64Result(t, callGetter(t, runner, res, avm.Storage{}, "ratioGtFullG", []string{u256, u256, u256, u256}, numC, denC, numA, denA)), "ratioGtFull 2^100 > 3*2^100 is false")
+	requireBigEq(t, bi(1), bigResult(t, callGetter(t, runner, res, avm.Storage{}, "ratioCmpG", []string{u256, u256, u256, u256}, numA, denA, numC, denC)), "ratioCmp full-range => +1")
+	// The OLD bounded path TRAPS on the very same inputs (mulDiv cross product
+	// overflows uint256), proving ratioGtFull is the overflow-safe replacement.
+	callGetterExpectTrap(t, runner, res, avm.Storage{}, "ratioGt", []string{u256, u256, u256, u256}, numA, denA, numC, denC)
+
+	// ---- mulDivSigned: signed, truncated-toward-zero (a*b)/c -----------------
+	// -7*3/2 = -21/2 truncates TOWARD ZERO to -10 (not floor -11).
+	requireBigEq(t, bi(-10), bigResult(t, callGetter(t, runner, res, avm.Storage{}, "mulDivSignedG", []string{i256, i256, i256}, bi(-7), bi(3), bi(2))), "mulDivSigned -7*3/2 => -10 (trunc toward zero)")
+	requireBigEq(t, bi(10), bigResult(t, callGetter(t, runner, res, avm.Storage{}, "mulDivSignedG", []string{i256, i256, i256}, bi(7), bi(3), bi(2))), "mulDivSigned 7*3/2 => 10")
+	requireBigEq(t, bi(10), bigResult(t, callGetter(t, runner, res, avm.Storage{}, "mulDivSignedG", []string{i256, i256, i256}, bi(-7), bi(-3), bi(2))), "mulDivSigned -7*-3/2 => 10")
+	requireBigEq(t, bi(-10), bigResult(t, callGetter(t, runner, res, avm.Storage{}, "mulDivSignedG", []string{i256, i256, i256}, bi(7), bi(-3), bi(2))), "mulDivSigned 7*-3/2 => -10")
+	// Signed funding scale: rate -0.5 (at 1e18) * size 10e18 / 1e18 = -5e18.
+	negHalf := new(big.Int).Neg(new(big.Int).Div(e18(), big.NewInt(2))) // -0.5e18
+	requireBigEq(t, new(big.Int).Neg(scaled(5)), bigResult(t, callGetter(t, runner, res, avm.Storage{}, "pnlScaleG", []string{i256, i256}, negHalf, scaled(10))), "pnlScale -0.5*10 => -5.0")
+
+	// ---- mulDivSigned by ZERO traps -----------------------------------------
+	callGetterExpectTrap(t, runner, res, avm.Storage{}, "mulDivSignedG", []string{i256, i256, i256}, bi(7), bi(3), bi(0))
+
+	// ---- Regression: a NEGATIVE operand to mulCmp TRAPS (deterministic
+	// rollback) rather than panicking. mulCmpG's params are uint256, but a
+	// negative int256 injected through the wire codec reaches the op as a signed
+	// value; mulCmp guards it and fails closed.
+	callGetterExpectTrap(t, runner, res, avm.Storage{}, "mulCmpSignedG", []string{i256, u256, u256, u256}, bi(-1), bi(3), bi(3), bi(2))
 }
 
 // TestAcceptanceLendingHealthFactor compiles the lending health-factor contract

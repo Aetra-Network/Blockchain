@@ -157,6 +157,16 @@ const (
 	// Integer square root over uint256 (isqrt): one uint256 operand in Args,
 	// one uint256 result. Maps 1:1 to avm.OpIsqrt.
 	IRExprIsqrt IRExprKind = "isqrt"
+
+	// Full-range cross-product compare (mulCmp): four unsigned operands
+	// (source order a, b, c, d) in Args, yields int256 sign(a*b - c*d) as
+	// -1/0/+1. Maps 1:1 to avm.OpMulCmp.
+	IRExprMulCmp IRExprKind = "mul_cmp"
+
+	// Signed fused multiply-divide (mulDivSigned): three signed int256 operands
+	// (source order a, b, c) in Args, yields int256 (a*b)/c truncated toward
+	// zero. Maps 1:1 to avm.OpMulDivSigned.
+	IRExprMulDivSigned IRExprKind = "mul_div_signed"
 )
 
 type IRStructField struct {

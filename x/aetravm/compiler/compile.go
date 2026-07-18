@@ -2459,6 +2459,31 @@ func (c *Compiler) inferExprType(expr Expr, env map[string]TypeRef, storage *Str
 				return TypeRef{}, err
 			}
 			return TypeRef{Name: "uint256"}, nil
+		case "mulcmp":
+			// mulCmp(a,b,c,d) -> int256: sign(a*b - c*d) as -1/0/+1. Both products
+			// are formed at unbounded width, so it never traps on a >uint256
+			// product — the full-range replacement for the ratioGtBounded path.
+			if len(expr.Args) != 4 {
+				return TypeRef{}, fail("E_CALL_ARITY", expr.Pos, "mulCmp() requires four arguments")
+			}
+			for _, arg := range expr.Args {
+				if _, err := c.inferExprType(arg, env, storage, structs, enums, types, functions, consts, inPure); err != nil {
+					return TypeRef{}, err
+				}
+			}
+			return TypeRef{Name: "int256"}, nil
+		case "muldivsigned":
+			// mulDivSigned(a,b,c) -> int256: (a*b)/c truncated toward zero over
+			// signed operands; the a*b product is formed at unbounded width.
+			if len(expr.Args) != 3 {
+				return TypeRef{}, fail("E_CALL_ARITY", expr.Pos, "mulDivSigned() requires three arguments")
+			}
+			for _, arg := range expr.Args {
+				if _, err := c.inferExprType(arg, env, storage, structs, enums, types, functions, consts, inPure); err != nil {
+					return TypeRef{}, err
+				}
+			}
+			return TypeRef{Name: "int256"}, nil
 		case "verifysecp256k1":
 			// verifySecp256k1(msgHash: hash, sig: bytes, pubkey: bytes) -> bool.
 			if len(expr.Args) != 3 {
@@ -5118,6 +5143,24 @@ func lowerExprToIR(expr Expr, env loweringEnv, functions map[string]*FunctionDec
 				return nil, err
 			}
 			return &IRExpr{Kind: IRExprIsqrt, Args: []*IRExpr{arg}, Pos: expr.Pos}, nil
+		case "mulcmp":
+			if len(expr.Args) != 4 {
+				return nil, fail("E_LOWER_CALL", expr.Pos, "mulCmp() requires four arguments")
+			}
+			args, err := lowerExprArgs(expr.Args, env, functions, seen)
+			if err != nil {
+				return nil, err
+			}
+			return &IRExpr{Kind: IRExprMulCmp, Args: args, Pos: expr.Pos}, nil
+		case "muldivsigned":
+			if len(expr.Args) != 3 {
+				return nil, fail("E_LOWER_CALL", expr.Pos, "mulDivSigned() requires three arguments")
+			}
+			args, err := lowerExprArgs(expr.Args, env, functions, seen)
+			if err != nil {
+				return nil, err
+			}
+			return &IRExpr{Kind: IRExprMulDivSigned, Args: args, Pos: expr.Pos}, nil
 		case "verifysecp256k1":
 			if len(expr.Args) != 3 {
 				return nil, fail("E_LOWER_CALL", expr.Pos, "verifySecp256k1() requires three arguments")
@@ -5569,10 +5612,11 @@ func emitIRExpr(expr *IRExpr, code *[]avm.Instruction) error {
 			return err
 		}
 		*code = append(*code, avm.Instruction{Op: avm.OpVerifySignature})
-	case IRExprMulDiv, IRExprMulDivRoundUp, IRExprVerifySecp256k1, IRExprEcrecover, IRExprIsqrt:
+	case IRExprMulDiv, IRExprMulDivRoundUp, IRExprVerifySecp256k1, IRExprEcrecover, IRExprIsqrt, IRExprMulCmp, IRExprMulDivSigned:
 		// Operands are pushed in source order; the VM dispatch pops them
 		// last-pushed-first (mulDiv pops c, b, a; verifySecp256k1 pops pubkey,
-		// sig, msgHash; ecrecover pops sig, msgHash).
+		// sig, msgHash; ecrecover pops sig, msgHash; mulCmp pops d, c, b, a;
+		// mulDivSigned pops c, b, a).
 		for _, arg := range expr.Args {
 			if err := emitIRExpr(arg, code); err != nil {
 				return err
@@ -5590,6 +5634,10 @@ func emitIRExpr(expr *IRExpr, code *[]avm.Instruction) error {
 			op = avm.OpEcrecover
 		case IRExprIsqrt:
 			op = avm.OpIsqrt
+		case IRExprMulCmp:
+			op = avm.OpMulCmp
+		case IRExprMulDivSigned:
+			op = avm.OpMulDivSigned
 		}
 		*code = append(*code, avm.Instruction{Op: op})
 	case IRExprCoinsCast:
