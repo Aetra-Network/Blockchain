@@ -12,6 +12,7 @@ import (
 	"github.com/cosmos/cosmos-sdk/runtime"
 	servertypes "github.com/cosmos/cosmos-sdk/server/types"
 	storetypes "github.com/cosmos/cosmos-sdk/store/v2/types"
+	sdk "github.com/cosmos/cosmos-sdk/types"
 	authkeeper "github.com/cosmos/cosmos-sdk/x/auth/keeper"
 	authtypes "github.com/cosmos/cosmos-sdk/x/auth/types"
 	authzkeeper "github.com/cosmos/cosmos-sdk/x/authz/keeper"
@@ -62,6 +63,24 @@ func (a validatorRegistryReputationAdapter) GetValidatorTotalScore(ctx context.C
 		return 0, false, nil
 	}
 	return vs.TotalScore, vs.IsJailed || vs.IsSlashed, nil
+}
+
+// stakingValidatorPresenceAdapter answers "is this account a validator operator"
+// for the ANS Phase B reputation fee gate (keeperwiring.ValidatorPresenceReader).
+// A validator's operator account and its valoper address share the same bytes,
+// so a fee-paying validator tx (signed by the operator account) resolves here.
+// Any lookup miss or error degrades to false -- a broken staking read must never
+// block a tx, only forgo the reputation scaling.
+type stakingValidatorPresenceAdapter struct {
+	Keeper *stakingkeeper.Keeper
+}
+
+func (a stakingValidatorPresenceAdapter) IsValidator(ctx context.Context, addr sdk.AccAddress) bool {
+	if a.Keeper == nil || len(addr) == 0 {
+		return false
+	}
+	_, err := a.Keeper.GetValidator(ctx, sdk.ValAddress(addr.Bytes()))
+	return err == nil
 }
 
 func (app *L1App) initKeepers(
@@ -260,6 +279,12 @@ func (app *L1App) initKeepers(
 		BankKeeper:    app.BankKeeper,
 		DistrKeeper:   app.DistrKeeper,
 		GovAuthority:  govAuthority,
+		// ANS Phase B reputation fee gate: engage reputation scaling only for a
+		// wallet that currently holds an attached domain (app.IdentityRootKeeper,
+		// assigned above with bank custody) or a validator (x/staking). Both are
+		// already live at this point in the wiring sequence.
+		DomainOwnershipReader:   app.IdentityRootKeeper,
+		ValidatorPresenceReader: stakingValidatorPresenceAdapter{Keeper: app.StakingKeeper},
 	})
 	app.BurnKeeper = nativeKeepers.BurnKeeper
 	app.TreasuryKeeper = nativeKeepers.TreasuryKeeper

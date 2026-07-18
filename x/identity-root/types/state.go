@@ -91,6 +91,10 @@ type IdentityRootState struct {
 	// domain; a losing bid is refunded the moment it is outbid, so only the
 	// current high bid is escrowed and no separate Bid records exist.
 	Auctions	[]Auction
+	// Attachments are ANS Phase B domain attachments: one record per target
+	// wallet (one domain per wallet). Stored per-record under AttachKeyPrefix,
+	// keyed by the target wallet's v2 identity.
+	Attachments	[]Attachment
 	// SweepState carries the last treasury-sweep height so the daily sweep is
 	// gated on block height alone (residual blob, not a per-record key).
 	SweepState	SweepState
@@ -144,6 +148,25 @@ type ReservedName struct {
 	Reason		string
 }
 
+// Attachment is one ANS Phase B domain attachment: an owned FQDN pointed at a
+// target wallet. The record is keyed by TargetIdentityHex (the hex of the target
+// wallet's 32-byte v2 identity) so a wallet can hold at most one attached domain
+// -- the fee-gate index. Reputation is NEVER stored here; the attachment only
+// records "this wallet currently holds a domain".
+type Attachment struct {
+	// Fqdn is the normalized fully-qualified .aet name that is attached.
+	Fqdn			string
+	// Target is the user-facing AE address the FQDN is attached to.
+	Target			string
+	// TargetIdentityHex is the hex of the target wallet's 32-byte v2 identity
+	// (addressing.NormalizeToAccountIdentity) -- the per-wallet primary key.
+	TargetIdentityHex	string
+	// Owner is the AE address that owned the FQDN when it was attached.
+	Owner			string
+	CreatedHeight		uint64
+	UpdatedHeight		uint64
+}
+
 type MsgRegisterName struct {
 	Owner		string
 	Name		string
@@ -181,15 +204,23 @@ type MsgSetReverseRecord struct {
 	Height	uint64
 }
 
+// MsgCreateSubdomain is BOTH the keeper input and (ANS Phase B) the wire type
+// exposed on the live Msg server. Every field is a FLAT scalar carrying a
+// protobuf struct tag so the hand-rolled tx.proto descriptor can marshal AND
+// decode it -- exactly like every other hand-rolled Msg in this tree. It carries
+// NO nested IdentityNFTBindingReference: gogoproto's table unmarshaler panics on
+// an untagged struct field, and a tagged nested message would need its own
+// descriptor. NFT binding is disabled by default (DefaultIdentityRootParams
+// keeps NFTBindingEnabled=false), so a subdomain never needs to carry one over
+// the wire. Field NUMBERS must match tx.go's descriptor.
 type MsgCreateSubdomain struct {
-	Owner		string
-	ParentName	string
-	Label		string
-	SubdomainOwner	string
-	Height		uint64
-	ResolverRoot	string
-	SubdomainPolicy	string
-	NFTBinding	IdentityNFTBindingReference
+	Owner		string	`protobuf:"bytes,1,opt,name=owner,proto3" json:"owner,omitempty"`
+	ParentName	string	`protobuf:"bytes,2,opt,name=parent_name,json=parentName,proto3" json:"parent_name,omitempty"`
+	Label		string	`protobuf:"bytes,3,opt,name=label,proto3" json:"label,omitempty"`
+	SubdomainOwner	string	`protobuf:"bytes,4,opt,name=subdomain_owner,json=subdomainOwner,proto3" json:"subdomain_owner,omitempty"`
+	Height		uint64	`protobuf:"varint,5,opt,name=height,proto3" json:"height,omitempty"`
+	ResolverRoot	string	`protobuf:"bytes,6,opt,name=resolver_root,json=resolverRoot,proto3" json:"resolver_root,omitempty"`
+	SubdomainPolicy	string	`protobuf:"bytes,7,opt,name=subdomain_policy,json=subdomainPolicy,proto3" json:"subdomain_policy,omitempty"`
 }
 
 type MsgReserveName struct {
@@ -237,6 +268,7 @@ func EmptyIdentityRootState() IdentityRootState {
 		RootAuthorities:	[]RootAuthority{},
 		ReservedNames:		[]ReservedName{},
 		Auctions:		[]Auction{},
+		Attachments:		[]Attachment{},
 	}
 }
 
@@ -275,6 +307,7 @@ func (s IdentityRootState) Export() IdentityRootState {
 		RootAuthorities:	cloneAuthorities(s.RootAuthorities),
 		ReservedNames:		cloneReserved(s.ReservedNames),
 		Auctions:		cloneAuctions(s.Auctions),
+		Attachments:		cloneAttachments(s.Attachments),
 		SweepState:		s.SweepState,
 	}
 	SortRecords(out.Records)
@@ -284,6 +317,7 @@ func (s IdentityRootState) Export() IdentityRootState {
 	SortAuthorities(out.RootAuthorities)
 	SortReserved(out.ReservedNames)
 	SortAuctions(out.Auctions)
+	SortAttachments(out.Attachments)
 	return out
 }
 
@@ -395,6 +429,24 @@ func (s IdentityRootState) Validate(params IdentityRootParams) error {
 			return fmt.Errorf("duplicate identity auction %q", auction.Name)
 		}
 		auctions[auction.Name] = struct{}{}
+	}
+	attachedWallets := map[string]struct{}{}
+	attachedNames := map[string]struct{}{}
+	for _, attachment := range s.Attachments {
+		attachment = attachment.Normalize(params)
+		if err := attachment.Validate(params); err != nil {
+			return err
+		}
+		// One domain per wallet: the target identity is the primary key.
+		if _, found := attachedWallets[attachment.TargetIdentityHex]; found {
+			return fmt.Errorf("duplicate identity attachment for wallet %q", attachment.TargetIdentityHex)
+		}
+		attachedWallets[attachment.TargetIdentityHex] = struct{}{}
+		// A name can be attached at most once.
+		if _, found := attachedNames[attachment.Fqdn]; found {
+			return fmt.Errorf("duplicate identity attachment for name %q", attachment.Fqdn)
+		}
+		attachedNames[attachment.Fqdn] = struct{}{}
 	}
 	return nil
 }
@@ -553,6 +605,50 @@ func (r ReservedName) Validate(params IdentityRootParams) error {
 	}
 	if r.Authority == "" || r.Reason == "" {
 		return errors.New("identity reserved name authority and reason are required")
+	}
+	return nil
+}
+
+func (a Attachment) Normalize(params IdentityRootParams) Attachment {
+	a.Fqdn, _ = NormalizeName(a.Fqdn, params.RootNamespace)
+	a.Target = strings.TrimSpace(a.Target)
+	a.TargetIdentityHex = strings.ToLower(strings.TrimSpace(a.TargetIdentityHex))
+	a.Owner = strings.TrimSpace(a.Owner)
+	return a
+}
+
+func (a Attachment) Validate(params IdentityRootParams) error {
+	a = a.Normalize(params)
+	if err := ValidateName(a.Fqdn, params); err != nil {
+		return err
+	}
+	if err := ValidateUserFacingAEAddress("identity attachment target", a.Target); err != nil {
+		return err
+	}
+	if err := ValidateAttachmentIdentityHex(a.TargetIdentityHex); err != nil {
+		return err
+	}
+	if err := ValidateUserFacingAEAddress("identity attachment owner", a.Owner); err != nil {
+		return err
+	}
+	if a.CreatedHeight == 0 || a.UpdatedHeight == 0 {
+		return errors.New("identity attachment heights must be positive")
+	}
+	if a.UpdatedHeight < a.CreatedHeight {
+		return errors.New("identity attachment updated height cannot precede creation")
+	}
+	return nil
+}
+
+// ValidateAttachmentIdentityHex checks the target identity is a 32-byte hex
+// string -- the canonical v2 account identity the attachment is keyed by.
+func ValidateAttachmentIdentityHex(idHex string) error {
+	idHex = strings.ToLower(strings.TrimSpace(idHex))
+	if len(idHex) != 64 {
+		return errors.New("identity attachment target identity must be 32-byte hex")
+	}
+	if _, err := hex.DecodeString(idHex); err != nil {
+		return fmt.Errorf("identity attachment target identity must be hex: %w", err)
 	}
 	return nil
 }
@@ -737,6 +833,14 @@ func SortReserved(names []ReservedName) {
 	sort.SliceStable(names, func(i, j int) bool { return names[i].Name < names[j].Name })
 }
 
+// SortAttachments orders attachments by target identity (the primary key) so
+// the per-record Set/Delete sequence is byte-ordered on every node.
+func SortAttachments(attachments []Attachment) {
+	sort.SliceStable(attachments, func(i, j int) bool {
+		return attachments[i].TargetIdentityHex < attachments[j].TargetIdentityHex
+	})
+}
+
 func normalizeResolverRoot(root string) string {
 	root = strings.TrimSpace(root)
 	if root == "" {
@@ -818,6 +922,17 @@ func cloneReserved(names []ReservedName) []ReservedName {
 		out[i].Name = strings.ToLower(strings.TrimSpace(out[i].Name))
 		out[i].Authority = strings.TrimSpace(out[i].Authority)
 		out[i].Reason = strings.TrimSpace(out[i].Reason)
+	}
+	return out
+}
+
+func cloneAttachments(attachments []Attachment) []Attachment {
+	out := append([]Attachment(nil), attachments...)
+	for i := range out {
+		out[i].Fqdn = strings.ToLower(strings.TrimSpace(out[i].Fqdn))
+		out[i].Target = strings.TrimSpace(out[i].Target)
+		out[i].TargetIdentityHex = strings.ToLower(strings.TrimSpace(out[i].TargetIdentityHex))
+		out[i].Owner = strings.TrimSpace(out[i].Owner)
 	}
 	return out
 }

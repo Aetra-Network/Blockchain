@@ -57,3 +57,18 @@ func MsgStartAuctionSigners(msg proto.Message) ([][]byte, error) {
 func MsgUpdatePriceTableSigners(msg proto.Message) ([][]byte, error) {
 	return msgSignerFromAddressField(msg, "authority")
 }
+
+// MsgAttachDomainSigners resolves the signer to the FQDN owner.
+func MsgAttachDomainSigners(msg proto.Message) ([][]byte, error) {
+	return msgSignerFromAddressField(msg, "owner")
+}
+
+// MsgDetachDomainSigners resolves the signer to the FQDN owner.
+func MsgDetachDomainSigners(msg proto.Message) ([][]byte, error) {
+	return msgSignerFromAddressField(msg, "owner")
+}
+
+// MsgCreateSubdomainSigners resolves the signer to the parent-domain owner.
+func MsgCreateSubdomainSigners(msg proto.Message) ([][]byte, error) {
+	return msgSignerFromAddressField(msg, "owner")
+}

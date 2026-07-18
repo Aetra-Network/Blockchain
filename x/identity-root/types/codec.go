@@ -13,6 +13,9 @@ func RegisterLegacyAminoCodec(cdc *codec.LegacyAmino) {
 	cdc.RegisterConcrete(&MsgPlaceBid{}, "l1/identityroot/MsgPlaceBid", nil)
 	cdc.RegisterConcrete(&MsgStartAuction{}, "l1/identityroot/MsgStartAuction", nil)
 	cdc.RegisterConcrete(&MsgUpdatePriceTable{}, "l1/identityroot/MsgUpdatePriceTable", nil)
+	cdc.RegisterConcrete(&MsgAttachDomain{}, "l1/identityroot/MsgAttachDomain", nil)
+	cdc.RegisterConcrete(&MsgDetachDomain{}, "l1/identityroot/MsgDetachDomain", nil)
+	cdc.RegisterConcrete(&MsgCreateSubdomain{}, "l1/identityroot/MsgCreateSubdomain", nil)
 }
 
 // RegisterInterfaces registers the Msg service descriptor and the Phase-A Msg
@@ -26,6 +29,9 @@ func RegisterInterfaces(registry codectypes.InterfaceRegistry) {
 		&MsgPlaceBid{},
 		&MsgStartAuction{},
 		&MsgUpdatePriceTable{},
+		&MsgAttachDomain{},
+		&MsgDetachDomain{},
+		&MsgCreateSubdomain{},
 	)
 	registry.RegisterImplementations(
 		(*txtypes.MsgResponse)(nil),
@@ -33,5 +39,8 @@ func RegisterInterfaces(registry codectypes.InterfaceRegistry) {
 		&MsgPlaceBidResponse{},
 		&MsgStartAuctionResponse{},
 		&MsgUpdatePriceTableResponse{},
+		&MsgAttachDomainResponse{},
+		&MsgDetachDomainResponse{},
+		&MsgCreateSubdomainResponse{},
 	)
 }

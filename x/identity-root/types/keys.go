@@ -15,6 +15,17 @@ var (
 	ResolverKeyPrefix	= []byte{0x03}
 	ReverseKeyPrefix	= []byte{0x04}
 	AuctionKeyPrefix	= []byte{0x05}
+	// AttachKeyPrefix keys ANS Phase B domain attachments, ONE record per
+	// target wallet (the "one domain per wallet" index). The key is
+	// 0x06 || target_identity_hex, where target_identity_hex is the hex of the
+	// 32-byte v2 account identity the FQDN is attached TO -- the same identity
+	// the reputation fee gate derives from a tx sender
+	// (addressing.NormalizeToAccountIdentity), so attach-time and fee-time
+	// produce the identical key for the same account. Keying by the wallet
+	// makes "does this wallet hold a domain?" an O(1) store.Get for the ante
+	// fee gate (see keeper.AccountHoldsDomain) and makes the one-per-wallet
+	// invariant structural: the wallet identity IS the primary key.
+	AttachKeyPrefix		= []byte{0x06}
 )
 
 // NameKey is the per-record key for a NameRecord, keyed by its normalized FQDN.
@@ -35,4 +46,11 @@ func ReverseKey(address string) []byte {
 // AuctionKey is the per-record key for an Auction, keyed by its normalized FQDN.
 func AuctionKey(name string) []byte {
 	return append(append([]byte(nil), AuctionKeyPrefix...), []byte(name)...)
+}
+
+// AttachKey is the per-record key for an Attachment, keyed by the hex of the
+// target wallet's 32-byte v2 identity. Keying by the wallet (not the FQDN)
+// enforces one domain per wallet and lets the fee gate do an O(1) presence read.
+func AttachKey(targetIdentityHex string) []byte {
+	return append(append([]byte(nil), AttachKeyPrefix...), []byte(targetIdentityHex)...)
 }

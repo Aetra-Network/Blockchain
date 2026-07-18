@@ -48,6 +48,16 @@ type FeeFormulaParams struct {
 	// StorageRentSideEffectsNaet is the default fee budget for transactions that create
 	// or increase persistent state (Requirement 6.6). May be overridden per-tx.
 	StorageRentSideEffectsNaet	string	`json:"storage_rent_side_effects_naet"`
+
+	// --- ANS Phase B: multiplicative reputation-fee scaling (gated) ---
+	// These scale the base transfer anchor for a reputation-GATED sender (a
+	// wallet that currently holds a domain, or a validator) between the floor
+	// (best reputation) and the ceiling (worst reputation). A non-gated sender
+	// is unaffected (1.0x). All three are basis-point / score integers, so the
+	// scaling is integer-only and deterministic.
+	ReputationFeeFloorBps		uint32	`json:"reputation_fee_floor_bps"`
+	ReputationFeeCeilBps		uint32	`json:"reputation_fee_ceil_bps"`
+	ReputationFeeReferenceScore	uint32	`json:"reputation_fee_reference_score"`
 }
 
 // DefaultFeeFormulaParams returns safe governance defaults for the extended fee formula.
@@ -61,6 +71,9 @@ func DefaultFeeFormulaParams() FeeFormulaParams {
 		LowReputationPremiumCapNaet:	DefaultLowReputationPremiumCap,
 		HighReputationDiscountCapNaet:	DefaultHighReputationDiscountCap,
 		StorageRentSideEffectsNaet:	DefaultStorageRentSideEffectsNaet,
+		ReputationFeeFloorBps:		DefaultReputationFeeFloorBps,
+		ReputationFeeCeilBps:		DefaultReputationFeeCeilBps,
+		ReputationFeeReferenceScore:	DefaultReputationFeeReferenceScore,
 	}
 }
 
@@ -89,6 +102,34 @@ func (p FeeFormulaParams) Validate() error {
 	}
 	if _, err := validateNonNegativeAmount("storage_rent_side_effects_naet", p.StorageRentSideEffectsNaet); err != nil {
 		return err
+	}
+	// ANS Phase B multiplicative reputation scaling. Validate on defaulted
+	// values (0 means "unset -> default", exactly as NormalizeFeeFormulaParams
+	// fills them, and every real path normalizes before use) so a zero-valued
+	// legacy param set stays valid while a genuinely out-of-range vote is
+	// rejected. floor must be positive (never zero the anchor) and <= ceil <=
+	// 10000; the reference score must be positive (it is a divisor).
+	def := DefaultFeeFormulaParams()
+	floorBps := p.ReputationFeeFloorBps
+	if floorBps == 0 {
+		floorBps = def.ReputationFeeFloorBps
+	}
+	ceilBps := p.ReputationFeeCeilBps
+	if ceilBps == 0 {
+		ceilBps = def.ReputationFeeCeilBps
+	}
+	refScore := p.ReputationFeeReferenceScore
+	if refScore == 0 {
+		refScore = def.ReputationFeeReferenceScore
+	}
+	if floorBps > uint32(BasisPoints) {
+		return fmt.Errorf("reputation_fee_floor_bps must be in (0, %d], got %d", BasisPoints, p.ReputationFeeFloorBps)
+	}
+	if ceilBps < floorBps || ceilBps > uint32(BasisPoints) {
+		return fmt.Errorf("reputation_fee_ceil_bps must be in [%d, %d], got %d", floorBps, BasisPoints, p.ReputationFeeCeilBps)
+	}
+	if refScore == 0 {
+		return fmt.Errorf("reputation_fee_reference_score must be positive")
 	}
 	return nil
 }
@@ -119,6 +160,15 @@ func NormalizeFeeFormulaParams(p FeeFormulaParams) FeeFormulaParams {
 	}
 	if p.StorageRentSideEffectsNaet == "" {
 		p.StorageRentSideEffectsNaet = def.StorageRentSideEffectsNaet
+	}
+	if p.ReputationFeeFloorBps == 0 {
+		p.ReputationFeeFloorBps = def.ReputationFeeFloorBps
+	}
+	if p.ReputationFeeCeilBps == 0 {
+		p.ReputationFeeCeilBps = def.ReputationFeeCeilBps
+	}
+	if p.ReputationFeeReferenceScore == 0 {
+		p.ReputationFeeReferenceScore = def.ReputationFeeReferenceScore
 	}
 	return p
 }
@@ -245,29 +295,33 @@ func ComputeFullTransferFee(
 	}
 	congestionSurcharge := computeBoundedCongestionSurcharge(maxSurcharge, blockUtilizationBps, baseParams.CongestionThresholdBps)
 
-	lowPremiumCap, err := formulaParams.LowReputationPremiumCapInt()
-	if err != nil {
-		return sdkmath.Int{}, err
-	}
-	discountCap, err := formulaParams.HighReputationDiscountCapInt()
-	if err != nil {
-		return sdkmath.Int{}, err
-	}
-	premium, discount := computeReputationAdjustments(reputationScore, reputationFound, lowPremiumCap, discountCap)
+	// ANS Phase B: reputation scales the base transfer anchor MULTIPLICATIVELY,
+	// and only for a reputation-GATED sender (reputationFound == true, set by the
+	// wiring adapter for a wallet that currently holds a domain OR is a
+	// validator). A non-gated sender keeps the full anchor (1.0x). The
+	// cost-recovery components (gas/byte/message/congestion/storage-rent) are
+	// NEVER discounted -- they are anti-spam / real-resource charges, not a
+	// reputation reward.
+	multBps := computeReputationMultiplierBps(
+		reputationScore,
+		reputationFound,
+		formulaParams.ReputationFeeFloorBps,
+		formulaParams.ReputationFeeCeilBps,
+		formulaParams.ReputationFeeReferenceScore,
+	)
+	adjustedBase := base.MulRaw(int64(multBps)).QuoRaw(int64(BasisPoints))
 
 	storageRent := storageRentSideEffectsNaet
 	if storageRent.IsNil() || storageRent.IsNegative() {
 		storageRent = sdkmath.ZeroInt()
 	}
 
-	total := base.
+	total := adjustedBase.
 		Add(gasComponent).
 		Add(byteComponent).
 		Add(msgComponent).
 		Add(congestionSurcharge).
-		Add(premium).
-		Add(storageRent).
-		Sub(discount)
+		Add(storageRent)
 
 	if total.LT(minFee) {
 		total = minFee
@@ -310,44 +364,36 @@ func computeBoundedCongestionSurcharge(maxSurcharge sdkmath.Int, utilizationBps,
 	return surcharge
 }
 
-// computeReputationAdjustments returns (premium, discount) in naet for the given
-// reputation score. Neutral score (5000) → both zero. Low score → bounded premium.
-// High score → bounded discount (Requirement 1.4, 1.5).
+// computeReputationMultiplierBps returns the basis-point factor applied to the
+// base transfer anchor for a sender with the given reputation score (ANS Phase
+// B). It replaces the additive premium/discount model.
 //
-// Score is in [0..10000] bps where ReputationNeutralScore (5000) == neutral.
-func computeReputationAdjustments(score uint32, found bool, premiumCap, discountCap sdkmath.Int) (premium, discount sdkmath.Int) {
+//   - A non-GATED sender (found == false: no domain and not a validator) always
+//     gets BasisPoints (1.0x) -- a plain wallet's fee is unaffected by whatever
+//     reputation record it may happen to have.
+//   - A GATED sender is scaled linearly from ceilBps (worst reputation, at
+//     score 0) down to floorBps (best reputation, at score >= referenceScore).
+//     Higher score -> larger reduction from the ceiling -> lower multiplier.
+//
+// The result is always in [floorBps, ceilBps] (both <= BasisPoints, floorBps >
+// 0 by Validate), so the anchor is scaled down but never zeroed. Integer-only
+// (truncating division), so every node computes the identical factor.
+func computeReputationMultiplierBps(score uint32, found bool, floorBps, ceilBps, referenceScore uint32) uint32 {
 	if !found {
-
-		return sdkmath.ZeroInt(), sdkmath.ZeroInt()
+		return uint32(BasisPoints)
 	}
-
-	neutral := ReputationNeutralScore
-
-	if score < neutral {
-
-		deficit := uint64(neutral - score)
-		p := premiumCap.MulRaw(int64(deficit)).QuoRaw(int64(neutral))
-		if p.GT(premiumCap) {
-			p = premiumCap
-		}
-		return p, sdkmath.ZeroInt()
+	if referenceScore == 0 || ceilBps < floorBps {
+		// Defensive: Validate/Normalize guarantee neither, but never divide by
+		// zero or underflow the span in the consensus path.
+		return ceilBps
 	}
-
-	if score > neutral {
-
-		excess := uint64(score - neutral)
-		remaining := uint64(BasisPoints) - uint64(neutral)
-		if remaining == 0 {
-			return sdkmath.ZeroInt(), discountCap
-		}
-		d := discountCap.MulRaw(int64(excess)).QuoRaw(int64(remaining))
-		if d.GT(discountCap) {
-			d = discountCap
-		}
-		return sdkmath.ZeroInt(), d
+	s := score
+	if s > referenceScore {
+		s = referenceScore
 	}
-
-	return sdkmath.ZeroInt(), sdkmath.ZeroInt()
+	span := uint64(ceilBps - floorBps)
+	reduction := uint32(span * uint64(s) / uint64(referenceScore))
+	return ceilBps - reduction
 }
 
 // validateNonNegativeAmount validates that a string integer is >= 0.

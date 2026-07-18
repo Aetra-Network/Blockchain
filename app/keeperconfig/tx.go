@@ -61,6 +61,12 @@ func CustomGetSigners() map[protoreflect.FullName]signing.GetSignersFunc {
 		"l1.identityroot.v1.MsgPlaceBid":		identityroottypes.MsgPlaceBidSigners,
 		"l1.identityroot.v1.MsgStartAuction":		identityroottypes.MsgStartAuctionSigners,
 		"l1.identityroot.v1.MsgUpdatePriceTable":	identityroottypes.MsgUpdatePriceTableSigners,
+		// ANS Phase B. The attach/detach/subdomain messages are the same
+		// hand-rolled shape (no cosmos.msg.v1.signer option); each resolves to
+		// the caller's plain wallet address in its "owner" field.
+		"l1.identityroot.v1.MsgAttachDomain":		identityroottypes.MsgAttachDomainSigners,
+		"l1.identityroot.v1.MsgDetachDomain":		identityroottypes.MsgDetachDomainSigners,
+		"l1.identityroot.v1.MsgCreateSubdomain":	identityroottypes.MsgCreateSubdomainSigners,
 	}
 }
 

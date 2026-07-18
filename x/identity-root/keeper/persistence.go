@@ -63,6 +63,7 @@ type hotCollections struct {
 	resolvers	[]types.ResolverRecord
 	reverses	[]types.ReverseRecord
 	auctions	[]types.Auction
+	attachments	[]types.Attachment
 }
 
 // hotRecords maps a store key to the exact bytes believed committed under it.
@@ -83,17 +84,19 @@ func splitHotCollections(gs GenesisState) (GenesisState, hotCollections) {
 		resolvers:	gs.State.Resolvers,
 		reverses:	gs.State.ReverseRecords,
 		auctions:	gs.State.Auctions,
+		attachments:	gs.State.Attachments,
 	}
 	gs.State.Records = nil
 	gs.State.Resolvers = nil
 	gs.State.ReverseRecords = nil
 	gs.State.Auctions = nil
+	gs.State.Attachments = nil
 	return gs, hot
 }
 
 // marshalHotRecords renders the per-record write set: store key -> record bytes.
 func marshalHotRecords(hot hotCollections) (hotRecords, error) {
-	out := make(hotRecords, len(hot.records)+len(hot.resolvers)+len(hot.reverses)+len(hot.auctions))
+	out := make(hotRecords, len(hot.records)+len(hot.resolvers)+len(hot.reverses)+len(hot.auctions)+len(hot.attachments))
 	for _, record := range hot.records {
 		bz, err := json.Marshal(record)
 		if err != nil {
@@ -121,6 +124,13 @@ func marshalHotRecords(hot hotCollections) (hotRecords, error) {
 			return nil, err
 		}
 		out[string(types.AuctionKey(auction.Name))] = bz
+	}
+	for _, attachment := range hot.attachments {
+		bz, err := json.Marshal(attachment)
+		if err != nil {
+			return nil, err
+		}
+		out[string(types.AttachKey(attachment.TargetIdentityHex))] = bz
 	}
 	return out, nil
 }
@@ -204,6 +214,10 @@ func (k Keeper) readGenesisState(ctx context.Context) (GenesisState, storeBaseli
 	if err != nil {
 		return GenesisState{}, storeBaseline{}, false, err
 	}
+	attachments, err := scanRecords[types.Attachment](store, types.AttachKeyPrefix, baseline.records)
+	if err != nil {
+		return GenesisState{}, storeBaseline{}, false, err
+	}
 
 	if len(gs.State.Records) == 0 {
 		gs.State.Records = records
@@ -216,6 +230,9 @@ func (k Keeper) readGenesisState(ctx context.Context) (GenesisState, storeBaseli
 	}
 	if len(gs.State.Auctions) == 0 {
 		gs.State.Auctions = auctions
+	}
+	if len(gs.State.Attachments) == 0 {
+		gs.State.Attachments = attachments
 	}
 	return gs, baseline, true, nil
 }

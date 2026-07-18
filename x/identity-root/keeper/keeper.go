@@ -472,7 +472,11 @@ func (k *Keeper) CreateSubdomain(msg types.MsgCreateSubdomain) (types.NameRecord
 	if _, _, found := recordIndex(k.genesis.State.Records, name); found {
 		return types.NameRecord{}, errors.New("identity subdomain already registered")
 	}
-	binding := prepareBinding(name, subOwner, msg.NFTBinding, k.genesis.IdentityParams)
+	// ANS Phase B made MsgCreateSubdomain a flat wire type with no NFTBinding
+	// field (a nested message would need its own descriptor and panics the
+	// gogoproto table unmarshaler). A subdomain therefore never carries its own
+	// binding over the wire; prepareBinding degrades an empty reference safely.
+	binding := prepareBinding(name, subOwner, types.IdentityNFTBindingReference{}, k.genesis.IdentityParams)
 	record := types.NameRecord{
 		Name:				name,
 		ParentName:			parent.Name,

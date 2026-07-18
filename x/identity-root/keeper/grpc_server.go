@@ -119,6 +119,51 @@ func (m grpcMsgServer) UpdatePriceTable(ctx context.Context, msg *types.MsgUpdat
 	return &types.MsgUpdatePriceTableResponse{Tiers: uint32(tiers)}, nil
 }
 
+func (m grpcMsgServer) AttachDomain(ctx context.Context, msg *types.MsgAttachDomain) (*types.MsgAttachDomainResponse, error) {
+	if msg == nil {
+		return nil, errors.New("empty identity attach message")
+	}
+	if err := m.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
+	msg.Height = blockHeight(ctx)
+	attachment, err := m.keeper.AttachDomain(*msg)
+	if err != nil {
+		return nil, err
+	}
+	return &types.MsgAttachDomainResponse{Fqdn: attachment.Fqdn, Target: attachment.Target}, nil
+}
+
+func (m grpcMsgServer) DetachDomain(ctx context.Context, msg *types.MsgDetachDomain) (*types.MsgDetachDomainResponse, error) {
+	if msg == nil {
+		return nil, errors.New("empty identity detach message")
+	}
+	if err := m.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
+	msg.Height = blockHeight(ctx)
+	attachment, err := m.keeper.DetachDomain(*msg)
+	if err != nil {
+		return nil, err
+	}
+	return &types.MsgDetachDomainResponse{Fqdn: attachment.Fqdn}, nil
+}
+
+func (m grpcMsgServer) CreateSubdomain(ctx context.Context, msg *types.MsgCreateSubdomain) (*types.MsgCreateSubdomainResponse, error) {
+	if msg == nil {
+		return nil, errors.New("empty identity create-subdomain message")
+	}
+	if err := m.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
+	msg.Height = blockHeight(ctx)
+	record, err := m.keeper.CreateSubdomain(*msg)
+	if err != nil {
+		return nil, err
+	}
+	return &types.MsgCreateSubdomainResponse{Name: record.Name, ExpiryHeight: record.ExpiryHeight}, nil
+}
+
 // --- Query server. Read-only; the keeper accessors take the read lock. ---
 
 func (q grpcQueryServer) CollectionParams(_ context.Context, req *types.QueryCollectionParamsRequest) (*types.QueryCollectionParamsResponse, error) {

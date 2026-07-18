@@ -50,8 +50,28 @@ const (
 	// Worst reputation adds at most 0.25 AET; best reputation subtracts at
 	// most 0.1 AET, which can never zero the fee because the flat transfer
 	// anchor alone is 0.4 AET.
+	//
+	// ANS Phase B replaced this ADDITIVE premium/discount with a MULTIPLICATIVE
+	// scaling of the base anchor for reputation-GATED senders (domain holders
+	// and validators) -- see computeReputationMultiplierBps. The two caps are
+	// retained for genesis/params compatibility but no longer feed the formula.
 	DefaultLowReputationPremiumCap		= "250000000"	// 0.25 AET
 	DefaultHighReputationDiscountCap	= "100000000"	// 0.10 AET
+
+	// ANS Phase B multiplicative reputation-fee scaling. The base transfer
+	// anchor of a reputation-GATED sender is multiplied by a basis-point factor
+	// between the floor (best reputation, ~0.20x) and the ceiling (worst
+	// reputation, ~0.80x), linear in the sender's score against the reference.
+	//
+	// The reference is the realistic score ceiling, NOT 10000: x/reputation's
+	// ComputeIdentityScore saturates near ~850 in practice (its component caps
+	// sum to stake 400 + tx 200 + contract 100 + domain 50 + uptime 100 = 850),
+	// and a fresh record defaults to 100. Anchoring at 850 makes the excellent
+	// (~0.20x) tier reachable; anchoring at 10000 would pin every real wallet at
+	// the poor (~0.80x) end.
+	DefaultReputationFeeFloorBps		= uint32(2_000)	// 0.20x, best reputation
+	DefaultReputationFeeCeilBps		= uint32(8_000)	// 0.80x, worst reputation
+	DefaultReputationFeeReferenceScore	= uint32(850)	// score at/above which the floor applies
 
 	// Default storage rent side-effect budget per state-creating tx (naet).
 	DefaultStorageRentSideEffectsNaet	= "50000000"	// 0.05 AET

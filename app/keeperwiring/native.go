@@ -41,13 +41,65 @@ import (
 	treasurytypes "github.com/sovereign-l1/l1/x/treasury/types"
 )
 
-// reputationReaderAdapter wraps the reputation module keeper as a feestypes.ReputationReader.
+// identityReputationScorer reads a raw identity reputation score. The reputation
+// module keeper satisfies it; keeping it an interface makes the gate below
+// unit-testable without a live store.
+type identityReputationScorer interface {
+	GetIdentityReputationScore(ctx context.Context, addr sdk.AccAddress) (uint32, bool, error)
+}
+
+// DomainOwnershipReader reports whether an account currently holds an attached
+// domain -- the ANS Phase B reputation fee gate. x/identity-root's keeper
+// satisfies it via AccountHoldsDomain (an O(1) committed-store read).
+type DomainOwnershipReader interface {
+	AccountHoldsDomain(ctx context.Context, addr sdk.AccAddress) (bool, error)
+}
+
+// ValidatorPresenceReader reports whether an account is a validator operator --
+// the other half of the reputation fee gate. An x/staking adapter satisfies it.
+type ValidatorPresenceReader interface {
+	IsValidator(ctx context.Context, addr sdk.AccAddress) bool
+}
+
+// reputationReaderAdapter wraps the reputation module keeper as a
+// feestypes.ReputationReader, GATED (ANS Phase B, owner's rule) on CURRENT
+// domain ownership or validator status. GetIdentityReputationScore returns
+// found=false (neutral, no fee scaling) UNLESS the account currently holds a
+// domain OR is a validator; only then does the multiplicative reputation fee
+// engage. A plain wallet's fee is thus unaffected by whatever reputation record
+// it may happen to have. Reputation itself still lives on the native account in
+// x/reputation -- this adapter only decides whether it is allowed to move a fee.
 type reputationReaderAdapter struct {
-	Keeper reputationkeeper.Keeper
+	scorer		identityReputationScorer
+	domainReader	DomainOwnershipReader
+	validatorReader	ValidatorPresenceReader
 }
 
 func (a reputationReaderAdapter) GetIdentityReputationScore(ctx context.Context, addr sdk.AccAddress) (uint32, bool, error) {
-	return a.Keeper.GetIdentityReputationScore(ctx, addr)
+	score, _, err := a.scorer.GetIdentityReputationScore(ctx, addr)
+	if err != nil {
+		// Degrade to neutral: a reputation read error must never block a tx.
+		return score, false, nil
+	}
+	// Gate. A domain holder or a validator engages reputation scaling; anyone
+	// else is neutral regardless of their score. Read errors degrade to false.
+	gated := false
+	if a.domainReader != nil {
+		if holds, herr := a.domainReader.AccountHoldsDomain(ctx, addr); herr == nil && holds {
+			gated = true
+		}
+	}
+	if !gated && a.validatorReader != nil && a.validatorReader.IsValidator(ctx, addr) {
+		gated = true
+	}
+	if !gated {
+		return score, false, nil
+	}
+	// Gated: engage scaling. found=true even when the underlying record is
+	// absent (a freshly-attached wallet, whose score defaults to the reputation
+	// module's IdentityScoreDefault) so a domain grants the multiplier
+	// immediately rather than only after other reputation activity.
+	return score, true, nil
 }
 
 // validatorReputationAdapter wraps the reputation keeper as a dynamiccommissiontypes.ReputationKeeper.
@@ -73,6 +125,11 @@ type NativeKeeperDeps struct {
 	BankKeeper	bankkeeper.BaseKeeper
 	DistrKeeper	distrkeeper.Keeper
 	GovAuthority	string
+	// DomainOwnershipReader / ValidatorPresenceReader gate the reputation fee
+	// (ANS Phase B). Both optional: a nil reader is treated as "not gated" so a
+	// keeper set built without them behaves as pre-Phase-B neutral reputation.
+	DomainOwnershipReader	DomainOwnershipReader
+	ValidatorPresenceReader	ValidatorPresenceReader
 }
 
 type NativeKeepers struct {
@@ -155,7 +212,11 @@ func NewNativeKeepers(deps NativeKeeperDeps) NativeKeepers {
 			deps.BankKeeper,
 			deps.DistrKeeper,
 			deps.GovAuthority,
-		).WithReputationReader(reputationReaderAdapter{Keeper: repKeeper}).WithFeeCollector(fcKeeper),
+		).WithReputationReader(reputationReaderAdapter{
+			scorer:			repKeeper,
+			domainReader:		deps.DomainOwnershipReader,
+			validatorReader:	deps.ValidatorPresenceReader,
+		}).WithFeeCollector(fcKeeper),
 		AetraStakingPolicyKeeper:	aetrastakingpolicykeeper.NewPersistentKeeper(runtime.NewKVStoreService(deps.Keys[aetrastakingpolicytypes.StoreKey]), deps.GovAuthority),
 		AetraEconomicsKeeper:		aetraeconomicskeeper.NewPersistentKeeper(runtime.NewKVStoreService(deps.Keys[aetraeconomicstypes.StoreKey]), deps.GovAuthority),
 		AetraValidatorScoreKeeper:	aetravalidatorscorekeeper.NewPersistentKeeper(runtime.NewKVStoreService(deps.Keys[aetravalidatorscoretypes.StoreKey]), deps.GovAuthority),

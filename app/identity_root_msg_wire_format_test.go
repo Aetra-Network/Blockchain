@@ -134,3 +134,64 @@ func TestIdentityRootAuctionMsgsAllDecodeOverTheWire(t *testing.T) {
 		})
 	}
 }
+
+// TestIdentityRootPhaseBMsgsDecodeAndResolveSigner is the ANS Phase B wire-format
+// guard: the three new hand-rolled messages (MsgAttachDomain, MsgDetachDomain,
+// MsgCreateSubdomain) must each survive the real TxConfig encode -> TxDecoder
+// round trip (the RejectUnknownFields walker calls Descriptor() here, which a
+// keeper test never exercises) AND resolve their signer to the "owner" field
+// through the app's signing context (the CustomGetSigners entries in
+// app/keeperconfig/tx.go). Against a tree missing any of these messages'
+// Descriptor()/CustomGetSigners wiring, this fails exactly as the Phase A defect
+// did on a live node.
+func TestIdentityRootPhaseBMsgsDecodeAndResolveSigner(t *testing.T) {
+	testApp := app.Setup(t, false)
+	txConfig := testApp.TxConfig()
+
+	ownerAE, err := addressing.FormatUserFriendly(bytes.Repeat([]byte{0x51}, 20))
+	require.NoError(t, err)
+	targetAE, err := addressing.FormatUserFriendly(bytes.Repeat([]byte{0x52}, 20))
+	require.NoError(t, err)
+
+	cases := []struct {
+		name string
+		msg  sdk.Msg
+	}{
+		{
+			name: "MsgAttachDomain",
+			msg:  &identityroottypes.MsgAttachDomain{Owner: ownerAE, Fqdn: "alice.aet", Target: targetAE, Height: 1},
+		},
+		{
+			name: "MsgDetachDomain",
+			msg:  &identityroottypes.MsgDetachDomain{Owner: ownerAE, Fqdn: "alice.aet", Height: 1},
+		},
+		{
+			name: "MsgCreateSubdomain",
+			msg:  &identityroottypes.MsgCreateSubdomain{Owner: ownerAE, ParentName: "alice.aet", Label: "test", Height: 1},
+		},
+	}
+	expectedSigner, err := addressing.Parse(ownerAE)
+	require.NoError(t, err)
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			builder := txConfig.NewTxBuilder()
+			require.NoError(t, builder.SetMsgs(tc.msg))
+
+			txBytes, err := txConfig.TxEncoder()(builder.GetTx())
+			require.NoError(t, err)
+			require.NotEmpty(t, txBytes, "%s encoded to empty bytes; struct tags/descriptor missing", tc.name)
+
+			decodedTx, err := txConfig.TxDecoder()(txBytes)
+			require.NoError(t, err, "%s must decode over the wire; a missing Descriptor() rejects it here", tc.name)
+
+			msgs := decodedTx.GetMsgs()
+			require.Len(t, msgs, 1)
+
+			signers, _, err := testApp.AppCodec().GetMsgV1Signers(msgs[0])
+			require.NoError(t, err, "%s signer must resolve for a routable tx", tc.name)
+			require.Len(t, signers, 1)
+			require.Equal(t, expectedSigner, signers[0], "%s signer must be the parsed bytes of the owner field", tc.name)
+		})
+	}
+}

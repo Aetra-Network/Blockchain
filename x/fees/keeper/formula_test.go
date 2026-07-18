@@ -109,43 +109,66 @@ func TestGoldenFeeFixtureHighLoad(t *testing.T) {
 	require.Equal(t, expected, got, "high load golden fee mismatch")
 }
 
-// TestLowReputationPaysMoreThanNeutralWithinCap verifies that a low-reputation sender
-// pays more than neutral, and the premium never exceeds the cap.
-func TestLowReputationPaysMoreThanNeutralWithinCap(t *testing.T) {
+// TestDomainReputationScalesFeeMultiplicatively is the ANS Phase B core: for a
+// reputation-GATED sender (found=true: a domain holder or validator) a HIGHER
+// score pays LESS and a LOWER score pays MORE, and every gated tier pays no more
+// than a non-gated wallet. The scaling multiplies only the base anchor, so the
+// gap between tiers is the anchor times the multiplier delta.
+func TestDomainReputationScalesFeeMultiplicatively(t *testing.T) {
 	bp := testBaseParams()
-	fp := testFormulaParams()
+	fp := types.NormalizeFeeFormulaParams(testFormulaParams()) // fills floor=2000, ceil=8000, ref=850
 
 	gasUsed := uint64(50_000)
 	txBytes := uint64(200)
 	msgCount := uint64(1)
 	utilizationBps := uint32(0)
 
-	neutralFee, err := types.ComputeFullTransferFee(
-		bp, fp,
-		gasUsed, txBytes, msgCount,
-		utilizationBps,
-		types.ReputationNeutralScore, false,
-		sdkmath.ZeroInt(),
-	)
-	require.NoError(t, err)
+	fee := func(score uint32, found bool) sdkmath.Int {
+		got, err := types.ComputeFullTransferFee(
+			bp, fp, gasUsed, txBytes, msgCount, utilizationBps, score, found, sdkmath.ZeroInt(),
+		)
+		require.NoError(t, err)
+		return got
+	}
 
-	lowScore := uint32(1_000)
-	lowFee, err := types.ComputeFullTransferFee(
-		bp, fp,
-		gasUsed, txBytes, msgCount,
-		utilizationBps,
-		lowScore, true,
-		sdkmath.ZeroInt(),
-	)
-	require.NoError(t, err)
+	nonGated := fee(0, false)               // 1.0x anchor
+	lowRepDomain := fee(0, true)            // worst gated tier (~0.80x anchor)
+	midRepDomain := fee(425, true)          // ~0.50x anchor
+	highRepDomain := fee(850, true)         // best gated tier (~0.20x anchor)
 
-	require.True(t, lowFee.GT(neutralFee),
-		"low-reputation fee %s must exceed neutral fee %s", lowFee, neutralFee)
+	// Higher reputation pays strictly less; lower reputation pays strictly more.
+	require.True(t, highRepDomain.LT(midRepDomain),
+		"high-rep domain fee %s must be below mid-rep %s", highRepDomain, midRepDomain)
+	require.True(t, midRepDomain.LT(lowRepDomain),
+		"mid-rep domain fee %s must be below low-rep %s", midRepDomain, lowRepDomain)
 
-	capNaet := sdkmath.NewInt(500_000)
-	premium := lowFee.Sub(neutralFee)
-	require.True(t, premium.LTE(capNaet),
-		"reputation premium %s must not exceed cap %s", premium, capNaet)
+	// Even the worst gated tier pays no more than a non-gated wallet (the
+	// multiplier ceiling is < 1.0x): holding a domain is always a discount.
+	require.True(t, lowRepDomain.LTE(nonGated),
+		"worst gated fee %s must be <= non-gated fee %s", lowRepDomain, nonGated)
+	require.True(t, highRepDomain.LT(nonGated),
+		"best gated fee %s must be strictly below non-gated fee %s", highRepDomain, nonGated)
+}
+
+// TestNonDomainWalletFeeUnaffectedByReputation verifies the gate: a NON-gated
+// sender (found=false) pays the identical fee regardless of the reputation score
+// carried alongside -- reputation only moves the fee once a wallet is gated.
+func TestNonDomainWalletFeeUnaffectedByReputation(t *testing.T) {
+	bp := testBaseParams()
+	fp := testFormulaParams()
+
+	fee := func(score uint32) sdkmath.Int {
+		got, err := types.ComputeFullTransferFee(
+			bp, fp, 50_000, 200, 1, 0, score, false, sdkmath.ZeroInt(),
+		)
+		require.NoError(t, err)
+		return got
+	}
+
+	require.Equal(t, fee(0), fee(850),
+		"a non-domain wallet's fee must not depend on its reputation score")
+	require.Equal(t, fee(0), fee(10_000),
+		"a non-domain wallet's fee must not depend on its reputation score")
 }
 
 // TestHighReputationNeverPaysBelowMinTxFee verifies that even with maximum discount,
