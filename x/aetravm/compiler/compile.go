@@ -3737,8 +3737,40 @@ func (c *Compiler) lowerStatementsToIR(stmts []Statement, params []ParamDecl, re
 			}
 			if stmt.Value.Kind == ExprCall && len(stmt.Value.Path) >= 2 {
 				env.types[stmt.Name] = TypeRef{Name: stmt.Value.Path[0], Pos: stmt.Value.Pos}
+			} else if stmt.Value.Kind == ExprCall && len(stmt.Value.Path) == 1 {
+				// A plain (non-receiver) call to a declared helper function
+				// (e.g. `const cap = mintCapabilityFor(...)`) needs the
+				// callee's own declared return type, not a Path[0] proxy —
+				// there's no dotted receiver segment to borrow one from.
+				// Without this, a local bound from a struct-returning @pure
+				// helper never gets a lowering-time type, so a later
+				// `cap.field` access (including through inlining substitution
+				// at another call site) is rejected as unsupported even
+				// though the value is a perfectly ordinary struct map.
+				if fn := resolveUserFunction(stmt.Value, functions); fn != nil {
+					env.types[stmt.Name] = fn.ReturnType
+				}
 			} else if stmt.Value.Kind == ExprPath && len(stmt.Value.Path) >= 1 {
 				env.types[stmt.Name] = TypeRef{Name: stmt.Value.Path[0], Pos: stmt.Value.Pos}
+			} else if stmt.Value.Kind == ExprStruct && stmt.Value.Text != "" {
+				// A struct-literal RHS (`Bp{bps: 30}`) lowers to a runtime map
+				// (IRExprStruct -> OpMapEmpty/OpMapSet), and OpReadField already
+				// knows how to read a named field out of that map at runtime —
+				// the only missing piece was tagging the local's lowering-time
+				// type so `b.bps` isn't rejected by isFieldLikeType("").
+				env.types[stmt.Name] = TypeRef{Name: stmt.Value.Text, Pos: stmt.Value.Pos}
+			} else if stmt.Value.Kind == ExprIdent {
+				// Copying an existing struct-typed local/param (`var c = b`)
+				// must carry the source's field-like type forward too, so a
+				// subsequent `c.field` access resolves the same way `b.field`
+				// would. The actual value copy stays a plain local load/store;
+				// see runtimeMapSet (avm/value.go), which never mutates a
+				// shared map in place, so this copy cannot alias b.
+				if binding, ok := env.locals[stmt.Value.Text]; ok {
+					env.types[stmt.Name] = binding.Type
+				} else if typ, ok := env.types[stmt.Value.Text]; ok {
+					env.types[stmt.Name] = typ
+				}
 			}
 			v, ok := evalConstValue(stmt.Value, env, functions, map[string]bool{})
 			if !stmt.Mutable && ok {
@@ -4725,6 +4757,25 @@ func lowerExprToIR(expr Expr, env loweringEnv, functions map[string]*FunctionDec
 						return &IRExpr{Kind: IRExprMsgValue, Pos: expr.Pos}, nil
 					case "data":
 						return &IRExpr{Kind: IRExprMsgBody, Pos: expr.Pos}, nil
+					}
+				default:
+					// A struct-typed parameter (including a method's `self`,
+					// which is just a parameter named "self") carries its
+					// declared type in env.types unconditionally (set in
+					// lowerStatementsToIR), but — unlike a local — it isn't in
+					// env.locals, so the check above never saw it. Its value
+					// lives in the message body as the synthetic positional
+					// field "argN" (see the ExprIdent param case), so a field
+					// read on it must go through that same arg slot rather
+					// than falling to the generic top-level MsgField read
+					// below, which would read a same-named top-level message
+					// field instead of the parameter's own field.
+					if idx, ok := env.params[expr.Path[0]]; ok {
+						lowerName := strings.ToLower(typ.Name)
+						if lowerName != "segment" && lowerName != "chunk" && isFieldLikeType(typ.Name) {
+							argLeft := &IRExpr{Kind: IRExprMsgField, Text: fmt.Sprintf("arg%d", idx), Pos: expr.Pos}
+							return &IRExpr{Kind: IRExprField, Left: argLeft, Text: expr.Path[1], Pos: expr.Pos}, nil
+						}
 					}
 				}
 				return &IRExpr{Kind: IRExprMsgField, Text: expr.Path[1], Pos: expr.Pos}, nil

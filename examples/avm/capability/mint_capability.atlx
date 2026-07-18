@@ -1,0 +1,112 @@
+// Mint-capability example for ATLX / AVM.
+//
+// Model: "authorization by holding a typed object", not by comparing a bare
+// address or scalar. `MintCapability` is a plain (non-@storage, non-@message)
+// value struct with a single `tokenId` field. The internal @pure helper
+// `canMint` takes a `cap: MintCapability` argument and only allows the mint
+// to proceed when the capability's own `tokenId` field matches the token the
+// caller is asking to mint -- the gate inspects a FIELD of a typed value,
+// not the caller's address.
+//
+// The capability value itself is constructed from the contract's own storage
+// (see `mintCapabilityFor`), so it cannot be forged by an external caller
+// supplying arbitrary bytes on the wire -- only the contract's own code can
+// mint one. This mirrors how a capability-secured system is meant to work:
+// possessing the (unforgeable) typed value is what grants authority, and the
+// gate is expressed as ordinary field access on that value
+// (`cap.tokenId == tokenId`), exercising the same local-struct-literal field
+// read/pass-by-identifier lowering path documented in compile.go.
+
+const ERR_BAD_CAPABILITY = 9001
+const ERR_BAD_AMOUNT = 9002
+
+// MintCapability is a plain value struct, not @storage and not @message: it
+// only ever exists as a short-lived local value inside contract code, built
+// by mintCapabilityFor() and consumed by canMint(). It never crosses the
+// wire.
+struct MintCapability {
+    tokenId: uint64
+}
+
+@storage
+struct VaultStorage {
+    owner: address
+    allowedTokenId: uint64
+    totalSupply: uint64
+}
+
+@message(0x9101)
+struct MintRequest {
+    tokenId: uint64
+    amount: uint64
+}
+
+contract MintCapabilityVault {
+    author: "Capability pattern example"
+    description: "Gates minting on holding a MintCapability value, not on the caller's address"
+    version: "1.0.0"
+
+    storage: VaultStorage
+    incomingMessages: MintRequest
+
+    @store
+    func VaultStorage.load() {
+        return VaultStorage.fromChunk(contract.getData())
+    }
+
+    @store
+    func VaultStorage.save(self) {
+        contract.setData(self.toChunk())
+    }
+
+    // mintCapabilityFor derives the one capability this vault is willing to
+    // recognize from its OWN storage. An external caller can never construct
+    // a MintCapability directly -- they can only ever present a scalar
+    // tokenId and have the contract check it against a capability the
+    // contract built for itself.
+    @pure
+    func mintCapabilityFor(allowedTokenId: uint64): MintCapability {
+        return MintCapability { tokenId: allowedTokenId }
+    }
+
+    // canMint is the capability gate: it takes the capability BY VALUE and
+    // reads its own field, rather than comparing the caller's address. This
+    // is the exact pattern CONFIRMED FACT 1 (compile.go) unlocks: a
+    // struct-literal-derived local, passed by identifier into a @pure
+    // helper, has its field read correctly instead of being rejected with
+    // "local field access is not supported in AVM v1".
+    @pure
+    func canMint(cap: MintCapability, tokenId: uint64): bool {
+        return cap.tokenId == tokenId
+    }
+
+    @internal
+    func onInternalMessage(in: InMessage) {
+        const msg = lazy MintRequest.fromSegment(in.body)
+        var st = lazy VaultStorage.load()
+
+        assert (msg.amount > 0) throw ERR_BAD_AMOUNT
+
+        const cap = mintCapabilityFor(st.allowedTokenId)
+        assert (canMint(cap, msg.tokenId)) throw ERR_BAD_CAPABILITY
+
+        st.totalSupply += msg.amount
+        st.save()
+    }
+
+    @bounced
+    func onBouncedMessage(in: InMessageBounced) {
+    }
+
+    @get
+    func totalSupply(): uint64 {
+        const st = lazy VaultStorage.load()
+        return st.totalSupply
+    }
+
+    @get
+    func allowedTokenId(): uint64 {
+        const st = lazy VaultStorage.load()
+        return st.allowedTokenId
+    }
+}
