@@ -1,9 +1,11 @@
-# AVM Phase D ZK/pairing primitives — design v1 (REJECTED), v2 (REJECTED)
+# AVM Phase D ZK/pairing primitives — design v1 (REJECTED), v2 (REJECTED), v3 (REJECTED, minor fixes only)
 
-Status: **Two adversarial review rounds so far; each found real, non-repeating blockers. Do not implement
-below as-is.** This design track runs independently of Phase E/F's call-mechanism work and of the
-financial-arithmetic pipeline — it does not touch `avm.go`/`compile.go`/`ir.go` at this design stage, so it
-can proceed in parallel once those land.
+Status: **Three adversarial review rounds, strictly decreasing severity (3 blockers → 2 blockers → 1
+spec-typo + 1 simplification). With the two mechanical corrections in v3's "Status" section applied, this
+design is ready for owner sign-off on the vendoring decision — see the end of this document.** This design
+track runs independently of Phase E/F's call-mechanism work and of the financial-arithmetic pipeline — it
+does not touch `avm.go`/`compile.go`/`ir.go` at this design stage, so it can proceed in parallel once those
+land.
 
 ## What v1 got right (kept forward)
 
@@ -135,17 +137,98 @@ nor v2 states how the point-at-infinity/identity element is encoded under the ne
 "reject if not `IsOnCurve()`" implementer would soft-fail every legitimate attempt to pass the identity
 element, unless a distinct sentinel encoding is defined elsewhere (currently undocumented).
 
+## v3 — real research (not assumption) on the ADX/purego question; REJECTED for a spec bug plus an over-engineered non-fix
+
+v3 dropped the design-only constraint for item (a) specifically and directly fetched gnark-crypto's actual
+upstream source (`github.com/Consensys/gnark-crypto`, verbatim files + GitHub Contents API directory
+listings) rather than reasoning about it. **Substantive, well-cited finding, independently re-confirmed by
+adversarial review: the ADX-dispatch hazard splits into two independently-behaving subsystems, not one.**
+
+- **G1 / base field (`ecc/bn254/fp`, `fr`)**: `element_amd64.go` is genuinely gated `//go:build !purego`;
+  `element_purego.go` is gated `//go:build purego || (!amd64 && !arm64)` and is fully generic Go. `-tags
+  purego` is a whole-file compile-time exclusion — `supportAdx` and all its assembly are verifiably absent
+  from the compiled binary. **`purego` is a real, sufficient fix here.**
+- **G2 / pairing tower (`ecc/bn254/internal/fptower`) — backs `OpBn254G2Add`, `OpBn254G2ScalarMul`,
+  `OpBn254PairingCheck`, i.e. the opcodes that matter most**: `e2_amd64.go` carries **no `purego` guard at
+  all** (only the implicit `GOARCH=amd64` from its filename) and calls `mulAdxE2`/`squareAdxE2` — real
+  assembly — unconditionally on every amd64 build. The variable gating the *internal* ADX-vs-non-ADX branch,
+  `supportAdx`, lives in `asm.go` under a **separate, independent tag family** (`!noadx`, not `!purego`). No
+  file anywhere in `fptower` is `purego`-tagged (confirmed via a full 18-file directory listing). **`-tags
+  purego` alone does nothing for G2/pairing — v2's central safety claim was false for exactly the opcodes at
+  stake**, matching precisely the failure mode v2's own blocker described, now confirmed rather than merely
+  feared.
+- Fix adopted: **(A)** use upstream `-tags purego` directly for `fp`/`fr` (G1) — verified sufficient, no
+  vendoring needed. **(B)** for `fptower` (G2/pairing), no upstream tag closes the gap — vendor
+  `ecc/bn254/internal/fptower` at a pinned commit, delete `asm.go`/`asm_noadx.go`/`e2_amd64.go`/`e2_amd64.s`,
+  and un-gate the upstream generic fallback (`e2_fallback.go`/`e2_bn254_fallback.go`, already pure Go,
+  currently tagged `!amd64`) to compile unconditionally — this reuses code gnark-crypto already ships and
+  maintains for non-amd64 platforms rather than writing new field arithmetic. Adversarial review independently
+  confirmed the actual vendored surface is smaller than framed: the generic Fp2 mul/square logic already
+  lives in an untagged, shared file (`e2_bn254.go`); only two thin wrapper files need deleting and one
+  build-tag line needs flipping on two already-upstream files — not "fork and maintain a subsystem."
+- Precedent search for other projects resolving this exact hazard came back empty (stated honestly, not
+  glossed over) — this is genuinely uncharted territory for this specific gap, raising rather than lowering
+  the bar for review rigor before shipping.
+
+**v3 was REJECTED — 1 blocker (a spec-writing bug, not a new conceptual gap) plus 1 correct simplification:**
+
+1. **Point-at-infinity sentinel byte counts are exactly half of the correct size.** v3's decode pseudocode
+   says "32 bytes zero for G1, 64 bytes zero for G2" — but per gnark-crypto's own `marshal.go` constants,
+   uncompressed G1 is 64 bytes total (X:32‖Y:32) and uncompressed G2 is 128 bytes total (4×32). Read
+   literally, an implementer would zero-check only half the buffer (e.g. only X for G1), which could
+   misclassify a genuine point with a zero first-half and garbage second-half as the identity element — a
+   real soundness gap in an adversarial-input-facing decode path. Trivial fix: the correct totals are 64 (G1)
+   and 128 (G2), all-zero.
+2. **The elaborate infinity-diversion logic in fix 4 solves a problem gnark-crypto's own code already
+   solves.** Adversarial review checked `g1.go`/`g2.go` directly: `IsOnCurve()` explicitly checks
+   `IsInfinity()` (X==0 && Y==0) FIRST and returns true before the curve-equation check — i.e. gnark's own
+   `IsOnCurve()`/`IsInSubGroup()` already correctly accept the identity element with zero special-casing
+   needed on the AVM side. The "divert all-zero bytes before calling IsOnCurve" framing was inherited
+   unquestioned from v1/v2's premise that "(0,0) is mathematically not on-curve" — true of the bare curve
+   equation, but irrelevant once gnark's actual method already special-cases it internally. Harmless in
+   outcome (the diversion produces the same accept/reject result either way) but should be simplified away:
+   **just call `IsOnCurve()`/`IsInSubGroup()` directly on the decoded point; no AVM-side infinity sentinel or
+   pre-check is needed at all.**
+3. Minor citation correction (does not affect the core finding, which review independently re-verified
+   directly against source): the historical `supportAdx` race-condition fix is PR #228 ("fix: remove
+   supportAdx race condition in internal/fptower"), not PR #186 as v3 stated — and #228's diff touches only
+   *test* files (parallel tests toggling `supportAdx`), i.e. the historical race was in the test harness, not
+   evidence of production per-call runtime dispatch. The core finding stands on its own independent
+   verbatim-source verification regardless of this citation, but the citation itself should be dropped or
+   corrected rather than stated as settled fact.
+
 ## Status
 
-**Not started. Do not implement.** v3 must: (a) actually verify (not assume) gnark-crypto's real ADX/BMI2
-runtime-dispatch behavior and whether a `purego`-equivalent build configuration genuinely excludes ALL of it
-— this requires reading the actual library source/changelog, not reasoning from this repo alone, and if no
-build configuration can eliminate runtime dispatch, the dependency choice from v1 itself may need revisiting,
-not just this determinism sub-point; (b) fix the Section 4/7 self-contradiction by actually updating the
-formula box to include the `G2_SUBGROUP_CHECK_COST` term; (c) replace the mathematically-impossible
-term-order test with a correctly-reasoned operand/pairing-association-mismatch test; (d) define an explicit
-point-at-infinity/identity-element encoding compatible with the on-curve validation rule.
+**v3's research (dependency behavior, opcode/gas/test fixes) is sound and ready to carry forward as-is.**
+Only two small, mechanical corrections remain before this design is implementation-ready, both closed here
+rather than requiring a v4 round-trip: (1) the point-at-infinity sentinel is **64 bytes (G1) / 128 bytes
+(G2), all zero** — not the halved counts v3 stated; (2) **no AVM-side infinity special-casing is needed at
+all** — the decode step is simply "parse the point, then call `IsOnCurve()` (G1, G2) and `IsInSubGroup()`
+(G2 only) unconditionally," since gnark-crypto's own methods already treat `(0,0)` as a valid identity
+element. This *simplifies* v3's fix 4, it doesn't complicate it.
 
-Two rounds now, each finding real, non-repeating blockers — normal for a design this security-critical;
-proceed with v3 rather than escalating, but note item (a) may require an agent with real internet-research
-access (to gnark-crypto's actual source/changelog) rather than design-only reasoning against this repo.
+With those two corrections applied, this design has now been through three real adversarial rounds
+(3 blockers, 2 blockers, 1 blocker-that-was-a-typo-plus-a-simplification) with **strictly decreasing
+severity each round** — unlike Phase E/F's call-mechanism track, where three rounds each found an equally
+serious NEW fund-loss bug. That trend, plus this round's blocker being a mechanical spec error rather than a
+conceptual gap, is a reasonable signal this design is genuinely converging and ready for owner sign-off on
+the dependency/vendoring decision (see owner-decisions list below) before implementation, rather than
+needing a further automated round.
+
+**Owner decisions needed before implementation** (carried forward from v3, still open):
+- Approve vendoring `ecc/bn254/internal/fptower` at a pinned commit (delete the ASM/ADX-dispatch files,
+  un-gate the existing upstream generic fallback) as the mechanism for closing the G2/pairing ADX gap —
+  an ongoing but small maintenance commitment (re-diff on every future gnark-crypto version bump; the actual
+  audited surface per bump is a few build-tag lines plus confirming no new amd64-suffixed file appeared, not
+  a large diff).
+- Alternative considered and available if full vendoring is deferred: `-tags purego,noadx` without vendoring,
+  IF the validator set is amd64-only for the foreseeable future — this leaves amd64-vs-arm64 divergence open
+  as a known, documented, accepted gap rather than a closed one; not recommended as the long-term answer.
+- Whichever mechanism is chosen must be baked into the release build process itself (Makefile/CI), not
+  merely documented for validator operators — a validator that omits the flag silently reverts to
+  ADX-dispatching assembly with no error.
+- A named-reviewer audit of the small vendored subset (Fp2 generic mul/square, a few hundred lines) as an
+  explicit acceptance gate, consistent with the line-by-line-diff requirement already placed on the
+  hand-rolled Groth16 verify equation.
+- Whether BLS12-381 (deferred since v1) should be pre-emptively checked for this same `fptower`-style gap
+  before it's ever added as a second curve, since the hazard would presumably recur identically there.
