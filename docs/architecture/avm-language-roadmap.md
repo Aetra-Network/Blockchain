@@ -116,16 +116,42 @@ calls, and a capability model (a MintCapability object gates minting, not an add
 cross-zone stays the AEZ message bus (exactly-once, bounce, timeout) -- never promise atomicity across
 independent zones.
 
-## Phase G — storage + lifecycle
+## Phase G — storage + lifecycle (DONE, scoped)
 Nested maps (Map<Address, Map<TokenId, u256>>), ordered maps / trees / heaps for order books, bounded
 pagination over large collections, bitmaps; deterministic-address factories (CREATE2-style), minimal-proxy
 clones, initial-state passing; upgrade models (immutable / upgrade-authority / proxy / code-hash swap with
 kept storage) + state migration + timelock + permanent upgrade lock.
 
-## Phase H — VM resource accounting + hard limits
+Shipped (commits `2140d2b1`, `b5d1cddc`): nested maps already worked pre-Phase-G (see `multi_id_ledger.atlx`);
+this phase added `examples/avm/orderbook/order_book.atlx` (price-bucketed order book: fixed-tier Map book
+sides + fixed-capacity per-level FIFO slot arrays, since AVM v1 has no native ordered-map/heap and no
+map-fetched-struct field WRITE — a real linked-list order book is not expressible until Phase F's call
+mechanism unblocks that); `examples/avm/collections/{pagination_stdlib,bitmap_stdlib}.atlx` (page-sharded
+bounded pagination, word-packed bitmap); and `MsgScheduleContractUpgrade`/`MsgApplyScheduledUpgrade`
+(governed `MinUpgradeDelay` timelock + the pre-existing permanent upgrade lock, both keyed off the REAL
+chain block height at the gRPC layer, not a caller-supplied `Height` field — see
+`x/contracts/keeper/grpc_server.go`'s `blockHeight()`).
+
+Two honest, NOT-closed gaps, documented rather than hidden: (1) `order_book.atlx`'s Map operations still bill
+against FINDING-001's per-Map-total-size model (10-28x measured cost variance vs. book depth, despite bounded
+step counts) — closing it needs per-tier field sharding, deferred as a larger rewrite of a reference example;
+(2) deterministic-address factories / minimal-proxy clones were not attempted this phase.
+
+## Phase H — VM resource accounting + hard limits (DONE, scoped)
 Gas = CPU + memory + storageRead + storageWrite + stateGrowth + delete + crypto + serialization +
 contractCall + contractCreate + inputSize. Separate hard caps beyond gas: tx size, code size, memory,
 stack depth, call depth, event count, return size, touched storage keys, max state growth.
+
+Shipped (commit `2255e365`): `RequireStorageCloneGasFloor` (a minimum gas floor scaled to destination storage
+size, so a message with an unrealistically low `GasLimit` can't force an expensive clone-and-discard for
+near-zero cost), `enforceAVMExecutionCaps` (`MaxEventsPerExecution`, `MaxChangedStorageKeysPerExecution`),
+and `requireStateGrowthWithinCap` (`MaxStateGrowthBytesPerExecution`) — see
+`x/contracts/keeper/avm_execution_caps.go`. Also fixed a real, separate storage-layer gas bug found later in
+the same area (commit `b5d1cddc`): `.save()` as a bare statement previously billed gas proportional to a
+contract's ENTIRE storage footprint on every call (a provable no-op, since AVM v1's only storage-write path
+is the immediate per-field assignment that already persists by the time `.save()` runs) — now compiles away
+entirely. Tx size / code size / memory / stack depth / call depth caps beyond the above were not addressed
+this phase.
 
 ## Reference-contract acceptance suite (the real bar)
 perpetual DEX · lending w/ liquidations · trustless bridge/light client · ZK (Groth16) verifier ·
