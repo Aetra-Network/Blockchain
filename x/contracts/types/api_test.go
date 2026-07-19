@@ -38,6 +38,48 @@ func TestContractsTxAPIValidationRejectsMalformedAddressesAndBounds(t *testing.T
 	require.Error(t, MsgExecuteExternal{Sender: sender, ContractAddress: "4:" + strings.Repeat("00", 32), GasLimit: 1, Height: 2}.ValidateBasic(params))
 }
 
+// TestRequireStorageCloneGasFloor proves the Phase H "uncharged double
+// CloneStorage" mitigation: below MinStorageBytesForCloneGasFloor any gas
+// limit (even 1) is accepted (the clone is cheap regardless), at/above it a
+// gas limit under the storage-proportional floor is rejected with a
+// specific, checkable error, and a gas limit at or above the floor passes.
+func TestRequireStorageCloneGasFloor(t *testing.T) {
+	// Below the threshold: even a gas limit of 1 is fine, no floor applies.
+	require.NoError(t, RequireStorageCloneGasFloor(MinStorageBytesForCloneGasFloor, 1))
+	require.NoError(t, RequireStorageCloneGasFloor(0, 0))
+
+	// Above the threshold: a near-zero gas limit is rejected.
+	const bigStorage = MinStorageBytesForCloneGasFloor + 1024
+	err := RequireStorageCloneGasFloor(bigStorage, 1)
+	require.ErrorContains(t, err, ErrExecutionFailed)
+	require.ErrorContains(t, err, "gas limit")
+
+	// The exact boundary: one gas unit below the computed floor is rejected...
+	floor := (uint64(bigStorage) / StorageCloneGasFloorDivisor) * 2
+	require.Greater(t, floor, uint64(1))
+	require.Error(t, RequireStorageCloneGasFloor(bigStorage, floor-1))
+	// ...and the floor itself (or more) is accepted.
+	require.NoError(t, RequireStorageCloneGasFloor(bigStorage, floor))
+
+	// A large-but-realistic storage size (the AVM's own always-binding 1 MiB
+	// MaxMemoryBytes ceiling) must still clear comfortably under the
+	// module's default gas budgets, so ordinary executions against
+	// max-size contracts are never rejected by this floor.
+	const oneMiB = 1024 * 1024
+	require.NoError(t, RequireStorageCloneGasFloor(oneMiB, 100_000))
+}
+
+// TestMaxStateGrowthBytesPerExecutionBelowAVMMemoryCeiling documents (and
+// pins) that the per-execution growth cap is meaningfully smaller than the
+// AVM's own always-binding 1 MiB MaxMemoryBytes ceiling (avm.DefaultParams,
+// always used by the keeper's Runner construction) -- otherwise the cap
+// would never be reachable in practice. See MaxStateGrowthBytesPerExecution's
+// doc comment.
+func TestMaxStateGrowthBytesPerExecutionBelowAVMMemoryCeiling(t *testing.T) {
+	const avmMaxMemoryBytes = 1024 * 1024
+	require.Less(t, uint64(MaxStateGrowthBytesPerExecution), uint64(avmMaxMemoryBytes))
+}
+
 func TestContractsStoreCodeAndQueryAPIValidation(t *testing.T) {
 	params := DefaultParams()
 	sender := contractAPIAddress(0x22)

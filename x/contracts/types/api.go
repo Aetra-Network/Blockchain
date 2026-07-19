@@ -32,7 +32,95 @@ const (
 	// inside RefreshStateRoot so the in-memory genesis and the persisted store
 	// prune to the identical set on every node. See SEC-HIGH: bound receipt log.
 	MaxRetainedReceipts = 8192
+
+	// --- Phase H hard-cap additions -----------------------------------------
+	// The following bound execution dimensions the AVM interpreter itself
+	// (x/aetravm/avm/avm.go) does not cap today: per-execution outgoing
+	// message count, per-execution distinct-changed-storage-key count, and
+	// per-execution net storage growth. All three are enforced HERE, at the
+	// keeper boundary, right after avm.Runner.Run returns and before its
+	// result is committed to genesis state -- deliberately NOT inside
+	// avm.go's interpreter loop, which was under concurrent edit (Phase D
+	// BN254/ZK opcodes) when these were added, making a Dispatch-loop change
+	// there high collision risk. Enforcing post-execution here still turns
+	// each dimension from "unbounded" into "bounded, and the whole execution
+	// atomically rolls back if exceeded" -- the same shape as the existing
+	// MaxContractStorageBytes / MaxInternalMessageQueueDepth checks below.
+
+	// MaxEventsPerExecution bounds the number of outgoing internal messages
+	// (OpEmitInternal calls) a single AVM execution may enqueue. Previously
+	// the only limit was MaxInternalMessageQueueDepth, a GLOBAL cap checked
+	// at enqueue time, AFTER the whole execution had already run -- so a
+	// single execution could itself accumulate a batch as large as
+	// GasLimit/100 (the flat OpEmitInternal cost) before ever tripping it.
+	// This is deliberately generous relative to normal contract behavior
+	// (a handful of emits per call) while still closing the "one execution
+	// can nearly fill the entire global queue" amplification.
+	MaxEventsPerExecution = 256
+
+	// MaxChangedStorageKeysPerExecution bounds the number of DISTINCT
+	// storage keys a single AVM execution may add, modify, or delete
+	// (computed as the symmetric difference between the pre- and
+	// post-execution storage maps). This is a partial mitigation for the
+	// Phase H "touched storage keys" cap gap: it catches every write/delete
+	// touch, but -- being computed from the before/after snapshots rather
+	// than from in-VM tracking -- it cannot see a key that was only READ
+	// (OpReadStorage) and never changed. A complete touched-key cap
+	// (covering reads too) needs avm.go Dispatch-loop instrumentation,
+	// deferred for the same concurrent-edit reason as above.
+	MaxChangedStorageKeysPerExecution = 256
+
+	// MaxStateGrowthBytesPerExecution bounds the NET bytes a single AVM
+	// execution may add to a contract's storage (post-execution
+	// contractStorageBytes minus pre-execution, when positive; shrinking is
+	// always allowed and never counted). This is distinct from the existing
+	// absolute MaxContractStorageBytes ceiling (checked after every write,
+	// bounding the TOTAL size a contract's storage may ever reach): this
+	// bounds the DELTA a single execution may contribute, so a contract
+	// cannot jump from near-empty to a large fraction of the storage
+	// ceiling in one shot. Set below the AVM's own always-binding
+	// DefaultParams().MaxMemoryBytes (1 MiB, see keeper.go's runner
+	// construction) so it is a real, reachable constraint rather than dead
+	// weight.
+	MaxStateGrowthBytesPerExecution = 256 * 1024
+
+	// MinStorageBytesForCloneGasFloor / StorageCloneGasFloorDivisor together
+	// close the Phase H "Runner.Run's uncharged double CloneStorage" gap
+	// (avm.go's Run() clones the full contract storage map TWICE, before any
+	// gas is charged). Below MinStorageBytesForCloneGasFloor bytes the clone
+	// is cheap enough (well under a millisecond) that a floor would only add
+	// friction for ordinary small contracts; above it, RequireStorageCloneGasFloor
+	// requires the caller to have budgeted at least a coarse, storage-size-
+	// proportional amount of gas before Runner.Run (and the O(storage) decode
+	// before it) is even attempted -- using the contract's already-tracked
+	// StorageBytes field, so the check itself needs no decode. The rate is
+	// deliberately much coarser than the interpreter's own 1 gas/byte
+	// GasPerOperandUnit (used for real in-VM operand charges) so it only
+	// rejects the degenerate near-zero-gas-vs-large-storage case, never an
+	// ordinary execution against a sizeable contract with its default gas
+	// budget. See RequireStorageCloneGasFloor.
+	MinStorageBytesForCloneGasFloor = 8192
+	StorageCloneGasFloorDivisor     = 128
 )
+
+// RequireStorageCloneGasFloor rejects an AVM execution attempt against a
+// contract whose storage exceeds MinStorageBytesForCloneGasFloor bytes
+// unless gasLimit budgets at least a coarse, storage-size-proportional
+// floor. See the constants' doc comment for the full rationale. Call this
+// BEFORE decodeContractSnapshot/avm.Runner.Run so the reject is cheap
+// (uses the contract's tracked StorageBytes metadata, no decode needed).
+func RequireStorageCloneGasFloor(storageBytes, gasLimit uint64) error {
+	if storageBytes <= MinStorageBytesForCloneGasFloor {
+		return nil
+	}
+	// The "2" mirrors Runner.Run's two CloneStorage calls (originalState +
+	// working state) before either is charged.
+	floor := (storageBytes / StorageCloneGasFloorDivisor) * 2
+	if gasLimit < floor {
+		return fmt.Errorf("%s: gas limit %d is below the minimum %d required to execute against a %d-byte-storage contract", ErrExecutionFailed, gasLimit, floor, storageBytes)
+	}
+	return nil
+}
 
 // Contract execution events. Emitted into the transaction event log so
 // explorers can reconstruct the message chain of an execution: the executed

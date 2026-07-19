@@ -75,6 +75,12 @@ func (k *Keeper) ContractGet(req types.QueryContractGetRequest) (types.QueryCont
 	if max := gs.Params.MaxGasPerExecution; max > 0 && gas > max {
 		gas = max
 	}
+	// Phase H: reject a caller-chosen near-zero GasLimit against a
+	// large-storage contract before paying decodeContractSnapshot's/
+	// Runner.Run's O(storage) clone cost. See types.RequireStorageCloneGasFloor.
+	if err := types.RequireStorageCloneGasFloor(contract.StorageBytes, gas); err != nil {
+		return types.QueryContractGetResponse{}, err
+	}
 
 	runner, err := avm.NewRunner(avm.DefaultParams())
 	if err != nil {

@@ -768,12 +768,35 @@ func (k *Keeper) InstantiateContract(msg types.MsgInstantiateContract) (types.In
 	return k.instantiateContract(k.runtimeCtx, msg)
 }
 
-func (k *Keeper) instantiateContract(ctx context.Context, msg types.MsgInstantiateContract) (types.InstantiateContractResponse, error) {
+// buildInstantiateContract validates msg and appends the resulting Contract record and its
+// "deploy" receipt into next's scratch state (next.State.Contracts / next.State.Receipts),
+// WITHOUT calling RefreshStateRoot, Validate, collectRentPayment, or assignGenesis -- the
+// caller owns the single commit point. This exists so ReceiveInternalMessage's StateInit
+// auto-deploy branch can fold contract creation into the SAME scratch copy as the matching
+// source-side funds debit, so both mutations commit atomically via that function's existing
+// single end-of-function assignGenesis call, or neither does. Calling the old self-committing
+// instantiateContract from that branch instead committed the auto-deployed contract's credit
+// independently, before the branch's own commit point -- so a later failure (AVM execution
+// failure, storage-limit exceeded, destination lookup, dequeue, Validate, ...) left the credit
+// permanently minted with no matching debit. See SEC-HIGH: deliverInternalMessage auto-deploy
+// atomicity.
+//
+// All lookups read next's scratch slices rather than k.genesis directly, so the result stays
+// consistent with whatever mutations the caller already folded into next (e.g. a source
+// contract's rent charge applied earlier in the same delivery).
+//
+// The returned initialStorageFee is NOT collected here -- callers must invoke
+// k.collectRentPayment(ctx, msg.Creator, initialStorageFee) themselves, and only after their
+// own next.Validate() has succeeded, mirroring the rentCharged/chargeRentToReserve deferred-
+// collection pattern used later in ReceiveInternalMessage. Collecting it here, before the
+// caller's commit is known to succeed, would risk charging the fee with no matching state
+// change if a later step in the caller's flow fails.
+func (k *Keeper) buildInstantiateContract(ctx context.Context, msg types.MsgInstantiateContract, next *types.GenesisState) (types.Contract, types.InstantiateContractResponse, uint64, error) {
 	if !k.genesis.Params.Enabled {
-		return types.InstantiateContractResponse{}, errors.New(types.ErrExecutionFailed + ": module disabled")
+		return types.Contract{}, types.InstantiateContractResponse{}, 0, errors.New(types.ErrExecutionFailed + ": module disabled")
 	}
 	if err := types.ValidateUserFacingAEAddress("contract creator", msg.Creator); err != nil {
-		return types.InstantiateContractResponse{}, err
+		return types.Contract{}, types.InstantiateContractResponse{}, 0, err
 	}
 	// Contract-initiated instantiation — the authenticated internal-message
 	// auto-deploy path, where Creator is itself an on-chain contract — is
@@ -784,16 +807,16 @@ func (k *Keeper) instantiateContract(ctx context.Context, msg types.MsgInstantia
 	// here with a contract creator is pending-queue delivery, whose source
 	// is authenticated by content hash (SEC-HIGH #5); external tx paths
 	// always carry a human creator and keep both checks.
-	_, _, creatorIsContract := findContractWithIndex(k.genesis.State.Contracts, msg.Creator)
+	_, _, creatorIsContract := findContractWithIndex(next.State.Contracts, msg.Creator)
 	if !creatorIsContract {
 		if err := k.ensureActiveWallet(ctx, msg.Creator, "contract instantiate"); err != nil {
-			return types.InstantiateContractResponse{}, err
+			return types.Contract{}, types.InstantiateContractResponse{}, 0, err
 		}
 	}
 	if msg.Height == 0 {
-		return types.InstantiateContractResponse{}, errors.New("contract instantiate height must be positive")
+		return types.Contract{}, types.InstantiateContractResponse{}, 0, errors.New("contract instantiate height must be positive")
 	}
-	code, found := findCode(k.genesis.State.Codes, msg.CodeID)
+	code, found := findCode(next.State.Codes, msg.CodeID)
 	if !found && creatorIsContract {
 		// The AVM's autoDeployAddress/counterfactualAddress builtins identify
 		// code by the plain module hash sha256(bytecode) (see avm.go
@@ -801,45 +824,45 @@ func (k *Keeper) instantiateContract(ctx context.Context, msg types.MsgInstantia
 		// the domain-separated canonical hash. Both are content addresses of
 		// the same bytes, so resolving the module hash against stored
 		// bytecode is exact, deterministic, and unforgeable.
-		code, found = findCodeByModuleHash(k.genesis.State.Codes, msg.CodeID)
+		code, found = findCodeByModuleHash(next.State.Codes, msg.CodeID)
 	}
 	if !found {
-		return types.InstantiateContractResponse{}, errors.New(types.ErrContractNotFound + ": contract code not found")
+		return types.Contract{}, types.InstantiateContractResponse{}, 0, errors.New(types.ErrContractNotFound + ": contract code not found")
 	}
 	if !creatorIsContract && code.Owner != msg.Creator {
-		return types.InstantiateContractResponse{}, errors.New(types.ErrUnauthorized + ": contract instantiate requires code owner")
+		return types.Contract{}, types.InstantiateContractResponse{}, 0, errors.New(types.ErrUnauthorized + ": contract instantiate requires code owner")
 	}
 	stateInit, data, funds, err := k.stateInitForInstantiate(msg, code)
 	if err != nil {
-		return types.InstantiateContractResponse{}, err
+		return types.Contract{}, types.InstantiateContractResponse{}, 0, err
 	}
 	admin := msg.Admin
 	if admin == "" {
 		admin = stateInit.Owner
 	}
 	if err := types.ValidateUserFacingAEAddress("contract admin", admin); err != nil {
-		return types.InstantiateContractResponse{}, err
+		return types.Contract{}, types.InstantiateContractResponse{}, 0, err
 	}
 	user, raw, err := types.DeriveContractAddressFromStateInit(msg.ChainID, msg.Namespace, msg.Creator, stateInit, k.genesis.Params)
 	if err != nil {
-		return types.InstantiateContractResponse{}, err
+		return types.Contract{}, types.InstantiateContractResponse{}, 0, err
 	}
-	if _, found := findContract(k.genesis.State.Contracts, user); found {
-		return types.InstantiateContractResponse{}, errors.New(types.ErrContractNotFound + ": contract address already exists")
+	if _, found := findContract(next.State.Contracts, user); found {
+		return types.Contract{}, types.InstantiateContractResponse{}, 0, errors.New(types.ErrContractNotFound + ": contract address already exists")
 	}
 	storageBytes, err := contractStorageBytesForCode(code, data)
 	if err != nil {
-		return types.InstantiateContractResponse{}, err
+		return types.Contract{}, types.InstantiateContractResponse{}, 0, err
 	}
 	if msg.StorageBytes != 0 && msg.StorageBytes != storageBytes {
-		return types.InstantiateContractResponse{}, errors.New(types.ErrStorageRent + ": contract storage must equal code bytes plus data bytes")
+		return types.Contract{}, types.InstantiateContractResponse{}, 0, errors.New(types.ErrStorageRent + ": contract storage must equal code bytes plus data bytes")
 	}
 	if storageBytes > k.genesis.Params.MaxContractStorageBytes {
-		return types.InstantiateContractResponse{}, errors.New(types.ErrStorageRent + ": contract storage exceeds configured limit")
+		return types.Contract{}, types.InstantiateContractResponse{}, 0, errors.New(types.ErrStorageRent + ": contract storage exceeds configured limit")
 	}
 	stateInitHash, err := types.HashStateInit(stateInit)
 	if err != nil {
-		return types.InstantiateContractResponse{}, err
+		return types.Contract{}, types.InstantiateContractResponse{}, 0, err
 	}
 	schemaVersion := msg.SchemaVersion
 	if schemaVersion == 0 {
@@ -872,22 +895,13 @@ func (k *Keeper) instantiateContract(ctx context.Context, msg types.MsgInstantia
 		UpdatedHeight:           msg.Height,
 	}
 	contract.StateRoot = types.ComputeContractStateRoot(contract)
-	next := k.genesis
 	next.State.Contracts = append(next.State.Contracts, contract)
 	next.State.Receipts = append(next.State.Receipts, newContractReceipt(contract.AddressUser, msg.Creator, "deploy", types.ExitCodeOK, funds, 0, contract.LogicalTime, msg.Height))
-	next = types.RefreshStateRoot(next)
-	if err := next.Validate(); err != nil {
-		return types.InstantiateContractResponse{}, err
-	}
 	initialStorageFee, err := checkedMul(storageBytes, k.storageRentPerByteBlock(), "contract storage fee overflow")
 	if err != nil {
-		return types.InstantiateContractResponse{}, err
+		return types.Contract{}, types.InstantiateContractResponse{}, 0, err
 	}
-	if err := k.collectRentPayment(ctx, msg.Creator, initialStorageFee); err != nil {
-		return types.InstantiateContractResponse{}, err
-	}
-	k.assignGenesis(next)
-	return types.InstantiateContractResponse{
+	return contract, types.InstantiateContractResponse{
 		ContractAddressUser: user,
 		ContractAddressRaw:  raw,
 		Owner:               contract.Owner,
@@ -900,7 +914,25 @@ func (k *Keeper) instantiateContract(ctx context.Context, msg types.MsgInstantia
 			Amount:      funds,
 			InternalRaw: raw,
 		}},
-	}, nil
+	}, initialStorageFee, nil
+}
+
+func (k *Keeper) instantiateContract(ctx context.Context, msg types.MsgInstantiateContract) (types.InstantiateContractResponse, error) {
+	next := k.genesis
+	next.State.Contracts = append([]types.Contract(nil), k.genesis.State.Contracts...)
+	_, resp, initialStorageFee, err := k.buildInstantiateContract(ctx, msg, &next)
+	if err != nil {
+		return types.InstantiateContractResponse{}, err
+	}
+	next = types.RefreshStateRoot(next)
+	if err := next.Validate(); err != nil {
+		return types.InstantiateContractResponse{}, err
+	}
+	if err := k.collectRentPayment(ctx, msg.Creator, initialStorageFee); err != nil {
+		return types.InstantiateContractResponse{}, err
+	}
+	k.assignGenesis(next)
+	return resp, nil
 }
 
 func (k *Keeper) InstantiateContractState(ctx context.Context, msg types.MsgInstantiateContract) (types.InstantiateContractResponse, error) {
@@ -1370,6 +1402,14 @@ func blockBeaconInputs(ctx context.Context) (prevStateRoot, blockEntropy []byte)
 	return info.AppHash, info.Hash
 }
 
+// defaultAVMGasLimit is the "use module default" substitution for a
+// caller-supplied GasLimit of 0 -- InternalMessage.Validate deliberately
+// accepts 0 as a valid sentinel meaning this, so every site that inspects a
+// not-yet-substituted GasLimit (e.g. a pre-Run() gas-floor check) must
+// resolve it the same way buildAVMContext does, not treat a raw 0 as an
+// actual near-zero budget.
+const defaultAVMGasLimit = 100_000
+
 func (k Keeper) buildAVMContext(entry avm.Entrypoint, contract types.Contract, sender string, payload []byte, funds, gasLimit, height, logicalTime uint64, opcode uint32, queryID uint64, bounced bool) (avm.RuntimeContext, error) {
 	contractAddress, err := aetraaddress.ParseAccAddress(contract.AddressUser)
 	if err != nil {
@@ -1380,7 +1420,7 @@ func (k Keeper) buildAVMContext(entry avm.Entrypoint, contract types.Contract, s
 		return avm.RuntimeContext{}, err
 	}
 	if gasLimit == 0 {
-		gasLimit = 100_000
+		gasLimit = defaultAVMGasLimit
 	}
 	prevStateRoot, blockEntropy := blockBeaconInputs(k.runtimeCtx)
 	return avm.RuntimeContext{
@@ -1465,6 +1505,10 @@ func (k *Keeper) executeContract(ctx context.Context, msg types.MsgExecuteContra
 		return types.ExecuteContractResponse{}, err
 	}
 	contract.Balance = balance
+	// Captured before contract.Data/StorageBytes are overwritten below, so
+	// the post-execution net-growth cap (requireStateGrowthWithinCap) can
+	// compare against the size this execution actually started from.
+	preStorageBytes := contract.StorageBytes
 	code, found := findCodeRecord(k.genesis.State.Codes, contract.CodeID)
 	if !found {
 		return types.ExecuteContractResponse{}, errors.New(types.ErrInvalidBytecode + ": stored code not found for contract")
@@ -1475,6 +1519,17 @@ func (k *Keeper) executeContract(ctx context.Context, msg types.MsgExecuteContra
 	}
 	var outgoing []async.MessageEnvelope
 	if executable {
+		// Phase H: reject a degenerate near-zero GasLimit against a
+		// large-storage contract before paying decodeContractSnapshot's and
+		// Runner.Run's O(storage) cost at all. See
+		// types.RequireStorageCloneGasFloor. This call site always passes
+		// MaxGasPerExecution below (not caller-controlled), so this is
+		// defense in depth rather than the primary fix -- the reachable
+		// attack is via ReceiveInternalMessage's contract-controlled
+		// record.GasLimit, guarded the same way further down.
+		if err := types.RequireStorageCloneGasFloor(contract.StorageBytes, k.genesis.Params.MaxGasPerExecution); err != nil {
+			return types.ExecuteContractResponse{}, err
+		}
 		storage, decodable, err := decodeContractSnapshot(contract.Data)
 		if err != nil {
 			return types.ExecuteContractResponse{}, err
@@ -1511,6 +1566,11 @@ func (k *Keeper) executeContract(ctx context.Context, msg types.MsgExecuteContra
 				types.ErrExecutionFailed, exec.ResultCode, async.RuntimeExitCodeName(exec.ResultCode),
 				contractExitCode, types.ExitCodeName(contractExitCode))
 		}
+		// Phase H: per-execution outgoing-message-count and
+		// distinct-changed-storage-key caps. See enforceAVMExecutionCaps.
+		if err := enforceAVMExecutionCaps(storage, exec); err != nil {
+			return types.ExecuteContractResponse{}, err
+		}
 		contract.Data = encodeSnapshotStorage(exec.State)
 		outgoing = append([]async.MessageEnvelope(nil), exec.Outgoing...)
 	} else {
@@ -1540,6 +1600,11 @@ func (k *Keeper) executeContract(ctx context.Context, msg types.MsgExecuteContra
 	}
 	if storageBytes > k.genesis.Params.MaxContractStorageBytes {
 		return types.ExecuteContractResponse{}, errors.New(types.ErrStorageRent + ": contract storage exceeds configured limit")
+	}
+	// Phase H: per-execution net storage-growth cap, distinct from the
+	// absolute ceiling just above. See requireStateGrowthWithinCap.
+	if err := requireStateGrowthWithinCap(preStorageBytes, storageBytes); err != nil {
+		return types.ExecuteContractResponse{}, err
 	}
 	contract.StorageBytes = storageBytes
 	contract.UpdatedHeight = msg.Height
@@ -1963,6 +2028,12 @@ func (k *Keeper) ReceiveInternalMessage(msg types.MsgReceiveInternalMessage) (ty
 	var code types.CodeRecord
 	var module avm.Module
 	var executable bool
+	// Storage-rent fee owed for a StateInit auto-deploy folded into next below (see the
+	// record.StateInit branch). Collected via k.collectRentPayment only after next.Validate()
+	// succeeds, alongside rentCharged/chargeRentToReserve -- never inside the branch itself,
+	// so a later failure in this same delivery never charges a fee for a deploy that didn't
+	// end up committed.
+	var autoDeployStorageFee uint64
 	if destinationIdx >= 0 {
 		// Conserve funds: debit the verified source, then credit the destination.
 		// Writing the debit first and re-reading the destination makes a self-send
@@ -1992,6 +2063,31 @@ func (k *Keeper) ReceiveInternalMessage(msg types.MsgReceiveInternalMessage) (ty
 			return types.InternalMessage{}, err
 		}
 		if executable {
+			// Phase H: reject a degenerate near-zero record.GasLimit (fully
+			// contract-controlled -- see appendAVMOutgoingMessages/
+			// InternalMessage.Validate, which never enforces a minimum)
+			// against a large-storage destination before paying
+			// decodeContractSnapshot's and Runner.Run's O(storage) cost at
+			// all. See types.RequireStorageCloneGasFloor. This is the
+			// primary fix for the "uncharged double CloneStorage" gap: this
+			// call site (unlike ExecuteContract) passes an
+			// attacker-controlled gas limit straight through to Runner.Run.
+			//
+			// GasLimit==0 is a valid, documented "use module default"
+			// sentinel (InternalMessage.Validate accepts it) that
+			// buildAVMContext only resolves to defaultAVMGasLimit AFTER
+			// this check would otherwise run -- resolve it here first, or
+			// every ordinary contract-to-contract message that omits an
+			// explicit gas limit gets permanently rejected the moment the
+			// destination's storage crosses MinStorageBytesForCloneGasFloor.
+			checkGasLimit := record.GasLimit
+			if checkGasLimit == 0 {
+				checkGasLimit = defaultAVMGasLimit
+			}
+			if err := types.RequireStorageCloneGasFloor(destination.StorageBytes, checkGasLimit); err != nil {
+				return types.InternalMessage{}, err
+			}
+			preStorageBytes := destination.StorageBytes
 			storage, decodable, err := decodeContractSnapshot(destination.Data)
 			if err != nil {
 				return types.InternalMessage{}, err
@@ -2021,6 +2117,11 @@ func (k *Keeper) ReceiveInternalMessage(msg types.MsgReceiveInternalMessage) (ty
 					types.ErrExecutionFailed, exec.ResultCode, async.RuntimeExitCodeName(exec.ResultCode),
 					contractExitCode, types.ExitCodeName(contractExitCode))
 			}
+			// Phase H: per-execution outgoing-message-count and
+			// distinct-changed-storage-key caps. See enforceAVMExecutionCaps.
+			if err := enforceAVMExecutionCaps(storage, exec); err != nil {
+				return types.InternalMessage{}, err
+			}
 			destination.Data = encodeSnapshotStorage(exec.State)
 			destination.LogicalTime++
 			destination.UpdatedHeight = record.Height
@@ -2031,6 +2132,11 @@ func (k *Keeper) ReceiveInternalMessage(msg types.MsgReceiveInternalMessage) (ty
 			}
 			if destinationStorageBytes > k.genesis.Params.MaxContractStorageBytes {
 				return types.InternalMessage{}, errors.New(types.ErrStorageRent + ": destination contract storage exceeds configured limit")
+			}
+			// Phase H: per-execution net storage-growth cap, distinct from
+			// the absolute ceiling just above. See requireStateGrowthWithinCap.
+			if err := requireStateGrowthWithinCap(preStorageBytes, destinationStorageBytes); err != nil {
+				return types.InternalMessage{}, err
 			}
 			destination.StorageBytes = destinationStorageBytes
 			next.State.Contracts[destinationIdx] = destination
@@ -2050,15 +2156,21 @@ func (k *Keeper) ReceiveInternalMessage(msg types.MsgReceiveInternalMessage) (ty
 		if expectedUser != record.DestinationAccount {
 			return types.InternalMessage{}, errors.New(types.ErrContractNotFound + ": internal state init address does not match destination")
 		}
-		// Verify the source can cover the attached funds BEFORE instantiate, which
-		// credits the auto-deployed contract with record.Funds and self-commits to
-		// k.genesis. Without this pre-check an insufficient-balance error after
-		// instantiate would leave the new contract holding fabricated funds with no
-		// matching source debit — minting value. See SEC-HIGH: fund debit.
+		// Verify the source can cover the attached funds before folding the auto-deploy
+		// in, so an obviously-underfunded message is rejected without touching next at
+		// all.
 		if record.Funds > 0 && next.State.Contracts[idx].Balance < record.Funds {
 			return types.InternalMessage{}, errors.New(types.ErrExecutionFailed + ": source contract has insufficient balance")
 		}
-		_, err = k.instantiateContract(k.runtimeCtx, types.MsgInstantiateContract{
+		// Fold the auto-deploy's contract creation into THIS SAME scratch copy (next) as
+		// the matching source debit right below, instead of calling the self-committing
+		// instantiateContract. That would commit the auto-deployed contract's credit
+		// independently -- before this function's own single end-of-function
+		// assignGenesis -- so any later failure (destination/code lookup, AVM execution
+		// failure, storage-limit exceeded, dequeue, Validate, ...) would leave the credit
+		// permanently minted with no matching debit. See SEC-HIGH: deliverInternalMessage
+		// auto-deploy atomicity.
+		_, _, autoDeployStorageFee, err = k.buildInstantiateContract(k.runtimeCtx, types.MsgInstantiateContract{
 			Creator:       record.SourceContractUser,
 			CodeID:        record.StateInit.Normalize().CodeID,
 			ChainID:       types.DefaultContractChainID,
@@ -2068,31 +2180,27 @@ func (k *Keeper) ReceiveInternalMessage(msg types.MsgReceiveInternalMessage) (ty
 			Funds:         record.Funds,
 			Height:        record.Height,
 			SchemaVersion: 1,
-		})
+		}, &next)
 		if err != nil {
 			return types.InternalMessage{}, err
 		}
-		next = k.genesis
-		next.State.Contracts = append([]types.Contract(nil), k.genesis.State.Contracts...)
-		// The auto-deployed contract already received record.Funds as its initial
-		// balance; apply the matching source debit now that instantiate re-synced
-		// next (value conserved).
+		// The auto-deployed contract (just appended into next.State.Contracts, not yet
+		// committed) carries record.Funds as its initial balance; apply the matching
+		// source debit into the same next so both mutations commit -- or roll back --
+		// together at this function's single end-of-function assignGenesis call.
 		if record.Funds > 0 {
-			srcNowIdx, srcNow, srcFound := findContractWithIndex(next.State.Contracts, record.SourceContractUser)
-			if !srcFound {
-				return types.InternalMessage{}, errors.New(types.ErrContractNotFound + ": source contract not found")
-			}
-			if srcNow.Balance < record.Funds {
+			src := next.State.Contracts[idx]
+			if src.Balance < record.Funds {
 				return types.InternalMessage{}, errors.New(types.ErrExecutionFailed + ": source contract has insufficient balance")
 			}
-			srcNow.Balance -= record.Funds
-			next.State.Contracts[srcNowIdx] = srcNow
+			src.Balance -= record.Funds
+			next.State.Contracts[idx] = src
 		}
-		destinationIdx, destination, found = findContractWithIndex(k.genesis.State.Contracts, record.DestinationAccount)
+		destinationIdx, destination, found = findContractWithIndex(next.State.Contracts, record.DestinationAccount)
 		if !found {
 			return types.InternalMessage{}, errors.New(types.ErrContractNotFound + ": auto-deployed contract not found")
 		}
-		code, found = findCodeRecord(k.genesis.State.Codes, destination.CodeID)
+		code, found = findCodeRecord(next.State.Codes, destination.CodeID)
 		if !found {
 			return types.InternalMessage{}, errors.New(types.ErrInvalidBytecode + ": stored code not found for auto-deployed destination")
 		}
@@ -2101,6 +2209,17 @@ func (k *Keeper) ReceiveInternalMessage(msg types.MsgReceiveInternalMessage) (ty
 			return types.InternalMessage{}, err
 		}
 		if executable {
+			// Phase H: see the matching comment on the same check in the
+			// existing-destination branch above (GasLimit==0 must resolve
+			// to defaultAVMGasLimit before this check, not after).
+			checkGasLimit := record.GasLimit
+			if checkGasLimit == 0 {
+				checkGasLimit = defaultAVMGasLimit
+			}
+			if err := types.RequireStorageCloneGasFloor(destination.StorageBytes, checkGasLimit); err != nil {
+				return types.InternalMessage{}, err
+			}
+			preStorageBytes := destination.StorageBytes
 			storage, decodable, err := decodeContractSnapshot(destination.Data)
 			if err != nil {
 				return types.InternalMessage{}, err
@@ -2130,6 +2249,11 @@ func (k *Keeper) ReceiveInternalMessage(msg types.MsgReceiveInternalMessage) (ty
 					types.ErrExecutionFailed, exec.ResultCode, async.RuntimeExitCodeName(exec.ResultCode),
 					contractExitCode, types.ExitCodeName(contractExitCode))
 			}
+			// Phase H: see the matching comment on the same check in the
+			// existing-destination branch above.
+			if err := enforceAVMExecutionCaps(storage, exec); err != nil {
+				return types.InternalMessage{}, err
+			}
 			destination.Data = encodeSnapshotStorage(exec.State)
 			destination.LogicalTime++
 			destination.UpdatedHeight = record.Height
@@ -2140,6 +2264,9 @@ func (k *Keeper) ReceiveInternalMessage(msg types.MsgReceiveInternalMessage) (ty
 			}
 			if destinationStorageBytes > k.genesis.Params.MaxContractStorageBytes {
 				return types.InternalMessage{}, errors.New(types.ErrStorageRent + ": destination contract storage exceeds configured limit")
+			}
+			if err := requireStateGrowthWithinCap(preStorageBytes, destinationStorageBytes); err != nil {
+				return types.InternalMessage{}, err
 			}
 			destination.StorageBytes = destinationStorageBytes
 			next.State.Contracts[destinationIdx] = destination
@@ -2193,6 +2320,15 @@ func (k *Keeper) ReceiveInternalMessage(msg types.MsgReceiveInternalMessage) (ty
 	}
 	if rentCharged > 0 {
 		if err := k.chargeRentToReserve(k.runtimeCtx, contract, rentCharged); err != nil {
+			return types.InternalMessage{}, err
+		}
+	}
+	// Collect the auto-deployed child's initial storage-rent fee (if any) only now that
+	// next.Validate() above has confirmed the whole delivery -- including the folded-in
+	// deploy -- is about to commit. Mirrors rentCharged/chargeRentToReserve immediately
+	// above.
+	if autoDeployStorageFee > 0 {
+		if err := k.collectRentPayment(k.runtimeCtx, record.SourceContractUser, autoDeployStorageFee); err != nil {
 			return types.InternalMessage{}, err
 		}
 	}

@@ -1467,6 +1467,131 @@ func TestTokenWalletStateInitAutoDeployAndDeterministicAddress(t *testing.T) {
 	require.Equal(t, uint64(40), avm.DecodeU64(holder2StorageBeforeBurn["balance"]))
 }
 
+// sumContractBalances totals the native-asset ledger Balance across every contract, for
+// value-conservation assertions: a successful or a failed operation must never change this
+// sum except by an amount that actually left/entered the contract set through a source
+// outside it (e.g. a real bank-keeper transfer), which none of the ReceiveInternalMessage
+// auto-deploy tests below perform.
+func sumContractBalances(contracts []types.Contract) uint64 {
+	var total uint64
+	for _, c := range contracts {
+		total += c.Balance
+	}
+	return total
+}
+
+// TestReceiveInternalMessageAutoDeployFailureIsAtomic is a regression test for a real
+// atomicity bug: ReceiveInternalMessage's StateInit auto-deploy branch used to call the
+// self-committing instantiateContract, which credited the new contract with record.Funds and
+// committed that credit to k.genesis via its own independent assignGenesis call -- BEFORE
+// ReceiveInternalMessage applied the matching source-side debit and performed its own
+// end-of-function commit. Any error surfacing between those two commits (AVM execution
+// failure, storage-limit exceeded, destination lookup, dequeue, Validate, ...) left the
+// auto-deployed contract's credit permanently committed with no matching debit -- value
+// minted from nothing.
+//
+// This test forces exactly such an error: the freshly auto-deployed TokenWallet contract's
+// very first message carries WalletTransfer amount 0, which its own `assert (msg.amount > 0)
+// throw ERR_BAD_AMOUNT` rejects during EntryReceiveInternal execution -- discovered only
+// AFTER the auto-deploy would previously already have committed independently, while the
+// delivery still carries a nonzero record.Funds meant to fund the new contract.
+func TestReceiveInternalMessageAutoDeployFailureIsAtomic(t *testing.T) {
+	deployer := aeAddress("66")
+	holderOwner := aeAddress("77")
+	status := testAccountStatus{deployer: accountStatusActive}
+	k := NewKeeperWithAccountStatus(status)
+
+	c, err := compiler.New(compiler.DefaultOptions())
+	require.NoError(t, err)
+	walletResult, err := c.CompileFile("../../../examples/avm/token/token_wallet.atlx")
+	require.NoError(t, err)
+
+	sourceCode := storeContractCode(t, &k, deployer)
+	source := instantiateContract(t, &k, deployer, sourceCode, "atomic-source", 9, 1_000_000, 0)
+
+	// StoreCode always requires an active wallet authority (no contract exemption, unlike
+	// instantiate); use deployer. The resulting code's Owner field doesn't gate the
+	// auto-deploy below since its Creator (source, a contract) is exempt from the
+	// code-ownership check.
+	walletStored, err := k.StoreCode(types.MsgStoreCode{
+		Authority: deployer,
+		Bytecode:  walletResult.ModuleBytes,
+	})
+	require.NoError(t, err)
+
+	holderInitData, err := walletResult.StorageCodec.Encode(map[string]any{
+		"master":     source.ContractAddressUser,
+		"owner":      holderOwner,
+		"walletCode": walletResult.CodeChunk,
+		"balance":    uint64(0),
+	})
+	require.NoError(t, err)
+	// InitialBalanceNAET left at 0 so the delivered message's own Funds (attachedFunds
+	// below) is what determines the new contract's initial ledger balance and the matching
+	// source debit -- letting this test control and assert on that exact amount.
+	holderStateInit := types.NewStateInit(source.ContractAddressUser, walletStored.CodeID, holderInitData, "atomic-holder", 0)
+	holderAddress, _, err := types.DeriveContractAddressFromStateInit("", "", source.ContractAddressUser, holderStateInit, k.Params())
+	require.NoError(t, err)
+
+	badBody, err := walletResult.MessageBodies["WalletInternalTransfer"].Encode(map[string]any{
+		"from":       source.ContractAddressUser,
+		"amount":     uint64(0),
+		"responseTo": nil,
+	})
+	require.NoError(t, err)
+
+	const attachedFunds = uint64(250)
+
+	before := k.ExportGenesis()
+	sumBefore := sumContractBalances(before.State.Contracts)
+	_, sourceFoundBefore := findContract(before.State.Contracts, source.ContractAddressUser)
+	require.True(t, sourceFoundBefore)
+
+	_, err = deliverInternalForTest(t, &k, types.InternalMessage{
+		SourceContractUser: source.ContractAddressUser,
+		DestinationAccount: holderAddress,
+		Funds:              attachedFunds,
+		Opcode:             walletResult.MessageBodyOpcodes["WalletInternalTransfer"],
+		Body:               badBody,
+		StateInit:          &holderStateInit,
+		GasLimit:           100_000,
+		LogicalTime:        20,
+		Height:             20,
+	})
+	require.Error(t, err)
+	// runner.Run surfaces an `assert ... throw` abort directly (not wrapped in
+	// types.ErrExecutionFailed); 1005 is ERR_BAD_AMOUNT from token_shared.atlx, confirming
+	// this really is the AVM execution failure and not some unrelated setup error.
+	require.Contains(t, err.Error(), "AVM abort with exit code 1005")
+
+	after := k.ExportGenesis()
+
+	// Value conservation: the failed delivery must not have changed the total of every
+	// contract's ledger Balance by even one unit.
+	sumAfter := sumContractBalances(after.State.Contracts)
+	require.Equal(t, sumBefore, sumAfter, "failed auto-deploy delivery must not mint or burn value")
+
+	// The auto-deployed contract's credit must not survive the failed delivery.
+	_, found := findContract(after.State.Contracts, holderAddress)
+	require.False(t, found, "auto-deployed contract must not exist after a failed delivery")
+
+	// The source contract's balance must be completely unchanged: no debit was ever
+	// committed for a credit that was itself rolled back.
+	sourceAfter, found := findContract(after.State.Contracts, source.ContractAddressUser)
+	require.True(t, found)
+	require.Equal(t, uint64(1_000_000), sourceAfter.Balance, "source balance must be unchanged after a failed delivery")
+
+	// The queued message must still be present (delivery failed before it could be
+	// dequeued), so a retry remains possible.
+	foundQueued := false
+	for _, m := range after.State.InternalMessages {
+		if m.DestinationAccount == holderAddress {
+			foundQueued = true
+		}
+	}
+	require.True(t, foundQueued, "a failed delivery must leave the message queued for retry")
+}
+
 func TestTokenWalletMintTransferBurnLifecycleWithQueuedMessages(t *testing.T) {
 	deployer := aeAddress("11")
 	holder1 := aeAddress("22")
