@@ -78,6 +78,22 @@ type Contract struct {
 	LogicalTime             uint64    `protobuf:"varint,22,opt,name=logical_time,json=logicalTime,proto3" json:"logical_time,omitempty"`
 	CreatedHeight           uint64    `protobuf:"varint,23,opt,name=created_height,json=createdHeight,proto3" json:"created_height,omitempty"`
 	UpdatedHeight           uint64    `protobuf:"varint,24,opt,name=updated_height,json=updatedHeight,proto3" json:"updated_height,omitempty"`
+	// PendingUpgradeCodeID, PendingUpgradeMigrationHandler,
+	// PendingUpgradeScheduledHeight and PendingUpgradeEarliestHeight record a
+	// code upgrade scheduled via MsgScheduleContractUpgrade but not yet
+	// applied via MsgApplyScheduledUpgrade. PendingUpgradeCodeID == "" means no
+	// upgrade is currently scheduled. See keeper.ScheduleContractUpgrade /
+	// keeper.ApplyScheduledContractUpgrade in x/contracts/keeper/keeper.go.
+	PendingUpgradeCodeID           string `protobuf:"bytes,25,opt,name=pending_upgrade_code_id,json=pendingUpgradeCodeId,proto3" json:"pending_upgrade_code_id,omitempty"`
+	PendingUpgradeMigrationHandler string `protobuf:"bytes,26,opt,name=pending_upgrade_migration_handler,json=pendingUpgradeMigrationHandler,proto3" json:"pending_upgrade_migration_handler,omitempty"`
+	PendingUpgradeScheduledHeight  uint64 `protobuf:"varint,27,opt,name=pending_upgrade_scheduled_height,json=pendingUpgradeScheduledHeight,proto3" json:"pending_upgrade_scheduled_height,omitempty"`
+	PendingUpgradeEarliestHeight   uint64 `protobuf:"varint,28,opt,name=pending_upgrade_earliest_height,json=pendingUpgradeEarliestHeight,proto3" json:"pending_upgrade_earliest_height,omitempty"`
+}
+
+// HasPendingUpgrade reports whether the contract has an unapplied scheduled
+// code upgrade recorded (via MsgScheduleContractUpgrade).
+func (c Contract) HasPendingUpgrade() bool {
+	return strings.TrimSpace(c.PendingUpgradeCodeID) != ""
 }
 
 type ContractCapability struct {
@@ -257,6 +273,47 @@ type MsgDisableContractUpgrades struct {
 // MsgDisableContractUpgradesResponse: see MsgUpgradeContractCodeResponse's doc
 // comment above.
 type MsgDisableContractUpgradesResponse struct {
+	Receipt ContractReceipt `protobuf:"bytes,1,opt,name=receipt,proto3" json:"receipt"`
+}
+
+// MsgScheduleContractUpgrade and MsgApplyScheduledUpgrade implement the
+// timelocked two-step upgrade flow: ScheduleContractUpgrade records
+// (NewCodeID, earliestActivationHeight = Height + Params.MinUpgradeDelay) on
+// the contract without touching its live code, and ApplyScheduledUpgrade
+// performs the actual code swap once the current height reaches that
+// earliest activation height. Both are ADDITIONS alongside the pre-existing
+// MsgUpgradeContractCode (immediate, no delay) rather than a change to its
+// signature or semantics -- see keeper.ScheduleContractUpgrade's doc comment
+// in x/contracts/keeper/keeper.go for the full reasoning. Both sign with
+// "actor", matching authorizeContractUpgradeActor.
+type MsgScheduleContractUpgrade struct {
+	Actor            string `protobuf:"bytes,1,opt,name=actor,proto3" json:"actor,omitempty"`
+	ContractAddress  string `protobuf:"bytes,2,opt,name=contract_address,json=contractAddress,proto3" json:"contract_address,omitempty"`
+	NewCodeID        string `protobuf:"bytes,3,opt,name=new_code_id,json=newCodeId,proto3" json:"new_code_id,omitempty"`
+	MigrationHandler string `protobuf:"bytes,4,opt,name=migration_handler,json=migrationHandler,proto3" json:"migration_handler,omitempty"`
+	Height           uint64 `protobuf:"varint,5,opt,name=height,proto3" json:"height,omitempty"`
+}
+
+// MsgScheduleContractUpgradeResponse: see MsgUpgradeContractCodeResponse's
+// doc comment above for why this wraps ContractReceipt (defined in
+// query.proto) as registry metadata only. EarliestActivationHeight is
+// surfaced directly (rather than requiring callers to recompute
+// Height+MinUpgradeDelay themselves) since it is the actionable output of
+// this message.
+type MsgScheduleContractUpgradeResponse struct {
+	Receipt                  ContractReceipt `protobuf:"bytes,1,opt,name=receipt,proto3" json:"receipt"`
+	EarliestActivationHeight uint64          `protobuf:"varint,2,opt,name=earliest_activation_height,json=earliestActivationHeight,proto3" json:"earliest_activation_height,omitempty"`
+}
+
+type MsgApplyScheduledUpgrade struct {
+	Actor           string `protobuf:"bytes,1,opt,name=actor,proto3" json:"actor,omitempty"`
+	ContractAddress string `protobuf:"bytes,2,opt,name=contract_address,json=contractAddress,proto3" json:"contract_address,omitempty"`
+	Height          uint64 `protobuf:"varint,3,opt,name=height,proto3" json:"height,omitempty"`
+}
+
+// MsgApplyScheduledUpgradeResponse: see MsgUpgradeContractCodeResponse's doc
+// comment above.
+type MsgApplyScheduledUpgradeResponse struct {
 	Receipt ContractReceipt `protobuf:"bytes,1,opt,name=receipt,proto3" json:"receipt"`
 }
 
@@ -585,6 +642,27 @@ func (c Contract) Validate(params Params) error {
 	}
 	if c.UpgradesDisabled && c.Upgradeable {
 		return errors.New("contract upgrades disabled cannot remain upgradeable")
+	}
+	// A permanently-disabled contract must never carry a live pending
+	// schedule: ApplyScheduledUpgrade already re-checks Upgradeable/
+	// UpgradesDisabled at apply time (so a stale pending record alone cannot
+	// re-enable upgrades), but this invariant catches any future code path
+	// that forgets to clear the pending fields when disabling upgrades,
+	// keeping the "permanent" guarantee visible in validation rather than
+	// only in one call site. See TestDisableContractUpgradesIsPermanent.
+	if c.UpgradesDisabled && c.HasPendingUpgrade() {
+		return errors.New("contract with upgrades permanently disabled cannot carry a pending upgrade")
+	}
+	if c.HasPendingUpgrade() {
+		// PendingUpgradeCodeID mirrors CodeID, which is only required to be
+		// non-empty elsewhere in this function (not hash-shaped), so the same
+		// looser check applies here.
+		if c.PendingUpgradeEarliestHeight == 0 || c.PendingUpgradeEarliestHeight < c.PendingUpgradeScheduledHeight {
+			return errors.New("contract pending upgrade earliest activation height is invalid")
+		}
+		if len(c.PendingUpgradeMigrationHandler) > MaxContractMetadataBytes {
+			return errors.New("contract pending upgrade migration handler exceeds maximum size")
+		}
 	}
 	if c.StorageSchemaVersion == 0 && c.Status != ContractStatusDeleted {
 		return errors.New("contract storage schema version must be positive")

@@ -23,6 +23,8 @@ func RegisterLegacyAminoCodec(cdc *codec.LegacyAmino) {
 	cdc.RegisterConcrete(&MsgMigrateContractState{}, "l1/contracts/MsgMigrateContractState", nil)
 	cdc.RegisterConcrete(&MsgSetContractAdmin{}, "l1/contracts/MsgSetContractAdmin", nil)
 	cdc.RegisterConcrete(&MsgDisableContractUpgrades{}, "l1/contracts/MsgDisableContractUpgrades", nil)
+	cdc.RegisterConcrete(&MsgScheduleContractUpgrade{}, "l1/contracts/MsgScheduleContractUpgrade", nil)
+	cdc.RegisterConcrete(&MsgApplyScheduledUpgrade{}, "l1/contracts/MsgApplyScheduledUpgrade", nil)
 }
 
 func RegisterInterfaces(registry codectypes.InterfaceRegistry) {
@@ -43,6 +45,8 @@ func RegisterInterfaces(registry codectypes.InterfaceRegistry) {
 		&MsgMigrateContractState{},
 		&MsgSetContractAdmin{},
 		&MsgDisableContractUpgrades{},
+		&MsgScheduleContractUpgrade{},
+		&MsgApplyScheduledUpgrade{},
 	)
 	registry.RegisterImplementations(
 		(*txtypes.MsgResponse)(nil),
@@ -60,5 +64,7 @@ func RegisterInterfaces(registry codectypes.InterfaceRegistry) {
 		&MsgMigrateContractStateResponse{},
 		&MsgSetContractAdminResponse{},
 		&MsgDisableContractUpgradesResponse{},
+		&MsgScheduleContractUpgradeResponse{},
+		&MsgApplyScheduledUpgradeResponse{},
 	)
 }

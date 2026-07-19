@@ -200,6 +200,11 @@ func (m *Params) MarshalToSizedBuffer(dAtA []byte) (int, error) {
 	_ = i
 	var l int
 	_ = l
+	if m.MinUpgradeDelay != 0 {
+		i = encodeVarintContractsQuery(dAtA, i, uint64(m.MinUpgradeDelay))
+		i--
+		dAtA[i] = 0x58
+	}
 	if m.MaxInternalMessageGasPerBlock != 0 {
 		i = encodeVarintContractsQuery(dAtA, i, uint64(m.MaxInternalMessageGasPerBlock))
 		i--
@@ -732,6 +737,38 @@ func (m *Contract) MarshalToSizedBuffer(dAtA []byte) (int, error) {
 	_ = i
 	var l int
 	_ = l
+	if m.PendingUpgradeEarliestHeight != 0 {
+		i = encodeVarintContractsQuery(dAtA, i, uint64(m.PendingUpgradeEarliestHeight))
+		i--
+		dAtA[i] = 0x1
+		i--
+		dAtA[i] = 0xe0
+	}
+	if m.PendingUpgradeScheduledHeight != 0 {
+		i = encodeVarintContractsQuery(dAtA, i, uint64(m.PendingUpgradeScheduledHeight))
+		i--
+		dAtA[i] = 0x1
+		i--
+		dAtA[i] = 0xd8
+	}
+	if len(m.PendingUpgradeMigrationHandler) > 0 {
+		i -= len(m.PendingUpgradeMigrationHandler)
+		copy(dAtA[i:], m.PendingUpgradeMigrationHandler)
+		i = encodeVarintContractsQuery(dAtA, i, uint64(len(m.PendingUpgradeMigrationHandler)))
+		i--
+		dAtA[i] = 0x1
+		i--
+		dAtA[i] = 0xd2
+	}
+	if len(m.PendingUpgradeCodeID) > 0 {
+		i -= len(m.PendingUpgradeCodeID)
+		copy(dAtA[i:], m.PendingUpgradeCodeID)
+		i = encodeVarintContractsQuery(dAtA, i, uint64(len(m.PendingUpgradeCodeID)))
+		i--
+		dAtA[i] = 0x1
+		i--
+		dAtA[i] = 0xca
+	}
 	if m.UpdatedHeight != 0 {
 		i = encodeVarintContractsQuery(dAtA, i, uint64(m.UpdatedHeight))
 		i--

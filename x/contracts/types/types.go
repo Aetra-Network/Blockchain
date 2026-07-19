@@ -51,6 +51,17 @@ type Params struct {
 	// an explicit MsgReceiveInternalMessage tx), which keeps genesis fixtures
 	// built before this field existed behaving exactly as before.
 	MaxInternalMessageGasPerBlock uint64 `protobuf:"varint,10,opt,name=max_internal_message_gas_per_block,json=maxInternalMessageGasPerBlock,proto3" json:"max_internal_message_gas_per_block,omitempty"`
+	// MinUpgradeDelay is the minimum number of blocks that must elapse between
+	// ScheduleContractUpgrade recording a pending code upgrade and
+	// ApplyScheduledUpgrade being allowed to apply it (see
+	// ContractLifecycleActionUpgradeMigrate / keeper.ScheduleContractUpgrade /
+	// keeper.ApplyScheduledContractUpgrade). Zero means a scheduled upgrade may
+	// be applied in the same block it was scheduled in (no enforced delay);
+	// this keeps genesis fixtures built before this field existed behaving
+	// exactly as before (DefaultParams sets a positive default explicitly).
+	// This has no effect on the pre-existing immediate UpgradeContractCode
+	// Msg route, which is unchanged and does not go through a timelock.
+	MinUpgradeDelay uint64 `protobuf:"varint,11,opt,name=min_upgrade_delay,json=minUpgradeDelay,proto3" json:"min_upgrade_delay,omitempty"`
 }
 
 type GenesisState struct {
@@ -104,6 +115,8 @@ type MsgServer interface {
 	MigrateContractState(MsgMigrateContractState) (ContractReceipt, error)
 	SetContractAdmin(MsgSetContractAdmin) (ContractReceipt, error)
 	DisableContractUpgrades(MsgDisableContractUpgrades) (ContractReceipt, error)
+	ScheduleContractUpgrade(MsgScheduleContractUpgrade) (MsgScheduleContractUpgradeResponse, error)
+	ApplyScheduledUpgrade(MsgApplyScheduledUpgrade) (ContractReceipt, error)
 	UpdateContractParams(MsgUpdateContractParams) error
 	SubmitSecurityAttestation(MsgSubmitSecurityAttestation) (MsgSubmitSecurityAttestationResponse, error)
 	RevokeSecurityAttestation(MsgRevokeSecurityAttestation) (MsgRevokeSecurityAttestationResponse, error)
@@ -141,6 +154,9 @@ func DefaultParams() Params {
 		// change behavior for any genesis built before it existed. Governance
 		// raises this explicitly via MsgUpdateContractParams to turn it on.
 		MaxInternalMessageGasPerBlock: 0,
+		// 100 blocks gives affected parties (users, integrators) a real window
+		// to observe a scheduled upgrade and react before it can take effect.
+		MinUpgradeDelay: 100,
 	}
 }
 
@@ -215,7 +231,7 @@ func ComputeContractsStateRoot(gs GenesisState) string {
 		panic(err)
 	}
 	return coretypes.DeterministicEmptyRootCommitment(coretypes.RootType(ModuleName), fmt.Sprintf(
-		"authority=%s/enabled=%t/code=%020d/storage=%020d/gas=%020d/rent=%020d/init=%020d/salt=%020d/deps=%010d/state=%s",
+		"authority=%s/enabled=%t/code=%020d/storage=%020d/gas=%020d/rent=%020d/init=%020d/salt=%020d/deps=%010d/upgradedelay=%020d/state=%s",
 		gs.Params.Authority,
 		gs.Params.Enabled,
 		gs.Params.MaxCodeBytes,
@@ -225,6 +241,7 @@ func ComputeContractsStateRoot(gs GenesisState) string {
 		gs.Params.MaxInitDataBytes,
 		gs.Params.MaxStateInitSaltBytes,
 		gs.Params.MaxStateInitDependencies,
+		gs.Params.MinUpgradeDelay,
 		string(stateJSON),
 	))
 }

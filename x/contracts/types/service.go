@@ -32,6 +32,8 @@ const (
 	MsgMigrateContractStateTypeURL      = "/l1.contracts.v1.MsgMigrateContractState"
 	MsgSetContractAdminTypeURL          = "/l1.contracts.v1.MsgSetContractAdmin"
 	MsgDisableContractUpgradesTypeURL   = "/l1.contracts.v1.MsgDisableContractUpgrades"
+	MsgScheduleContractUpgradeTypeURL   = "/l1.contracts.v1.MsgScheduleContractUpgrade"
+	MsgApplyScheduledUpgradeTypeURL     = "/l1.contracts.v1.MsgApplyScheduledUpgrade"
 )
 
 type GRPCMsgServer interface {
@@ -50,6 +52,8 @@ type GRPCMsgServer interface {
 	MigrateContractState(context.Context, *MsgMigrateContractState) (*MsgMigrateContractStateResponse, error)
 	SetContractAdmin(context.Context, *MsgSetContractAdmin) (*MsgSetContractAdminResponse, error)
 	DisableContractUpgrades(context.Context, *MsgDisableContractUpgrades) (*MsgDisableContractUpgradesResponse, error)
+	ScheduleContractUpgrade(context.Context, *MsgScheduleContractUpgrade) (*MsgScheduleContractUpgradeResponse, error)
+	ApplyScheduledUpgrade(context.Context, *MsgApplyScheduledUpgrade) (*MsgApplyScheduledUpgradeResponse, error)
 }
 
 type UnimplementedGRPCMsgServer struct{}
@@ -98,6 +102,12 @@ func (UnimplementedGRPCMsgServer) SetContractAdmin(context.Context, *MsgSetContr
 }
 func (UnimplementedGRPCMsgServer) DisableContractUpgrades(context.Context, *MsgDisableContractUpgrades) (*MsgDisableContractUpgradesResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method DisableContractUpgrades not implemented")
+}
+func (UnimplementedGRPCMsgServer) ScheduleContractUpgrade(context.Context, *MsgScheduleContractUpgrade) (*MsgScheduleContractUpgradeResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ScheduleContractUpgrade not implemented")
+}
+func (UnimplementedGRPCMsgServer) ApplyScheduledUpgrade(context.Context, *MsgApplyScheduledUpgrade) (*MsgApplyScheduledUpgradeResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ApplyScheduledUpgrade not implemented")
 }
 
 type GRPCQueryServer interface {
@@ -215,6 +225,12 @@ var Msg_serviceDesc = grpcgo.ServiceDesc{
 		{MethodName: "DisableContractUpgrades", Handler: msgHandler(func(s GRPCMsgServer, ctx context.Context, req any) (any, error) {
 			return s.DisableContractUpgrades(ctx, req.(*MsgDisableContractUpgrades))
 		}, newMsgDisableContractUpgrades)},
+		{MethodName: "ScheduleContractUpgrade", Handler: msgHandler(func(s GRPCMsgServer, ctx context.Context, req any) (any, error) {
+			return s.ScheduleContractUpgrade(ctx, req.(*MsgScheduleContractUpgrade))
+		}, newMsgScheduleContractUpgrade)},
+		{MethodName: "ApplyScheduledUpgrade", Handler: msgHandler(func(s GRPCMsgServer, ctx context.Context, req any) (any, error) {
+			return s.ApplyScheduledUpgrade(ctx, req.(*MsgApplyScheduledUpgrade))
+		}, newMsgApplyScheduledUpgrade)},
 	},
 	Streams:  []grpcgo.StreamDesc{},
 	Metadata: "l1/contracts/v1/tx.proto",
@@ -319,6 +335,8 @@ func newMsgUpgradeContractCode() any       { return new(MsgUpgradeContractCode) 
 func newMsgMigrateContractState() any      { return new(MsgMigrateContractState) }
 func newMsgSetContractAdmin() any          { return new(MsgSetContractAdmin) }
 func newMsgDisableContractUpgrades() any   { return new(MsgDisableContractUpgrades) }
+func newMsgScheduleContractUpgrade() any   { return new(MsgScheduleContractUpgrade) }
+func newMsgApplyScheduledUpgrade() any     { return new(MsgApplyScheduledUpgrade) }
 func newQueryParamsRequest() any           { return new(QueryParamsRequest) }
 func newQueryCodeRequest() any             { return new(QueryCodeRequest) }
 func newQueryCodesRequest() any            { return new(QueryCodesRequest) }
@@ -351,6 +369,8 @@ func init() {
 	gogoproto.RegisterType((*MsgMigrateContractState)(nil), "l1.contracts.v1.MsgMigrateContractState")
 	gogoproto.RegisterType((*MsgSetContractAdmin)(nil), "l1.contracts.v1.MsgSetContractAdmin")
 	gogoproto.RegisterType((*MsgDisableContractUpgrades)(nil), "l1.contracts.v1.MsgDisableContractUpgrades")
+	gogoproto.RegisterType((*MsgScheduleContractUpgrade)(nil), "l1.contracts.v1.MsgScheduleContractUpgrade")
+	gogoproto.RegisterType((*MsgApplyScheduledUpgrade)(nil), "l1.contracts.v1.MsgApplyScheduledUpgrade")
 	gogoproto.RegisterType((*StoreCodeResponse)(nil), "l1.contracts.v1.MsgStoreCodeResponse")
 	gogoproto.RegisterType((*InstantiateContractResponse)(nil), "l1.contracts.v1.MsgDeployContractResponse")
 	gogoproto.RegisterType((*ExecuteContractResponse)(nil), "l1.contracts.v1.MsgExecuteExternalResponse")
@@ -365,6 +385,8 @@ func init() {
 	gogoproto.RegisterType((*MsgMigrateContractStateResponse)(nil), "l1.contracts.v1.MsgMigrateContractStateResponse")
 	gogoproto.RegisterType((*MsgSetContractAdminResponse)(nil), "l1.contracts.v1.MsgSetContractAdminResponse")
 	gogoproto.RegisterType((*MsgDisableContractUpgradesResponse)(nil), "l1.contracts.v1.MsgDisableContractUpgradesResponse")
+	gogoproto.RegisterType((*MsgScheduleContractUpgradeResponse)(nil), "l1.contracts.v1.MsgScheduleContractUpgradeResponse")
+	gogoproto.RegisterType((*MsgApplyScheduledUpgradeResponse)(nil), "l1.contracts.v1.MsgApplyScheduledUpgradeResponse")
 	gogoproto.RegisterType((*QueryParamsRequest)(nil), "l1.contracts.v1.QueryParamsRequest")
 	gogoproto.RegisterType((*QueryParamsResponse)(nil), "l1.contracts.v1.QueryParamsResponse")
 	gogoproto.RegisterType((*QueryCodeRequest)(nil), "l1.contracts.v1.QueryCodeRequest")
@@ -716,10 +738,12 @@ func (*MsgUnfreezeContractResponse) XXX_MessageName() string {
 	return "l1.contracts.v1.MsgUnfreezeContractResponse"
 }
 
-func (m *MsgUpgradeContractCode) Reset()                { *m = MsgUpgradeContractCode{} }
-func (m *MsgUpgradeContractCode) String() string        { return gogoproto.CompactTextString(m) }
-func (*MsgUpgradeContractCode) ProtoMessage()           {}
-func (*MsgUpgradeContractCode) XXX_MessageName() string { return "l1.contracts.v1.MsgUpgradeContractCode" }
+func (m *MsgUpgradeContractCode) Reset()         { *m = MsgUpgradeContractCode{} }
+func (m *MsgUpgradeContractCode) String() string { return gogoproto.CompactTextString(m) }
+func (*MsgUpgradeContractCode) ProtoMessage()    {}
+func (*MsgUpgradeContractCode) XXX_MessageName() string {
+	return "l1.contracts.v1.MsgUpgradeContractCode"
+}
 func (*MsgUpgradeContractCode) Descriptor() ([]byte, []int) {
 	return fileDescriptorContractsTx, []int{27}
 }
@@ -778,6 +802,40 @@ func (m *MsgDisableContractUpgradesResponse) String() string { return gogoproto.
 func (*MsgDisableContractUpgradesResponse) ProtoMessage()    {}
 func (*MsgDisableContractUpgradesResponse) XXX_MessageName() string {
 	return "l1.contracts.v1.MsgDisableContractUpgradesResponse"
+}
+
+func (m *MsgScheduleContractUpgrade) Reset()         { *m = MsgScheduleContractUpgrade{} }
+func (m *MsgScheduleContractUpgrade) String() string { return gogoproto.CompactTextString(m) }
+func (*MsgScheduleContractUpgrade) ProtoMessage()    {}
+func (*MsgScheduleContractUpgrade) XXX_MessageName() string {
+	return "l1.contracts.v1.MsgScheduleContractUpgrade"
+}
+func (*MsgScheduleContractUpgrade) Descriptor() ([]byte, []int) {
+	return fileDescriptorContractsTx, []int{35}
+}
+
+func (m *MsgScheduleContractUpgradeResponse) Reset()         { *m = MsgScheduleContractUpgradeResponse{} }
+func (m *MsgScheduleContractUpgradeResponse) String() string { return gogoproto.CompactTextString(m) }
+func (*MsgScheduleContractUpgradeResponse) ProtoMessage()    {}
+func (*MsgScheduleContractUpgradeResponse) XXX_MessageName() string {
+	return "l1.contracts.v1.MsgScheduleContractUpgradeResponse"
+}
+
+func (m *MsgApplyScheduledUpgrade) Reset()         { *m = MsgApplyScheduledUpgrade{} }
+func (m *MsgApplyScheduledUpgrade) String() string { return gogoproto.CompactTextString(m) }
+func (*MsgApplyScheduledUpgrade) ProtoMessage()    {}
+func (*MsgApplyScheduledUpgrade) XXX_MessageName() string {
+	return "l1.contracts.v1.MsgApplyScheduledUpgrade"
+}
+func (*MsgApplyScheduledUpgrade) Descriptor() ([]byte, []int) {
+	return fileDescriptorContractsTx, []int{37}
+}
+
+func (m *MsgApplyScheduledUpgradeResponse) Reset()         { *m = MsgApplyScheduledUpgradeResponse{} }
+func (m *MsgApplyScheduledUpgradeResponse) String() string { return gogoproto.CompactTextString(m) }
+func (*MsgApplyScheduledUpgradeResponse) ProtoMessage()    {}
+func (*MsgApplyScheduledUpgradeResponse) XXX_MessageName() string {
+	return "l1.contracts.v1.MsgApplyScheduledUpgradeResponse"
 }
 
 var fileDescriptorContractsTx = buildContractsTxFileDescriptor()
@@ -937,6 +995,7 @@ func buildContractsTxFileDescriptor() []byte {
 				uint64Field("max_state_init_salt_bytes", 8),
 				uint32Field("max_state_init_dependencies", 9),
 				uint64Field("max_internal_message_gas_per_block", 10),
+				uint64Field("min_upgrade_delay", 11),
 			),
 			messageDescriptorFields("SecurityGraphEdge",
 				stringField("from", 1),
@@ -1035,6 +1094,30 @@ func buildContractsTxFileDescriptor() []byte {
 				uint64Field("height", 3),
 			), "actor"),
 			messageDescriptor("MsgDisableContractUpgradesResponse"),
+			// MsgScheduleContractUpgrade / MsgApplyScheduledUpgrade: the
+			// two-step timelocked upgrade flow (see the doc comment on
+			// MsgScheduleContractUpgrade in contract_state.go). Both sign
+			// with "actor", matching authorizeContractUpgradeActor.
+			withSigner(messageDescriptorFields("MsgScheduleContractUpgrade",
+				stringField("actor", 1),
+				stringField("contract_address", 2),
+				stringField("new_code_id", 3),
+				stringField("migration_handler", 4),
+				uint64Field("height", 5),
+			), "actor"),
+			// MsgScheduleContractUpgradeResponse wraps ContractReceipt
+			// (defined in query.proto) plus a scalar; see the comment on
+			// MsgTopUpContractResponse above for why this descriptor entry is
+			// registry metadata only (wire encoding uses the Go struct's
+			// protobuf tags via gogoproto's reflection-based Marshal
+			// fallback).
+			messageDescriptor("MsgScheduleContractUpgradeResponse"),
+			withSigner(messageDescriptorFields("MsgApplyScheduledUpgrade",
+				stringField("actor", 1),
+				stringField("contract_address", 2),
+				uint64Field("height", 3),
+			), "actor"),
+			messageDescriptor("MsgApplyScheduledUpgradeResponse"),
 		},
 		Service: []*descriptorpb.ServiceDescriptorProto{
 			{
@@ -1055,6 +1138,8 @@ func buildContractsTxFileDescriptor() []byte {
 					serviceMethodDescriptor("MigrateContractState", "MsgMigrateContractState", "MsgMigrateContractStateResponse"),
 					serviceMethodDescriptor("SetContractAdmin", "MsgSetContractAdmin", "MsgSetContractAdminResponse"),
 					serviceMethodDescriptor("DisableContractUpgrades", "MsgDisableContractUpgrades", "MsgDisableContractUpgradesResponse"),
+					serviceMethodDescriptor("ScheduleContractUpgrade", "MsgScheduleContractUpgrade", "MsgScheduleContractUpgradeResponse"),
+					serviceMethodDescriptor("ApplyScheduledUpgrade", "MsgApplyScheduledUpgrade", "MsgApplyScheduledUpgradeResponse"),
 				},
 				Options: &descriptorpb.ServiceOptions{
 					UninterpretedOption: []*descriptorpb.UninterpretedOption{{
@@ -1164,6 +1249,10 @@ func buildContractsQueryFileDescriptor() []byte {
 				uint64Field("logical_time", 22),
 				uint64Field("created_height", 23),
 				uint64Field("updated_height", 24),
+				stringField("pending_upgrade_code_id", 25),
+				stringField("pending_upgrade_migration_handler", 26),
+				uint64Field("pending_upgrade_scheduled_height", 27),
+				uint64Field("pending_upgrade_earliest_height", 28),
 			),
 			messageDescriptorFields("QueryContractsRequest",
 				messageField("pagination", 1, ".l1.contracts.v1.PageRequest"),

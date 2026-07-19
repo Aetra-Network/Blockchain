@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 
+	sdk "github.com/cosmos/cosmos-sdk/types"
+
 	"github.com/sovereign-l1/l1/x/contracts/types"
 )
 
@@ -11,6 +13,25 @@ var (
 	_ types.GRPCMsgServer   = grpcMsgServer{}
 	_ types.GRPCQueryServer = grpcQueryServer{}
 )
+
+// blockHeight returns the consensus block height for the current context.
+// ScheduleContractUpgrade/ApplyScheduledUpgrade use the caller-supplied
+// msg.Height to compute and enforce MinUpgradeDelay -- if that value were
+// trusted as-is, any caller could self-report a far-future Height and apply
+// a scheduled upgrade in the very next transaction, defeating the timelock
+// entirely. So (mirroring x/identity-root/keeper/grpc_server.go's blockHeight)
+// every handler that feeds a security-critical delay check overwrites
+// msg.Height with this value before the keeper runs. The overwrite is
+// UNCONDITIONAL, not a zero-fill, so a non-zero attacker-chosen height can
+// never survive. Floored at 1 so the keeper's Height==0 guard is never
+// tripped spuriously (e.g. a genesis/height-0 context).
+func blockHeight(ctx context.Context) uint64 {
+	height := sdk.UnwrapSDKContext(ctx).BlockHeight()
+	if height <= 0 {
+		return 1
+	}
+	return uint64(height)
+}
 
 type grpcMsgServer struct {
 	types.UnimplementedGRPCMsgServer
@@ -268,6 +289,42 @@ func (m grpcMsgServer) DisableContractUpgrades(ctx context.Context, msg *types.M
 		return nil, err
 	}
 	return &types.MsgDisableContractUpgradesResponse{Receipt: receipt}, nil
+}
+
+func (m grpcMsgServer) ScheduleContractUpgrade(ctx context.Context, msg *types.MsgScheduleContractUpgrade) (*types.MsgScheduleContractUpgradeResponse, error) {
+	if msg == nil {
+		return nil, errors.New("empty contracts schedule-upgrade request")
+	}
+	if err := m.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
+	msg.Height = blockHeight(ctx)
+	res, err := m.keeper.ScheduleContractUpgrade(*msg)
+	if err != nil {
+		return nil, err
+	}
+	if err := m.keeper.writeGenesis(ctx); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (m grpcMsgServer) ApplyScheduledUpgrade(ctx context.Context, msg *types.MsgApplyScheduledUpgrade) (*types.MsgApplyScheduledUpgradeResponse, error) {
+	if msg == nil {
+		return nil, errors.New("empty contracts apply-scheduled-upgrade request")
+	}
+	if err := m.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
+	msg.Height = blockHeight(ctx)
+	receipt, err := m.keeper.ApplyScheduledContractUpgrade(*msg)
+	if err != nil {
+		return nil, err
+	}
+	if err := m.keeper.writeGenesis(ctx); err != nil {
+		return nil, err
+	}
+	return &types.MsgApplyScheduledUpgradeResponse{Receipt: receipt}, nil
 }
 
 func (q grpcQueryServer) Params(context.Context, *types.QueryParamsRequest) (*types.QueryParamsResponse, error) {

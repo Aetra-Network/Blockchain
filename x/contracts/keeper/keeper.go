@@ -21,12 +21,12 @@ import (
 	sdkmath "cosmossdk.io/math"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	aetraaddress "github.com/sovereign-l1/l1/app/addressing"
+	"github.com/sovereign-l1/l1/observability"
 	coretypes "github.com/sovereign-l1/l1/x/aetracore/types"
 	"github.com/sovereign-l1/l1/x/aetravm/async"
 	"github.com/sovereign-l1/l1/x/aetravm/avm"
 	"github.com/sovereign-l1/l1/x/aetravm/chunk"
 	"github.com/sovereign-l1/l1/x/contracts/types"
-	"github.com/sovereign-l1/l1/observability"
 )
 
 const storageRentReserveModule = "feecollector_storage_rent_reserve"
@@ -988,6 +988,16 @@ func (k *Keeper) UpgradeContractCode(msg types.MsgUpgradeContractCode) (types.Co
 		}
 	}
 	nextContract.StorageBytes = storageBytes
+	// This immediate path just changed the live code out from under any
+	// not-yet-applied ScheduleContractUpgrade record, which would otherwise
+	// go stale (still pointing at whatever was scheduled earlier) and could
+	// later be applied by ApplyScheduledContractUpgrade as an unexpected,
+	// unintended second code swap. Clear it so a pending schedule never
+	// survives an immediate upgrade to a different (or the same) code.
+	nextContract.PendingUpgradeCodeID = ""
+	nextContract.PendingUpgradeMigrationHandler = ""
+	nextContract.PendingUpgradeScheduledHeight = 0
+	nextContract.PendingUpgradeEarliestHeight = 0
 	nextContract.LogicalTime++
 	nextContract.UpdatedHeight = msg.Height
 	nextContract.StateRoot = types.ComputeContractStateRoot(nextContract)
@@ -1119,6 +1129,17 @@ func (k *Keeper) DisableContractUpgrades(msg types.MsgDisableContractUpgrades) (
 	}
 	contract.Upgradeable = false
 	contract.UpgradesDisabled = true
+	// Clear any not-yet-applied schedule too: ApplyScheduledContractUpgrade
+	// already re-checks Upgradeable/UpgradesDisabled at apply time (so a
+	// stale pending record alone could never re-enable upgrades), but
+	// clearing it here keeps the contract's visible state consistent with
+	// "permanently disabled" immediately, and satisfies the Contract.Validate
+	// invariant that a permanently-disabled contract never carries a pending
+	// upgrade. See TestDisableContractUpgradesIsPermanent.
+	contract.PendingUpgradeCodeID = ""
+	contract.PendingUpgradeMigrationHandler = ""
+	contract.PendingUpgradeScheduledHeight = 0
+	contract.PendingUpgradeEarliestHeight = 0
 	contract.LogicalTime++
 	contract.UpdatedHeight = msg.Height
 	contract.StateRoot = types.ComputeContractStateRoot(contract)
@@ -1127,6 +1148,175 @@ func (k *Keeper) DisableContractUpgrades(msg types.MsgDisableContractUpgrades) (
 	// Clone before index-write; see UpgradeContractCode above (FINDING-008).
 	next.State.Contracts = append([]types.Contract(nil), next.State.Contracts...)
 	next.State.Contracts[idx] = contract
+	next.State.Receipts = append(next.State.Receipts, receipt)
+	next = types.RefreshStateRoot(next)
+	if err := next.Validate(); err != nil {
+		return types.ContractReceipt{}, err
+	}
+	k.assignGenesis(next)
+	return receipt, nil
+}
+
+// ScheduleContractUpgrade records a pending code upgrade
+// (NewCodeID/MigrationHandler) on the contract with an earliest activation
+// height of msg.Height + Params.MinUpgradeDelay, WITHOUT touching the
+// contract's live code -- ApplyScheduledContractUpgrade performs the actual
+// swap once the chain reaches that height. This and ApplyScheduledContractUpgrade
+// are NEW methods/Msg types (MsgScheduleContractUpgrade / MsgApplyScheduledUpgrade)
+// added alongside the pre-existing, already-live UpgradeContractCode/
+// MsgUpgradeContractCode rather than a change to that method's signature or
+// semantics:
+//
+//   - UpgradeContractCode's Msg wire format, ValidateBasic and immediate-apply
+//     behavior are all left completely unchanged, so every already-broadcast
+//     transaction shape, every already-passing test
+//     (TestContractLifecycleMsgsLiveReachableThroughGRPCMsgServer in
+//     contract_lifecycle_msg_wiring_test.go), and every existing integrator
+//     keeps working exactly as before -- this is the "adding new Msg types"
+//     option, chosen specifically for that backward compatibility.
+//   - The alternative (folding the timelock into UpgradeContractCode itself,
+//     e.g. by requiring a prior schedule before it will apply) would change
+//     the meaning of an already-live, already-tested Msg route for every
+//     caller, with no way for an old client to distinguish "immediate apply"
+//     from "now requires two steps" except by trying it and observing a new
+//     failure mode.
+//
+// The tradeoff this creates, stated explicitly: UpgradeContractCode remains
+// an immediate-apply path that does NOT go through this timelock -- an admin
+// who calls it directly bypasses the delay entirely. That is intentional
+// (many chains keep a fast admin-key path alongside a slower delayed/
+// governance path), but it does mean the timelock is opt-in per upgrade, not
+// a chain-wide guarantee that ALL upgrades are delayed. A follow-up that
+// wants the latter would need to gate or deprecate the immediate path
+// (e.g. only allow it when Params.MinUpgradeDelay == 0, or require
+// SystemOwned/governance-only access to it) -- flagged here rather than done
+// silently, since it would be a real behavior change for existing callers.
+func (k *Keeper) ScheduleContractUpgrade(msg types.MsgScheduleContractUpgrade) (types.MsgScheduleContractUpgradeResponse, error) {
+	if err := msg.ValidateBasic(k.genesis.Params); err != nil {
+		return types.MsgScheduleContractUpgradeResponse{}, err
+	}
+	idx, contract, found := findContractWithIndex(k.genesis.State.Contracts, msg.ContractAddress)
+	if !found {
+		return types.MsgScheduleContractUpgradeResponse{}, errors.New(types.ErrContractNotFound + ": contract not found")
+	}
+	if err := types.EnsureContractLifecycleAction(contract, types.ContractLifecycleActionUpgradeMigrate); err != nil {
+		return types.MsgScheduleContractUpgradeResponse{}, err
+	}
+	if err := k.authorizeContractUpgradeActor(contract, msg.Actor); err != nil {
+		return types.MsgScheduleContractUpgradeResponse{}, err
+	}
+	if !contract.Upgradeable || contract.UpgradesDisabled {
+		return types.MsgScheduleContractUpgradeResponse{}, errors.New(types.ErrUnauthorized + ": contract is immutable")
+	}
+	code, found := findCode(k.genesis.State.Codes, msg.NewCodeID)
+	if !found {
+		return types.MsgScheduleContractUpgradeResponse{}, errors.New(types.ErrContractNotFound + ": upgrade code not found")
+	}
+	if code.CodeHash != contract.CodeHash && strings.TrimSpace(msg.MigrationHandler) == "" {
+		return types.MsgScheduleContractUpgradeResponse{}, errors.New(types.ErrExecutionFailed + ": code hash change requires migration handler")
+	}
+	earliest, err := checkedAdd(msg.Height, k.genesis.Params.MinUpgradeDelay, "contract upgrade schedule height overflow")
+	if err != nil {
+		return types.MsgScheduleContractUpgradeResponse{}, err
+	}
+	nextContract := contract
+	// Re-scheduling (calling this again before a pending upgrade was applied)
+	// intentionally REPLACES the prior pending target and restarts the delay
+	// from msg.Height, rather than being rejected -- a single authorized actor
+	// can always change their mind about which code they are scheduling, the
+	// same way they could cancel and re-submit.
+	nextContract.PendingUpgradeCodeID = code.CodeID
+	nextContract.PendingUpgradeMigrationHandler = msg.MigrationHandler
+	nextContract.PendingUpgradeScheduledHeight = msg.Height
+	nextContract.PendingUpgradeEarliestHeight = earliest
+	nextContract.LogicalTime++
+	nextContract.UpdatedHeight = msg.Height
+	nextContract.StateRoot = types.ComputeContractStateRoot(nextContract)
+	receipt := newContractReceipt(nextContract.AddressUser, receiptActor(contract, msg.Actor), "schedule_upgrade", types.ExitCodeOK, 0, 0, nextContract.LogicalTime, msg.Height)
+	next := k.genesis
+	// Clone before index-write; see UpgradeContractCode above (FINDING-008).
+	next.State.Contracts = append([]types.Contract(nil), next.State.Contracts...)
+	next.State.Contracts[idx] = nextContract
+	next.State.Receipts = append(next.State.Receipts, receipt)
+	next = types.RefreshStateRoot(next)
+	if err := next.Validate(); err != nil {
+		return types.MsgScheduleContractUpgradeResponse{}, err
+	}
+	k.assignGenesis(next)
+	return types.MsgScheduleContractUpgradeResponse{Receipt: receipt, EarliestActivationHeight: earliest}, nil
+}
+
+// ApplyScheduledContractUpgrade applies the code swap recorded by a prior
+// ScheduleContractUpgrade, rejecting the call if there is no pending
+// schedule or if msg.Height has not yet reached the recorded earliest
+// activation height -- this is the timelock's actual enforcement point. The
+// authorization and immutability checks are re-run here (not just trusted
+// from schedule time) so that an admin change, a disable, or a code removal
+// that happens during the delay window is honored rather than the schedule
+// blindly applying anyway.
+func (k *Keeper) ApplyScheduledContractUpgrade(msg types.MsgApplyScheduledUpgrade) (types.ContractReceipt, error) {
+	if err := msg.ValidateBasic(k.genesis.Params); err != nil {
+		return types.ContractReceipt{}, err
+	}
+	idx, contract, found := findContractWithIndex(k.genesis.State.Contracts, msg.ContractAddress)
+	if !found {
+		return types.ContractReceipt{}, errors.New(types.ErrContractNotFound + ": contract not found")
+	}
+	if err := types.EnsureContractLifecycleAction(contract, types.ContractLifecycleActionUpgradeMigrate); err != nil {
+		return types.ContractReceipt{}, err
+	}
+	if err := k.authorizeContractUpgradeActor(contract, msg.Actor); err != nil {
+		return types.ContractReceipt{}, err
+	}
+	if !contract.Upgradeable || contract.UpgradesDisabled {
+		return types.ContractReceipt{}, errors.New(types.ErrUnauthorized + ": contract is immutable")
+	}
+	if !contract.HasPendingUpgrade() {
+		return types.ContractReceipt{}, errors.New(types.ErrExecutionFailed + ": no scheduled upgrade is pending for this contract")
+	}
+	if msg.Height < contract.PendingUpgradeEarliestHeight {
+		return types.ContractReceipt{}, fmt.Errorf("%s: scheduled upgrade not yet eligible to apply (height %d, earliest %d)", types.ErrUnauthorized, msg.Height, contract.PendingUpgradeEarliestHeight)
+	}
+	code, found := findCode(k.genesis.State.Codes, contract.PendingUpgradeCodeID)
+	if !found {
+		return types.ContractReceipt{}, errors.New(types.ErrContractNotFound + ": scheduled upgrade code no longer exists")
+	}
+	nextContract := contract
+	nextContract.CodeID = code.CodeID
+	nextContract.CodeHash = code.CodeHash
+	storageBytes, err := contractStorageBytesForCode(code, nextContract.Data)
+	if err != nil {
+		return types.ContractReceipt{}, err
+	}
+	if storageBytes > k.genesis.Params.MaxContractStorageBytes {
+		return types.ContractReceipt{}, errors.New(types.ErrStorageRent + ": contract storage exceeds configured limit")
+	}
+	if storageBytes > contract.StorageBytes {
+		diff := storageBytes - contract.StorageBytes
+		extraFee, err := checkedMul(diff, k.storageRentPerByteBlock(), "contract storage fee overflow")
+		if err != nil {
+			return types.ContractReceipt{}, err
+		}
+		if err := k.collectRentPayment(k.runtimeCtx, msg.Actor, extraFee); err != nil {
+			return types.ContractReceipt{}, err
+		}
+	}
+	nextContract.StorageBytes = storageBytes
+	// The upgrade has now been applied: clear the pending schedule so
+	// HasPendingUpgrade() is false again and a later ApplyScheduledUpgrade
+	// call (with no new schedule) is correctly rejected.
+	nextContract.PendingUpgradeCodeID = ""
+	nextContract.PendingUpgradeMigrationHandler = ""
+	nextContract.PendingUpgradeScheduledHeight = 0
+	nextContract.PendingUpgradeEarliestHeight = 0
+	nextContract.LogicalTime++
+	nextContract.UpdatedHeight = msg.Height
+	nextContract.StateRoot = types.ComputeContractStateRoot(nextContract)
+	receipt := newContractReceipt(nextContract.AddressUser, receiptActor(contract, msg.Actor), "apply_scheduled_upgrade", types.ExitCodeOK, 0, 0, nextContract.LogicalTime, msg.Height)
+	next := k.genesis
+	// Clone before index-write; see UpgradeContractCode above (FINDING-008).
+	next.State.Contracts = append([]types.Contract(nil), next.State.Contracts...)
+	next.State.Contracts[idx] = nextContract
 	next.State.Receipts = append(next.State.Receipts, receipt)
 	next = types.RefreshStateRoot(next)
 	if err := next.Validate(); err != nil {

@@ -462,6 +462,39 @@ func (m MsgDisableContractUpgrades) ValidateBasic(_ Params) error {
 	return nil
 }
 
+func (m MsgScheduleContractUpgrade) ValidateBasic(params Params) error {
+	if strings.TrimSpace(m.Actor) == "" {
+		return errors.New("contract upgrade schedule actor is required")
+	}
+	if err := ValidateContractAddress(m.ContractAddress); err != nil {
+		return err
+	}
+	if strings.TrimSpace(m.NewCodeID) == "" {
+		return errors.New("contract upgrade schedule code id is required")
+	}
+	if len(m.MigrationHandler) > MaxContractMetadataBytes {
+		return errors.New("contract migration handler exceeds maximum size")
+	}
+	if m.Height == 0 {
+		return errors.New("contract upgrade schedule height must be positive")
+	}
+	_ = params
+	return nil
+}
+
+func (m MsgApplyScheduledUpgrade) ValidateBasic(_ Params) error {
+	if strings.TrimSpace(m.Actor) == "" {
+		return errors.New("scheduled upgrade apply actor is required")
+	}
+	if err := ValidateContractAddress(m.ContractAddress); err != nil {
+		return err
+	}
+	if m.Height == 0 {
+		return errors.New("scheduled upgrade apply height must be positive")
+	}
+	return nil
+}
+
 func (m MsgUpdateContractParams) ValidateBasic() error {
 	if err := m.Params.Authorize(m.Authority); err != nil {
 		return err

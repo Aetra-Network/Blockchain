@@ -47,6 +47,12 @@ func TestContractLifecycleMsgsAreBroadcastable(t *testing.T) {
 		{"MsgMigrateContractState", &MsgMigrateContractState{Actor: actor, ContractAddress: contractAddr, FromSchemaVersion: 1, ToSchemaVersion: 2, MigrationHandler: "append", Payload: []byte(":v2"), Height: 5}},
 		{"MsgSetContractAdmin", &MsgSetContractAdmin{Actor: actor, ContractAddress: contractAddr, NewAdmin: actor, Height: 5}},
 		{"MsgDisableContractUpgrades", &MsgDisableContractUpgrades{Actor: actor, ContractAddress: contractAddr, Height: 5}},
+		// MsgScheduleContractUpgrade / MsgApplyScheduledUpgrade: the same
+		// wire-format regression class guarded above, for the timelocked
+		// two-step upgrade flow (see the doc comment on
+		// MsgScheduleContractUpgrade in contract_state.go).
+		{"MsgScheduleContractUpgrade", &MsgScheduleContractUpgrade{Actor: actor, ContractAddress: contractAddr, NewCodeID: "code2", MigrationHandler: "schema_only", Height: 5}},
+		{"MsgApplyScheduledUpgrade", &MsgApplyScheduledUpgrade{Actor: actor, ContractAddress: contractAddr, Height: 5}},
 	}
 
 	for _, tc := range cases {

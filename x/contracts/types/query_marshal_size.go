@@ -65,6 +65,9 @@ func (m *Params) Size() (n int) {
 	if m.MaxInternalMessageGasPerBlock != 0 {
 		n += 1 + sovContractsQuery(uint64(m.MaxInternalMessageGasPerBlock))
 	}
+	if m.MinUpgradeDelay != 0 {
+		n += 1 + sovContractsQuery(uint64(m.MinUpgradeDelay))
+	}
 	return n
 }
 
@@ -350,6 +353,20 @@ func (m *Contract) Size() (n int) {
 	}
 	if m.UpdatedHeight != 0 {
 		n += 2 + sovContractsQuery(uint64(m.UpdatedHeight))
+	}
+	l = len(m.PendingUpgradeCodeID)
+	if l > 0 {
+		n += 2 + l + sovContractsQuery(uint64(l))
+	}
+	l = len(m.PendingUpgradeMigrationHandler)
+	if l > 0 {
+		n += 2 + l + sovContractsQuery(uint64(l))
+	}
+	if m.PendingUpgradeScheduledHeight != 0 {
+		n += 2 + sovContractsQuery(uint64(m.PendingUpgradeScheduledHeight))
+	}
+	if m.PendingUpgradeEarliestHeight != 0 {
+		n += 2 + sovContractsQuery(uint64(m.PendingUpgradeEarliestHeight))
 	}
 	return n
 }
