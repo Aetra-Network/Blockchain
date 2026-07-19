@@ -196,6 +196,9 @@ contract FinanceTypes {
     // non-trapping path. This is the file's canonical "inline bounds trap"
     // idiom; see also ratioFromRaw below for the equivalent zero-denominator
     // idiom via mulDiv.
+    // Duplicated verbatim into: health_factor.atlx (see finance_stdlib.atlx's
+    // header for why duplication rather than import is used generally; this
+    // file ships as its own HOST CONTRACT for the identical reason).
     @pure
     func bpFromPercentBounded(bps: uint256): BasisPoints {
         return BasisPoints{bps: bps + 0 * (MAX_BPS - bps)}
@@ -206,6 +209,18 @@ contract FinanceTypes {
         return self.bps
     }
 
+    // Canonical source for health_factor.atlx's bpApplyFloor duplicate.
+    // KNOWN DRIFT (flagged, not silently fixed -- needs a human call): that
+    // copy currently calls the bare mulDiv spelling instead of mulDivFloor
+    // below. Both compile to the identical avm.OpMulDiv opcode (see
+    // TestMulDivFloorCeilAreAliases, x/aetravm/compiler/
+    // sig_math_builtins_test.go), so this is NOT a behavioral bug today --
+    // only textual drift between a duplicate and its canonical source, and
+    // deciding which spelling this pair should standardize on is deliberately
+    // left to a human (see health_factor.atlx's own comment on its
+    // bpApplyFloor). This pair is deliberately EXCLUDED from
+    // TestFinanceZKStdlibDuplicatesStayInSync (x/aetravm/conformance) until
+    // that call is made.
     @pure
     func bpApplyFloor(self: BasisPoints, amount: uint256): uint256 {
         return mulDivFloor(amount, self.bps, MAX_BPS)

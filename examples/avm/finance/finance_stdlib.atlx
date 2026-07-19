@@ -28,6 +28,31 @@
 //     opcodes, identical behavior) -- this file keeps using the bare
 //     mulDiv/mulDivRoundUp names below, both spellings are accepted.
 //
+// WHY REFERENCE CONTRACTS DUPLICATE THESE ROUTINES INSTEAD OF IMPORTING THEM
+// (the one canonical explanation every duplicate site below -- and in
+// health_factor.atlx / perp_pnl.atlx / sqrt_price.atlx -- points back to
+// rather than re-stating in full):
+//   1. The AVM requires exactly one contract per compiled unit
+//      (compile.go: "package must declare exactly one contract"). This file
+//      already IS that one contract (FinanceStdlib, below), so importing it
+//      into another contract's file would merge a second contract into that
+//      unit and fail compilation -- there is no way to ship these routines as
+//      a bare, contract-free library, even though ATLX's import mechanism
+//      (parseImportDecl / mergeResolvedImports) genuinely works for
+//      contract-free files like token_shared.atlx.
+//   2. The AVM has no CALL/RET opcode: every ordinary function call is
+//      textually inlined at its call site (compile.go's
+//      tryInlineUserFunctionCall), which only succeeds when the callee's body
+//      is a single return expression. A routine with a loop or multiple
+//      statements could never be shared across files this way even if (1)
+//      were somehow not a blocker.
+// Each duplicate site therefore embeds its own verbatim copy (its own doc
+// comment names this file + the specific routine it mirrors), and
+// TestFinanceZKStdlibDuplicatesStayInSync (x/aetravm/conformance) asserts
+// every embedded copy stays byte-for-byte (whitespace aside) identical to the
+// canonical routine here, so a future edit to this file that isn't mirrored
+// everywhere fails CI instead of silently diverging.
+//
 // Namespaces (prefix = namespace):
 //   bp*   BasisPoints   scale 10000 = 100%
 //   ratio* Ratio256     an unreduced (num, den) pair passed as two scalars
@@ -71,6 +96,8 @@ contract FinanceStdlib {
     // ---- BasisPoints namespace -------------------------------------------
 
     // Apply `bps` (out of 10000) to `amount`: floor(amount * bps / 10000).
+    // Duplicated verbatim into: health_factor.atlx (see this file's header
+    // for why it's duplicated, not imported).
     @pure
     func bpApplyTo(bps: uint256, amount: uint256): uint256 {
         return mulDiv(amount, bps, MAX_BPS)
@@ -108,6 +135,8 @@ contract FinanceStdlib {
     // SAFE ONLY when each cross operand fits below 2^128 (the caller must bound
     // its inputs); otherwise mulDiv(...,1) forms a > u256 product and TRAPS.
     // Kept for back-compat; prefer ratioGtFull below, which is overflow-safe.
+    // Duplicated verbatim into: sqrt_price.atlx (see this file's header for
+    // why it's duplicated, not imported).
     @pure
     func ratioGtBounded(numA: uint256, denA: uint256, numC: uint256, denC: uint256): uint64 {
         return (mulDiv(numA, denC, 1) > mulDiv(numC, denA, 1)) ? 1 : 0
@@ -151,7 +180,9 @@ contract FinanceStdlib {
         return mulDiv(a, b, ONE_1E18)
     }
 
-    // Fixed-point divide: floor(a * 1e18 / b).
+    // Fixed-point divide: floor(a * 1e18 / b). Duplicated verbatim into:
+    // health_factor.atlx and sqrt_price.atlx (see this file's header for why
+    // it's duplicated, not imported).
     @pure
     func decDiv(a: uint256, b: uint256): uint256 {
         return mulDiv(a, ONE_1E18, b)
@@ -172,6 +203,8 @@ contract FinanceStdlib {
     // Realized/mark PnL for a position: (exitPrice - entryPrice) * size. All
     // operands are int256 (decoded from int256 fields), so the result carries a
     // real sign — a long that exits below entry yields a negative value.
+    // Duplicated verbatim into: perp_pnl.atlx (see this file's header for why
+    // it's duplicated, not imported).
     @pure
     func pnlOf(entryPrice: int256, exitPrice: int256, size: int256): int256 {
         return (exitPrice - entryPrice) * size

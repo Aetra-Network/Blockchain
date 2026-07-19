@@ -83,13 +83,19 @@ contract LendingHealth {
         contract.setData(self.toChunk())
     }
 
-    // BasisPoints.applyTo — embedded stdlib routine (single-return, inlinable).
+    // BasisPoints.applyTo — duplicated verbatim from finance_stdlib.atlx's
+    // bpApplyTo (canonical, ~line 75); not imported -- see
+    // finance_stdlib.atlx's header for why. Drift-guarded by
+    // TestFinanceZKStdlibDuplicatesStayInSync (x/aetravm/conformance).
     @pure
     func bpApplyTo(bps: uint256, amount: uint256): uint256 {
         return mulDiv(amount, bps, MAX_BPS)
     }
 
-    // Decimal18.div — floor(a * 1e18 / b).
+    // Decimal18.div — floor(a * 1e18 / b). Duplicated verbatim from
+    // finance_stdlib.atlx's decDiv (canonical, ~line 156); not imported --
+    // see finance_stdlib.atlx's header for why. Drift-guarded by
+    // TestFinanceZKStdlibDuplicatesStayInSync (x/aetravm/conformance).
     @pure
     func decDiv(a: uint256, b: uint256): uint256 {
         return mulDiv(a, ONE_1E18, b)
@@ -105,13 +111,27 @@ contract LendingHealth {
     // ---- Typed variant: BasisPoints.fromPercentBounded + applyFloor -------
 
     // Bounded constructor: TRAPS if bps > 10000 (i.e. requires the threshold
-    // be 0-100% inclusive) — see finance_types.atlx's bpFromPercentBounded
-    // for the identical checked-subtraction trap idiom.
+    // be 0-100% inclusive). Duplicated verbatim from finance_types.atlx's
+    // bpFromPercentBounded (canonical, ~line 200); not imported -- see
+    // finance_stdlib.atlx's header for why. Drift-guarded by
+    // TestFinanceZKStdlibDuplicatesStayInSync (x/aetravm/conformance).
     @pure
     func bpFromPercentBounded(bps: uint256): BasisPoints {
         return BasisPoints{bps: bps + 0 * (MAX_BPS - bps)}
     }
 
+    // Mirrors finance_types.atlx's bpApplyFloor (canonical, ~line 210).
+    // KNOWN DRIFT (flagged, not silently fixed -- needs a human call): this
+    // copy calls the bare mulDiv spelling below instead of mulDivFloor, which
+    // finance_types.atlx's canonical bpApplyFloor uses. Both compile to the
+    // identical avm.OpMulDiv opcode (see TestMulDivFloorCeilAreAliases,
+    // x/aetravm/compiler/sig_math_builtins_test.go), so this is NOT a
+    // behavioral bug today -- only textual drift between a duplicate and its
+    // canonical source. Deciding which spelling this pair should standardize
+    // on is deliberately left to a human, not resolved silently here. This
+    // pair is deliberately EXCLUDED from
+    // TestFinanceZKStdlibDuplicatesStayInSync (x/aetravm/conformance) until
+    // that call is made.
     @pure
     func bpApplyFloor(self: BasisPoints, amount: uint256): uint256 {
         return mulDiv(amount, self.bps, MAX_BPS)

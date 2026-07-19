@@ -36,7 +36,10 @@
 const ERR_BAD_MSG = 0xFFFF
 
 // See groth16_stdlib.atlx's header for the full byte-layout ABI and the
-// reasoning behind each constant below (kept byte-for-byte identical here).
+// reasoning behind each constant below (kept byte-for-byte identical here,
+// duplicated from groth16_stdlib.atlx's own const block, ~lines 105-121, not
+// imported -- see that file's header for why). Drift-guarded by
+// TestFinanceZKStdlibDuplicatesStayInSync (x/aetravm/conformance).
 const BN254_P_BE = bytes.fromHex("30644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd47")
 
 const G1_LEN = 64
@@ -102,55 +105,67 @@ contract Groth16Verifier {
 
     // ---- Byte-layout accessors, copied verbatim from groth16_stdlib.atlx
     //      (see this file's header for why they cannot instead be a real
-    //      cross-file call). ----
+    //      cross-file call). Each is duplicated from the same-named function
+    //      in groth16_stdlib.atlx (canonical); drift-guarded by
+    //      TestFinanceZKStdlibDuplicatesStayInSync (x/aetravm/conformance). ----
 
+    // Mirrors groth16_stdlib.atlx's groth16VkAlpha (canonical, ~line 171).
     @pure
     func groth16VkAlpha(vk: bytes): bytes {
         return subBytes(vk, 0, G1_LEN)
     }
 
+    // Mirrors groth16_stdlib.atlx's groth16VkBeta (canonical, ~line 176).
     @pure
     func groth16VkBeta(vk: bytes): bytes {
         return subBytes(vk, G1_LEN, G2_LEN)
     }
 
+    // Mirrors groth16_stdlib.atlx's groth16VkGamma (canonical, ~line 181).
     @pure
     func groth16VkGamma(vk: bytes): bytes {
         return subBytes(vk, G1_LEN + G2_LEN, G2_LEN)
     }
 
+    // Mirrors groth16_stdlib.atlx's groth16VkDelta (canonical, ~line 186).
     @pure
     func groth16VkDelta(vk: bytes): bytes {
         return subBytes(vk, G1_LEN + G2_LEN + G2_LEN, G2_LEN)
     }
 
+    // Mirrors groth16_stdlib.atlx's groth16VkIC (canonical, ~line 192).
     @pure
     func groth16VkIC(vk: bytes, i: uint256): bytes {
         return subBytes(vk, VK_FIXED_LEN + i * G1_LEN, G1_LEN)
     }
 
+    // Mirrors groth16_stdlib.atlx's groth16ProofA (canonical, ~line 197).
     @pure
     func groth16ProofA(proof: bytes): bytes {
         return subBytes(proof, 0, G1_LEN)
     }
 
+    // Mirrors groth16_stdlib.atlx's groth16ProofB (canonical, ~line 202).
     @pure
     func groth16ProofB(proof: bytes): bytes {
         return subBytes(proof, G1_LEN, G2_LEN)
     }
 
+    // Mirrors groth16_stdlib.atlx's groth16ProofC (canonical, ~line 207).
     @pure
     func groth16ProofC(proof: bytes): bytes {
         return subBytes(proof, G1_LEN + G2_LEN, G1_LEN)
     }
 
+    // Mirrors groth16_stdlib.atlx's groth16PublicInputAt (canonical, ~line 212).
     @pure
     func groth16PublicInputAt(publicInputs: bytes, i: uint256): uint256 {
         return fromBytesBE(subBytes(publicInputs, i * SCALAR_LEN, SCALAR_LEN))
     }
 
     // See groth16_stdlib.atlx's groth16NegateG1 doc comment for the full
-    // trap-avoidance reasoning (identical here).
+    // trap-avoidance reasoning (identical here). Mirrors groth16_stdlib.atlx's
+    // groth16NegateG1 (canonical, ~line 237).
     @pure
     func groth16NegateG1(point: bytes): bytes {
         return (fromBytesBE(subBytes(point, 32, 32)) < fromBytesBE(BN254_P_BE))

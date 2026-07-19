@@ -77,7 +77,10 @@ contract PerpPnl {
         contract.setData(self.toChunk())
     }
 
-    // PnL.of — embedded stdlib routine. Signed int256: (exit - entry) * size.
+    // PnL.of — duplicated verbatim from finance_stdlib.atlx's pnlOf
+    // (canonical, ~line 176); not imported -- see finance_stdlib.atlx's
+    // header for why. Signed int256: (exit - entry) * size. Drift-guarded by
+    // TestFinanceZKStdlibDuplicatesStayInSync (x/aetravm/conformance).
     @pure
     func pnlOf(entryPrice: int256, exitPrice: int256, size: int256): int256 {
         return (exitPrice - entryPrice) * size

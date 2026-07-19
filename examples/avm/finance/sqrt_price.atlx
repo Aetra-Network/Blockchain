@@ -66,7 +66,10 @@ contract ClammSqrtPrice {
         contract.setData(self.toChunk())
     }
 
-    // Decimal18.div — floor(a * 1e18 / b).
+    // Decimal18.div — floor(a * 1e18 / b). Duplicated verbatim from
+    // finance_stdlib.atlx's decDiv (canonical, ~line 156); not imported --
+    // see finance_stdlib.atlx's header for why. Drift-guarded by
+    // TestFinanceZKStdlibDuplicatesStayInSync (x/aetravm/conformance).
     @pure
     func decDiv(a: uint256, b: uint256): uint256 {
         return mulDiv(a, ONE_1E18, b)
@@ -87,7 +90,10 @@ contract ClammSqrtPrice {
     }
 
     // Ratio256.gtBounded cross-multiply compare (num/den ordering), safe only
-    // for operands < 2^128.
+    // for operands < 2^128. Duplicated verbatim from finance_stdlib.atlx's
+    // ratioGtBounded (canonical, ~line 112); not imported -- see
+    // finance_stdlib.atlx's header for why. Drift-guarded by
+    // TestFinanceZKStdlibDuplicatesStayInSync (x/aetravm/conformance).
     @pure
     func ratioGtBounded(numA: uint256, denA: uint256, numC: uint256, denC: uint256): uint64 {
         return (mulDiv(numA, denC, 1) > mulDiv(numC, denA, 1)) ? 1 : 0
