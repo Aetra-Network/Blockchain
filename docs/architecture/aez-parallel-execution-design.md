@@ -1,8 +1,10 @@
-# AEZ real parallel execution — design v1 (REJECTED)
+# AEZ real parallel execution — design v1 (REJECTED), v2 (REJECTED, worse than v1)
 
-Status: **First adversarial review round found 2 blockers and 4 majors, including one that directly refutes
-the design's own central claim that `MaxBlockGas` stays correctly enforced. Do not implement below as-is.**
-This is a new design track, not in the original AEZ phased plan (`docs/architecture/aez.md`), requested to
+Status: **Two adversarial review rounds; the second found MORE severe blockers than the first (a newly-
+introduced network-wide crash DoS, and proof that `x/contracts`'s current storage architecture is
+structurally incompatible with zone-goroutine concurrency independent of Phase 3/5). Do not implement below
+as-is. Paused pending direct owner/architect involvement — see "Status" at the end of this document.** This
+is a new design track, not in the original AEZ phased plan (`docs/architecture/aez.md`), requested to
 close the gap that document's own §4.9 names explicitly: "Zones do not add throughput... AEZ today buys
 isolation/fairness/blast-radius-containment, NOT capacity."
 
@@ -128,16 +130,76 @@ separately vary Go's per-process map-iteration seed, which could hide a map-iter
 - Whether the current Phase 6 gas-quota split (Core reserved 8M / each elastic zone capped at 3M) is still
   right once real parallel throughput is measurable.
 
+## v2 — resolved v1's 2 blockers decisively, but REJECTED again: MORE severe findings than v1, not fewer
+
+v2 made real, verified progress on two fronts: (1) **proved, not assumed**, that Optimistic Execution can
+never run concurrently with a real `internalFinalizeBlock` invocation — read the actual vendored OE source
+and traced every call site (`PrepareProposal`/`ProcessProposal` unconditionally call the blocking `Abort()`
+before any `Execute()`; `FinalizeBlock` unconditionally calls the blocking `WaitResult()` before falling back
+to a synchronous invocation) — v1's blocker 1 is closed, confirmed correct by independent re-verification.
+(2) Extended the *already-shipped* per-zone reserve-by-limit gas mechanism (`x/fees/keeper/fee_policy.go`'s
+`ZoneGasConsumed`) to the *global* admission check — not a new mechanism, the same one the codebase already
+uses one field over — with an honestly-quantified, explicitly-flagged economic tradeoff (conservative
+admission can reject transactions an actual-consumption model would have accepted) requiring owner sign-off,
+not a silent behavior change. Also correctly determined, by reading `x/native-account/keeper/zone.go`'s own
+doc comment directly, that the "which modules are zone-scoped-safe" allow-list is **legitimately empty
+today** — no module's storage is actually zone-prefixed yet, independently confirming v1's "zero throughput
+today" conclusion from a second angle.
+
+**v2 was REJECTED — and this round's findings are MORE severe than v1's, the opposite of the convergence
+Phase D's design track showed over its three rounds:**
+
+1. **A concrete, deterministic, synchronized, network-wide chain-halting DoS, newly introduced by v2's own
+   fix.** The zone-classification/bucket-assignment step (deciding which zone-goroutine a tx goes to) must
+   run *before* `RunTx`'s existing per-tx panic recovery, so it has no protection — and v2's own fatal-crash
+   policy, applied to this step, means a single crafted transaction that deterministically panics during
+   classification takes down **every honest validator that includes it in a block, simultaneously**, since
+   zone classification is required to be deterministic (same rule, same bytes, same result everywhere). This
+   is strictly worse than the status quo (`RunTx` already gracefully recovers per-tx panics into an ordinary
+   failed-tx result today) and worse than v1's original rejected recover-and-continue policy.
+2. **`x/contracts`'s actual current storage architecture is structurally incompatible with zone-goroutine
+   concurrency, independent of whether Phase 3/5 ever lands key-prefixing.** `x/contracts/keeper.Keeper`
+   holds its entire module state as a single shared Go field, mutated via a non-atomic
+   read-then-build-then-replace pattern with no lock held across the read+derive step (only the final
+   `assignGenesis` write is serialized) — two zone-goroutines executing `x/contracts` messages concurrently
+   is a textbook lost-update race whose outcome depends on OS thread-scheduling order between validators, a
+   genuine `AppHash`-divergence fork vector. Worse: `x/contracts`'s state-root computation hashes the
+   **entire module state as one JSON blob on every single write**, regardless of which contract or zone it
+   touches — key-prefixing (Phase 3/5's whole premise) changes *where* a record lives, not the fact that
+   root/prune logic reads across every record on every write. A Msg-type-URL allow-list has no way to detect
+   either hazard, since both are invisible from a message's type name alone.
+3. **Fix 3 (gas reservation) and fix 2 (panic policy) contradict each other.** Fix 3's soundness proof
+   implicitly depends on each zone-goroutine preserving the existing per-tx `GasWanted` ceiling and its
+   graceful out-of-gas/panic isolation (today provided by `RunTx`'s own recovery middleware) — but fix 2's
+   mechanism, applied literally, would route an entirely ordinary, expected, frequent event (a single tx
+   running out of gas, or panicking on a routine edge case — both already happen today and are already
+   gracefully isolated) to the zone-goroutine's fatal outer recover, crashing the whole validator on routine
+   load rather than failing just that one tx.
+4. **A concrete, code-verified instance of exactly the "looks safe but isn't" hazard the review was asked to
+   hunt for.** `x/contracts`'s rent-charging path calls `SendCoinsFromAccountToModule` against a single
+   global `x/bank` module account as a routine side effect of ordinary contract execution — invisible from
+   any message's type URL, confirming the allow-list approach is the wrong granularity in principle, not
+   merely incomplete for one module.
+
+Also found (minor, correctly not blocking on their own): a citation error in which ABCI paths carry
+`recover()` (the load-bearing conclusion survived independent re-verification regardless); an unstated
+dependency of `oe.Abort()`'s own internal synchronization on CometBFT's single-connection ABCI calling
+convention (no practical failure scenario under that convention, flagged for completeness).
+
 ## Status
 
-**Not started. Do not implement.** This is the FIRST round for this design track. Unlike a well-scoped
-feature addition, this design reworks a fundamental cross-cutting property of the app's execution model
-(admission-time gas accounting, which the fee/congestion-pricing system depends on) and collides with an
-already-shipped feature (Optimistic Execution) — the blockers found are structural, not implementation
-details. Proceed to a v2 pass targeting specifically: (a) an explicit reconciliation with or disabling of
-Optimistic Execution when the AEZ runner is active; (b) panic-is-fatal-not-recoverable for zone-goroutine
-faults; (c) a concrete redesign of admission-time gas checking compatible with deferred/parallel message
-execution (the hardest, most consensus-and-economics-sensitive item — likely needs its own dedicated design
-sub-track); (d) an explicit list of modules that force a message onto the sequential path. Given the
-depth of blocker (c) in particular, this track should be watched for the same non-convergence pattern the
-Phase E/F call-mechanism track showed (4 rounds, no convergence) rather than assumed to resolve quickly.
+**Not started. Do not implement.** Two rounds now — and unlike Phase D's design track (3 rounds, strictly
+DECREASING severity, converging toward owner sign-off) or even the Phase E/F call-mechanism track (4 rounds,
+roughly constant severity), this track's second round surfaced **more numerous and more severe** blockers
+than its first, including a newly-introduced DoS vector and a structural incompatibility
+(`x/contracts`'s whole-state-hash-per-write architecture) that no amount of message-type classification can
+route around. This is a clear, stronger-than-usual signal to stop automated iteration: real parallel
+execution for AEZ is gated on `x/contracts` itself getting the Phase 5 rewrite `aez.md` already calls "the
+expensive one, there is no incremental version of it," *and* on resolving a genuine tension between
+per-tx failure isolation and process-level crash safety that has no design-doc-only answer — this needs
+direct owner/architect involvement to decide the sequencing (Phase 5 first? a narrower v1-scope limited to
+only truly-isolated modules? abandon deferred/parallel execution in favor of a completely different
+throughput strategy?) rather than a v3 automated pass. Recommend surfacing this conclusion, and the two
+design docs' accumulated owner-decision lists, directly to the owner. AEZ's existing isolation/fairness
+properties (Phase 1-2, 6, already shipped) are unaffected by this pause and remain valid and in production
+regardless of how or whether real parallel execution is ever pursued.
