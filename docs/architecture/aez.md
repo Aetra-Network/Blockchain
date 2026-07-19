@@ -372,6 +372,33 @@ optionality**. It does **not** buy capacity. Any roadmap language implying
 "elastic = more TPS" is false under this model and should be corrected before it
 reaches a public document.
 
+> **Addendum (implemented — Phase 6b, see
+> `docs/architecture/aez-throughput-preservation-design.md`): a distinct
+> load-skew property, not a capacity increase.** The claim above is about
+> **total capacity** and remains true, unchanged: `MaxBlockGas = 20,000,000`
+> is untouched, and the cross-zone message bus's total per-block drain budget
+> (`TotalMessageGasPerBlock`) is still `8,000,000` — the same number the bus
+> already budgeted before this landed. What changed is *which* messages get to
+> spend that unchanged budget when the chain is loaded unevenly. Before: the
+> message bus drained a single global, non-zone-weighted budget in canonical
+> id order and `break`-stopped on first overrun, so one zone's flood could
+> exhaust the shared counter before any message from an otherwise-idle zone
+> was ever reached this block. After: `x/aez/types/quota.go`'s
+> `MessageQuotaParams` (mirroring Phase 6's `GasQuotaParams`) gives every
+> zone, Core included, its own guaranteed per-block allotment inside that same
+> unchanged total, with any zone's *unused* allotment rolling over within the
+> block to whichever zone actually needs it — so a flood in zone A can never
+> crowd zone B's own guaranteed minimum out of the shared counter. This is a
+> **load-skew / fairness** property ("zone B's throughput is not crowded out
+> by zone A's flood"), independent of and additive to the capacity statement
+> above — both are true at once. See the design doc for the full two-pass
+> algorithm, the adversarial-review history (two rounds, both addressed), and
+> the load test that measures the pre-existing single-global-budget mechanism
+> actually starving a fair-share zone under an adversarial flood, side-by-side
+> with the new mechanism preserving it at no aggregate throughput cost (both
+> admit the same 8-of-11 messages the block the load test drives; the new
+> mechanism just guarantees the fair-share zone is one of them).
+
 ### 4.10 DNS does not exist yet
 
 There is **no `x/dns`**. The native registry is `x/identity-root`
@@ -625,6 +652,72 @@ still fits 3 maximum-gas transactions per block. **The Core reservation is the
 point** — a contract storm in zone 2 must never starve a slashing or governance
 transaction. Quota params are committed state; per-block consumption is a
 height-keyed transient in the fees store that self-resets each block.
+
+### Phase 6b — per-zone message-bus drain budget (load-skew throughput preservation, landed)
+
+Extends Phase 6's per-zone-quota idea from the tx-admission gate to the
+cross-zone message bus's `BeginBlocker` drain, closing the gap this section's
+own `message.go` comment named at Phase 6 time ("Phase 6 replaces this single
+global budget with a per-zone budget plus a Core reservation; that is
+deliberately NOT built here"). Design, adversarial-review history (two
+rounds, both addressed), and the load-test proof:
+`docs/architecture/aez-throughput-preservation-design.md`.
+
+- **New:** `x/aez/types/quota.go` — `ZoneMessageQuota`/`MessageQuotaParams`,
+  mirroring `ZoneGasQuota`/`GasQuotaParams` field-for-field (Core is a
+  `ReservedGas` floor, never capped; elastic zones are `MaxGas` caps, never
+  reserved). `DefaultMessageQuotaParams()` splits the **existing** total
+  (`4×1,000,000` elastic + `4,000,000` Core reserved `== 8,000,000`, the same
+  constant the bus already budgeted) — this redistributes the existing
+  budget, it does not enlarge it. Also adds `OwnAllotmentForZone` (returns
+  `ReservedGas` for Core, `MaxGas` for an elastic zone), the accessor the
+  two-pass drain algorithm indexes by so Core participates in the same
+  own-allotment-then-rollover mechanism as every elastic zone, symmetrically.
+- **Edit:** `x/aez/types/params.go` — `Params.MessageQuota MessageQuotaParams`,
+  wired into `DefaultParams()` and `Params.Validate()`.
+- **Edit:** `x/aez/types/message.go` — `MaxGasPerDelivery` unchanged; the old
+  single-global-budget constant `ZoneMessageGasPerBlock` renamed to
+  `LegacyGlobalMessageGasPerBlock` (same `8,000,000` value) and retained,
+  byte-for-byte, as the migration-safety fallback total (below).
+- **Edit:** `x/aez/keeper/drain.go` — `DrainWith` reads `params.MessageQuota`
+  once per call (only when `len(due) > 0`, preserving the I-23 fast path) and
+  dispatches to `drainWeighted` — a two-pass algorithm keyed by each
+  message's `SourceZone` (not destination: the sender's zone pays for the
+  load it produces, the same principle the tx-admission gate already uses)
+  that measures every zone's real per-block demand against its own allotment
+  first, then spends in the unchanged canonical `(deliver_height,
+  message_id)` order, admitting via a zone's own allotment or via rollover
+  from the shared surplus of every other zone's genuinely idle capacity —
+  when `MessageQuota` validates, else `drainLegacyGlobalBudget` (a literal
+  reproduction of the prior single-shared-counter, break-on-first-overrun
+  algorithm) as an unconditional migration-safety fallback. The global
+  `TotalMessageGasPerBlock` backstop is checked first on every candidate
+  regardless of path, so per-zone/rollover accounting can never push the
+  aggregate above the unchanged total.
+- **New:** `x/aez/keeper/quota.go` — `MessageGasQuotaForZone(ctx, zoneID)`,
+  mirroring `GasQuotaForZone` (reads committed params fresh every call, no
+  cache).
+- **New:** `app/upgrades/aez_message_quota.go` — `FixupAEZMessageQuota`, a
+  ready, exported, unit-tested Layer-1 fixup (old-shape `Params` blobs
+  unmarshal `MessageQuota` to its Go zero value, which fails `Validate()`;
+  this repairs it to the default) following the `native_account.go`
+  convention: **not** force-wired into the live `v053-to-v054` handler, since
+  no live upgrade plan exists yet for it to hang off — a future named
+  upgrade calls it from its own handler. Layer 2 (`DrainWith`'s fallback
+  above) is the unconditional defense-in-depth: an upgraded node that never
+  runs Layer 1 still gets exactly today's behavior, indefinitely, never a
+  halted bus.
+- **Tests:** full `MessageQuotaParams`/`MessageGasQuotaForZone` validation
+  suites mirroring the existing `GasQuotaParams` coverage; a migration test
+  writing a real old-shape store blob and proving the legacy-fallback path
+  reproduces prior numbers byte-for-byte; and the acceptance-criteria load
+  test (`x/aez/keeper/throughput_preservation_acceptance_test.go`) that runs
+  the identical adversarial-flood-vs-fair-share workload through both the
+  old algorithm (forced via real store corruption, not a hand-reimplementation)
+  and the new one, measuring the old mechanism actually starving the
+  fair-share zone's message while the new mechanism admits it — both
+  mechanisms admitting the same aggregate count this block, so the fix costs
+  nothing in throughput.
 
 ### Phase 7 — hybrid DNS
 

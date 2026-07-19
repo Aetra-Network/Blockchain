@@ -177,3 +177,186 @@ func TestParamsValidateEnforcesGasQuota(t *testing.T) {
 		t.Fatalf("params carrying an over-budget quota table must be rejected, got %v", err)
 	}
 }
+
+// --- Phase 6b: MessageQuotaParams (docs/architecture/aez-throughput-preservation-design.md) ---
+//
+// These mirror the GasQuotaParams tests above field-for-field (same shape,
+// same invariants, a DIFFERENT committed table protecting a different
+// resource -- message-bus drain gas, not tx-admission gas).
+
+func coreMessageQuota(reserved uint64) aeztypes.ZoneMessageQuota {
+	return aeztypes.ZoneMessageQuota{ZoneID: aeztypes.ZoneIDCore, MaxGas: 0, ReservedGas: reserved}
+}
+
+func elasticMessageQuota(id aeztypes.ZoneID, cap_ uint64) aeztypes.ZoneMessageQuota {
+	return aeztypes.ZoneMessageQuota{ZoneID: id, MaxGas: cap_, ReservedGas: 0}
+}
+
+// fullMessageTable returns a well-formed message-quota table: Core reserve +
+// one cap per elastic zone.
+func fullMessageTable(total, coreReserved uint64, elasticCaps ...uint64) aeztypes.MessageQuotaParams {
+	quotas := []aeztypes.ZoneMessageQuota{coreMessageQuota(coreReserved)}
+	for i, cap_ := range elasticCaps {
+		quotas = append(quotas, elasticMessageQuota(aeztypes.ZoneID(uint32(i+1)), cap_))
+	}
+	return aeztypes.MessageQuotaParams{TotalMessageGasPerBlock: total, Quotas: quotas}
+}
+
+func TestDefaultMessageQuotaParamsIsTheSpecSplit(t *testing.T) {
+	q := aeztypes.DefaultMessageQuotaParams()
+	if err := q.Validate(); err != nil {
+		t.Fatalf("default message quota params must validate: %v", err)
+	}
+	if q.TotalMessageGasPerBlock != 8_000_000 {
+		t.Fatalf("default TotalMessageGasPerBlock = %d, want 8000000 (unchanged from the legacy constant)", q.TotalMessageGasPerBlock)
+	}
+	if uint32(len(q.Quotas)) != aeztypes.ZoneCount {
+		t.Fatalf("default must carry %d quotas, got %d", aeztypes.ZoneCount, len(q.Quotas))
+	}
+	if got := q.CoreReservedMessageGas(); got != 4_000_000 {
+		t.Fatalf("core reserve = %d, want 4000000", got)
+	}
+	if maxGas, err := q.MaxMessageGasForZone(0); err != nil || maxGas != 0 {
+		t.Fatalf("core MaxMessageGasForZone = (%d,%v), want (0,nil)", maxGas, err)
+	}
+	for z := uint32(1); z < aeztypes.ZoneCount; z++ {
+		maxGas, err := q.MaxMessageGasForZone(z)
+		if err != nil || maxGas != 1_000_000 {
+			t.Fatalf("elastic zone %d MaxMessageGasForZone = (%d,%v), want (1000000,nil)", z, maxGas, err)
+		}
+	}
+}
+
+// TestMessageQuotaOwnAllotmentIsSymmetricAcrossCoreAndElastic proves the
+// Finding-1 fix's load-bearing accessor: OwnAllotmentForZone returns
+// ReservedGas for Core and MaxGas for an elastic zone, so the two-pass drain
+// algorithm can index every zone -- Core included -- through one uniform
+// array with no Core-shaped branch.
+func TestMessageQuotaOwnAllotmentIsSymmetricAcrossCoreAndElastic(t *testing.T) {
+	q := aeztypes.DefaultMessageQuotaParams()
+	core, err := q.OwnAllotmentForZone(0)
+	if err != nil || core != 4_000_000 {
+		t.Fatalf("core OwnAllotmentForZone = (%d,%v), want (4000000,nil)", core, err)
+	}
+	for z := uint32(1); z < aeztypes.ZoneCount; z++ {
+		got, err := q.OwnAllotmentForZone(z)
+		if err != nil || got != 1_000_000 {
+			t.Fatalf("elastic zone %d OwnAllotmentForZone = (%d,%v), want (1000000,nil)", z, got, err)
+		}
+	}
+	if _, err := q.OwnAllotmentForZone(aeztypes.ZoneCount); !errors.Is(err, aeztypes.ErrInvalidMessageQuota) {
+		t.Fatalf("out-of-range zone must error, got %v", err)
+	}
+}
+
+// TestMessageQuotaReservedInvariantHoldsWithEquality mirrors
+// TestReservedCoreInvariantHoldsWithEquality: the default split hits the
+// budget with exact equality (4*1M + 4M == 8M), and one naet over rejects.
+func TestMessageQuotaReservedInvariantHoldsWithEquality(t *testing.T) {
+	ok := fullMessageTable(8_000_000, 4_000_000, 1_000_000, 1_000_000, 1_000_000, 1_000_000)
+	if err := ok.Validate(); err != nil {
+		t.Fatalf("sum-at-budget table must validate: %v", err)
+	}
+	over := fullMessageTable(8_000_000, 4_000_000, 1_000_001, 1_000_000, 1_000_000, 1_000_000)
+	if err := over.Validate(); !errors.Is(err, aeztypes.ErrInvalidMessageQuota) {
+		t.Fatalf("over-budget table must be rejected with ErrInvalidMessageQuota, got %v", err)
+	}
+}
+
+func TestMessageQuotaValidateRejectsCappedCore(t *testing.T) {
+	q := aeztypes.DefaultMessageQuotaParams()
+	q.Quotas[0].MaxGas = 4_000_000 // cap the Core Zone -- forbidden
+	if err := q.Validate(); !errors.Is(err, aeztypes.ErrInvalidMessageQuota) {
+		t.Fatalf("capped Core must be rejected, got %v", err)
+	}
+}
+
+func TestMessageQuotaValidateRejectsElasticReservation(t *testing.T) {
+	q := aeztypes.DefaultMessageQuotaParams()
+	q.Quotas[1].ReservedGas = 1
+	if err := q.Validate(); !errors.Is(err, aeztypes.ErrInvalidMessageQuota) {
+		t.Fatalf("elastic reservation must be rejected, got %v", err)
+	}
+}
+
+func TestMessageQuotaValidateRejectsZeroElasticCap(t *testing.T) {
+	q := aeztypes.DefaultMessageQuotaParams()
+	q.Quotas[2].MaxGas = 0
+	if err := q.Validate(); !errors.Is(err, aeztypes.ErrInvalidMessageQuota) {
+		t.Fatalf("zero elastic cap must be rejected, got %v", err)
+	}
+}
+
+func TestMessageQuotaValidateRejectsWrongLength(t *testing.T) {
+	q := aeztypes.DefaultMessageQuotaParams()
+	q.Quotas = q.Quotas[:aeztypes.ZoneCount-1]
+	if err := q.Validate(); !errors.Is(err, aeztypes.ErrInvalidMessageQuota) {
+		t.Fatalf("short quota table must be rejected, got %v", err)
+	}
+}
+
+func TestMessageQuotaValidateRejectsOutOfOrder(t *testing.T) {
+	q := aeztypes.DefaultMessageQuotaParams()
+	q.Quotas[1], q.Quotas[2] = q.Quotas[2], q.Quotas[1]
+	if err := q.Validate(); !errors.Is(err, aeztypes.ErrInvalidMessageQuota) {
+		t.Fatalf("out-of-order quota table must be rejected, got %v", err)
+	}
+}
+
+func TestMessageQuotaValidateRejectsDuplicateZone(t *testing.T) {
+	q := aeztypes.DefaultMessageQuotaParams()
+	q.Quotas[2].ZoneID = aeztypes.ZoneID(1)
+	if err := q.Validate(); !errors.Is(err, aeztypes.ErrInvalidMessageQuota) {
+		t.Fatalf("duplicate zone must be rejected, got %v", err)
+	}
+}
+
+func TestMessageQuotaValidateRejectsZeroTotal(t *testing.T) {
+	q := aeztypes.DefaultMessageQuotaParams()
+	q.TotalMessageGasPerBlock = 0
+	if err := q.Validate(); !errors.Is(err, aeztypes.ErrInvalidMessageQuota) {
+		t.Fatalf("zero TotalMessageGasPerBlock must be rejected, got %v", err)
+	}
+}
+
+// TestMessageQuotaZeroValueFailsValidate proves the migration-safety hazard's
+// exact shape (design doc §5.4): a completely zero MessageQuotaParams -- what
+// json.Unmarshal silently produces for an old-shape Params blob missing the
+// field entirely -- fails Validate(), which is precisely what DrainWith uses
+// to decide to take the legacy fallback branch instead of treating "every
+// zone capped at 0" as real.
+func TestMessageQuotaZeroValueFailsValidate(t *testing.T) {
+	var zero aeztypes.MessageQuotaParams
+	if err := zero.Validate(); !errors.Is(err, aeztypes.ErrInvalidMessageQuota) {
+		t.Fatalf("the Go zero value must fail Validate, got %v", err)
+	}
+}
+
+func TestMessageQuotaValidateRejectsElasticOverflow(t *testing.T) {
+	q := fullMessageTable(8_000_000, 0, ^uint64(0)-10, 20, 1, 1)
+	if err := q.Validate(); !errors.Is(err, aeztypes.ErrInvalidMessageQuota) {
+		t.Fatalf("elastic sum overflow must be rejected, got %v", err)
+	}
+}
+
+func TestMaxMessageGasForZoneRejectsUnknownZone(t *testing.T) {
+	q := aeztypes.DefaultMessageQuotaParams()
+	if _, err := q.MaxMessageGasForZone(aeztypes.ZoneCount); !errors.Is(err, aeztypes.ErrInvalidMessageQuota) {
+		t.Fatalf("out-of-range zone must error, got %v", err)
+	}
+}
+
+// TestParamsValidateEnforcesMessageQuota proves the invariant is reached
+// through the module-level Params.Validate, exactly like
+// TestParamsValidateEnforcesGasQuota does for GasQuota: governance cannot
+// commit an over-budget message-quota table through SetParams either.
+func TestParamsValidateEnforcesMessageQuota(t *testing.T) {
+	p := aeztypes.DefaultParams()
+	if err := p.Validate(); err != nil {
+		t.Fatalf("default params must validate: %v", err)
+	}
+	p.MessageQuota = fullMessageTable(8_000_000, 4_000_000, 2_000_000, 2_000_000, 2_000_000, 2_000_000)
+	if err := p.Validate(); !errors.Is(err, aeztypes.ErrInvalidMessageQuota) {
+		t.Fatalf("params carrying an over-budget message quota table must be rejected, got %v", err)
+	}
+}

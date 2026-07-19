@@ -56,4 +56,14 @@ var (
 	// no cap, a mis-ordered or wrong-length quota set, or a table whose elastic
 	// caps plus the Core reserve exceed MaxBlockGas (I-18/I-19).
 	ErrInvalidGasQuota	= errors.New("aez: invalid gas quota")
+
+	// ErrInvalidMessageQuota is returned when the Phase 6b per-zone
+	// message-bus drain quota (MessageQuotaParams) is malformed: a capped
+	// Core Zone, an elastic zone with a reservation or no cap, a mis-ordered
+	// or wrong-length quota set, or a table whose elastic caps plus the Core
+	// reserve exceed TotalMessageGasPerBlock. Kept distinct from
+	// ErrInvalidGasQuota: the two validate different committed tables
+	// protecting different resources, and a caller/test may reasonably want
+	// to tell them apart.
+	ErrInvalidMessageQuota	= errors.New("aez: invalid message quota")
 )

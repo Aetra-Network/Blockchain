@@ -549,6 +549,280 @@ func TestQueueBoundEnforced(t *testing.T) {
 
 // --- gas budget ------------------------------------------------------------
 
+// --- Phase 6b: per-zone-weighted message-bus drain budget -------------------
+//
+// docs/architecture/aez-throughput-preservation-design.md is the full design
+// (adversarial-review history included). These tests exercise drainWeighted
+// (drain.go) against a routing table that actually splits buckets across
+// zones -- fourElasticZonesRoundRobin below -- through the SAME real
+// installTable/schedule-then-activate mechanism every other table in this
+// file uses, so nothing here expresses a table the chain itself could not
+// produce.
+
+// fourElasticZonesRoundRobin is a TEST FIXTURE ONLY (design doc §2), never a
+// production genesis proposal: GenesisRoutingTable() (routing_table.go) still
+// maps every one of the 256 buckets to Core, and nothing in this file changes
+// that default. It assigns bucket b to elastic zone (b%4)+1, spreading
+// buckets roughly evenly across the four elastic zones while routing NO
+// bucket to Core -- Core stays reachable in these tests only through the pin
+// short-circuit (system accounts, names), exactly as in production, never
+// through the table. Used only by the tests below.
+func fourElasticZonesRoundRobin(bucket int) types.ZoneID {
+	return types.ZoneID(bucket%4 + 1)
+}
+
+// addrsForZone returns n distinct addresses whose bucket hashes to zone z
+// under assign. Used only by the Phase 6b tests below to populate specific
+// zones under fourElasticZonesRoundRobin.
+func addrsForZone(t *testing.T, assign func(bucket int) types.ZoneID, z types.ZoneID, n int) [][]byte {
+	t.Helper()
+	out := make([][]byte, 0, n)
+	for s := 0x10; s <= 0xff && len(out) < n; s++ {
+		a := addr(byte(s))
+		if assign(int(bucketOf(t, a))) == z {
+			out = append(out, a)
+		}
+	}
+	require.Len(t, out, n, "could not find %d addresses hashing to zone %d", n, z)
+	return out
+}
+
+// idSet builds a set of message ids (as strings) from a slice of ZoneMessage.
+func idSet(msgs ...types.ZoneMessage) map[string]bool {
+	out := make(map[string]bool, len(msgs))
+	for _, m := range msgs {
+		out[string(m.ID)] = true
+	}
+	return out
+}
+
+// countIn reports how many of ids are present in delivered.
+func countIn(ids map[string]bool, delivered map[string]bool) int {
+	n := 0
+	for id := range ids {
+		if delivered[id] {
+			n++
+		}
+	}
+	return n
+}
+
+// TestDrainWeightedPreservesZoneBThroughputUnderZoneAFlood is the
+// acceptance-criteria load test (design doc §3): zone A floods the bus with
+// 10x its own elastic cap's worth of cross-zone traffic while zone B sends
+// exactly one normal, fair-share message. Under the OLD single-global-budget
+// algorithm, whether B's message is among the 8 that admit this block depends
+// entirely on where B's content-addressed message id happens to sort among
+// A's ten -- pure luck. Under the per-zone-weighted budget, B's message
+// admits via its OWN allotment, a check that runs before any zone's rollover
+// spend can matter, so it is guaranteed regardless of sort order.
+//
+// Zones 3, 4, and Core are idle throughout (the fixture never routes a
+// bucket to Core), so their own allotments (1,000,000 + 1,000,000 + 4,000,000
+// = 6,000,000) become the measured rollover surplus zone A's flood draws on.
+// Numbers below are worked out mechanically from the two-pass algorithm
+// (design doc §3.4) and hold regardless of canonical message-id sort order --
+// only WHICH of A's specific messages land in which bucket varies with sort
+// order, never the counts.
+func TestDrainWeightedPreservesZoneBThroughputUnderZoneAFlood(t *testing.T) {
+	k, _ := busKeeper(t)
+	installTable(t, k, 1, 2, 10000, fourElasticZonesRoundRobin)
+
+	zone2Addrs := addrsForZone(t, fourElasticZonesRoundRobin, types.ZoneID(2), 2)
+	floodRecipient := zone2Addrs[0]
+	fairSender := zone2Addrs[1]
+	floodSenders := addrsForZone(t, fourElasticZonesRoundRobin, types.ZoneID(1), 10)
+	fairRecipient := addrsForZone(t, fourElasticZonesRoundRobin, types.ZoneID(3), 1)[0]
+
+	ctx := busCtx(10000)
+	floodMsgs := make([]types.ZoneMessage, 0, 10)
+	for i, s := range floodSenders {
+		msg, produced, err := k.EnqueueMessage(ctx, EnqueueRequest{
+			SenderKind:    types.EntityKindAddress,
+			Sender:        s,
+			RecipientKind: types.EntityKindAddress,
+			Recipient:     floodRecipient,
+			Payload:       []byte{byte(i)},
+			GasLimit:      types.MaxGasPerDelivery,
+		})
+		require.NoError(t, err)
+		require.True(t, produced)
+		require.Equal(t, types.ZoneID(1), msg.SourceZone, "flood sender must resolve to zone 1")
+		floodMsgs = append(floodMsgs, msg)
+	}
+
+	fairMsg, produced, err := k.EnqueueMessage(ctx, EnqueueRequest{
+		SenderKind:    types.EntityKindAddress,
+		Sender:        fairSender,
+		RecipientKind: types.EntityKindAddress,
+		Recipient:     fairRecipient,
+		Payload:       []byte("fair-share"),
+		GasLimit:      types.MaxGasPerDelivery,
+	})
+	require.NoError(t, err)
+	require.True(t, produced)
+	require.Equal(t, types.ZoneID(2), fairMsg.SourceZone, "fair-share sender must resolve to zone 2")
+
+	floodIDs := idSet(floodMsgs...)
+
+	// H+1: zone 2's own allotment (1,000,000) admits B's single message
+	// regardless of its id's sort position; zone 1 gets its own allotment (1
+	// message) plus rollover from zones 3, 4, and Core (idle: 1M+1M+4M=6M),
+	// admitting 7 of its 10 messages. Total admitted: 8 -- exactly what the
+	// legacy single-global-budget algorithm would ALSO admit in aggregate;
+	// the new mechanism does not cost throughput here, it only guarantees
+	// WHICH 8 include B.
+	rec := &recorder{}
+	require.NoError(t, k.DrainWith(busCtx(10001), rec.deliver))
+	require.Len(t, rec.calls, 8, "8,000,000 / 1,000,000 per delivery = 8 admissions this block")
+
+	delivered := map[string]bool{}
+	for _, c := range rec.calls {
+		delivered[string(c.id)] = true
+	}
+	require.True(t, delivered[string(fairMsg.ID)],
+		"zone B's fair-share message must deliver in the same block it becomes due, independent of message-id sort order")
+	require.Equal(t, 7, countIn(floodIDs, delivered), "zone A's own allotment (1) + measured rollover (6) = 7 of its 10 messages")
+
+	// H+2: everyone else is idle again (zones 2/3/4 and Core), so the full
+	// budget (own 1,000,000 + rollover 7,000,000 = 8,000,000) is available to
+	// zone A's remaining traffic -- comfortably more than the 3,000,000 still
+	// queued. Nothing was ever dropped; the whole 11-message set delivers
+	// across exactly 2 blocks.
+	require.NoError(t, k.DrainWith(busCtx(10002), rec.deliver))
+	require.Len(t, rec.calls, 11, "all 11 messages deliver across exactly 2 blocks; nothing is ever dropped")
+
+	seen := map[string]bool{}
+	for _, c := range rec.calls {
+		require.False(t, seen[string(c.id)], "no message delivered twice")
+		seen[string(c.id)] = true
+	}
+	require.True(t, seen[string(fairMsg.ID)])
+	for id := range floodIDs {
+		require.True(t, seen[id], "every flood message must eventually deliver, none dropped")
+	}
+}
+
+// TestDrainWeightedGuaranteesEachFloodingZoneItsOwnCapEvenSimultaneously is
+// the "quota exhaustion isolated per zone" proof required independent of the
+// single-flood scenario above: TWO elastic zones flood the bus in the SAME
+// block, each well past its own 1,000,000 cap. The two-pass algorithm
+// guarantees each zone's own allotment regardless of the other zone's flood
+// or of canonical message-id interleaving order -- Pass 1 measures every
+// zone's own-cap usage from real demand before Pass 2 ever runs, so one
+// zone's excess can only ever compete for the *measured leftover* surplus,
+// never for another zone's own guaranteed slice (design doc §1.4, the
+// Finding-1 fix).
+func TestDrainWeightedGuaranteesEachFloodingZoneItsOwnCapEvenSimultaneously(t *testing.T) {
+	k, _ := busKeeper(t)
+	installTable(t, k, 1, 2, 10000, fourElasticZonesRoundRobin)
+
+	zone1Senders := addrsForZone(t, fourElasticZonesRoundRobin, types.ZoneID(1), 5)
+	zone3Senders := addrsForZone(t, fourElasticZonesRoundRobin, types.ZoneID(3), 5)
+	zone2Recipient := addrsForZone(t, fourElasticZonesRoundRobin, types.ZoneID(2), 1)[0]
+
+	ctx := busCtx(10000)
+	enqueueFlood := func(senders [][]byte) []types.ZoneMessage {
+		out := make([]types.ZoneMessage, 0, len(senders))
+		for i, s := range senders {
+			msg, produced, err := k.EnqueueMessage(ctx, EnqueueRequest{
+				SenderKind:    types.EntityKindAddress,
+				Sender:        s,
+				RecipientKind: types.EntityKindAddress,
+				Recipient:     zone2Recipient,
+				Payload:       []byte{byte(i)},
+				GasLimit:      types.MaxGasPerDelivery,
+			})
+			require.NoError(t, err)
+			require.True(t, produced)
+			out = append(out, msg)
+		}
+		return out
+	}
+	zone1Msgs := enqueueFlood(zone1Senders)
+	zone3Msgs := enqueueFlood(zone3Senders)
+	for _, m := range zone1Msgs {
+		require.Equal(t, types.ZoneID(1), m.SourceZone)
+	}
+	for _, m := range zone3Msgs {
+		require.Equal(t, types.ZoneID(3), m.SourceZone)
+	}
+
+	rec := &recorder{}
+	require.NoError(t, k.DrainWith(busCtx(10001), rec.deliver))
+
+	// Global backstop: 8,000,000 / 1,000,000 = 8 admissions this block, no
+	// matter how the two floods interleave in canonical id order.
+	require.Len(t, rec.calls, 8, "global backstop caps this block at 8 admissions regardless of interleaving")
+
+	delivered := map[string]bool{}
+	for _, c := range rec.calls {
+		delivered[string(c.id)] = true
+	}
+	zone1IDs, zone3IDs := idSet(zone1Msgs...), idSet(zone3Msgs...)
+	require.GreaterOrEqual(t, countIn(zone1IDs, delivered), 1, "zone 1's own allotment must survive zone 3's simultaneous flood")
+	require.GreaterOrEqual(t, countIn(zone3IDs, delivered), 1, "zone 3's own allotment must survive zone 1's simultaneous flood")
+
+	// Nothing is ever dropped: every remaining message drains by the next
+	// block, once both floods go idle and the full budget is theirs again.
+	require.NoError(t, k.DrainWith(busCtx(10002), rec.deliver))
+	require.Len(t, rec.calls, 10, "all 10 flood messages deliver across at most 2 blocks; nothing dropped")
+	seen := map[string]bool{}
+	for _, c := range rec.calls {
+		require.False(t, seen[string(c.id)], "no message delivered twice")
+		seen[string(c.id)] = true
+	}
+	for id := range zone1IDs {
+		require.True(t, seen[id])
+	}
+	for id := range zone3IDs {
+		require.True(t, seen[id])
+	}
+}
+
+// TestDrainWeightedCoreIdleReserveRollsOverToSingleBusyElasticZone isolates
+// the Finding-1 fix specifically (design doc's revision note): with every
+// OTHER zone -- including Core -- completely idle, a single busy elastic
+// zone must reach the FULL legacy 8,000,000 budget (its own 1,000,000 cap
+// plus 7,000,000 of rollover: 1,000,000 each from the two other idle elastic
+// zones plus Core's full 4,000,000 reserved floor). Before the fix, Core was
+// excluded from the rollover pool in both directions, so this same scenario
+// would have topped out at 4,000,000 (own cap + only the two idle elastic
+// zones' surplus) -- a real throughput REGRESSION in the single-busy-zone
+// case the original draft did not deliver on. 8, not 4, is the proof Core's
+// idle floor is genuinely part of the shared surplus pool.
+func TestDrainWeightedCoreIdleReserveRollsOverToSingleBusyElasticZone(t *testing.T) {
+	k, _ := busKeeper(t)
+	installTable(t, k, 1, 2, 10000, fourElasticZonesRoundRobin)
+
+	recipient := addrsForZone(t, fourElasticZonesRoundRobin, types.ZoneID(2), 1)[0]
+	senders := addrsForZone(t, fourElasticZonesRoundRobin, types.ZoneID(1), 9)
+
+	ctx := busCtx(10000)
+	msgs := make([]types.ZoneMessage, 0, 9)
+	for i, s := range senders {
+		msg, produced, err := k.EnqueueMessage(ctx, EnqueueRequest{
+			SenderKind:    types.EntityKindAddress,
+			Sender:        s,
+			RecipientKind: types.EntityKindAddress,
+			Recipient:     recipient,
+			Payload:       []byte{byte(i)},
+			GasLimit:      types.MaxGasPerDelivery,
+		})
+		require.NoError(t, err)
+		require.True(t, produced)
+		msgs = append(msgs, msg)
+	}
+
+	rec := &recorder{}
+	require.NoError(t, k.DrainWith(busCtx(10001), rec.deliver))
+	require.Len(t, rec.calls, 8,
+		"own cap (1) + rollover from zones 2/3/4 (3,000,000) + Core's idle reserve (4,000,000) = 8, not 4")
+
+	require.NoError(t, k.DrainWith(busCtx(10002), rec.deliver))
+	require.Len(t, rec.calls, 9, "the 9th message, held over one block, must still deliver -- nothing dropped")
+}
+
 // TestDrainBudgetStopsAndResumes: the per-block budget bounds delivery; anything
 // over budget stays queued and drains on a later block (nothing is dropped).
 func TestDrainBudgetStopsAndResumes(t *testing.T) {

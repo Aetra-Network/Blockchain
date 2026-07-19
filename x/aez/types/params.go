@@ -59,6 +59,15 @@ type Params struct {
 	// every bucket on zone 0 the Core cap is 0 (uncapped), so this table has no
 	// behavioural effect on a single-zone chain.
 	GasQuota	GasQuotaParams
+	// MessageQuota is the Phase 6b per-zone cross-zone MESSAGE-BUS drain
+	// budget (docs/architecture/aez-throughput-preservation-design.md) -- a
+	// separate, independent counter from GasQuota protecting a different
+	// resource (BeginBlock message-bus drain gas, not ante-time tx admission
+	// gas). x/aez/keeper/drain.go's DrainWith falls back to the legacy
+	// single-global-budget algorithm whenever this fails Validate() (e.g. an
+	// old-shape, pre-this-field Params blob unmarshalled after a binary
+	// upgrade), so it can never brick an upgrading chain.
+	MessageQuota	MessageQuotaParams
 }
 
 // DefaultParams returns the genesis params: prototype-disabled, governed by the
@@ -75,6 +84,7 @@ func DefaultParams() Params {
 		Prototype:		prototypeParams,
 		RoutingEpochLength:	DefaultRoutingEpochLength,
 		GasQuota:		DefaultGasQuotaParams(),
+		MessageQuota:		DefaultMessageQuotaParams(),
 	}
 }
 
@@ -87,6 +97,9 @@ func (p Params) Validate() error {
 		return fmt.Errorf("aez routing epoch length must be positive")
 	}
 	if err := p.GasQuota.Validate(); err != nil {
+		return err
+	}
+	if err := p.MessageQuota.Validate(); err != nil {
 		return err
 	}
 	return nil

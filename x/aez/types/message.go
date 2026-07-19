@@ -20,11 +20,13 @@ const MessageDomain = "aetra-aez-zone-message-v1"
 const SenderKeyDomain = "aetra-aez-sender-key-v1"
 
 // Bus bounds. These are CONSTANTS, not params, on purpose. x/aez reads no param
-// on the per-block drain path (drain.go), so there is no governance-raised value
-// a restarted node could hold stale -- the F-17 class the whole module is
-// structurally immune to (I-20). A bound that lived in Params would put the drain
-// behind a param read and reintroduce that read's failure surface for no benefit
-// while the bus is inert.
+// on the per-block drain path UNLESS there is at least one due message (Phase
+// 6b's MessageQuota read, x/aez/keeper/drain.go, gated behind the same
+// len(due) > 0 check that already guards the I-23 fast path) -- so an
+// inert/disabled chain never pays that read and can never fail a block over it
+// (I-20's protection is preserved for the case that matters; see the design
+// doc's §5.4b for the narrow, low-severity exception this creates once the bus
+// is actually populated).
 const (
 	// MaxZoneMessageQueueDepth caps the inbox. It mirrors
 	// x/contracts/types/api.go:26 (MaxInternalMessageQueueDepth = 65536): the
@@ -38,12 +40,19 @@ const (
 	// belt-and-suspenders guard the invariant table (I-14) names.
 	MaxBounceDepth = 8
 
-	// ZoneMessageGasPerBlock is the per-block drain budget. It is transient
-	// accounting recomputed every block and never enters committed state, so it
-	// is a constant here rather than committed Params. Phase 6 replaces this
-	// single global budget with a per-zone budget plus a Core reservation
-	// (aez.md Phase 6); that is deliberately NOT built here.
-	ZoneMessageGasPerBlock = uint64(8_000_000)
+	// LegacyGlobalMessageGasPerBlock is the PRE-Phase-6b, single shared,
+	// non-zone-weighted per-block drain budget (formerly named
+	// ZoneMessageGasPerBlock). It is no longer the primary drain budget --
+	// Phase 6b (docs/architecture/aez-throughput-preservation-design.md)
+	// replaces it with the per-zone MessageQuotaParams carried in committed
+	// Params -- but it is kept, unrenamed in VALUE, as the migration-safety
+	// fallback total: x/aez/keeper/drain.go's drainLegacyGlobalBudget
+	// reproduces today's exact algorithm byte-for-byte against this exact
+	// constant whenever the committed MessageQuota fails Validate() (e.g. an
+	// old-shape Params blob read after a binary upgrade, before anything has
+	// populated the new field). Do not change this value independently of
+	// deliberately changing what the fallback reproduces.
+	LegacyGlobalMessageGasPerBlock = uint64(8_000_000)
 
 	// MaxGasPerDelivery clamps a single delivery's charge. It mirrors
 	// x/fees MaxTxGas (1,000,000) so one message can never claim the whole
