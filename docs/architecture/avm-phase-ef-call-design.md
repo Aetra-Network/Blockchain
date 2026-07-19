@@ -1,9 +1,10 @@
-# AVM Phase E/F call mechanism — design v1 (REJECTED), v2 (REJECTED), v3 (REJECTED)
+# AVM Phase E/F call mechanism — design v1-v4, ALL REJECTED
 
-Status: **THREE adversarial review rounds run so far (v1, v2, v3); each found a genuinely NEW, serious,
-fund-loss-class bug, not a repeat of a prior one. Do not implement any version below. Pausing further
-automated design iteration here — see "Status" at the end of this document — pending direct owner/architect
-review of the accumulated design and open decisions.** This is the shared prerequisite
+Status: **FOUR adversarial review rounds run so far (v1-v4); each found a genuinely NEW, serious,
+fund-loss-class bug, not a repeat of a prior one, with NO convergence in severity round over round (unlike
+Phase D's design track, which converged after 3 rounds). Do not implement any version below. Paused pending
+direct owner/architect design of the specific missing capability identified in "Status" at the end of this
+document — this is no longer a case for more automated iteration.** This is the shared prerequisite
 behind Phase E (real function call/return — `OpReturn` today halts the entire VM, not just a function) and
 Phase F (synchronous cross-contract calls). Confirmed the single largest, most consensus-critical
 remaining phase in the roadmap: every prior phase touched 5 opcode-registration sites + 4 compiler sites with no
@@ -207,17 +208,86 @@ canonical sorted overlay-flush order (extended to cover balance in the same pass
 - **New in v3**: adding a `checkedSub` helper (symmetric to the existing `checkedAdd`) is required scope —
   confirm this belongs in the same implementation pass.
 
+## v4 — fixed v3's 2 blockers as stated, but REJECTED again: the worst round yet, plus a real bug found in ALREADY-SHIPPED code
+
+v4 re-grounded every citation directly against the current tree (avm.go now 4699 lines, keeper.go re-read
+line-by-line) rather than trusting v3's numbers, and produced two internally coherent fixes: (1) an explicit
+recipient-side overflow check in `TransferValue` plus a "validate the whole batch, then flush once" atomic
+multi-address commit mirroring `deliverInternalMessage`'s existing scratch-copy discipline; (2) a semantic
+split of `OriginalBalance` (live, `address(this).balance`-like, needs live re-read from the shared working
+set) from `AttachedValue` (frame-static, `msg.value`-like, correctly cache-once) plus explicit
+`Message.GasLimit` inheritance rules. Both fixes cited real line numbers and reused already-settled v2/v3
+machinery rather than inventing new state.
+
+**v4 was REJECTED — and this round's findings are more severe than any prior round, not less:**
+
+1. **A concrete fund-ANNIHILATION sequence, not just a fund-freezing/revert-failure one.**
+   `addressWorkingSet.committedBalanceSnapshot` is only ever correctly seeded via `buildAVMContext`'s real
+   balance read for a frame's OWN address — but `avm.go` has (and must keep) zero access to
+   `k.genesis.State.Contracts`, so `TransferValue`'s lazy-create for a recipient that is never itself pushed
+   as a frame (i.e. any ordinary payout to a plain wallet address — not a corner case, the single most common
+   real-world use of `TransferValue`) can only seed `committedBalanceSnapshot = 0`. The atomic flush then does
+   `c.Balance = bd.NewBalance` — **assignment, not addition** — silently overwriting and destroying the
+   recipient's entire real pre-existing balance down to just the transferred amount. The design's own
+   "sum of all balanceDelta == 0" conservation check (proposed as a defensive catch-all) does NOT catch this,
+   because the delta bookkeeping is internally self-consistent — the bug is a wrong baseline, not a wrong
+   delta.
+2. **A second blocker: fresh-call `OriginalBalance` seeding is entirely unspecified**, and the most natural
+   reading of "start a callee frame as a copy of the caller's context" leaks the CALLER's balance value into
+   a callee's first `OriginalBalance` read — worse than the staleness bug v4 was fixing, and undetected
+   because the fix only touches reads for addresses already present in the working-set map.
+3. **A real, pre-existing, already-shipped bug found as a byproduct of this review**, unrelated to Phase E/F
+   itself: `deliverInternalMessage`'s auto-deploy (StateInit) branch calls `k.instantiateContract(...)`, which
+   independently commits `k.genesis` on its own (crediting the new contract) — and only afterward does
+   `deliverInternalMessage` apply the matching source-side debit and commit a second time. Any error between
+   those two commits (insufficient balance, code-not-found, AVM execution failure, storage-limit exceeded,
+   etc. — several real, reachable paths) leaves the auto-deployed contract's credit permanently applied with
+   **no matching debit** — value minted from nothing, in code shipping today, independent of whether Phase E/F
+   ever lands. Filed separately (see repo task tracker) since it needs its own fix regardless of this design's
+   fate.
+4. Also flagged: a known, already-proven-real bug CLASS in this exact codebase (`Runner.AsyncHandler`'s
+   documented shallow-copy stale-`Entry`-field leak, avm.go ~3934-3938) applies identically to the new
+   `WorkingSet` map field if it is not explicitly freshly-allocated per top-level call tree — the design never
+   states this required invariant, despite the codebase already carrying a code comment warning about exactly
+   this failure mode for a different field.
+
+## Owner decisions still needed (grown across v1 → v2 → v3 → v4, unresolved)
+
+All items from the v3 list remain open (reentrancy opt-in shape, abort-policy scope, conservation-invariant
+assertion, Frame pre-provisioning, `MaxCallDepth`, match-dispatch-fix sequencing, storage-rent-at-resolution
+interaction), plus, new in v4:
+- Confirm or reject the `OriginalBalance` (live) vs. `AttachedValue` (frame-static) semantic split v4
+  proposed — if confirmed, v3's original framing ("both need live reads") was itself imprecise and needs
+  correcting in any future round.
+- How does a resolved-but-never-transferred-value counterparty (any `TransferValue` recipient, or any callee
+  entered via a zero-value `OpCall`/`OpCallExternal`) get its `committedBalanceSnapshot` correctly seeded from
+  the REAL ledger without giving `avm.go` direct access to `k.genesis.State.Contracts`? No answer has survived
+  four rounds. Candidate directions not yet designed or reviewed: (a) give `ContractResolver` a
+  `RealBalanceOf(address) (uint64, error)` method so `avm.go` can query — not mutate — real balances on demand
+  at first touch, keeping the existing "avm.go never imports x/contracts/keeper" acyclicity property intact;
+  (b) pre-resolve and pass in every address the call tree could possibly touch before `Run()` starts (requires
+  a static-analysis pass over the whole call graph, likely impractical); (c) something not yet considered.
+  Whichever direction is chosen must independently close blocker 2 (fresh-call seeding) too, since both
+  blockers are instances of the same missing capability.
+- The pre-existing `deliverInternalMessage` auto-deploy double-commit bug (found this round, item 3 above)
+  needs a decision on sequencing: fix it before Phase E/F design resumes (since Phase E/F's atomicity story
+  explicitly depends on citing that function as a proven-safe pattern to mirror, and it currently is not one),
+  or track it as fully independent work — recommend fixing it first regardless of Phase E/F's own timeline,
+  since it is a live bug today.
+
 ## Status
 
-**Not started. Do not implement.** THREE consecutive design rounds (v1, v2, v3) have now each been rejected
-for a genuinely NEW, non-repeating, fund-loss-class bug — not a refinement of a prior finding. This is no
-longer just "a strong signal automated review is doing real work"; three-for-three with escalating structural
-subtlety (v3's bugs are about read-freshness and commit-atomicity within brand-new machinery, one layer
-deeper than v1/v2's) indicates this specific piece — synchronous cross-contract value transfer under a
-deferred-commit model — is genuinely hard to get right by automated design→critique alone, and is exactly the
-kind of real-money-moving consensus code where a human architect should look at the accumulated design
-(sections 1-4 of v3, which are otherwise well-grounded in the actual current code — re-reads of
-`buildAVMContext`, `Run()`'s verify call, `StoreCode`'s gate, and the emit-opcode split were all independently
-confirmed correct by adversarial review) and the 9-item owner-decision list directly, rather than an automated
-v4 repeating the same loop a fourth time. Recommend pausing further automated iteration on this specific
-design track pending that review; other roadmap phases are not blocked by this pause.
+**Not started. Do not implement.** FOUR consecutive design rounds (v1, v2, v3, v4) have now each been
+rejected for a genuinely NEW, non-repeating, fund-loss-class bug. Unlike Phase D's ZK/pairing design (three
+rounds, strictly DECREASING severity: 3 blockers → 2 → 1 spec-typo, converging toward owner sign-off), this
+track shows NO convergence after four rounds — v4's findings are, if anything, more severe in real-world
+impact than v1's (silent destruction of a real counterparty's existing balance on the ordinary happy path,
+vs. v1's reentrancy-triggered lost-update requiring a specific opt-in). The core unresolved capability gap
+(how does `avm.go` learn a real, un-touched address's real balance without importing `x/contracts/keeper` and
+without breaking the established acyclicity invariant) has never been designed, only worked around, across
+all four rounds. This is now well past the point where a fifth automated round is a reasonable next step:
+recommend this track stay paused for direct owner/architect design of the missing capability (see the new
+owner-decision item above) before any further automated design→review iteration, and recommend the
+newly-found pre-existing `deliverInternalMessage` auto-deploy double-commit bug be fixed independently and
+promptly, since it is real and live regardless of this track's outcome. Other roadmap phases are not blocked
+by this pause.
