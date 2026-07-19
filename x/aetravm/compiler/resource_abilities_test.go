@@ -211,6 +211,39 @@ func TestResourceAbilityRejectsDoubleUseOnParameter(t *testing.T) {
 	require.Equal(t, "E_RESOURCE_DOUBLE_USE", abilityErr.Code)
 }
 
+// TestResourceAbilityWiredIntoCompilePipeline proves CheckResourceAbilities
+// now runs automatically as part of Compiler.Compile()/CompileFiles() -- not
+// just when called standalone. It deliberately does NOT call
+// CheckResourceAbilities itself; it feeds the same double-use source
+// straight into the real, unmodified c.Compile() entry point and asserts the
+// compile fails with E_RESOURCE_DOUBLE_USE.
+func TestResourceAbilityWiredIntoCompilePipeline(t *testing.T) {
+	c, err := New(DefaultOptions())
+	require.NoError(t, err)
+
+	_, err = c.Compile([]byte(resourceDoubleUseSource))
+	require.Error(t, err)
+	var abilityErr *ResourceAbilityError
+	require.ErrorAs(t, err, &abilityErr)
+	require.Equal(t, "E_RESOURCE_DOUBLE_USE", abilityErr.Code)
+}
+
+// TestResourceAbilityUnusedWiredIntoCompilePipeline is the E_RESOURCE_UNUSED
+// counterpart to TestResourceAbilityWiredIntoCompilePipeline: it feeds the
+// unused-resource source straight into c.Compile() (again, without calling
+// CheckResourceAbilities standalone) and asserts the real compile pipeline
+// rejects it.
+func TestResourceAbilityUnusedWiredIntoCompilePipeline(t *testing.T) {
+	c, err := New(DefaultOptions())
+	require.NoError(t, err)
+
+	_, err = c.Compile([]byte(resourceUnusedSource))
+	require.Error(t, err)
+	var abilityErr *ResourceAbilityError
+	require.ErrorAs(t, err, &abilityErr)
+	require.Equal(t, "E_RESOURCE_UNUSED", abilityErr.Code)
+}
+
 // TestResourceAnnotationRejectsCombinationWithStorageOrMessage documents
 // (and pins) the pre-existing "only one annotation per declaration" parser
 // rule (parser.go parseAnnotationList) as it applies to @resource: a struct

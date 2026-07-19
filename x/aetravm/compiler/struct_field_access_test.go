@@ -278,26 +278,40 @@ func TestSelfNamedParameterFieldReadUsesSameParamMechanism(t *testing.T) {
 	require.True(t, found, "expected self.bps to lower to OpReadMsgField(arg0) -> OpReadField(bps), same as any other parameter")
 }
 
-// nestedStructFieldChainSource is a struct field whose own declared type is
-// another struct, accessed via a 3-segment chain (o.inner.z). This is an
-// explicitly OUT-OF-SCOPE follow-up: lowerExprToIR's ExprPath case only
-// special-cases len(expr.Path) == 1 and == 2; a 3-segment chain falls through
-// to the generic "AVM v1 lowering supports only state.<field> reads" error,
-// even though the separate static type-checker pass (resolvePathType) already
-// walks a field chain of arbitrary depth and would happily type-check this
-// same expression. Documented here rather than silently shipped as
-// half-working.
+// nestedStructFieldChainSource exercises 3-segment (m.inner.z) and 4-segment
+// (o.middle.inner.z) local struct field READ chains, where every intermediate
+// segment (inner, middle) is itself a plain struct-typed field of the
+// previous segment's own declared type -- e.g. Middle.inner is an Inner, and
+// Outer.middle is a Middle. This is the regression test for the compile.go
+// fix that extends lowerExprToIR's ExprPath case (previously len==1/len==2
+// only) to arbitrary depth N by chaining IRExprField/OpReadField reads. Two
+// distinct depths with two distinct leaf values (7 vs 11) guard against a fix
+// that happens to work for exactly one extra segment but not further, or
+// that accidentally reads the wrong nested value.
+//
+// It also exercises the SAME lowering rooted at a storage alias
+// (`const st = DemoState4.load(); st.outer.z`, a 3-segment chain) rather than
+// a local, proving the fix is not local-only: a storage field whose OWN
+// declared type is a struct (DemoState4.outer: Inner) can have ITS nested
+// field read the same way, because IRExprStateRead produces the same kind of
+// runtime map value an IRExprLocalLoad of a struct-typed local does.
 const nestedStructFieldChainSource = `
 struct Inner {
   z: uint64
 }
 
-struct Outer {
+struct Middle {
   inner: Inner
+  y: uint64
+}
+
+struct Outer {
+  middle: Middle
 }
 
 struct DemoState4 {
   count: uint64 = 0
+  outer: Inner
 }
 
 contract NestedFieldDemo {
@@ -306,6 +320,7 @@ contract NestedFieldDemo {
 
   @external
   func onExternalMessage(inMsg: Segment) {
+    set state.outer = Inner{z: 77}
   }
 
   @bounced
@@ -313,23 +328,230 @@ contract NestedFieldDemo {
   }
 
   @get
-  func readNestedField(): uint64 {
-    const o = Outer{inner: Inner{z: 5}}
-    return o.inner.z
+  func readThreeSegment(): uint64 {
+    const m = Middle{inner: Inner{z: 7}, y: 9}
+    return m.inner.z
+  }
+
+  @get
+  func readFourSegment(): uint64 {
+    const o = Outer{middle: Middle{inner: Inner{z: 11}, y: 13}}
+    return o.middle.inner.z
+  }
+
+  @get
+  func readStorageRootedThreeSegment(): uint64 {
+    const st = DemoState4.load()
+    return st.outer.z
   }
 }
 `
 
-// TestNestedStructFieldChainIsNotSupported documents that a 3+ segment field
-// chain (a struct field whose own type is another struct) is not lowered by
-// AVM v1 today. It fails at compile time with a clear diagnostic rather than
-// silently compiling to a wrong read -- this test pins that behavior so a
-// future attempt to add nested-chain support notices this test and updates it
-// deliberately instead of it drifting unnoticed.
-func TestNestedStructFieldChainIsNotSupported(t *testing.T) {
+// TestNestedStructFieldChainReadsThroughVM is the regression test for the
+// compile.go fix adding N-deep (N>=3) nested struct field READ lowering: it
+// compiles nestedStructFieldChainSource (which the pre-fix compiler rejected
+// outright, see the git history of this test) and executes it through the
+// real AVM interpreter, not just a compile-time check, confirming each depth
+// reads back the correct, distinct value -- proving the chain walks down the
+// right nested map at each level rather than, say, silently returning the
+// outermost or an unrelated field.
+func TestNestedStructFieldChainReadsThroughVM(t *testing.T) {
 	c, err := New(DefaultOptions())
 	require.NoError(t, err)
 
-	_, err = c.Compile([]byte(nestedStructFieldChainSource))
-	require.Error(t, err, "nested struct field chains (x.y.z) are not supported by AVM v1 lowering yet")
+	res, err := c.Compile([]byte(nestedStructFieldChainSource))
+	require.NoError(t, err)
+
+	runner, err := avm.NewRunner(avm.DefaultParams())
+	require.NoError(t, err)
+
+	// Populate state.outer via the external handler so the storage-rooted
+	// getter below has a real, non-default nested struct to read.
+	exec, err := runner.Run(res.Module, avm.Storage{}, avm.RuntimeContext{
+		Entry:    avm.EntryReceiveExternal,
+		Message:  async.MessageEnvelope{Opcode: 11, QueryID: 1, GasLimit: 200_000},
+		GasLimit: 200_000,
+	})
+	require.NoError(t, err)
+	require.Equal(t, async.ResultOK, exec.ResultCode)
+
+	for _, tc := range []struct {
+		getter string
+		want   uint64
+	}{
+		{"readThreeSegment", 7},
+		{"readFourSegment", 11},
+		{"readStorageRootedThreeSegment", 77},
+	} {
+		getExec, err := runner.Run(res.Module, exec.State, avm.RuntimeContext{
+			Entry:    avm.EntryQuery,
+			Message:  async.MessageEnvelope{Opcode: getterSelector(t, res, tc.getter), QueryID: 2, GasLimit: 200_000},
+			GasLimit: 200_000,
+		})
+		require.NoError(t, err)
+		require.Equal(t, async.ResultOK, getExec.ResultCode)
+		got, err := getExec.ReturnValue.AsUint64()
+		require.NoError(t, err)
+		require.Equalf(t, tc.want, got, "getter %s", tc.getter)
+	}
+}
+
+// mapGetUnwrapFieldChainSource is the DELIBERATELY OUT-OF-SCOPE shape called
+// out in nestedStructFieldChainSource's fix: a chain through a Map
+// .get()-then-unwrap, e.g. `m.get(k)!.bps.nested`. This is a different shape
+// from a local/storage binding's own nested struct field -- here the struct
+// comes from a MAP ENTRY's value, not from the receiver's own declared type
+// -- and this test pins that it is still rejected, with the SAME clear
+// diagnostic as before this fix (this source never reaches lowerExprToIR's
+// ExprPath case at all, so the new N-deep branch added there cannot affect
+// it): the grammar has no postfix `.field` selector after a call expression
+// or its trailing `!` unwrap (see parser.go parsePrimary's `finish` closure,
+// which consumes `!` but never loops back into a path/selector parse), so
+// this is rejected at PARSE time with "unexpected expression token", not a
+// confusing new compile/lowering error.
+const mapGetUnwrapFieldChainSource = `
+struct Bp5 {
+  bps: uint64
+}
+
+struct DemoState8 {
+  count: uint64 = 0
+}
+
+contract MapUnwrapDemo {
+  storage: DemoState8
+  incomingExternal: DemoState8
+
+  @external
+  func onExternalMessage(inMsg: Segment) {
+    var m = Map.empty()
+    set state.count = m.get(getAddress())!.bps.nested
+  }
+
+  @bounced
+  func onBouncedMessage(in: InMessageBounced) {
+  }
+}
+`
+
+// TestMapGetUnwrapFieldChainStillRejectedClearly documents and pins that the
+// out-of-scope map-fetched-struct-field shape keeps failing with a clear,
+// unambiguous diagnostic ("unexpected expression token") rather than being
+// silently accepted or newly mis-lowered by the N-deep chain support added
+// alongside this test.
+func TestMapGetUnwrapFieldChainStillRejectedClearly(t *testing.T) {
+	c, err := New(DefaultOptions())
+	require.NoError(t, err)
+
+	_, err = c.Compile([]byte(mapGetUnwrapFieldChainSource))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "unexpected expression token",
+		"map-fetched struct field chains must still fail with a clear parse-time diagnostic, not a confusing new one")
+}
+
+// nestedStructFieldChainWriteSource reproduces the exact silent-state-
+// corruption repro found while adversarially reviewing the read-side N-deep
+// chain fix above: before the E_SET_NESTED_UNSUPPORTED guard existed, `set
+// st.outer.b = st.spare` compiled with ZERO errors (validateStatement's
+// StatementSet case only ever inspected stmt.Path[1] == "outer", type-
+// checking spare's whole-Inner type against outer's whole-Inner type --
+// which matched, since both container fields share the same struct type)
+// and lowered to `IRStmtStoreState{Key: "outer", ...}` (lowerStatementsToIR's
+// StatementSet case, same stmt.Path[1]-only bug), silently overwriting ALL of
+// outer (not just .b) with spare's value. This must now be a compile-time
+// error, not a silent runtime corruption.
+const nestedStructFieldChainWriteSource = `
+struct Inner9 {
+  a: uint64
+  b: uint64
+}
+
+struct DemoState9 {
+  outer: Inner9
+  spare: Inner9
+}
+
+contract NestedFieldWriteDemo {
+  storage: DemoState9
+  incomingExternal: DemoState9
+
+  @external
+  func onExternalMessage(inMsg: Segment) {
+    var st = lazy DemoState9.load()
+    st.outer.b = st.spare
+    st.save()
+  }
+
+  @bounced
+  func onBouncedMessage(in: InMessageBounced) {
+  }
+}
+`
+
+// TestNestedStructFieldWriteRejectedNotSilentlyCorrupted is the regression
+// test for the write-path bug: a 3-segment `set` target (here via a local
+// storage-alias field assignment, `st.outer.b = ...`) must be rejected at
+// compile time with E_SET_NESTED_UNSUPPORTED, never silently accepted and
+// lowered to a whole-field overwrite that discards the trailing segment.
+func TestNestedStructFieldWriteRejectedNotSilentlyCorrupted(t *testing.T) {
+	c, err := New(DefaultOptions())
+	require.NoError(t, err)
+
+	_, err = c.Compile([]byte(nestedStructFieldChainWriteSource))
+	require.Error(t, err, "a 3+ segment set target must be rejected at compile time, not silently accepted")
+	require.Contains(t, err.Error(), "nested (3+ segment) struct field writes are not supported")
+}
+
+// nestedStructFieldChainLocalWriteSource is the same bug shape but through a
+// LOCAL struct binding's own field chain (`o.middle.inner.z = ...`) rather
+// than a storage alias -- lowerStatementsToIR's StatementSet case has a
+// SEPARATE stmt.Path[1]-only branch for local bindings (distinct from the
+// storage/state branch nestedStructFieldChainWriteSource exercises above), so
+// this needs its own regression proof that the len(stmt.Path)>=3 guard closes
+// both branches, not just one.
+const nestedStructFieldChainLocalWriteSource = `
+struct Inner10 {
+  z: uint64
+}
+
+struct Middle10 {
+  inner: Inner10
+}
+
+struct Outer10 {
+  middle: Middle10
+}
+
+struct DemoState10 {
+  count: uint64 = 0
+}
+
+contract NestedLocalFieldWriteDemo {
+  storage: DemoState10
+  incomingExternal: DemoState10
+
+  @external
+  func onExternalMessage(inMsg: Segment) {
+    var o = Outer10{middle: Middle10{inner: Inner10{z: 1}}}
+    o.middle.inner.z = 2
+    set state.count = o.middle.inner.z
+  }
+
+  @bounced
+  func onBouncedMessage(in: InMessageBounced) {
+  }
+}
+`
+
+// TestNestedStructFieldLocalWriteRejectedNotSilentlyCorrupted mirrors
+// TestNestedStructFieldWriteRejectedNotSilentlyCorrupted for the LOCAL-
+// binding branch of the same set-statement lowering, proving the
+// E_SET_NESTED_UNSUPPORTED guard closes that branch too.
+func TestNestedStructFieldLocalWriteRejectedNotSilentlyCorrupted(t *testing.T) {
+	c, err := New(DefaultOptions())
+	require.NoError(t, err)
+
+	_, err = c.Compile([]byte(nestedStructFieldChainLocalWriteSource))
+	require.Error(t, err, "a 3+ segment local-binding set target must be rejected at compile time, not silently accepted")
+	require.Contains(t, err.Error(), "nested (3+ segment) struct field writes are not supported")
 }

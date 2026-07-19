@@ -87,11 +87,30 @@ RESOURCE ABILITIES (copy/drop/store) so tokens/NFTs can't be duplicated at the t
 structured error propagation. (Recursion deliberately bounded.)
 
 ### Phase E status
-DONE: struct field access on locals AND function/method parameters (commit `1165cf4f`); hard-abort,
+DONE: struct field access on locals AND function/method parameters (commit `1165cf4f`); nested (3+
+segment) struct field READ chains of arbitrary depth (`o.inner.z`, `st.outer.z`, ...) through local
+bindings, storage/`state` aliases, and struct-typed parameters -- `lowerExprToIR`'s `ExprPath` case now
+chains `IRExprField`/`OpReadField` per segment instead of erroring past depth 2, verified end-to-end
+through the real AVM runner at 3- and 4-segment depth (`struct_field_access_test.go`); hard-abort,
 real tag-compare-and-jump match codegen for the message-opcode-union match path (`match(msg)` handlers);
 Move-style RESOURCE ABILITIES as a compiler-only, intra-function-scoped static linear-use check (`@resource`
-struct annotation + `CheckResourceAbilities`, commit `52d02d47`) -- currently opt-in, not yet wired into
-`Compiler.Compile()`'s automatic pipeline (pending exclusive access to compile.go).
+struct annotation + `CheckResourceAbilities`, commit `52d02d47`) -- now WIRED into `Compiler.Compile()`'s
+automatic pipeline (called from `typecheck()` as the last check before codegen, no longer opt-in; still
+dormant/zero-cost in practice since no shipped example declares `@resource` yet).
+
+STILL NOT supported: field access through a MAP-FETCHED struct value (e.g. `m.get(k)!.field`), for either
+read or write -- rejected at parse time (`unexpected expression token "."`; `parsePrimary` has no postfix
+field-access loop after a call/`!`-unwrap), so it never reaches the lowering pass above. This stays blocked
+on the paused Phase F call-mechanism prerequisite below.
+
+Separately, a pre-existing gap the read-side fix makes more reachable rather than causes: nested-field
+WRITE (`set st.outer.b = ...` for a 3+-segment path) silently corrupts state today, with no compiler
+diagnostic and no runtime failure. `validateStatement`/`lowerStatementsToIR`'s `StatementSet` handling only
+ever inspects `stmt.Path[1]`, regardless of `len(stmt.Path)`; for a 3-segment target it typechecks the RHS
+against the *container* field's type (`outer`, not `b`) and lowering then overwrites the whole container
+with the RHS, discarding the trailing segment. Not yet fixed -- `set` should reject `len(Path) >= 3` with a
+clear "not supported" error (mirroring the read side's pre-fix behavior) until write-side nested-field
+support is implemented.
 
 OPEN, real gap (not cosmetic): the match path for user-declared enums/`Option`/`Result`/structs (i.e. every
 match EXCEPT the message-opcode-union one) still only handles its scrutinee via compile-time constant

@@ -699,6 +699,9 @@ func (c *Compiler) typecheck(file *SourceFile, contract *ContractDecl, functions
 	if err := validateFunctionRecursion(allFunctions); err != nil {
 		return err
 	}
+	if err := CheckResourceAbilities(file); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1576,6 +1579,24 @@ func (c *Compiler) validateStatement(stmt Statement, env map[string]TypeRef, mut
 		}
 		if len(stmt.Path) < 2 {
 			return fail("E_SET_PATH", stmt.Pos, "set statements must target state.<field> or a mutable local binding")
+		}
+		if len(stmt.Path) >= 3 {
+			// Nested (3+ segment) struct field WRITES are not supported: the
+			// lowering below (and this validation) only ever inspects
+			// stmt.Path[1], so a target like `st.outer.b` would silently type-
+			// check the RHS against `outer`'s type (the container) instead of
+			// `b`'s type, and lower to a whole-field overwrite of `outer` that
+			// discards the `.b` suffix entirely -- a real, silent state-
+			// corruption bug, not merely an unimplemented feature (found via
+			// this session's own adversarial review: `set st.outer.b =
+			// st.spare` compiles and executes with ResultOK, clobbering ALL of
+			// `outer` with `spare`'s value whenever their container types
+			// happen to match). Reject explicitly here instead. Read chains of
+			// arbitrary depth ARE supported (see the ExprPath len>=3 branch in
+			// lowerExprToIR) -- only the write side has this restriction.
+			return fail("E_SET_NESTED_UNSUPPORTED", stmt.Pos, fmt.Sprintf(
+				"cannot assign to %q: nested (3+ segment) struct field writes are not supported in AVM v1 -- construct a new struct literal (copying any fields you want unchanged) and assign it to %q as a whole instead",
+				joinPath(stmt.Path), joinPath(stmt.Path[:len(stmt.Path)-1])))
 		}
 		var targetStruct *StructDecl
 		if stmt.Path[0] == "state" {
@@ -3966,6 +3987,21 @@ func (c *Compiler) lowerStatementsToIR(stmts []Statement, params []ParamDecl, re
 			if len(stmt.Path) < 2 {
 				return nil, fail("E_LOWER_SET", stmt.Pos, "AVM v1 lowering supports only direct state.<field> writes")
 			}
+			if len(stmt.Path) >= 3 {
+				// Already rejected by validateStatement's E_SET_NESTED_UNSUPPORTED
+				// check, which always runs before lowering -- this is a
+				// redundant, defense-in-depth guard at the lowering layer
+				// itself (mirroring this switch's other doubled-up checks,
+				// e.g. the readOnly guard just below), so a future change to
+				// the earlier validation pass can never silently let a
+				// 3+-segment write reach here. Without this guard, both
+				// branches below only ever inspect stmt.Path[1], which would
+				// silently truncate a target like `st.outer.b` into a
+				// whole-field overwrite of `outer`, discarding `.b` entirely --
+				// a real, silent state-corruption bug found via this session's
+				// own adversarial review.
+				return nil, fail("E_LOWER_SET", stmt.Pos, "AVM v1 lowering supports only direct state.<field> writes")
+			}
 			if binding, ok := env.locals[stmt.Path[0]]; ok {
 				if !binding.Mutable {
 					return nil, fail("E_LOWER_SET", stmt.Pos, fmt.Sprintf("binding %q is immutable", stmt.Path[0]))
@@ -4989,6 +5025,67 @@ func lowerExprToIR(expr Expr, env loweringEnv, functions map[string]*FunctionDec
 			}
 			if _, ok := env.unknowns[expr.Path[0]]; ok {
 				return &IRExpr{Kind: IRExprConstU64, Pos: expr.Pos}, nil
+			}
+		}
+		if len(expr.Path) >= 3 {
+			// Nested struct field chain (3+ segments), e.g. `o.inner.z` or
+			// `state.inner.z`/`storageAlias.inner.z`: a plain local/parameter/
+			// storage-rooted binding whose OWN declared type is a struct, where
+			// every intermediate segment (`inner`, and any further ones) is
+			// itself a struct-typed field of the previous segment's type. This
+			// generalizes the len==2 IRExprField lowering directly above to
+			// arbitrary depth N by chaining OpReadField reads: emitIRExpr's
+			// IRExprField case already emits its Left receiver first and its
+			// own OpReadField second (recursively), and a nested struct literal
+			// already lowers to a nested runtime map value (IRExprStruct emits
+			// a fresh OpMapEmpty for every nested field, see emitIRExpr), so
+			// repeated OpReadField calls correctly walk down one level at a
+			// time — the same mechanism, just applied more than once.
+			//
+			// This lowering does not re-resolve each intermediate field's type
+			// (loweringEnv carries no `structs`/`enums`/`types` decl maps, only
+			// the root binding's own declared type) because it doesn't need
+			// to: by the time an expression reaches lowering, the whole chain
+			// has already been walked and validated field-by-field by the
+			// static type-checker (resolvePathType, invoked via inferExprType
+			// during typecheck, which always runs before lowering). A chain
+			// that resolvePathType would have rejected never reaches here.
+			//
+			// OUT OF SCOPE (deliberately, not handled by this branch): a chain
+			// through a Map.get()-then-unwrap, e.g. `x.get(k)!.field.nested` —
+			// a map ENTRY's value being a struct, not a local/storage binding's
+			// OWN nested struct field. That shape doesn't even reach this
+			// function as an ExprPath: `x.get(k)` parses as ExprCall (see
+			// parser.go parsePrimary), and postfix `.field` selectors are not
+			// parsed after a call/its trailing `!`, so it is rejected earlier
+			// (at parse time, or — if written some other way the grammar does
+			// accept — at typecheck) rather than silently accepted here. It
+			// remains unsupported; do not conflate the two shapes.
+			_, isStorageAlias := env.storageAliases[expr.Path[0]]
+			var base *IRExpr
+			tailStart := 1
+			if expr.Path[0] == "state" || isStorageAlias {
+				base = &IRExpr{Kind: IRExprStateRead, Key: expr.Path[1], TypeHint: stateReadTypeHint(env.storageFieldTypes, expr.Path[1]), Pos: expr.Pos}
+				tailStart = 2
+			} else if binding, ok := env.locals[expr.Path[0]]; ok {
+				if !isFieldLikeType(binding.Type.Name) {
+					return nil, fail("E_LOWER_PATH", expr.Pos, "local field access is not supported in AVM v1")
+				}
+				base = &IRExpr{Kind: IRExprLocalLoad, Slot: binding.Slot, Pos: expr.Pos}
+			} else if idx, ok := env.params[expr.Path[0]]; ok {
+				if typ, ok := env.types[expr.Path[0]]; ok {
+					lowerName := strings.ToLower(typ.Name)
+					if lowerName != "segment" && lowerName != "chunk" && isFieldLikeType(typ.Name) {
+						base = &IRExpr{Kind: IRExprMsgField, Text: fmt.Sprintf("arg%d", idx), Pos: expr.Pos}
+					}
+				}
+			}
+			if base != nil {
+				result := base
+				for _, seg := range expr.Path[tailStart:] {
+					result = &IRExpr{Kind: IRExprField, Left: result, Text: seg, Pos: expr.Pos}
+				}
+				return result, nil
 			}
 		}
 		return nil, fail("E_LOWER_PATH", expr.Pos, "AVM v1 lowering supports only state.<field> reads")

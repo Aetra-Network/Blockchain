@@ -16,10 +16,11 @@ import "fmt"
 // lands." This file honors that scope explicitly; see the doc comment on
 // CheckResourceAbilities below for the precise, honestly-stated boundaries.
 //
-// This is a NEW, standalone file. It does not modify parser.go's AST types,
-// ir.go, avm.go, or compile.go's Compile() pipeline. It is not currently
-// wired into Compiler.Compile() -- see the package-level note at the bottom
-// of this file for why, and what remains to integrate it.
+// This is a standalone file: it does not modify parser.go's AST types,
+// ir.go, or avm.go. It IS wired into Compiler.Compile()/CompileFiles()
+// (compile.go, end of typecheck()), so every compile enforces @resource
+// linearity automatically; see the package-level note at the bottom of this
+// file for the integration point.
 
 // ResourceAbilityError is returned by CheckResourceAbilities when a
 // @resource-typed value is used in a way that would duplicate or silently
@@ -334,18 +335,12 @@ func collectIdentRefCountsExpr(expr *Expr, counts map[string]int) {
 	}
 }
 
-// Integration note (deliberately NOT done in this change): wiring
-// CheckResourceAbilities into Compiler.Compile()/CompileFiles() (compile.go)
-// so it runs automatically on every contract compile is the one remaining
-// step to make @resource enforcement automatic rather than opt-in. It is
-// deferred here because compile.go was under active, live concurrent
-// modification by another session during this change (its on-disk mtime
-// advanced repeatedly while this file was being written -- confirmed by
-// re-`stat`ing it minutes apart). Touching compile.go's Compile() call graph
-// while another process is mid-edit risks a corrupted merge; per this
-// task's own instructions, correctness of the untouched pipeline outranks
-// finishing the wiring in this pass. Until that wiring lands, callers who
-// want @resource enforcement must call CheckResourceAbilities(sourceFile)
-// explicitly (see resource_abilities_test.go for the pattern: ParseSource
-// then CheckResourceAbilities, alongside the normal Compiler.Compile() for
-// codegen/execution).
+// Integration note: CheckResourceAbilities(file) is called from
+// (*Compiler).typecheck in compile.go, as the last check before typecheck
+// returns -- after struct/enum/type validation, function/message/getter
+// validation, and recursion validation have all already run, and before
+// buildArtifacts/buildModule (codegen) starts. This makes @resource
+// enforcement automatic on every Compile()/CompileFiles() call; it no longer
+// needs to be invoked standalone (though it remains an exported function and
+// resource_abilities_test.go still exercises it directly in some cases for
+// isolation).
