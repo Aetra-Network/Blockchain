@@ -73,6 +73,29 @@ Exhaustive match/pattern, full generics, tuples, fixed + dynamic arrays, enums, 
 RESOURCE ABILITIES (copy/drop/store) so tokens/NFTs can't be duplicated at the type level. Early return,
 structured error propagation. (Recursion deliberately bounded.)
 
+### Phase E status
+DONE: struct field access on locals AND function/method parameters (commit `1165cf4f`); hard-abort,
+real tag-compare-and-jump match codegen for the message-opcode-union match path (`match(msg)` handlers);
+Move-style RESOURCE ABILITIES as a compiler-only, intra-function-scoped static linear-use check (`@resource`
+struct annotation + `CheckResourceAbilities`, commit `52d02d47`) -- currently opt-in, not yet wired into
+`Compiler.Compile()`'s automatic pipeline (pending exclusive access to compile.go).
+
+OPEN, real gap (not cosmetic): the match path for user-declared enums/`Option`/`Result`/structs (i.e. every
+match EXCEPT the message-opcode-union one) still only handles its scrutinee via compile-time constant
+folding; when that fails for a genuine runtime value, it silently falls back to the wildcard arm if present,
+or otherwise **silently executes the first arm regardless of the actual runtime tag**. Latent today (no
+shipped example declares a user enum), but a real, fund-loss-class correctness gap the moment a contract
+uses non-trivial enum/Option/Result matching. Needs the same tag-compare-and-jump codegen the message-match
+path already has.
+
+BLOCKED on the paused Phase F call-mechanism prerequisite (see `docs/architecture/avm-phase-ef-call-design.md`
+— four rounds rejected, no convergence, paused pending direct owner design): full generics, tuples/multi-value
+returns (no tuple value representation, wire/ABI encoding, or destructuring syntax exists at all), traits with
+dynamic dispatch, early return / structured error propagation for non-trivial (branching, looping,
+multi-statement) function bodies. `tryInlineUserFunctionCall`, the only current intra-contract "call"
+mechanism, is an AST-splice supporting strictly one lazy-storage-binding-then-return shape and structurally
+cannot support any of these — they are not independent Phase E work, they inherit Phase F's blocked status.
+
 ## Phase F — composability + safety
 Synchronous contract-to-contract calls with return values, atomic rollback/revert/abort, a transactional
 journal, call-depth + reentrancy guards, a shared gas meter across the call tree, read-only calls, batched
