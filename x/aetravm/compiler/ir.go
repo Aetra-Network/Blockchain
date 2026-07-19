@@ -191,6 +191,52 @@ const (
 	// store an unsigned (Ratio256/BasisPoints-derived) magnitude into a
 	// genuinely int256-backed signed field. Maps 1:1 to avm.OpNarrowToInt256.
 	IRExprNarrowToInt256 IRExprKind = "narrow_to_int256"
+
+	// BN254 pairing/curve primitives (Phase D). Operands are carried in Args,
+	// source order, and pushed source-order at emit time -- the VM pops them
+	// last-pushed-first, matching each opcode's own doc comment in avm.go
+	// exactly (see IRExprBn254PairingCheck/IRExprPoseidon2Bn254 below for the
+	// two multi-operand cases). All G1/G2 points are opaque `bytes` (64-byte
+	// X‖Y for G1, 128-byte X.A0‖X.A1‖Y.A0‖Y.A1 for G2) -- there is no
+	// dedicated point type, mirroring how ecrecover's 64-byte pubkey is plain
+	// `bytes` rather than a newtype. Malformed/off-curve/out-of-subgroup input
+	// soft-fails (empty bytes / false) at the opcode layer for every one of
+	// these except IRExprPoseidon2Bn254, which traps on malformed length or a
+	// non-canonical field element (see OpPoseidon2Bn254's doc comment).
+
+	// bn254G1Add(a, b) -> bytes: two 64-byte G1 points in Args (source order
+	// a, b). Maps 1:1 to avm.OpBn254G1Add.
+	IRExprBn254G1Add IRExprKind = "bn254_g1_add"
+	// bn254G1ScalarMul(point, scalar) -> bytes: a 64-byte G1 point and a
+	// uint256 scalar in Args (source order point, scalar). Maps 1:1 to
+	// avm.OpBn254G1ScalarMul.
+	IRExprBn254G1ScalarMul IRExprKind = "bn254_g1_scalar_mul"
+	// bn254G1IsOnCurve(point) -> bool: one 64-byte G1 point in Args. Maps 1:1
+	// to avm.OpBn254G1IsOnCurve.
+	IRExprBn254G1IsOnCurve IRExprKind = "bn254_g1_is_on_curve"
+	// bn254G2Add(a, b) -> bytes: two 128-byte G2 points in Args (source order
+	// a, b). Maps 1:1 to avm.OpBn254G2Add.
+	IRExprBn254G2Add IRExprKind = "bn254_g2_add"
+	// bn254G2ScalarMul(point, scalar) -> bytes: a 128-byte G2 point and a
+	// uint256 scalar in Args (source order point, scalar). Maps 1:1 to
+	// avm.OpBn254G2ScalarMul.
+	IRExprBn254G2ScalarMul IRExprKind = "bn254_g2_scalar_mul"
+	// bn254PairingCheck(g1s, g2s, k) -> bool: three operands in Args, source
+	// order (g1s: packed 64-byte-per-record G1 points, g2s: packed 128-byte-
+	// per-record G2 points, k: uint256 pair count). Emitted source-order
+	// (g1s, g2s, k), so k lands on top of the stack -- matching
+	// OpBn254PairingCheck's own "k on top (pushed last, popped first)"
+	// contract exactly. Maps 1:1 to avm.OpBn254PairingCheck.
+	IRExprBn254PairingCheck IRExprKind = "bn254_pairing_check"
+	// poseidon2Bn254(data, n) -> hash32: two operands in Args, source order
+	// (data: packed 32-byte BN254 scalar-field elements, n: uint256 element
+	// count). Emitted source-order (data, n), so n lands on top of the stack
+	// -- matching OpPoseidon2Bn254's own "n on top (pushed last, popped
+	// first)" contract exactly. Maps 1:1 to avm.OpPoseidon2Bn254. Unlike
+	// every other BN254 builtin here, this TRAPS (never soft-fails) on a
+	// malformed length or a non-canonical scalar -- see OpPoseidon2Bn254's
+	// doc comment in avm.go.
+	IRExprPoseidon2Bn254 IRExprKind = "poseidon2_bn254"
 )
 
 type IRStructField struct {
@@ -211,6 +257,12 @@ type IRExpr struct {
 	Args   []*IRExpr       `json:"args,omitempty"`
 	Fields []IRStructField `json:"fields,omitempty"`
 	Pos    Position        `json:"pos"`
+	// TypeHint carries a compiler-known declared-type hint for IRExprStateRead
+	// nodes only (e.g. "map" for a Map<K,V> @storage field), so emitIRExpr can
+	// tag the emitted OpReadStorage instruction's Arg with avm.StateReadHintMap
+	// and the runtime can default a truly-absent key to an empty map instead
+	// of the generic uint64(0) fallback. Empty for every other expression kind.
+	TypeHint string `json:"type_hint,omitempty"`
 }
 
 type StatementLoweringRule struct {

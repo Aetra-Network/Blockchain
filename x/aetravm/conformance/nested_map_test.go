@@ -193,25 +193,26 @@ func TestNestedMapCompilesAndExecutes(t *testing.T) {
 
 	// --- fresh contract: nothing set yet ---
 	//
-	// NOTE: the initial "balances" field is seeded EXPLICITLY with a
-	// canonical-encoded empty map, rather than left absent from Storage (the
+	// NOTE: the initial "balances" field used to need seeding EXPLICITLY with
+	// a canonical-encoded empty map, rather than left absent from Storage the
 	// way every other example/acceptance test in this suite starts a fresh
-	// contract, e.g. avm.Storage{} in multisig_acceptance_test.go /
-	// pow_acceptance_test.go). A truly absent Map-typed storage field (no
-	// explicit `= ...` initializer, and no prior stored value) decodes as a
-	// generic zero-valued uint64 instead of an empty map, tripping
+	// contract (e.g. avm.Storage{} in multisig_acceptance_test.go /
+	// pow_acceptance_test.go), because a truly absent Map-typed storage field
+	// (no explicit `= ...` initializer, and no prior stored value) used to
+	// decode as a generic zero-valued uint64 instead of an empty map, tripping
 	// "AVM type error: expected map, got uint64 → EXIT_TYPE_ERROR" the moment
-	// any map method (even a bare .keys()/.get()) touches it. This reproduces
-	// identically for dex_amm.atlx's pre-existing SINGLE-LEVEL
-	// Map<address,uint256> lpBalances field driven from a fresh
-	// avm.Storage{} through a real AddLiquidity message -- so it is a
-	// general "no declared-type-aware zero default for a Map storage field"
-	// gap in the storage-default path, not something specific to nesting.
-	// See the followup note in the test package doc / final report: fixing
-	// it requires touching the storage-default generation in
-	// x/aetravm/compiler/compile.go and/or the fromChunk/getData runtime
-	// default construction in x/aetravm/avm/avm.go, both explicitly out of
-	// scope for this task. Seeding the field here with the exported
+	// any map method (even a bare .keys()/.get()) touched it. That gap has
+	// since been fixed (see avm.StateReadHintMap / runtimeValueFromStorageHinted
+	// in x/aetravm/avm/avm.go and stateReadTypeHint in
+	// x/aetravm/compiler/compile.go) and is covered by a dedicated regression
+	// test driving this same contract from a genuinely fresh, unseeded
+	// avm.Storage{} -- see
+	// TestNestedMapStorageFieldDefaultsToEmptyMapOnFreshContract in
+	// storage_default_test.go. The explicit seed below is kept anyway (rather
+	// than switched to avm.Storage{}) so this test keeps exercising the full
+	// get/set/delete/round-trip surface below starting from a known, explicit
+	// baseline state, independent of the storage-default path. Seeding the
+	// field here with the exported
 	// avm.ValueMapEmpty()/avm.CanonicalEncode APIs works around it without
 	// touching either off-limits file, and still lets this test drive every
 	// nested get/set/delete/round-trip path for real.

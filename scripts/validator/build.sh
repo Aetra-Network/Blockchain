@@ -63,7 +63,14 @@ go mod download
 if [[ "$SKIP_MOD_VERIFY" != true ]]; then
   go mod verify
 fi
-CGO_ENABLED=0 go build -mod=readonly -trimpath -p=1 -ldflags "$LDFLAGS" -o "$BINARY" ./cmd/l1d
+# -tags purego,noadx: force gnark-crypto (AVM Phase D BN254 opcodes) onto its
+# pure-Go arithmetic path on every validator build, closing the ADX-dispatch
+# cross-architecture/runtime-CPU-feature determinism hazard documented in
+# docs/architecture/avm-phase-d-zk-design.md (Status / owner-decisions). This
+# is the INTERIM alternative (no vendoring); see that doc for the tradeoff
+# accepted (amd64-vs-arm64 divergence stays open as a known gap) and every
+# other place this flag combo must be passed.
+CGO_ENABLED=0 go build -mod=readonly -trimpath -p=1 -tags purego,noadx -ldflags "$LDFLAGS" -o "$BINARY" ./cmd/l1d
 
 echo "Binary: $BINARY"
 echo "Version: $VERSION"

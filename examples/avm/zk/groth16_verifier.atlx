@@ -1,0 +1,243 @@
+// Reference contract for Phase D's Groth16-over-BN254 verifier (design doc:
+// docs/architecture/avm-phase-d-zk-design.md, Section 6's shape — see
+// groth16_stdlib.atlx's own header for why this file's exact byte layout is
+// a documented implementation choice rather than a verbatim reproduction of
+// a pseudocode block that is not itself present in the committed design
+// doc). Two independent entry points, per the task brief:
+//
+//   1. verifyAndUnlock(vk, proof, publicInputs) -- a message handler that
+//      runs the SAME Groth16 verify equation as groth16_stdlib.atlx's
+//      VerifyGroth16Proof (vk_x accumulation over the IC array, then a
+//      4-term bn254PairingCheck with negated A) and, ONLY on a true verdict,
+//      flips a one-way `unlocked` storage flag to 1 -- a failed or malformed
+//      proof leaves `unlocked` exactly as it was (it is a "prove once,
+//      stay unlocked" latch, not a live/resettable status bit).
+//   2. commit(secret) -- a message handler that hashes a single BN254
+//      scalar-field element directly through poseidon2Bn254 and stores the
+//      digest, demonstrating the hash primitive used stand-alone (not just
+//      as part of the Groth16 equation, which never calls Poseidon2 itself).
+//
+// WHY THE VERIFY LOOP IS DUPLICATED FROM groth16_stdlib.atlx, NOT CALLED:
+// the AVM has no CALL/RET opcode -- every ordinary function call is
+// textually inlined at its call site, and inlining only succeeds for a
+// single-return-expression callee body (compile.go's
+// tryInlineUserFunctionCall). The vk_x accumulation is a mutating-loop
+// message-handler routine (see groth16_stdlib.atlx's own header for the
+// full "AVM v1 loop constraint" explanation), which can never be inlined,
+// and the AVM also requires exactly one contract per compiled unit, so this
+// file cannot import and invoke groth16_stdlib.atlx's message handler
+// either. The small pure byte-layout helpers below are copied verbatim from
+// groth16_stdlib.atlx (same names, same bodies) so the two files stay
+// byte-for-byte in agreement on the ABI even though the loop itself is
+// necessarily duplicated -- exactly the shape bridge_verify.atlx already
+// uses, duplicating its own Merkle-walk loop across multiple match arms
+// within a single file, one level up (across two files, here).
+
+const ERR_BAD_MSG = 0xFFFF
+
+// See groth16_stdlib.atlx's header for the full byte-layout ABI and the
+// reasoning behind each constant below (kept byte-for-byte identical here).
+const BN254_P_BE = bytes.fromHex("30644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd47")
+
+const G1_LEN = 64
+const G2_LEN = 128
+const SCALAR_LEN = 32
+const VK_FIXED_LEN = 448
+const PROOF_LEN = 256
+const MAX_PUBLIC_INPUTS = 64
+
+@storage
+struct VerifierStorage {
+    owner: address
+    // One-way unlock latch: 1 once ANY submitted proof has verified true.
+    // Never reset to 0 by a failed/malformed VerifyAndUnlock call.
+    unlocked: uint64 = 0
+    // Poseidon2 digest of the last Commit.secret.
+    lastCommitment: hash32
+}
+
+// Submit a Groth16 proof + verifying key + public inputs; unlocks on a true
+// verdict. See groth16_stdlib.atlx's header for the exact byte layout.
+@message(0x9401)
+struct VerifyAndUnlock {
+    vk: bytes
+    proof: bytes
+    publicInputs: bytes
+}
+
+// Commit to a single 32-byte BN254 scalar-field element via poseidon2Bn254
+// directly. Per OpPoseidon2Bn254's own documented contract (see avm.go and
+// groth16_stdlib.atlx's header), this is the ONE opcode in the whole family
+// that TRAPS rather than soft-failing on a malformed length or a
+// non-canonical scalar -- a `secret` that is not exactly 32 bytes, or whose
+// 32 bytes are >= the BN254 scalar-field modulus, aborts the message
+// entirely rather than silently committing a wrong/zero digest. That is the
+// deliberately conservative behavior for a commitment scheme: a caller must
+// resubmit a well-formed secret, never have a malformed one silently
+// accepted as "some" commitment.
+@message(0x9402)
+struct Commit {
+    secret: bytes
+}
+
+type VerifierMsg = VerifyAndUnlock | Commit
+
+contract Groth16Verifier {
+    author: "Aetralis example"
+    description: "Phase D reference contract: Groth16-over-BN254 proof-gated unlock + a standalone poseidon2Bn254 commitment"
+    version: "0.01.0"
+
+    storage: VerifierStorage
+    incomingMessages: VerifierMsg
+
+    @store
+    func VerifierStorage.load() {
+        return VerifierStorage.fromChunk(contract.getData())
+    }
+
+    @store
+    func VerifierStorage.save(self) {
+        contract.setData(self.toChunk())
+    }
+
+    // ---- Byte-layout accessors, copied verbatim from groth16_stdlib.atlx
+    //      (see this file's header for why they cannot instead be a real
+    //      cross-file call). ----
+
+    @pure
+    func groth16VkAlpha(vk: bytes): bytes {
+        return subBytes(vk, 0, G1_LEN)
+    }
+
+    @pure
+    func groth16VkBeta(vk: bytes): bytes {
+        return subBytes(vk, G1_LEN, G2_LEN)
+    }
+
+    @pure
+    func groth16VkGamma(vk: bytes): bytes {
+        return subBytes(vk, G1_LEN + G2_LEN, G2_LEN)
+    }
+
+    @pure
+    func groth16VkDelta(vk: bytes): bytes {
+        return subBytes(vk, G1_LEN + G2_LEN + G2_LEN, G2_LEN)
+    }
+
+    @pure
+    func groth16VkIC(vk: bytes, i: uint256): bytes {
+        return subBytes(vk, VK_FIXED_LEN + i * G1_LEN, G1_LEN)
+    }
+
+    @pure
+    func groth16ProofA(proof: bytes): bytes {
+        return subBytes(proof, 0, G1_LEN)
+    }
+
+    @pure
+    func groth16ProofB(proof: bytes): bytes {
+        return subBytes(proof, G1_LEN, G2_LEN)
+    }
+
+    @pure
+    func groth16ProofC(proof: bytes): bytes {
+        return subBytes(proof, G1_LEN + G2_LEN, G1_LEN)
+    }
+
+    @pure
+    func groth16PublicInputAt(publicInputs: bytes, i: uint256): uint256 {
+        return fromBytesBE(subBytes(publicInputs, i * SCALAR_LEN, SCALAR_LEN))
+    }
+
+    // See groth16_stdlib.atlx's groth16NegateG1 doc comment for the full
+    // trap-avoidance reasoning (identical here).
+    @pure
+    func groth16NegateG1(point: bytes): bytes {
+        return (fromBytesBE(subBytes(point, 32, 32)) < fromBytesBE(BN254_P_BE))
+            ? concat(subBytes(point, 0, 32), toBytesBE(fromBytesBE(BN254_P_BE) - fromBytesBE(subBytes(point, 32, 32)), 32))
+            : point
+    }
+
+    @internal
+    func onInternalMessage(in: InMessage) {
+        const msg = lazy VerifierMsg.fromSegment(in.body)
+        match (msg) {
+            // Duplicated from groth16_stdlib.atlx's VerifyGroth16Proof --
+            // see this file's header for why it must be duplicated, not
+            // called.
+            VerifyAndUnlock => {
+                var st = lazy VerifierStorage.load()
+
+                const vkLen = len(msg.vk)
+                // See groth16_stdlib.atlx's VerifyGroth16Proof handler for
+                // why this cannot be a single eager `&&` expression (`&&`
+                // never short-circuits in this AVM, unlike the ternary
+                // below) -- identical guard here.
+                const vkLenOk = vkLen >= VK_FIXED_LEN + G1_LEN
+                const safeVkLen = vkLenOk ? vkLen : (VK_FIXED_LEN + G1_LEN)
+                const vkShapeOk = vkLenOk && ((safeVkLen - VK_FIXED_LEN) % G1_LEN == 0)
+                const nPub = vkShapeOk ? (safeVkLen - VK_FIXED_LEN) / G1_LEN - 1 : 0
+                const lenOk = vkShapeOk
+                    && (nPub <= MAX_PUBLIC_INPUTS)
+                    && (len(msg.proof) == PROOF_LEN)
+                    && (len(msg.publicInputs) == nPub * SCALAR_LEN)
+
+                var verified = 0
+                if (lenOk) {
+                    var acc = groth16VkIC(msg.vk, 0)
+                    var i = 0
+                    while (i < nPub) {
+                        const term = bn254G1ScalarMul(groth16VkIC(msg.vk, i + 1), groth16PublicInputAt(msg.publicInputs, i))
+                        acc = bn254G1Add(acc, term)
+                        i += 1
+                    }
+
+                    const negA = groth16NegateG1(groth16ProofA(msg.proof))
+                    const g1s = concat(concat(negA, groth16VkAlpha(msg.vk)), concat(acc, groth16ProofC(msg.proof)))
+                    const g2s = concat(concat(groth16ProofB(msg.proof), groth16VkBeta(msg.vk)), concat(groth16VkGamma(msg.vk), groth16VkDelta(msg.vk)))
+                    verified = bn254PairingCheck(g1s, g2s, 4) ? 1 : 0
+                }
+
+                // One-way latch: only ever flips 0 -> 1, never 1 -> 0 and
+                // never overwritten on a failed/malformed proof.
+                if (verified == 1) {
+                    st.unlocked = 1
+                }
+                st.save()
+            }
+
+            // Standalone poseidon2Bn254 use: hashes exactly one packed
+            // 32-byte scalar. TRAPS (does not soft-fail) on a malformed
+            // `secret` -- see this file's header and OpPoseidon2Bn254's own
+            // doc comment in avm.go.
+            Commit => {
+                var st = lazy VerifierStorage.load()
+                st.lastCommitment = poseidon2Bn254(msg.secret, 1)
+                st.save()
+            }
+
+            else => {
+                assert (in.body.isEmpty()) throw ERR_BAD_MSG
+            }
+        }
+    }
+
+    @bounced
+    func onBouncedMessage(in: InMessageBounced) {
+        // No outbound messages are sent, so there is nothing to reconcile.
+    }
+
+    // Whether ANY submitted proof has ever verified true (one-way latch).
+    @get
+    func unlocked(): uint64 {
+        const st = lazy VerifierStorage.load()
+        return st.unlocked
+    }
+
+    // Poseidon2 digest of the last Commit.secret.
+    @get
+    func commitment(): hash32 {
+        const st = lazy VerifierStorage.load()
+        return st.lastCommitment
+    }
+}

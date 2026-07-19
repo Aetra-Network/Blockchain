@@ -15,6 +15,16 @@ permissions:
   actions: read
   security-events: write
 
+env:
+  # -tags purego,noadx: force gnark-crypto (AVM Phase D BN254 opcodes) onto its
+  # pure-Go arithmetic path, closing the ADX-dispatch cross-arch/runtime-CPU-
+  # feature determinism hazard -- see docs/architecture/avm-phase-d-zk-design.md
+  # (Status). Applies to every go build/test invocation below via GOFLAGS. This
+  # matters MOST for the determinism-gate job just below: its whole purpose is
+  # proving the runtime keeps stable state roots, which is meaningless if the
+  # crypto opcodes under test aren't pinned to a deterministic backend.
+  GOFLAGS: "-p=1 -tags=purego,noadx"
+
 jobs:
   govulncheck:
     name: govulncheck

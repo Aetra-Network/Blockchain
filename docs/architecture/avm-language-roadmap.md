@@ -64,9 +64,22 @@ Reference: `examples/avm/bridge/bridge_verify.atlx` — a light-client accept pa
 quorum AND merkle inclusion against a header's stateRoot, proven via known-answer + adversarial (forged-leaf,
 tampered-proof, duplicate-signer) conformance vectors.
 
-## Phase D — advanced crypto (ZK / pairing)
-BLS12-381, BN254, pairing_check, Poseidon hash, KZG verification, Groth16/PLONK verify intrinsics.
-Reference: a Groth16 verifier contract. (Largest phase; gas cost per op explicit.)
+## Phase D — advanced crypto (ZK / pairing) (DONE, scoped)
+BN254 primitives (`OpBn254G1Add`/`OpBn254G1ScalarMul`/`OpBn254G1IsOnCurve` = 0x5c-0x5e,
+`OpBn254G2Add`/`OpBn254G2ScalarMul`/`OpBn254PairingCheck`/`OpPoseidon2Bn254` = 0x5f-0x62), matching compiler
+builtins, a Groth16-over-BN254 `.atlx` stdlib, and a real Groth16 verifier reference contract. Built on
+`github.com/consensys/gnark-crypto` (added as a normal go.mod dependency, INTERIM `-tags purego,noadx`
+alternative rather than full vendoring — see design doc's Status/Implementation-status sections for the
+accepted amd64-vs-arm64 cross-architecture tradeoff this leaves open, and every build entrypoint that must
+carry the flag). Proven with a real Groth16 differential golden vector (two proofs generated offline via
+gnark's own R1CS+prover, never added to this repo's go.mod) plus an adversarial soft-fail matrix
+(bit-flipped proof, out-of-subgroup G2 point, length/count mismatches).
+NOT done, honestly scoped out: BLS12-381 (v1's explicit scope call — BN254 only), KZG verification, PLONK
+verify, and full vendoring-and-stripping of gnark-crypto's `fptower` (the stronger hardening pass that would
+close the cross-architecture gap the INTERIM build-tag approach leaves open).
+Reference: `docs/architecture/avm-phase-d-zk-design.md` (design v1-v3 + Status + Stages 1-4 implementation
+log); `examples/avm/zk/groth16_stdlib.atlx` (verifier library) and `examples/avm/zk/groth16_verifier.atlx`
+(reference contract).
 
 ## Phase E — language surface
 Exhaustive match/pattern, full generics, tuples, fixed + dynamic arrays, enums, traits, and Move-style

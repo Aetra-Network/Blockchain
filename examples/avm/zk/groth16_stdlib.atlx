@@ -1,0 +1,374 @@
+// Aetralis Phase D ZK standard library — the canonical Groth16-over-BN254
+// verifier built on the 7 primitive opcodes from docs/architecture/
+// avm-phase-d-zk-design.md (v3, "ready for owner sign-off", INTERIM
+// vendoring decision exercised): bn254G1Add, bn254G1ScalarMul,
+// bn254G1IsOnCurve, bn254G2Add, bn254G2ScalarMul, bn254PairingCheck,
+// poseidon2Bn254.
+//
+// Ships as a HOST CONTRACT, exactly like finance_stdlib.atlx (the AVM
+// requires exactly one contract per compiled unit, so a bare function
+// library cannot compile on its own) — the "namespace" is the `groth16*`
+// function-name prefix, mirroring finance_stdlib.atlx's bp*/ratio*/dec*/pnl*
+// convention and finance_types.atlx's Ratio256/BasisPoints naming.
+//
+// ============================================================================
+// BYTE-STRING ABI (this file's own choice — the design doc's Section 6
+// pseudocode is not reproduced verbatim in the committed design doc, only
+// summarized in its "Implementation status" section, so the exact vk/proof
+// packing below is this implementation's documented decision, made
+// conservatively per the task's own "if ambiguous, pick the safe choice and
+// document it" instruction):
+//
+//   G1 point   = 64 bytes  (X:32 || Y:32), big-endian, canonical-only —
+//                the same encoding OpBn254G1Add/OpBn254G1ScalarMul/
+//                OpBn254G1IsOnCurve already decode via bn254DecodeG1.
+//   G2 point   = 128 bytes (X.A0:32 || X.A1:32 || Y.A0:32 || Y.A1:32) —
+//                the same encoding OpBn254G2Add/OpBn254G2ScalarMul/
+//                OpBn254PairingCheck already decode via bn254DecodeG2.
+//   Scalar     = 32 bytes big-endian uint256 (a public input or a Poseidon2
+//                BN254 *scalar*-field element).
+//
+//   proof = A(64) || B(128) || C(64)                            = 256 bytes
+//   vk    = alpha(64) || beta(128) || gamma(128) || delta(128)
+//           || IC[0](64) || IC[1](64) || ... || IC[n](64)        = 448 + 64*(n+1)
+//   publicInputs = input[0](32) || input[1](32) || ... || input[n-1](32) = 32*n
+//
+// n (the public-input count) is DERIVED from vk's own length, never taken as
+// a separate untrusted argument: n = (len(vk) - 448) / 64 - 1. A vk whose
+// length is not exactly 448 + 64*(n+1) for a non-negative integer n, or a
+// publicInputs blob whose length disagrees with the derived n, or an n that
+// exceeds MAX_PUBLIC_INPUTS (a stdlib-level DoS/sanity bound — NOT the same
+// as OpBn254PairingCheck's own separate, opcode-level, consensus-critical
+// k<=16 hard cap: n only bounds the vk_x accumulation loop below, it never
+// changes the pairing arity, which is always exactly 4), all soft-fail the
+// whole verification to `false` before any subBytes call on the untrusted
+// blob — required per the design doc's own note that this codebase's real
+// `subBytes` TRAPS (does not silently short-read) on out-of-bounds, so every
+// length precondition must be checked BEFORE slicing, never relied upon to
+// fail safely on its own.
+//
+// VERIFY EQUATION (standard Groth16 over BN254, negated-A form):
+//   vk_x = IC[0] + sum_{i=0}^{n-1} publicInputs[i] * IC[i+1]
+//   accept iff e(-A, B) * e(alpha, beta) * e(vk_x, gamma) * e(C, delta) == 1
+// realized as ONE bn254PairingCheck(g1s, g2s, 4) call with
+//   g1s = (-A) || alpha || vk_x || C     (64 bytes each, 256 total)
+//   g2s =   B  || beta  || gamma || delta (128 bytes each, 512 total)
+// bn254PairingCheck's own mandatory per-point IsOnCurve()/IsInSubGroup()
+// validation (see avm.go / the design doc's blocker-1 fix) covers every
+// operand here except the negated A, which this file computes ITSELF in
+// plain ATLX arithmetic (there is no dedicated G1-negate opcode in the
+// 7-opcode surface) — see groth16NegateG1's own doc comment for why that
+// needs an explicit non-trapping guard that the opcode-backed operands don't.
+//
+// ============================================================================
+// AVM v1 LOOP CONSTRAINT (why verification is a MESSAGE, not a @get):
+// ============================================================================
+// The vk_x accumulation above is a variable-length loop over a mutating G1
+// accumulator (`acc = bn254G1Add(acc, term)` each iteration) — exactly
+// finance_types.atlx's Ratio256.reduce() situation. @get/@pure bodies are
+// ALWAYS validated as read-only (compile.go's validateGetter hard-codes
+// inPure=true — every StatementSet, including a plain local `var`
+// reassignment, is rejected there), so this loop cannot live inside a @get.
+// A message HANDLER is validated as impure and CAN mutate locals in a loop,
+// so — exactly like Ratio256.reduce()'s ReduceRatio message + ratioReduce
+// @get split, and bridge_verify.atlx's own Merkle-walk-in-a-message-handler
+// pattern — the real verification runs inside the VerifyGroth16Proof
+// message handler below, which commits the boolean verdict to storage; the
+// paired groth16Verified() @get just reads that back out. This IS the
+// "Groth16.verify(vk, proof, publicInputs) namespace function" the design
+// asks for, realized the only way AVM v1 allows a variable-arity
+// accumulation to be expressed: submit-then-read, not a live call.
+//
+// A consuming contract (see groth16_verifier.atlx) cannot literally CALL
+// this file's message handler either — the AVM has no CALL/RET opcode; every
+// ordinary function call is textually inlined at its call site, and inlining
+// only succeeds for a single-return-expression body (compile.go's
+// tryInlineUserFunctionCall). A loop-bearing routine can therefore never be
+// factored into a shared, callable helper — groth16_verifier.atlx
+// necessarily duplicates this same loop+pairing-check shape inside its own
+// message handler, exactly as bridge_verify.atlx duplicates its own
+// Merkle-walk loop across multiple match arms in the SAME file. The small,
+// single-return-expression pieces below (byte-layout accessors, the negated-A
+// helper) ARE genuinely reusable/inlinable and are written once here as the
+// canonical, tested reference for any consumer to copy faithfully.
+
+const ERR_BAD_MSG = 0xFFFF
+
+// BN254 (alt_bn128) base field modulus p, the standard Ethereum/EIP-196
+// constant, encoded as its own 32-byte canonical big-endian G1 Y-coordinate
+// width so groth16NegateG1 below can compute p - y directly. Declared as a
+// top-level `bytes.fromHex` const (compile-time-foldable, per this
+// codebase's existing const-evaluator, mirroring dual_sig_multisig.atlx's
+// OWNER_MESSAGE/SECP_PUBKEY constants) rather than a bare integer literal,
+// because ATLX integer literals are always OpPushU64 (fit uint64) and this
+// 254-bit prime does not.
+const BN254_P_BE = bytes.fromHex("30644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd47")
+
+// Byte-layout widths (see the file header for the full ABI).
+const G1_LEN = 64
+const G2_LEN = 128
+const SCALAR_LEN = 32
+const VK_FIXED_LEN = 448
+const PROOF_LEN = 256
+
+// Stdlib-level DoS/sanity bound on the vk_x accumulation loop's iteration
+// count (NOT the same as OpBn254PairingCheck's own separate, opcode-level,
+// consensus-critical k<=16 cap on pairing arity — see the file header).
+// Real circuits' public-input counts are almost always single digits; 64 is
+// a generous, documented, conservative ceiling chosen for this stdlib, not a
+// value taken from the design doc (which does not specify one for the
+// accumulation loop).
+const MAX_PUBLIC_INPUTS = 64
+
+@storage
+struct Groth16Storage {
+    owner: address
+    // Last VerifyGroth16Proof verdict (1 = valid proof accepted).
+    lastVerified: uint64 = 0
+    // Public-input count of the last verified call, for observability.
+    lastPublicInputCount: uint64 = 0
+}
+
+// A no-op message so the contract satisfies the "internal or external
+// handler" requirement, mirroring finance_stdlib.atlx's own Noop.
+@message(0x9301)
+struct Noop {}
+
+// Submit a full Groth16 proof + verifying key + public inputs for
+// verification; see the file header for the exact byte layout.
+@message(0x9302)
+struct VerifyGroth16Proof {
+    vk: bytes
+    proof: bytes
+    publicInputs: bytes
+}
+
+type Groth16Msg = Noop | VerifyGroth16Proof
+
+contract Groth16Stdlib {
+    author: "Aetralis example"
+    description: "Phase D canonical Groth16-over-BN254 verifier (groth16* namespace) over the 7 bn254/poseidon2 primitive opcodes"
+    version: "0.01.0"
+
+    storage: Groth16Storage
+    incomingMessages: Groth16Msg
+
+    @store
+    func Groth16Storage.load() {
+        return Groth16Storage.fromChunk(contract.getData())
+    }
+
+    @store
+    func Groth16Storage.save(self) {
+        contract.setData(self.toChunk())
+    }
+
+    // ---- groth16* namespace: byte-layout accessors (pure, single-expression,
+    //      inlinable — the reusable building blocks a consumer like
+    //      groth16_verifier.atlx copies faithfully). ----
+
+    @pure
+    func groth16VkAlpha(vk: bytes): bytes {
+        return subBytes(vk, 0, G1_LEN)
+    }
+
+    @pure
+    func groth16VkBeta(vk: bytes): bytes {
+        return subBytes(vk, G1_LEN, G2_LEN)
+    }
+
+    @pure
+    func groth16VkGamma(vk: bytes): bytes {
+        return subBytes(vk, G1_LEN + G2_LEN, G2_LEN)
+    }
+
+    @pure
+    func groth16VkDelta(vk: bytes): bytes {
+        return subBytes(vk, G1_LEN + G2_LEN + G2_LEN, G2_LEN)
+    }
+
+    // IC[i], the i-th (0-indexed) G1 point of the verifying key's IC array.
+    @pure
+    func groth16VkIC(vk: bytes, i: uint256): bytes {
+        return subBytes(vk, VK_FIXED_LEN + i * G1_LEN, G1_LEN)
+    }
+
+    @pure
+    func groth16ProofA(proof: bytes): bytes {
+        return subBytes(proof, 0, G1_LEN)
+    }
+
+    @pure
+    func groth16ProofB(proof: bytes): bytes {
+        return subBytes(proof, G1_LEN, G2_LEN)
+    }
+
+    @pure
+    func groth16ProofC(proof: bytes): bytes {
+        return subBytes(proof, G1_LEN + G2_LEN, G1_LEN)
+    }
+
+    @pure
+    func groth16PublicInputAt(publicInputs: bytes, i: uint256): uint256 {
+        return fromBytesBE(subBytes(publicInputs, i * SCALAR_LEN, SCALAR_LEN))
+    }
+
+    // Negate a 64-byte G1 point: (x, y) -> (x, p - y). There is no dedicated
+    // G1-negate opcode in the 7-primitive surface, so this is built from
+    // plain checked uint256 arithmetic over the decoded Y coordinate.
+    // GUARD: the checked `-` operator TRAPS on underflow, and an adversarial
+    // 32-byte Y half of a garbage/malformed "point" can be anything up to
+    // 2^256-1 (every byte string decodes to SOME uint256), which can exceed
+    // BN254_P. The ternary below is a real conditional branch at this AVM's
+    // IR level (compiles to OpJumpIfZero/OpJump, confirmed against
+    // emitIRExpr's IRExprTernary case — NOT an eager both-branches-evaluate
+    // construct the way `*`'s operands are), so the untaken branch's
+    // subtraction never executes and never traps; a Y >= p (impossible for
+    // any point that would ever pass IsOnCurve(), since bn254DecodeG1 only
+    // accepts canonical Y < p, but very possible for adversarial raw bytes
+    // fed straight into this helper before any opcode-level validation runs)
+    // instead soft-fails by returning the point UNCHANGED. The subsequent
+    // bn254PairingCheck call still independently decodes and validates every
+    // operand (including this one), so an unchanged-instead-of-negated point
+    // on that path is simply one more input that provably fails
+    // IsOnCurve()/pairing, soft-failing the overall verdict to `false` — it
+    // never lets a malformed A slip through as if it were validly negated.
+    @pure
+    func groth16NegateG1(point: bytes): bytes {
+        return (fromBytesBE(subBytes(point, 32, 32)) < fromBytesBE(BN254_P_BE))
+            ? concat(subBytes(point, 0, 32), toBytesBE(fromBytesBE(BN254_P_BE) - fromBytesBE(subBytes(point, 32, 32)), 32))
+            : point
+    }
+
+    @internal
+    func onInternalMessage(in: InMessage) {
+        const msg = lazy Groth16Msg.fromSegment(in.body)
+        match (msg) {
+            Noop => {
+                // Pure library contract: nothing to mutate.
+            }
+
+            // The real Groth16.verify(vk, proof, publicInputs) namespace
+            // function: length-validate, accumulate vk_x over the IC array
+            // (the mutating loop that forces this to be a message, not a
+            // @get — see the file header), then a single 4-term
+            // bn254PairingCheck. Every length check happens BEFORE any
+            // subBytes call on the untrusted vk/proof/publicInputs blobs,
+            // per the file header's "subBytes traps on OOB" note.
+            VerifyGroth16Proof => {
+                var st = lazy Groth16Storage.load()
+
+                const vkLen = len(msg.vk)
+                // GUARD: `&&` is EAGER in this AVM (both operands always
+                // evaluate, confirmed against emitIRExpr's IRExprAnd case --
+                // unlike the ternary below, which genuinely short-circuits
+                // via jumps), so `vkLen - VK_FIXED_LEN` cannot be written as
+                // the right-hand operand of `vkLen >= VK_FIXED_LEN+G1_LEN &&
+                // ...` directly: an adversarial vkLen < VK_FIXED_LEN would
+                // still evaluate that subtraction and TRAP (checked
+                // underflow) even though the left operand alone already
+                // proves the input malformed. `safeVkLen` picks a value that
+                // never underflows (the minimum valid length) whenever the
+                // real length is too short, exactly finance_stdlib.atlx's
+                // own `safeDen = (den == 0) ? 1 : den` idiom.
+                const vkLenOk = vkLen >= VK_FIXED_LEN + G1_LEN
+                const safeVkLen = vkLenOk ? vkLen : (VK_FIXED_LEN + G1_LEN)
+                const vkShapeOk = vkLenOk && ((safeVkLen - VK_FIXED_LEN) % G1_LEN == 0)
+                const nPub = vkShapeOk ? (safeVkLen - VK_FIXED_LEN) / G1_LEN - 1 : 0
+                const lenOk = vkShapeOk
+                    && (nPub <= MAX_PUBLIC_INPUTS)
+                    && (len(msg.proof) == PROOF_LEN)
+                    && (len(msg.publicInputs) == nPub * SCALAR_LEN)
+
+                var verified = 0
+                if (lenOk) {
+                    // vk_x = IC[0] + sum_i publicInputs[i] * IC[i+1].
+                    var acc = groth16VkIC(msg.vk, 0)
+                    var i = 0
+                    while (i < nPub) {
+                        const term = bn254G1ScalarMul(groth16VkIC(msg.vk, i + 1), groth16PublicInputAt(msg.publicInputs, i))
+                        acc = bn254G1Add(acc, term)
+                        i += 1
+                    }
+
+                    const negA = groth16NegateG1(groth16ProofA(msg.proof))
+                    const g1s = concat(concat(negA, groth16VkAlpha(msg.vk)), concat(acc, groth16ProofC(msg.proof)))
+                    const g2s = concat(concat(groth16ProofB(msg.proof), groth16VkBeta(msg.vk)), concat(groth16VkGamma(msg.vk), groth16VkDelta(msg.vk)))
+                    verified = bn254PairingCheck(g1s, g2s, 4) ? 1 : 0
+                }
+
+                st.lastVerified = verified
+                st.lastPublicInputCount = nPub
+                st.save()
+            }
+
+            else => {
+                assert (in.body.isEmpty()) throw ERR_BAD_MSG
+            }
+        }
+    }
+
+    // ---- Getters ----
+
+    // Last VerifyGroth16Proof verdict (1 = valid proof accepted).
+    @get
+    func groth16Verified(): uint64 {
+        const st = lazy Groth16Storage.load()
+        return st.lastVerified
+    }
+
+    // Public-input count derived from the last VerifyGroth16Proof call's vk.
+    @get
+    func groth16LastPublicInputCount(): uint64 {
+        const st = lazy Groth16Storage.load()
+        return st.lastPublicInputCount
+    }
+
+    // ---- Raw opcode pass-throughs, one thin @get per primitive, mirroring
+    //      finance_stdlib.atlx's mulCmpG/mulDivSignedG convention -- lets a
+    //      conformance test drive every one of the 7 new opcodes through the
+    //      real VM with exact byte/bool assertions, independent of the
+    //      higher-level Groth16 verify equation above. ----
+
+    @get
+    func bn254G1AddG(a: bytes, b: bytes): bytes {
+        return bn254G1Add(a, b)
+    }
+
+    @get
+    func bn254G1ScalarMulG(point: bytes, scalar: uint256): bytes {
+        return bn254G1ScalarMul(point, scalar)
+    }
+
+    @get
+    func bn254G1IsOnCurveG(point: bytes): bool {
+        return bn254G1IsOnCurve(point)
+    }
+
+    @get
+    func bn254G2AddG(a: bytes, b: bytes): bytes {
+        return bn254G2Add(a, b)
+    }
+
+    @get
+    func bn254G2ScalarMulG(point: bytes, scalar: uint256): bytes {
+        return bn254G2ScalarMul(point, scalar)
+    }
+
+    @get
+    func bn254PairingCheckG(g1s: bytes, g2s: bytes, k: uint256): bool {
+        return bn254PairingCheck(g1s, g2s, k)
+    }
+
+    @get
+    func poseidon2Bn254G(data: bytes, n: uint256): hash32 {
+        return poseidon2Bn254(data, n)
+    }
+
+    // Direct pass-through of the negated-A helper, for a conformance test to
+    // assert p - y byte-exactly against an independently computed vector.
+    @get
+    func groth16NegateG1G(point: bytes): bytes {
+        return groth16NegateG1(point)
+    }
+}

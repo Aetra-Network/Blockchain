@@ -2545,6 +2545,81 @@ func (c *Compiler) inferExprType(expr Expr, env map[string]TypeRef, storage *Str
 				}
 			}
 			return TypeRef{Name: "bytes"}, nil
+		case "bn254g1add":
+			// bn254G1Add(a: bytes, b: bytes) -> bytes (64-byte G1 point).
+			if len(expr.Args) != 2 {
+				return TypeRef{}, fail("E_CALL_ARITY", expr.Pos, "bn254G1Add() requires two arguments")
+			}
+			for _, arg := range expr.Args {
+				if _, err := c.inferExprType(arg, env, storage, structs, enums, types, functions, consts, inPure); err != nil {
+					return TypeRef{}, err
+				}
+			}
+			return TypeRef{Name: "bytes"}, nil
+		case "bn254g1scalarmul":
+			// bn254G1ScalarMul(point: bytes, scalar: uint256) -> bytes (64-byte G1 point).
+			if len(expr.Args) != 2 {
+				return TypeRef{}, fail("E_CALL_ARITY", expr.Pos, "bn254G1ScalarMul() requires two arguments")
+			}
+			for _, arg := range expr.Args {
+				if _, err := c.inferExprType(arg, env, storage, structs, enums, types, functions, consts, inPure); err != nil {
+					return TypeRef{}, err
+				}
+			}
+			return TypeRef{Name: "bytes"}, nil
+		case "bn254g1isoncurve":
+			// bn254G1IsOnCurve(point: bytes) -> bool.
+			if len(expr.Args) != 1 {
+				return TypeRef{}, fail("E_CALL_ARITY", expr.Pos, "bn254G1IsOnCurve() requires one argument")
+			}
+			if _, err := c.inferExprType(expr.Args[0], env, storage, structs, enums, types, functions, consts, inPure); err != nil {
+				return TypeRef{}, err
+			}
+			return TypeRef{Name: "bool"}, nil
+		case "bn254g2add":
+			// bn254G2Add(a: bytes, b: bytes) -> bytes (128-byte G2 point).
+			if len(expr.Args) != 2 {
+				return TypeRef{}, fail("E_CALL_ARITY", expr.Pos, "bn254G2Add() requires two arguments")
+			}
+			for _, arg := range expr.Args {
+				if _, err := c.inferExprType(arg, env, storage, structs, enums, types, functions, consts, inPure); err != nil {
+					return TypeRef{}, err
+				}
+			}
+			return TypeRef{Name: "bytes"}, nil
+		case "bn254g2scalarmul":
+			// bn254G2ScalarMul(point: bytes, scalar: uint256) -> bytes (128-byte G2 point).
+			if len(expr.Args) != 2 {
+				return TypeRef{}, fail("E_CALL_ARITY", expr.Pos, "bn254G2ScalarMul() requires two arguments")
+			}
+			for _, arg := range expr.Args {
+				if _, err := c.inferExprType(arg, env, storage, structs, enums, types, functions, consts, inPure); err != nil {
+					return TypeRef{}, err
+				}
+			}
+			return TypeRef{Name: "bytes"}, nil
+		case "bn254pairingcheck":
+			// bn254PairingCheck(g1s: bytes, g2s: bytes, k: uint256) -> bool.
+			if len(expr.Args) != 3 {
+				return TypeRef{}, fail("E_CALL_ARITY", expr.Pos, "bn254PairingCheck() requires three arguments")
+			}
+			for _, arg := range expr.Args {
+				if _, err := c.inferExprType(arg, env, storage, structs, enums, types, functions, consts, inPure); err != nil {
+					return TypeRef{}, err
+				}
+			}
+			return TypeRef{Name: "bool"}, nil
+		case "poseidon2bn254":
+			// poseidon2Bn254(data: bytes, n: uint256) -> hash32 (32-byte digest).
+			if len(expr.Args) != 2 {
+				return TypeRef{}, fail("E_CALL_ARITY", expr.Pos, "poseidon2Bn254() requires two arguments")
+			}
+			for _, arg := range expr.Args {
+				if _, err := c.inferExprType(arg, env, storage, structs, enums, types, functions, consts, inPure); err != nil {
+					return TypeRef{}, err
+				}
+			}
+			return TypeRef{Name: "hash32"}, nil
 		case "len":
 			return TypeRef{Name: "uint64"}, nil
 		case "aet":
@@ -3041,6 +3116,23 @@ func isMapFamilyType(name string) bool {
 	}
 }
 
+// stateReadTypeHint looks up a @storage field's declared type by name and
+// returns the IRExprStateRead.TypeHint to attach for it -- "map" when the
+// field is a Map<K,V> family type (so a truly-absent key on a fresh contract
+// defaults to an empty map instead of uint64(0)), "" otherwise (preserving
+// the pre-existing uint64(0) default for every scalar field). fieldTypes may
+// be nil (e.g. lowering outside a contract's own field set); a missing entry
+// is treated the same as a non-Map field.
+func stateReadTypeHint(fieldTypes map[string]TypeRef, field string) string {
+	if fieldTypes == nil {
+		return ""
+	}
+	if typ, ok := fieldTypes[field]; ok && isMapFamilyType(typ.Name) {
+		return "map"
+	}
+	return ""
+}
+
 func resolveSingleMemberTypeRef(t TypeRef, types map[string]*TypeDecl) TypeRef {
 	seen := map[string]bool{}
 	for {
@@ -3533,6 +3625,18 @@ func (c *Compiler) buildIR(file *SourceFile, contract *ContractDecl, registry Se
 			structs[st.Name] = st
 		}
 	}
+	// storageFieldTypes maps the contract's @storage struct's field names to
+	// their declared types, so a `<storageAlias>.<field>` read can tag its
+	// IRExprStateRead with a type-aware zero-default hint (see loweringEnv
+	// and the IRExprStateRead lowering below) instead of always falling back
+	// to the generic uint64(0) default when the field is absent from a
+	// fresh/genesis contract's storage.
+	storageFieldTypes := map[string]TypeRef{}
+	if storageStruct, ok := structs[contract.StorageTypeName]; ok && storageStruct != nil {
+		for _, f := range storageStruct.Fields {
+			storageFieldTypes[f.Name] = f.Type
+		}
+	}
 	consts, err := c.buildConstEnv(file, functions)
 	if err != nil {
 		return nil, err
@@ -3590,7 +3694,7 @@ func (c *Compiler) buildIR(file *SourceFile, contract *ContractDecl, registry Se
 				Statements: []IRStmt{{Kind: IRStmtTrace, Data: commit[:], Position: msg.Pos}},
 				Pos:        msg.Pos,
 			}
-			body, err := c.lowerStatementsToIR(msg.Body, msg.Params, msg.ReturnType, false, true, functions, structs, msgOpcodes, loweringEnv{types: map[string]TypeRef{}, consts: consts, msgOpcodes: msgOpcodes}, c.initialScope(msg.Params, true), nil)
+			body, err := c.lowerStatementsToIR(msg.Body, msg.Params, msg.ReturnType, false, true, functions, structs, msgOpcodes, loweringEnv{types: map[string]TypeRef{}, consts: consts, msgOpcodes: msgOpcodes, storageFieldTypes: storageFieldTypes}, c.initialScope(msg.Params, true), nil)
 			if err != nil {
 				return nil, err
 			}
@@ -3624,7 +3728,7 @@ func (c *Compiler) buildIR(file *SourceFile, contract *ContractDecl, registry Se
 		if err != nil {
 			return nil, err
 		}
-		body, err := c.lowerStatementsToIR(fn.Body, fn.Params, &fn.ReturnType, false, true, functions, structs, msgOpcodes, loweringEnv{types: map[string]TypeRef{}, consts: consts, msgOpcodes: msgOpcodes}, c.initialScope(fn.Params, true), nil)
+		body, err := c.lowerStatementsToIR(fn.Body, fn.Params, &fn.ReturnType, false, true, functions, structs, msgOpcodes, loweringEnv{types: map[string]TypeRef{}, consts: consts, msgOpcodes: msgOpcodes, storageFieldTypes: storageFieldTypes}, c.initialScope(fn.Params, true), nil)
 		if err != nil {
 			return nil, err
 		}
@@ -3660,7 +3764,7 @@ func (c *Compiler) buildIR(file *SourceFile, contract *ContractDecl, registry Se
 		if err != nil {
 			return nil, err
 		}
-		body, err := c.lowerStatementsToIR(fn.Body, fn.Params, &fn.ReturnType, true, true, functions, structs, msgOpcodes, loweringEnv{types: map[string]TypeRef{}, consts: consts, msgOpcodes: msgOpcodes}, c.initialScope(fn.Params, true), nil)
+		body, err := c.lowerStatementsToIR(fn.Body, fn.Params, &fn.ReturnType, true, true, functions, structs, msgOpcodes, loweringEnv{types: map[string]TypeRef{}, consts: consts, msgOpcodes: msgOpcodes, storageFieldTypes: storageFieldTypes}, c.initialScope(fn.Params, true), nil)
 		if err != nil {
 			return nil, err
 		}
@@ -3692,7 +3796,7 @@ func (c *Compiler) buildIR(file *SourceFile, contract *ContractDecl, registry Se
 			Statements: []IRStmt{{Kind: IRStmtTrace, Data: commit[:], Position: get.Pos}},
 			Pos:        get.Pos,
 		}
-		body, err := c.lowerStatementsToIR(get.Body, get.Params, &ret, true, true, functions, structs, msgOpcodes, loweringEnv{types: map[string]TypeRef{}, consts: consts, msgOpcodes: msgOpcodes}, c.initialScope(get.Params, true), nil)
+		body, err := c.lowerStatementsToIR(get.Body, get.Params, &ret, true, true, functions, structs, msgOpcodes, loweringEnv{types: map[string]TypeRef{}, consts: consts, msgOpcodes: msgOpcodes, storageFieldTypes: storageFieldTypes}, c.initialScope(get.Params, true), nil)
 		if err != nil {
 			return nil, err
 		}
@@ -3942,7 +4046,61 @@ func (c *Compiler) lowerStatementsToIR(stmts []Statement, params []ParamDecl, re
 				method := strings.ToLower(stmt.Value.Path[len(stmt.Value.Path)-1])
 				switch method {
 				case "save":
-					out = append(out, IRStmt{Kind: IRStmtStoreState, Key: "", Expr: &IRExpr{Kind: IRExprStateRead, Key: "", Pos: stmt.Pos}, Position: stmt.Pos})
+					// `.save()` as a bare statement is provably a no-op and is
+					// deliberately compiled away instead of emitting a real
+					// OpReadStorage+OpWriteStorage pair.
+					//
+					// AVM v1's ONLY storage-write path is the direct
+					// `state.<field> = expr` / `<alias>.<field> = expr`
+					// assignment handled by `case StatementSet:` above (which
+					// also covers `+=`/`-=`, desugared to the same form by the
+					// parser) -- it performs an immediate, single-key
+					// OpWriteStorage the moment a field changes. By the time
+					// `.save()` runs, every field the message touched this call
+					// is therefore already durably persisted under its own key.
+					//
+					// The whole-snapshot form this used to lower to read the
+					// ENTIRE current `Storage` map (OpReadStorage with an empty
+					// key -> runtimeStorageSnapshotValue: CanonicalDecode every
+					// stored key, O(total contract storage)) and immediately
+					// wrote that exact same decoded value straight back out
+					// (OpWriteStorage with an empty key ->
+					// runtimeStorageFromValue: CanonicalEncode every entry back
+					// to its own key, also O(total contract storage)) with zero
+					// transformation in between. Since every byte ever stored
+					// under a field key was itself produced by CanonicalEncode,
+					// that decode-then-re-encode round trip is byte-identical to
+					// what was already there -- so the old lowering billed gas
+					// proportional to the CONTRACT'S ENTIRE STORAGE FOOTPRINT on
+					// every `.save()` call for zero observable effect on state,
+					// regardless of how many fields the message actually
+					// touched. See security-audit/05-findings/
+					// FINDING-001-avm-gas-mispricing-dos.md and the "Write-path
+					// gas boundedness" note in
+					// examples/avm/collections/pagination_stdlib.atlx for the
+					// measured before/after numbers.
+					//
+					// The `@store func <Type>.save(self) { contract.setData(self.
+					// toChunk()) }` body a contract author writes is boilerplate
+					// required for the type/shape declaration, exactly like
+					// `.load()`'s body (see isStorageLoadBinding above) -- it is
+					// never actually executed for this bare-statement idiom.
+					//
+					// A getter calling `.save()` is already rejected earlier by
+					// functionDirectEffectMessage's StatementSet case (compile.go
+					// ~line 476), which runs before this lowering pass -- this
+					// check can never actually trigger. It is kept anyway as a
+					// redundant, defense-in-depth guard at the lowering layer
+					// itself, mirroring `case StatementSet:` just above (line
+					// 3947-3950), which carries the exact same doubled-up
+					// readOnly check for the same reason: if the earlier
+					// validation pass's coverage of "which statements count as
+					// mutation" ever narrows or diverges from this switch, the
+					// lowering layer still refuses to silently emit no-op
+					// bytecode for a getter that thinks it wrote storage.
+					if readOnly {
+						return nil, fail("E_GETTER_MUTATION", stmt.Pos, "getter cannot write storage")
+					}
 					continue
 				case "deletedata":
 					out = append(out, IRStmt{Kind: IRStmtDeleteState, Key: "", Position: stmt.Pos})
@@ -4438,6 +4596,15 @@ type loweringEnv struct {
 	// msgOpcodes in scope. Read-only: never mutated after construction, so
 	// sharing the same map across cloned envs is safe.
 	msgOpcodes map[string]uint32
+	// storageFieldTypes is the contract's @storage struct's field-name ->
+	// declared-type map, threaded through the same way as msgOpcodes
+	// (read-only, shared by reference across cloned envs). It lets a
+	// `<storageAlias>.<field>` read (IRExprStateRead) tag its emitted
+	// instruction with the field's declared type, so a fresh/absent field
+	// can decode to a type-aware zero value (e.g. an empty map for a
+	// Map<K,V> field) instead of the generic uint64(0) fallback. See
+	// runtimeValueFromStorage / OpReadStorage in x/aetravm/avm/avm.go.
+	storageFieldTypes map[string]TypeRef
 }
 
 type localBinding struct {
@@ -4463,14 +4630,15 @@ type loopContext struct {
 
 func cloneLoweringEnv(in loweringEnv) loweringEnv {
 	out := loweringEnv{
-		params:         map[string]int{},
-		consts:         map[string]constValue{},
-		types:          map[string]TypeRef{},
-		locals:         map[string]localBinding{},
-		storageAliases: map[string]struct{}{},
-		unknowns:       map[string]struct{}{},
-		nextLocalSlot:  in.nextLocalSlot,
-		msgOpcodes:     in.msgOpcodes,
+		params:            map[string]int{},
+		consts:            map[string]constValue{},
+		types:             map[string]TypeRef{},
+		locals:            map[string]localBinding{},
+		storageAliases:    map[string]struct{}{},
+		unknowns:          map[string]struct{}{},
+		nextLocalSlot:     in.nextLocalSlot,
+		msgOpcodes:        in.msgOpcodes,
+		storageFieldTypes: in.storageFieldTypes,
 	}
 	for k, v := range in.params {
 		out.params[k] = v
@@ -4749,10 +4917,10 @@ func lowerExprToIR(expr Expr, env loweringEnv, functions map[string]*FunctionDec
 		}
 		if len(expr.Path) == 2 {
 			if expr.Path[0] == "state" {
-				return &IRExpr{Kind: IRExprStateRead, Key: expr.Path[1], Pos: expr.Pos}, nil
+				return &IRExpr{Kind: IRExprStateRead, Key: expr.Path[1], TypeHint: stateReadTypeHint(env.storageFieldTypes, expr.Path[1]), Pos: expr.Pos}, nil
 			}
 			if _, ok := env.storageAliases[expr.Path[0]]; ok {
-				return &IRExpr{Kind: IRExprStateRead, Key: expr.Path[1], Pos: expr.Pos}, nil
+				return &IRExpr{Kind: IRExprStateRead, Key: expr.Path[1], TypeHint: stateReadTypeHint(env.storageFieldTypes, expr.Path[1]), Pos: expr.Pos}, nil
 			}
 			if binding, ok := env.locals[expr.Path[0]]; ok {
 				if isFieldLikeType(binding.Type.Name) {
@@ -5299,6 +5467,69 @@ func lowerExprToIR(expr Expr, env loweringEnv, functions map[string]*FunctionDec
 				return nil, err
 			}
 			return &IRExpr{Kind: IRExprEcrecover, Args: args, Pos: expr.Pos}, nil
+		case "bn254g1add":
+			if len(expr.Args) != 2 {
+				return nil, fail("E_LOWER_CALL", expr.Pos, "bn254G1Add() requires two arguments")
+			}
+			args, err := lowerExprArgs(expr.Args, env, functions, seen)
+			if err != nil {
+				return nil, err
+			}
+			return &IRExpr{Kind: IRExprBn254G1Add, Args: args, Pos: expr.Pos}, nil
+		case "bn254g1scalarmul":
+			if len(expr.Args) != 2 {
+				return nil, fail("E_LOWER_CALL", expr.Pos, "bn254G1ScalarMul() requires two arguments")
+			}
+			args, err := lowerExprArgs(expr.Args, env, functions, seen)
+			if err != nil {
+				return nil, err
+			}
+			return &IRExpr{Kind: IRExprBn254G1ScalarMul, Args: args, Pos: expr.Pos}, nil
+		case "bn254g1isoncurve":
+			if len(expr.Args) != 1 {
+				return nil, fail("E_LOWER_CALL", expr.Pos, "bn254G1IsOnCurve() requires one argument")
+			}
+			arg, err := lowerExprToIR(expr.Args[0], env, functions, seen)
+			if err != nil {
+				return nil, err
+			}
+			return &IRExpr{Kind: IRExprBn254G1IsOnCurve, Args: []*IRExpr{arg}, Pos: expr.Pos}, nil
+		case "bn254g2add":
+			if len(expr.Args) != 2 {
+				return nil, fail("E_LOWER_CALL", expr.Pos, "bn254G2Add() requires two arguments")
+			}
+			args, err := lowerExprArgs(expr.Args, env, functions, seen)
+			if err != nil {
+				return nil, err
+			}
+			return &IRExpr{Kind: IRExprBn254G2Add, Args: args, Pos: expr.Pos}, nil
+		case "bn254g2scalarmul":
+			if len(expr.Args) != 2 {
+				return nil, fail("E_LOWER_CALL", expr.Pos, "bn254G2ScalarMul() requires two arguments")
+			}
+			args, err := lowerExprArgs(expr.Args, env, functions, seen)
+			if err != nil {
+				return nil, err
+			}
+			return &IRExpr{Kind: IRExprBn254G2ScalarMul, Args: args, Pos: expr.Pos}, nil
+		case "bn254pairingcheck":
+			if len(expr.Args) != 3 {
+				return nil, fail("E_LOWER_CALL", expr.Pos, "bn254PairingCheck() requires three arguments")
+			}
+			args, err := lowerExprArgs(expr.Args, env, functions, seen)
+			if err != nil {
+				return nil, err
+			}
+			return &IRExpr{Kind: IRExprBn254PairingCheck, Args: args, Pos: expr.Pos}, nil
+		case "poseidon2bn254":
+			if len(expr.Args) != 2 {
+				return nil, fail("E_LOWER_CALL", expr.Pos, "poseidon2Bn254() requires two arguments")
+			}
+			args, err := lowerExprArgs(expr.Args, env, functions, seen)
+			if err != nil {
+				return nil, err
+			}
+			return &IRExpr{Kind: IRExprPoseidon2Bn254, Args: args, Pos: expr.Pos}, nil
 		case "counterfactualaddress", "autodeployaddress":
 			if len(expr.Args) != 1 || expr.Args[0].Kind != ExprStruct {
 				return nil, fail("E_LOWER_CALL", expr.Pos, expr.Text+"() requires one struct literal argument")
@@ -5530,7 +5761,11 @@ func emitIRExpr(expr *IRExpr, code *[]avm.Instruction) error {
 	case IRExprNull:
 		*code = append(*code, avm.Instruction{Op: avm.OpPushNull})
 	case IRExprStateRead:
-		*code = append(*code, avm.Instruction{Op: avm.OpReadStorage, Data: []byte(expr.Key)})
+		var hint uint64
+		if expr.TypeHint == "map" {
+			hint = avm.StateReadHintMap
+		}
+		*code = append(*code, avm.Instruction{Op: avm.OpReadStorage, Arg: hint, Data: []byte(expr.Key)})
 	case IRExprAdd, IRExprSub, IRExprMul, IRExprDiv, IRExprMod, IRExprShl, IRExprShr, IRExprBitAnd, IRExprBitOr, IRExprBitXor:
 		if err := emitIRExpr(expr.Left, code); err != nil {
 			return err
@@ -5767,6 +6002,34 @@ func emitIRExpr(expr *IRExpr, code *[]avm.Instruction) error {
 			op = avm.OpNarrowToInt128
 		case IRExprNarrowToInt256:
 			op = avm.OpNarrowToInt256
+		}
+		*code = append(*code, avm.Instruction{Op: op})
+	case IRExprBn254G1Add, IRExprBn254G1ScalarMul, IRExprBn254G1IsOnCurve, IRExprBn254G2Add, IRExprBn254G2ScalarMul, IRExprBn254PairingCheck, IRExprPoseidon2Bn254:
+		// Operands are pushed in source order; the VM dispatch pops them
+		// last-pushed-first (G1Add/G2Add pop b, a; G1ScalarMul/G2ScalarMul pop
+		// scalar, point; PairingCheck pops k, g2s, g1s; Poseidon2Bn254 pops n,
+		// data) -- see each opcode's own doc comment in avm.go.
+		for _, arg := range expr.Args {
+			if err := emitIRExpr(arg, code); err != nil {
+				return err
+			}
+		}
+		op := avm.OpBn254G1Add
+		switch expr.Kind {
+		case IRExprBn254G1Add:
+			op = avm.OpBn254G1Add
+		case IRExprBn254G1ScalarMul:
+			op = avm.OpBn254G1ScalarMul
+		case IRExprBn254G1IsOnCurve:
+			op = avm.OpBn254G1IsOnCurve
+		case IRExprBn254G2Add:
+			op = avm.OpBn254G2Add
+		case IRExprBn254G2ScalarMul:
+			op = avm.OpBn254G2ScalarMul
+		case IRExprBn254PairingCheck:
+			op = avm.OpBn254PairingCheck
+		case IRExprPoseidon2Bn254:
+			op = avm.OpPoseidon2Bn254
 		}
 		*code = append(*code, avm.Instruction{Op: op})
 	case IRExprCoinsCast:

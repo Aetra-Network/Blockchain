@@ -1,0 +1,360 @@
+// Bounded, cursor-based pagination over a large Map-backed collection, for
+// ATLX / AVM.
+//
+// THE PROBLEM THIS SOLVES
+// ------------------------
+// A plain `Map<K,V>` @storage field is a poor fit for "list up to N items"
+// once the map has grown large, for a reason that only becomes visible by
+// reading the AVM runtime, not the ATLX surface: EVERY map builtin
+// (get/set/has/delete/keys/entries), and the storage read that loads the
+// field in the first place, is priced by `GasPerOperandUnit *
+// runtimeValueSizeUnits(wholeMap)` -- see the FINDING-001 comments on
+// chargeOperandGas, OpMapKeys/OpMapEntries, and OpReadStorage's single-key
+// branch in x/aetravm/avm/avm.go. `Map.keys(limit)` / `Map.entries(limit)`
+// DO take a `limit`, but that limit only truncates the RETURNED list; the
+// gas charge happens before the truncation, against the map's CURRENT total
+// size. So `st.hugeMap.keys(1)` on a 10,000-entry map is billed the same as
+// `st.hugeMap.keys(10000)` -- a single "give me one page" call costs exactly
+// as much as reading the whole collection, which defeats the entire point
+// of paginating. This is a genuine, already-documented runtime limitation
+// (security-audit/05-findings/FINDING-001-avm-gas-mispricing-dos.md), not
+// something this file works around by accident -- see the "WHAT A NEW
+// OPCODE WOULD BUY" note at the bottom for the follow-up that would remove
+// it properly.
+//
+// THE PATTERN
+// ------------
+// AVM v1's @storage struct fields are NOT arbitrary key-value storage: each
+// NAMED field is its own independent entry in the contract's underlying
+// `Storage map[string][]byte` (see OpReadStorage's "single-key read" branch
+// -- gas is `len(state[key])`, and critically does NOT depend on any OTHER
+// field's size). `var st = lazy PaginationStorage.load()` is the standard
+// @store idiom (see multi_id_ledger.atlx), and the compiler recognizes that
+// exact shape specially: `st.<field>` compiles straight to a single-key
+// OpReadStorage keyed by the field's OWN name (IRExprStateRead / see
+// isStorageLoadBinding in x/aetravm/compiler/compile.go), never to a
+// whole-struct getData()/fromChunk() decode. (The `fromChunk(contract.
+// getData())` body written inside the `@store func .load()` function is
+// therefore boilerplate the language requires for the type/shape
+// declaration; it is not what actually executes for `var st = lazy
+// X.load()` followed by `st.field` reads -- confirmed by reading
+// isStorageLoadBinding's `continue` in compile.go, which emits ZERO
+// bytecode for the binding statement itself.)
+//
+// So: split the collection across a FIXED, small number of independent
+// top-level Map fields ("pages": page0..page7 below), each capped to hold
+// AT MOST PAGE_SIZE entries by construction. Reading ONE page (`st.page3`)
+// then costs gas proportional to THAT PAGE's own size only -- provably
+// independent of how many entries live in any other page, because each
+// page is its own storage key. Items are assigned sequential ids on
+// insert (id = nextId, then nextId += 1) and routed to page (id /
+// PAGE_SIZE), so every page except possibly the last is always exactly
+// full, and a page's entries are always its ids' natural ascending order
+// -- no sort step is ever needed anywhere in this file.
+//
+// The "cursor" in this scheme IS the page index: getPage-style reads take
+// a `cursor: uint64` page number and the caller advances with
+// `nextCursor()` until it returns the CAPACITY-many-pages sentinel value
+// NUM_PAGES (or until `pageEntryCount(cursor) == 0`, whichever the caller
+// finds more convenient). This is a coarser cursor granularity than
+// "resume after this exact key", but it is the finest granularity
+// achievable without either an unbounded number of storage fields (not
+// expressible -- fields are a fixed, compile-time-known set) or a single
+// big Map (which reintroduces the O(total size) charge this file exists to
+// avoid).
+//
+// Capacity is therefore FIXED at compile time (NUM_PAGES * PAGE_SIZE
+// entries, enforced with ERR_FULL) -- a real deployment would tune both
+// constants to its expected scale. This file intentionally keeps them
+// modest (8 pages of 16 entries = 128 total) so the conformance test can
+// cheaply drive the collection to "large" (all pages full) while still
+// making the O(page) vs O(collection) contrast obvious: fetching ANY one
+// page never touches more than 16 entries' worth of storage bytes, while
+// the deliberately-unbounded `scanAllUnboundedCount()` getter below (which
+// exists ONLY as the "bad pattern" contrast case, not as something a real
+// contract should call) touches all 8 pages every time, so its gas grows
+// with total collection size exactly the way `getPage`'s does NOT.
+//
+// WRITE-PATH GAS BOUNDEDNESS -- Insert / st.save() (FIXED)
+// -----------------------------------------------------------------------
+// Everything above was always true for READS (`pageEntryCount`,
+// `pageEntryValueAt`, `totalCount`) -- but until this section was added,
+// the WRITE path (`Insert`, the only mutating message in this file) had a
+// bug that quietly defeated the file's own page-sharding design: every
+// `Insert` ends with a bare `st.save()` statement, and the compiler used
+// to lower a bare `.save()` statement to a REAL whole-snapshot round trip
+// -- `OpReadStorage` with an empty key (decode every currently-stored
+// field, O(total contract storage)) immediately followed by
+// `OpWriteStorage` with an empty key (re-encode every field back out,
+// also O(total contract storage)) -- regardless of the fact that
+// `Insert` only ever touches ONE page field plus `nextId`. So gas for
+// `Insert` grew with the CONTRACT'S ENTIRE accumulated storage, not with
+// PAGE_SIZE, even though every read-side getter above was correctly
+// page-bounded. Measured before the fix (conformance-test-driven, see
+// x/aetravm/conformance/pagination_acceptance_test.go):
+//
+//   Insert # | id  | page touched          | gas used (BEFORE fix)
+//   1        | 0   | page0 slot0 (empty)   | 530
+//   16       | 15  | page0 (full)          | 2071
+//   17       | 16  | page1 slot0 (fresh)   | 1370   <- already 2.6x the very first insert
+//   33       | 32  | page2 slot0 (fresh)   | 2189
+//   113      | 112 | page7 slot0 (fresh)   | 6278
+//   127      | 126 | page7                 | 7697   <- ~14.5x the first insert
+//
+// "First entry into an otherwise-empty page" (holding the touched page's
+// own cost near-zero every time) rose linearly at ~51 gas per
+// ALREADY-STORED entry elsewhere in the contract -- proof the cost was
+// driven by total prior storage, not by the field the message actually
+// touched.
+//
+// THE FIX: a bare `.save()` statement is provably a no-op given AVM v1's
+// write semantics. The ONLY way to mutate storage in this language is the
+// direct `st.<field> = expr` assignment (see `st.page7 = st.page7.set(...)`
+// and `st.nextId = id + 1` above), which already performs an immediate,
+// single-key `OpWriteStorage` at the point of assignment -- so by the time
+// `.save()` runs, every field this message touched is already durably
+// persisted under its own key. `.save()`'s old lowering then just decoded
+// the WHOLE current snapshot and re-encoded it straight back out
+// byte-identical, with zero transformation in between: a pure, expensive
+// round trip with no observable effect on `state`. The compiler now
+// recognizes a bare `.save()` statement the same way it already recognized
+// a bare `lazy X.load()` binding (see isStorageLoadBinding) and compiles it
+// away entirely -- see the "case save:" comment in
+// x/aetravm/compiler/compile.go for the full argument. Re-measured after
+// the fix, same methodology:
+//
+//   Insert # | id  | page touched          | gas used (AFTER fix)
+//   1        | 0   | page0 slot0 (empty)   | 392
+//   16       | 15  | page0 (full)          | 1180
+//   17       | 16  | page1 slot0 (fresh)   | 418    <- back near the first-insert baseline
+//   33       | 32  | page2 slot0 (fresh)   | 426
+//   113      | 112 | page7 slot0 (fresh)   | 457
+//   127      | 126 | page7                 | 1176
+//
+// Crossing into a brand-new page now costs about the same as the
+// contract's very first-ever write (392 vs 418, vs 6278 pre-fix) --
+// bounded by PAGE_SIZE like the reads always were, no longer contaminated
+// by how many other pages are already full. The small remaining growth
+// within a page (e.g. 392 -> 1180 filling page0) is the SAME legitimate,
+// honestly-priced per-field-size effect the reads already had (a fuller
+// page's own bytes cost a little more to decode/encode) -- not a bug, and
+// not what this section is about. See
+// TestPaginationInsertGasBoundedAcrossFreshPages in
+// pagination_acceptance_test.go for the permanent regression proof.
+//
+// WHAT A NEW OPCODE WOULD BUY (flagged follow-up, not implemented here)
+// -----------------------------------------------------------------------
+// A native "indexed/lazy map" op that resolves a single key against a
+// persistent tree structure (charging O(log N) or O(1) amortized instead
+// of O(N) full-clone-then-truncate) would let a SINGLE Map field support
+// unbounded cursor-based pagination directly (real "resume after this
+// exact key" semantics, not "resume after this page number"), with no
+// fixed compile-time capacity. That is exactly the gap FINDING-001
+// describes for Map.keys()/Map.entries()/get/set/has/delete billing
+// against a map's CURRENT TOTAL size (a separate mechanism from the
+// whole-snapshot `.save()` issue fixed above, and NOT fixed by it -- this
+// file avoids it by construction, sharding into small fixed-size Map
+// fields, rather than by any runtime change). Per this task's constraint
+// against touching x/aetravm/avm/avm.go or the compiler's IR/codegen core
+// for THIS specific gap, this file achieves the same OBSERVABLE property
+// (gas per page independent of total collection size) with existing
+// primitives only, at the cost of a fixed page/capacity ceiling instead of
+// a truly unbounded one.
+
+const PAGE_SIZE = 16
+const NUM_PAGES = 8
+const CAPACITY = 128
+
+const ERR_FULL = 4001
+const ERR_BAD_MSG = 0xFFFF
+
+@storage
+struct PaginationStorage {
+    nextId: uint64
+    page0: Map<uint64, uint256>
+    page1: Map<uint64, uint256>
+    page2: Map<uint64, uint256>
+    page3: Map<uint64, uint256>
+    page4: Map<uint64, uint256>
+    page5: Map<uint64, uint256>
+    page6: Map<uint64, uint256>
+    page7: Map<uint64, uint256>
+}
+
+// Append one value to the collection. The assigned id is always the
+// current `nextId` (0, 1, 2, ... in strict insertion order), so a page's
+// occupied ids are always a contiguous run and its Map.entries() order
+// (byte-ordered on the CanonicalEncode'd uint64 key, which matches numeric
+// order for this type) always matches insertion order too.
+@message(0xC101)
+struct Insert {
+    value: uint256
+}
+
+type PaginationMsg = Insert
+
+contract PaginationStdlib {
+    author: "Aetralis example"
+    description: "Cursor-based bounded pagination over a Map-backed collection: fixed page-sharded storage fields so a single page fetch is gas-bounded by page size, never by total collection size"
+    version: "0.01.0"
+
+    storage: PaginationStorage
+    incomingMessages: PaginationMsg
+
+    @store
+    func PaginationStorage.load() {
+        return PaginationStorage.fromChunk(contract.getData())
+    }
+
+    @store
+    func PaginationStorage.save(self) {
+        contract.setData(self.toChunk())
+    }
+
+    @internal
+    func onInternalMessage(in: InMessage) {
+        const msg = lazy PaginationMsg.fromSegment(in.body)
+
+        match (msg) {
+            Insert => {
+                var st = lazy PaginationStorage.load()
+                assert (st.nextId < CAPACITY) throw ERR_FULL
+
+                const id = st.nextId
+                const pageIndex = id / PAGE_SIZE
+
+                // Route to the one page field that owns this id. Every
+                // branch touches exactly ONE page's storage key -- the
+                // other seven are never read or written by this message.
+                if (pageIndex == 0) {
+                    st.page0 = st.page0.set(id, msg.value)
+                } else if (pageIndex == 1) {
+                    st.page1 = st.page1.set(id, msg.value)
+                } else if (pageIndex == 2) {
+                    st.page2 = st.page2.set(id, msg.value)
+                } else if (pageIndex == 3) {
+                    st.page3 = st.page3.set(id, msg.value)
+                } else if (pageIndex == 4) {
+                    st.page4 = st.page4.set(id, msg.value)
+                } else if (pageIndex == 5) {
+                    st.page5 = st.page5.set(id, msg.value)
+                } else if (pageIndex == 6) {
+                    st.page6 = st.page6.set(id, msg.value)
+                } else {
+                    st.page7 = st.page7.set(id, msg.value)
+                }
+
+                st.nextId = id + 1
+                st.save()
+            }
+
+            else => {
+                assert (in.body.isEmpty()) throw ERR_BAD_MSG
+            }
+        }
+    }
+
+    @bounced
+    func onBouncedMessage(in: InMessageBounced) {
+    }
+
+    // Number of occupied slots in page `cursor` (0 if the page does not
+    // exist yet, PAGE_SIZE if it is full, something in between for the
+    // one page currently being filled). GAS-BOUNDED: touches exactly the
+    // one named storage field for this page, regardless of NUM_PAGES or
+    // how many total items the collection holds.
+    @get
+    func pageEntryCount(cursor: uint64): uint64 {
+        const st = lazy PaginationStorage.load()
+        if (cursor == 0) {
+            return st.page0.len()
+        } else if (cursor == 1) {
+            return st.page1.len()
+        } else if (cursor == 2) {
+            return st.page2.len()
+        } else if (cursor == 3) {
+            return st.page3.len()
+        } else if (cursor == 4) {
+            return st.page4.len()
+        } else if (cursor == 5) {
+            return st.page5.len()
+        } else if (cursor == 6) {
+            return st.page6.len()
+        } else if (cursor == 7) {
+            return st.page7.len()
+        }
+        return 0
+    }
+
+    // The value at position `slot` (0-indexed within the page) of page
+    // `cursor`, or 0 if that slot is not occupied. The item's id (its key
+    // within the page's Map) is always `cursor*PAGE_SIZE + slot` by
+    // construction, so callers never need a separate "key at this slot"
+    // getter -- the id is fully deterministic from (cursor, slot). Same
+    // gas-bound property as pageEntryCount: one storage field touched.
+    @get
+    func pageEntryValueAt(cursor: uint64, slot: uint64): uint256 {
+        const st = lazy PaginationStorage.load()
+        const id = cursor * PAGE_SIZE + slot
+        if (cursor == 0) {
+            const v = st.page0.get(id)
+            return (v == null) ? 0 : v!
+        } else if (cursor == 1) {
+            const v = st.page1.get(id)
+            return (v == null) ? 0 : v!
+        } else if (cursor == 2) {
+            const v = st.page2.get(id)
+            return (v == null) ? 0 : v!
+        } else if (cursor == 3) {
+            const v = st.page3.get(id)
+            return (v == null) ? 0 : v!
+        } else if (cursor == 4) {
+            const v = st.page4.get(id)
+            return (v == null) ? 0 : v!
+        } else if (cursor == 5) {
+            const v = st.page5.get(id)
+            return (v == null) ? 0 : v!
+        } else if (cursor == 6) {
+            const v = st.page6.get(id)
+            return (v == null) ? 0 : v!
+        } else {
+            const v = st.page7.get(id)
+            return (v == null) ? 0 : v!
+        }
+    }
+
+    // The page index the caller should fetch next, or NUM_PAGES itself as
+    // the "no more pages" sentinel. Pure arithmetic over the argument --
+    // deliberately does NOT touch storage, so calling it in a pagination
+    // loop never adds any collection-size-dependent cost at all. A caller
+    // stops paging when either nextCursor(cursor) == NUM_PAGES or
+    // pageEntryCount(cursor) == 0, whichever it reaches first.
+    @get
+    func nextCursor(cursor: uint64): uint64 {
+        const candidate = cursor + 1
+        return (candidate >= NUM_PAGES) ? NUM_PAGES : candidate
+    }
+
+    // Total items ever inserted. Cheap (one scalar field), but included
+    // for completeness -- NOT part of the gas-bounded page-read path
+    // above, and not needed to page through the collection (see
+    // nextCursor).
+    @get
+    func totalCount(): uint64 {
+        const st = lazy PaginationStorage.load()
+        return st.nextId
+    }
+
+    // Deliberately-UNBOUNDED contrast getter: touches all NUM_PAGES page
+    // fields every single call, so its gas cost genuinely grows with the
+    // total collection size, unlike every getter above. This function
+    // exists ONLY so the conformance test can demonstrate the difference
+    // within one contract -- it is the "what pagination avoids" example,
+    // not a recommended pattern.
+    @get
+    func scanAllUnboundedCount(): uint64 {
+        const st = lazy PaginationStorage.load()
+        return st.page0.len() + st.page1.len() + st.page2.len() + st.page3.len()
+            + st.page4.len() + st.page5.len() + st.page6.len() + st.page7.len()
+    }
+}

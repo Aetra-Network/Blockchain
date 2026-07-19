@@ -1,0 +1,291 @@
+// Word-packed bitmap over an arbitrarily large index space, for ATLX / AVM.
+//
+// THE PATTERN
+// ------------
+// A single bit at logical index `i` (i in [0, 2^256)) lives at bit
+// `i % WORD_BITS` of word `i / WORD_BITS`, and words are stored sparsely in
+// `Map<uint256 wordIndex, uint256 packedBits>` -- only words that have ever
+// had a bit touched exist in the map at all; every other word is
+// implicitly all-zero. set/get/clear/toggle on one bit therefore touch
+// exactly ONE map entry (one word), using only the bitwise ops AVM v1
+// already ships (OpBitAnd/OpBitOr/OpBitXor/OpBitNot/OpShl/OpShr -- see
+// x/aetravm/avm/avm.go) -- no new opcode, no per-bit storage key. This is
+// the standard "bitset" trick (same idea as a C `uint64_t bits[N/64]`
+// array, or Solidity's packed-bool-mapping pattern), adapted to ATLX's
+// Map<K,V> as the backing store for the (sparse, unboundedly large) word
+// index.
+//
+// A NON-OBVIOUS PITFALL THIS FILE WORKS AROUND (read before copying this
+// pattern elsewhere with a different word width)
+// -----------------------------------------------------------------------
+// A bare numeric literal in ATLX source (`1`, `0`, ...) always compiles to
+// a PushU64 instruction and is therefore a uint64-TAGGED runtime value --
+// see IRExprConstU64 in x/aetravm/compiler/compile.go and its emission as
+// `avm.Instruction{Op: avm.OpPushU64, ...}` -> `ValueUint64(...)` in
+// x/aetravm/avm/avm.go. This is true no matter what type the surrounding
+// expression is statically expected to have; ATLX has no `toUint256(x)`
+// widening-cast builtin (only checked NARROWING casts exist: toUint128,
+// toInt128, toInt256 -- see finance_types.atlx), and every binary
+// arithmetic/bitwise op tags its RESULT with its LEFT operand's tag and
+// bounds-checks against that tag's bit width (runtimeBinaryArithmetic /
+// OpShl's `runtimeFromBigIntChecked(left.Tag, ...)` in avm.go). So writing
+// the seemingly-obvious `1 << bitOffset` here, with the literal `1` as the
+// shift's LEFT operand, would tag the result uint64 and TRAP the instant
+// bitOffset >= 64 (2^64 does not fit a uint64-tagged value) -- silently
+// correct for the first word's low 64 bits and then trapping for the rest
+// of the very word this file exists to exercise. (The same hazard already
+// exists, unexercised, in the "default a missing uint256 to literal 0"
+// idiom used by multi_id_ledger.atlx/order_book.atlx -- `(x == null) ? 0 :
+// x!` -- for whichever call path takes the null branch; it simply never
+// bites there because every amount in that file's tests stays well under
+// 2^64.)
+//
+// The fix used throughout this file: derive both 0 and 1 as uint256-TAGGED
+// values from an already-uint256-typed operand (the message/getter's own
+// `index` or `wordIndex` parameter, which the ABI decoder always tags
+// correctly per its declared type), instead of from a bare literal:
+//
+//     const zero256 = index * 0        // uint256(0): left operand (index)
+//                                       // is already uint256-tagged, so
+//                                       // OpMul's result is too.
+//     const one256  = zero256 + 1      // uint256(1): same reasoning,
+//                                       // chained off zero256.
+//     const mask    = one256 << bitOffset   // now safely uint256-tagged.
+//
+// This is arithmetically a no-op (`index*0+1` always equals 1, for any
+// index including 0) -- its only purpose is to carry the uint256 tag
+// through to the shift/bitwise ops that follow, using nothing but the
+// Add/Mul opcodes every contract already uses.
+//
+// GAS NOTE: this file's correctness claim is per-bit O(1) set/get/clear/
+// toggle (one word's worth of storage touched, never the whole bitmap) --
+// it does NOT claim gas is independent of how many DISTINCT words have
+// been populated so far, because `words` is one ordinary Map<K,V> @storage
+// field and every Map builtin is priced by the WHOLE field's current size
+// (FINDING-001, see pagination_stdlib.atlx's header for the long version
+// and the same "what a new opcode would buy" note). A bitmap whose set
+// bits are so numerous that they occupy thousands of DISTINCT words would
+// hit that same collection-size-proportional cost; splitting words across
+// pagination_stdlib.atlx's fixed-page-field trick would fix it the same
+// way at the cost of a fixed word-index range, exactly as documented
+// there. The conformance test for this file proves per-bit CORRECTNESS at
+// word boundaries, not a gas-invariance property (which pagination_stdlib.
+// atlx's conformance test proves instead, for the collection-size axis
+// this file does not touch).
+
+const WORD_BITS = 256
+const ERR_BAD_MSG = 0xFFFF
+
+@storage
+struct BitmapStorage {
+    words: Map<uint256, uint256>
+}
+
+@message(0xC201)
+struct SetBit {
+    index: uint256
+}
+
+@message(0xC202)
+struct ClearBit {
+    index: uint256
+}
+
+@message(0xC203)
+struct ToggleBit {
+    index: uint256
+}
+
+type BitmapMsg = SetBit | ClearBit | ToggleBit
+
+contract BitmapStdlib {
+    author: "Aetralis example"
+    description: "Word-packed uint256 bitmap over Map<uint256,uint256>: O(1) set/get/clear/toggle per bit using only existing bitwise opcodes"
+    version: "0.01.0"
+
+    storage: BitmapStorage
+    incomingMessages: BitmapMsg
+
+    @store
+    func BitmapStorage.load() {
+        return BitmapStorage.fromChunk(contract.getData())
+    }
+
+    @store
+    func BitmapStorage.save(self) {
+        contract.setData(self.toChunk())
+    }
+
+    @internal
+    func onInternalMessage(in: InMessage) {
+        const msg = lazy BitmapMsg.fromSegment(in.body)
+
+        match (msg) {
+            SetBit => {
+                var st = lazy BitmapStorage.load()
+                const wordIndex = msg.index / WORD_BITS
+                const bitOffset = msg.index % WORD_BITS
+                const zero256 = msg.index * 0
+                const one256 = zero256 + 1
+                const mask = one256 << bitOffset
+
+                const existing = st.words.get(wordIndex)
+                const word = (existing == null) ? zero256 : existing!
+                st.words = st.words.set(wordIndex, word | mask)
+                st.save()
+            }
+
+            ClearBit => {
+                var st = lazy BitmapStorage.load()
+                const wordIndex = msg.index / WORD_BITS
+                const bitOffset = msg.index % WORD_BITS
+                const zero256 = msg.index * 0
+                const one256 = zero256 + 1
+                const mask = one256 << bitOffset
+
+                const existing = st.words.get(wordIndex)
+                const word = (existing == null) ? zero256 : existing!
+                st.words = st.words.set(wordIndex, word & ~mask)
+                st.save()
+            }
+
+            ToggleBit => {
+                var st = lazy BitmapStorage.load()
+                const wordIndex = msg.index / WORD_BITS
+                const bitOffset = msg.index % WORD_BITS
+                const zero256 = msg.index * 0
+                const one256 = zero256 + 1
+                const mask = one256 << bitOffset
+
+                const existing = st.words.get(wordIndex)
+                const word = (existing == null) ? zero256 : existing!
+                st.words = st.words.set(wordIndex, word ^ mask)
+                st.save()
+            }
+
+            else => {
+                assert (in.body.isEmpty()) throw ERR_BAD_MSG
+            }
+        }
+    }
+
+    @bounced
+    func onBouncedMessage(in: InMessageBounced) {
+    }
+
+    // 1 if logical bit `index` is set, 0 otherwise. Touches exactly the one
+    // word map entry that owns this bit.
+    @get
+    func getBit(index: uint256): uint64 {
+        const st = lazy BitmapStorage.load()
+        const wordIndex = index / WORD_BITS
+        const bitOffset = index % WORD_BITS
+        const zero256 = index * 0
+        const one256 = zero256 + 1
+        const mask = one256 << bitOffset
+
+        const existing = st.words.get(wordIndex)
+        const word = (existing == null) ? zero256 : existing!
+        return ((word & mask) == mask) ? 1 : 0
+    }
+
+    // Raw packed 256-bit word (0 if that word has never been touched).
+    // Exposed for boundary-crossing conformance checks that want to see
+    // the whole word at once rather than one bit at a time.
+    @get
+    func getWord(wordIndex: uint256): uint256 {
+        const st = lazy BitmapStorage.load()
+        const existing = st.words.get(wordIndex)
+        return (existing == null) ? (wordIndex * 0) : existing!
+    }
+
+    // Population count (number of set bits) of one word.
+    //
+    // A naive "loop 256 times, add 0-or-1 to a running total" is NOT
+    // expressible in an ATLX @get function: AVM v1 rejects EVERY `set`
+    // statement -- including reassigning an ordinary local, e.g. an
+    // accumulator or a loop-shifted copy of `word` -- inside any @get/
+    // @pure body (confirmed empirically: `validateGetter` calls
+    // `validateStatement` with `inPure=true`, and `case StatementSet: if
+    // inPure { return fail("E_PURE_MUTATION", ...) }` in
+    // x/aetravm/compiler/compile.go has no carve-out for a plain local
+    // that never touches storage). A fully unrolled 256-term boolean sum
+    // (one term per bit, no mutation) would sidestep that rule but is
+    // both unwieldy and a poor fit for AVM v1's whole-module 4096-
+    // instruction budget (avm.DefaultParams().MaxInstructions) once every
+    // other function in this file is counted too.
+    //
+    // Instead this uses the classic SWAR ("SIMD within a register")
+    // population-count algorithm (Hacker's Delight ch. 5-1), generalized
+    // from 64 to 256 bits: mask-and-subtract to get 2-bit lane counts,
+    // mask-and-add to get 4-bit lane counts, mask-and-add to get 8-bit
+    // (byte) lane counts, then FIVE more shift-and-add doubling steps
+    // (byte pairs -> 2 bytes -> 4 -> 8 -> 16 -> all 32 bytes) that need no
+    // further masking because each partial sum stays within its lane's
+    // capacity until the very last fold (whose 9-bit result, 0..256, is
+    // extracted with a final & 0x1FF). Every step here is a `const`
+    // binding -- no loop, no mutation, no new opcode, only the bitwise/
+    // arithmetic ops this file already uses elsewhere. The repeating-
+    // pattern masks (0x5555.../0x3333.../0x0f0f...) are themselves built
+    // from ordinary 64-bit hex literals widened to 256 bits via the same
+    // shift-and-or technique used for `mask` above, since ATLX numeric
+    // literals never exceed 64 bits (ir.Instruction.Arg is a uint64) --
+    // see the file-header note on the uint256-tagging pitfall, which
+    // applies identically to these masks.
+    @get
+    func popcountWord(wordIndex: uint256): uint64 {
+        const st = lazy BitmapStorage.load()
+        const existing = st.words.get(wordIndex)
+        const word = (existing == null) ? (wordIndex * 0) : existing!
+        const zero256 = wordIndex * 0
+
+        const seed1 = zero256 + 0x5555555555555555
+        const seed2 = zero256 + 0x3333333333333333
+        const seed3 = zero256 + 0x0F0F0F0F0F0F0F0F
+
+        const m1a = seed1 | (seed1 << 64)
+        const m1 = m1a | (m1a << 128)
+        const m2a = seed2 | (seed2 << 64)
+        const m2 = m2a | (m2a << 128)
+        const m3a = seed3 | (seed3 << 64)
+        const m3 = m3a | (m3a << 128)
+
+        // Step 1: each 2-bit lane -> count of set bits in that pair (0-2).
+        const s1 = word - ((word >> 1) & m1)
+        // Step 2: each 4-bit lane -> count of set bits in that nibble (0-4).
+        const s2 = (s1 & m2) + ((s1 >> 2) & m2)
+        // Step 3: each 8-bit lane (byte) -> count of set bits in that byte
+        // (0-8).
+        const s3 = (s2 + (s2 >> 4)) & m3
+        // Steps 4-7: fold byte counts together, doubling the group size
+        // each time (2 bytes, 4 bytes, 8 bytes, 16 bytes). No masking
+        // needed between THESE steps specifically: the running partial
+        // sum (max 16, then 32, then 64, then 128) always stays under
+        // 256, so it fits inside the single byte lane it occupies
+        // without ever carrying into -- and corrupting -- a neighboring
+        // lane's independent (and, at this point, still meaningful)
+        // partial sum.
+        const s4 = s3 + (s3 >> 8)
+        const s5 = s4 + (s4 >> 16)
+        const s6 = s5 + (s5 >> 32)
+        const s7 = s6 + (s6 >> 64)
+
+        // Final combination is DELIBERATELY NOT one more blind
+        // `s7 + (s7 >> 128)`: s7's low byte and its byte-16 (bit 128)
+        // both hold values up to 128, so their TRUE sum can reach 256 --
+        // one bit wider than a byte. A raw whole-width add at this point
+        // would let that 9th bit's carry corrupt s7's next byte lane
+        // (which still holds an unrelated, nonzero partial sum from a
+        // DIFFERENT byte group, not the zero/garbage a narrower width's
+        // final fold gets to assume -- this is exactly what made this
+        // step the one place this file's first draft had a real,
+        // caught-by-the-conformance-test bug: it returned 258 instead of
+        // 2 for a two-bit word with bits spaced 255 apart). Isolating
+        // each half to its own byte FIRST, THEN adding as plain small
+        // integers, avoids the corruption entirely.
+        const low = s7 & (zero256 + 0xFF)
+        const high = (s7 >> 128) & (zero256 + 0xFF)
+        const total = low + high
+        return total
+    }
+}

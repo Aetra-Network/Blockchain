@@ -237,7 +237,14 @@ try {
   }
 
   $ldflags = "-X github.com/sovereign-l1/l1/cmd/l1d/cmd.appVersion=$Version -X github.com/sovereign-l1/l1/cmd/l1d/cmd.gitCommit=$Commit -X github.com/sovereign-l1/l1/cmd/l1d/cmd.buildDate=$buildDate -X github.com/sovereign-l1/l1/cmd/l1d/cmd.dirty=$dirty"
-  $buildArgs = @("build", "-mod=readonly", "-trimpath", "-p=1", "-ldflags", $ldflags, "-o", $Binary, "./cmd/l1d")
+  # -tags purego,noadx: force gnark-crypto (AVM Phase D BN254 opcodes) onto its
+  # pure-Go arithmetic path on every validator build, closing the ADX-dispatch
+  # cross-architecture/runtime-CPU-feature determinism hazard documented in
+  # docs/architecture/avm-phase-d-zk-design.md (Status / owner-decisions). This
+  # is the INTERIM alternative (no vendoring); see that doc for the tradeoff
+  # accepted (amd64-vs-arm64 divergence stays open as a known gap) and every
+  # other place this flag combo must be passed.
+  $buildArgs = @("build", "-mod=readonly", "-trimpath", "-p=1", "-tags", "purego,noadx", "-ldflags", $ldflags, "-o", $Binary, "./cmd/l1d")
   & $Go @buildArgs
   if ($LASTEXITCODE -ne 0) { throw "go build failed for $TargetOS/$TargetArch" }
 

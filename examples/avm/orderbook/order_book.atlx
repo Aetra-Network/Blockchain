@@ -1,0 +1,638 @@
+// Price-bucketed limit order book for ATLX / AVM.
+//
+// AVM v1 has NO native ordered-map / heap / dynamic-array primitive (see
+// docs/architecture/avm-language-roadmap.md Phase G) and its `for` loop
+// bounds MUST be compile-time constants (E_LOWER_FOR) -- there is no way to
+// loop "from the current best price down to zero" at runtime, only "loop a
+// fixed constant number of times". Those two constraints together dictate
+// this contract's entire shape, so they are called out up front:
+//
+//   1. Price is NOT an arbitrary uint256. It is a bounded discrete TIER
+//      index in [0, MAX_PRICE_TIERS) -- the on-chain analogue of a fixed
+//      tick grid (real exchanges already do this: a listing chooses a tick
+//      size off-chain and prices trade at integer multiples of it). The
+//      contract itself never interprets what a tier "means" in real units;
+//      that mapping is an off-chain/caller concern.
+//   2. Storage is Map<tier, LevelMeta> for the bid side and the ask side
+//      (a "price-bucketed" map -- the tier IS the key, so there is no
+//      separate sorted index to maintain). Finding the best price is NOT
+//      O(log n): it is an O(1) cached-hint read in the common case, and an
+//      O(MAX_PRICE_TIERS) worst-case linear rescan (see "Honest complexity"
+//      below) in the case where the previously-cached best tier just
+//      emptied. That rescan is written as a `for` loop over the CONSTANT
+//      MAX_PRICE_TIERS with an early `break`/`return`, so it is always
+//      genuinely gas-charged per step (bounded Map.has() lookups) and never
+//      unbounded, and its declared worst case is always correct (the tier
+//      domain itself is bounded, so scanning all of it can never miss the
+//      true best).
+//   3. Each price level's resting-order FIFO queue is NOT a linked list.
+//      AVM v1's struct-field-WRITE lowering only supports a local bound
+//      directly from a struct literal or from copying another local/param
+//      (see x/aetravm/compiler/struct_field_access_test.go); a local bound
+//      from a chained Map.get()-then-unwrap call (`st.orders.get(id)!`) can
+//      be FIELD-READ but not FIELD-WRITTEN -- confirmed empirically against
+//      the real compiler while designing this contract, not assumed from
+//      the doc comment alone. A pointer-chasing linked list needs exactly
+//      that unsupported write-after-fetch shape to patch a neighbor's next/
+//      prev pointer, so it is not usable in AVM v1 today. Instead each
+//      level is a FIXED-CAPACITY slot array of size SLOTS_PER_LEVEL,
+//      simulated with a flat `Map<uint64, OrderSlot>` keyed by
+//      `tier * SLOTS_PER_LEVEL + slotIndex`, always left-packed (occupied
+//      slots are exactly indices [0, count)). Popping the head or cancelling
+//      a middle slot both shift every following occupied slot down by one
+//      -- itself a `for` loop bounded by the CONSTANT SLOTS_PER_LEVEL, never
+//      by a runtime count. This is the "existing Map + counter" pattern
+//      multi_id_ledger.atlx already established for nested get-mutate-
+//      writeback, generalized from "one value" to "a small fixed run of
+//      slots". Every mutation to a fetched struct is done by reading its
+//      fields into a brand-new struct literal and writing that back with
+//      Map.set(), never by field-assigning the fetched local in place.
+//
+// Honest complexity (read this before assuming this scales like a real
+// exchange):
+//   - PlaceOrder: O(1) Map operations, PLUS the tier is rejected outright if
+//     its level already holds SLOTS_PER_LEVEL resting orders (ERR_LEVEL_FULL)
+//     -- there is a hard, small, fixed cap on resting depth per price level
+//     in this reference contract. A production book would need a much
+//     larger cap and/or a genuine linked-list-style level once AVM gains
+//     write access to a map-fetched struct's own fields.
+//   - CancelOrder: O(SLOTS_PER_LEVEL) to locate the slot and shift the
+//     remainder of that ONE level down by one; PLUS, only when the
+//     cancelled order was the head of the currently-cached best tier AND
+//     removing it empties the level entirely, an O(MAX_PRICE_TIERS) rescan
+//     to find the new best. Neither bound depends on how many OTHER price
+//     levels or orders exist elsewhere in the book -- cancelling an order at
+//     tier 5 never touches tier 9's slots or count.
+//   - MatchOrder: a single call performs at most MAX_MATCH_STEPS crossing
+//     trades (a compile-time constant), each O(SLOTS_PER_LEVEL) for the
+//     shift-on-drain plus at most two O(MAX_PRICE_TIERS) rescans (one per
+//     side, only when that side's best level fully drains). Draining a
+//     deeply crossed book therefore needs multiple MatchOrder calls, each
+//     with its own bounded, fully gas-charged cost -- this is a crank
+//     pattern (anyone may call MatchOrder; it is not restricted to a
+//     resting order's own trader), not a single-transaction atomic sweep.
+//   - This is emphatically NOT O(log n) insertion/removal the way a real
+//     binary heap or red-black tree order book is. Every "find the new
+//     best" path is a bounded LINEAR scan over the fixed tier domain
+//     (O(MAX_PRICE_TIERS)), and every "list orders at a price" path is a
+//     bounded linear scan over the fixed per-level capacity
+//     (O(SLOTS_PER_LEVEL)). Both bounds are compile-time constants chosen
+//     deliberately small here (MAX_PRICE_TIERS = 32, SLOTS_PER_LEVEL = 4) so
+//     the worst case is cheap and the conformance test below can actually
+//     exercise the adversarial "many price levels" case without a huge gas
+//     limit. A real deployment would tune both constants far higher and
+//     accept the correspondingly higher worst-case (but still BOUNDED,
+//     still fully gas-charged, still deterministic) scan cost -- there is
+//     no way to make it sub-linear without a native ordered-collection
+//     opcode, which this contract deliberately does not add (see the
+//     roadmap note in this repo's task description).
+//
+// Gas cost caveat -- bounded STEPS does not mean bounded GAS:
+//   Everything above bounds the number of loop iterations / Map builtin
+//   CALLS a message performs. It does NOT bound the GAS those calls cost.
+//   AVM v1 bills every `Map.get/set/has/delete` against that map's CURRENT
+//   TOTAL size (all occupied keys' encoded bytes), not against the one key
+//   being touched -- see the FINDING-001 comments on chargeOperandGas in
+//   x/aetravm/avm/avm.go (security-audit/05-findings/
+//   FINDING-001-avm-gas-mispricing-dos.md), and the identical explanation
+//   in examples/avm/collections/pagination_stdlib.atlx's own header. THIS
+//   file uses five large, UNSHARDED Map fields (bidLevels/askLevels/
+//   bidSlots/askSlots/orderLocation), each covering all MAX_PRICE_TIERS
+//   tiers combined in one storage key -- the opposite of pagination_
+//   stdlib.atlx's per-tier sharding -- so every PlaceOrder/CancelOrder call
+//   pays FINDING-001's tax on whichever of those maps it touches, in
+//   addition to its own bounded step count.
+//
+//   Measured (conformance-test-driven, isolating the LOGICAL shape of the
+//   work -- same kind of new-level PlaceOrder, same kind of lone-non-best-
+//   level CancelOrder with NO best-price rescan -- so the executed OPCODE
+//   COUNT is provably identical between the two book sizes below, and any
+//   gas difference is attributable ONLY to Map size; see
+//   TestOrderBookGasScalesWithMapUsageDespiteBoundedSteps in
+//   x/aetravm/conformance/order_book_acceptance_test.go):
+//
+//     message      | book size      | opcodes | gas
+//     PlaceOrder   | 2 prior orders |   98    | 4,320
+//     PlaceOrder   | 124 prior orders |  98    | 43,718   (10.1x gas, SAME opcode count)
+//     CancelOrder  | 2 orders total |  270    | 3,602
+//     CancelOrder  | 125 orders total| 270    | 100,702  (28.0x gas, SAME opcode count)
+//
+//   So: this contract's own claimed step bounds are real and hold exactly
+//   as documented above (opcode counts do not move), but gas cost is NOT
+//   independent of total book depth the way pagination_stdlib.atlx's
+//   page-sharded reads are -- a resting-order-heavy book (approaching the
+//   MAX_PRICE_TIERS * SLOTS_PER_LEVEL = 128 hard cap) makes EVERY
+//   subsequent PlaceOrder/CancelOrder/MatchOrder meaningfully more
+//   expensive than the same call against a nearly-empty book, purely from
+//   Map-total-size billing on bidSlots/askSlots/orderLocation.
+//
+//   Note this is a DIFFERENT mechanism from the whole-struct-snapshot
+//   `.save()` bug that pagination_stdlib.atlx's own "WRITE-PATH GAS
+//   BOUNDEDNESS" section documents as fixed (see x/aetravm/compiler/
+//   compile.go's "case save:" comment): that fix makes a bare `.save()`
+//   statement (used identically by this file's PlaceOrder/CancelOrder/
+//   MatchOrder handlers, see below) compile to a genuine no-op instead of a
+//   real whole-CONTRACT-storage round trip, and the numbers above are
+//   measured WITH that fix applied -- FINDING-001's per-Map billing is what
+//   remains. Sharding these five fields the way pagination_stdlib.atlx
+//   shards its collection (e.g. one Map pair per tier bucket instead of one
+//   Map pair for the whole tier domain) would fix it the same way, at the
+//   cost of a much larger, riskier rewrite of this reference contract's
+//   storage layout -- deliberately out of scope here; this section exists
+//   to make the cost model honest, not to redesign the contract.
+
+const MAX_PRICE_TIERS = 32
+const SLOTS_PER_LEVEL = 4
+const MAX_MATCH_STEPS = 8
+
+const ERR_BAD_TIER = 9001
+const ERR_BAD_AMOUNT = 9002
+const ERR_LEVEL_FULL = 9003
+const ERR_NO_ORDER = 9004
+const ERR_NOT_OWNER = 9005
+const ERR_BAD_MSG = 0xFFFF
+
+// One resting order occupying one fixed slot within one price level's FIFO.
+struct OrderSlot {
+    orderId: uint64
+    trader: address
+    amount: uint256
+}
+
+// Per-(side, tier) metadata: how many of the SLOTS_PER_LEVEL slots at this
+// tier are occupied (always left-packed: occupied slots are [0, count)).
+struct LevelMeta {
+    count: uint64
+}
+
+// orderId -> which side/tier it lives on, so CancelOrder/orderAmount can
+// jump straight to the right level without scanning every tier.
+struct OrderLoc {
+    isBuy: bool
+    tier: uint64
+}
+
+@storage
+struct OrderBookStorage {
+    bidLevels: Map<uint64, LevelMeta>
+    askLevels: Map<uint64, LevelMeta>
+    bidSlots: Map<uint64, OrderSlot>
+    askSlots: Map<uint64, OrderSlot>
+    orderLocation: Map<uint64, OrderLoc>
+    // Cached best-price hints. Each is validated with Map.has() before being
+    // trusted anywhere it is read (see the header comment) -- this makes a
+    // stale hint (including the all-zero value on a freshly deployed
+    // contract, before ANY order has ever been placed at tier 0) self-heal
+    // via the same bounded rescan used after a cancel/match empties a level,
+    // rather than needing a separate "initialized" flag.
+    bestBidTier: uint64
+    bestAskTier: uint64
+    nextOrderId: uint64
+}
+
+@message(0x8801)
+struct PlaceOrder {
+    isBuy: bool
+    tier: uint64
+    amount: uint256
+}
+
+@message(0x8802)
+struct CancelOrder {
+    orderId: uint64
+}
+
+// Permissionless matching crank: anyone may call this to execute up to
+// MAX_MATCH_STEPS crossing trades against the current book. No fields.
+@message(0x8803)
+struct MatchOrder {
+}
+
+type OrderBookMsg = PlaceOrder | CancelOrder | MatchOrder
+
+contract OrderBook {
+    author: "Aetralis example"
+    description: "Price-bucketed limit order book: Map<tier, level> book sides, fixed-capacity per-level FIFO, bounded best-price rescan -- no native ordered-map/heap opcode"
+    version: "0.01.0"
+
+    storage: OrderBookStorage
+    incomingMessages: OrderBookMsg
+
+    @store
+    func OrderBookStorage.load() {
+        return OrderBookStorage.fromChunk(contract.getData())
+    }
+
+    @store
+    func OrderBookStorage.save(self) {
+        contract.setData(self.toChunk())
+    }
+
+    @internal
+    func onInternalMessage(in: InMessage) {
+        const msg = lazy OrderBookMsg.fromSegment(in.body)
+
+        match (msg) {
+            PlaceOrder => {
+                assert (msg.tier < MAX_PRICE_TIERS) throw ERR_BAD_TIER
+                assert (msg.amount > 0) throw ERR_BAD_AMOUNT
+                var st = lazy OrderBookStorage.load()
+
+                const orderId = st.nextOrderId + 1
+                st.nextOrderId = orderId
+
+                if (msg.isBuy) {
+                    // NOTE: a ternary (`cond ? StructLit : fetched!`) used to
+                    // default a missing level to LevelMeta{count:0} does NOT
+                    // give the bound local a lowering-time struct type in
+                    // AVM v1 (only a struct-literal or a copy-of-existing-
+                    // local RHS does -- confirmed empirically against the
+                    // real compiler), so `.count` on such a local fails with
+                    // "local field access is not supported in AVM v1". The
+                    // has()-then-conditional-get()! idiom below sidesteps
+                    // that entirely by only ever reading `.count` off a
+                    // local bound directly from a Map.get()! chain, which IS
+                    // supported for field READS.
+                    var bidLevelCount = 0
+                    if (st.bidLevels.has(msg.tier)) {
+                        const existingLevel = st.bidLevels.get(msg.tier)!
+                        bidLevelCount = existingLevel.count
+                    }
+                    assert (bidLevelCount < SLOTS_PER_LEVEL) throw ERR_LEVEL_FULL
+
+                    const slotKey = msg.tier * SLOTS_PER_LEVEL + bidLevelCount
+                    st.bidSlots = st.bidSlots.set(slotKey, OrderSlot{orderId: orderId, trader: in.senderAddress, amount: msg.amount})
+                    st.bidLevels = st.bidLevels.set(msg.tier, LevelMeta{count: bidLevelCount + 1})
+                    st.orderLocation = st.orderLocation.set(orderId, OrderLoc{isBuy: true, tier: msg.tier})
+
+                    // Best bid = HIGHEST tier with liquidity. Extend the
+                    // cached hint whenever it is currently invalid (stale/
+                    // empty, including the genesis case) or this order's
+                    // tier is strictly better.
+                    if (!st.bidLevels.has(st.bestBidTier) || msg.tier > st.bestBidTier) {
+                        st.bestBidTier = msg.tier
+                    }
+                } else {
+                    var askLevelCount = 0
+                    if (st.askLevels.has(msg.tier)) {
+                        const existingAskLevel = st.askLevels.get(msg.tier)!
+                        askLevelCount = existingAskLevel.count
+                    }
+                    assert (askLevelCount < SLOTS_PER_LEVEL) throw ERR_LEVEL_FULL
+
+                    const askSlotKey = msg.tier * SLOTS_PER_LEVEL + askLevelCount
+                    st.askSlots = st.askSlots.set(askSlotKey, OrderSlot{orderId: orderId, trader: in.senderAddress, amount: msg.amount})
+                    st.askLevels = st.askLevels.set(msg.tier, LevelMeta{count: askLevelCount + 1})
+                    st.orderLocation = st.orderLocation.set(orderId, OrderLoc{isBuy: false, tier: msg.tier})
+
+                    // Best ask = LOWEST tier with liquidity.
+                    if (!st.askLevels.has(st.bestAskTier) || msg.tier < st.bestAskTier) {
+                        st.bestAskTier = msg.tier
+                    }
+                }
+                st.save()
+            }
+
+            CancelOrder => {
+                var st = lazy OrderBookStorage.load()
+                const existingLoc = st.orderLocation.get(msg.orderId)
+                assert (existingLoc != null) throw ERR_NO_ORDER
+                const loc = existingLoc!
+
+                if (loc.isBuy) {
+                    const level = st.bidLevels.get(loc.tier)!
+
+                    // --- locate the occupied slot holding this orderId
+                    // (bounded scan over the CONSTANT SLOTS_PER_LEVEL). ---
+                    var bidSlotIdx = SLOTS_PER_LEVEL
+                    for scanI in 0 to SLOTS_PER_LEVEL {
+                        if (scanI < level.count) {
+                            const scanKey = loc.tier * SLOTS_PER_LEVEL + scanI
+                            const scanSlot = st.bidSlots.get(scanKey)!
+                            if (bidSlotIdx == SLOTS_PER_LEVEL && scanSlot.orderId == msg.orderId) {
+                                bidSlotIdx = scanI
+                            }
+                        }
+                    }
+                    assert (bidSlotIdx < SLOTS_PER_LEVEL) throw ERR_NO_ORDER
+
+                    const targetKey = loc.tier * SLOTS_PER_LEVEL + bidSlotIdx
+                    const targetSlot = st.bidSlots.get(targetKey)!
+                    assert (targetSlot.trader == in.senderAddress) throw ERR_NOT_OWNER
+
+                    // --- shift every later occupied slot down by one to
+                    // close the gap (bounded scan over the CONSTANT
+                    // SLOTS_PER_LEVEL). ---
+                    for shiftI in 0 to SLOTS_PER_LEVEL {
+                        if (shiftI >= bidSlotIdx && (shiftI + 1) < level.count) {
+                            const srcKey = loc.tier * SLOTS_PER_LEVEL + shiftI + 1
+                            const dstKey = loc.tier * SLOTS_PER_LEVEL + shiftI
+                            const srcSlot = st.bidSlots.get(srcKey)!
+                            st.bidSlots = st.bidSlots.set(dstKey, srcSlot)
+                        }
+                    }
+                    const lastKey = loc.tier * SLOTS_PER_LEVEL + level.count - 1
+                    st.bidSlots = st.bidSlots.delete(lastKey)
+
+                    const newCount = level.count - 1
+                    if (newCount == 0) {
+                        st.bidLevels = st.bidLevels.delete(loc.tier)
+                        if (st.bestBidTier == loc.tier) {
+                            // --- bounded downward rescan for the next-best
+                            // active bid tier (CONSTANT MAX_PRICE_TIERS). ---
+                            var bidRescanFound = false
+                            for rescanI in 0 to MAX_PRICE_TIERS {
+                                const candidate = MAX_PRICE_TIERS - 1 - rescanI
+                                if (!bidRescanFound && candidate < loc.tier && st.bidLevels.has(candidate)) {
+                                    st.bestBidTier = candidate
+                                    bidRescanFound = true
+                                    break
+                                }
+                            }
+                            if (!bidRescanFound) {
+                                st.bestBidTier = MAX_PRICE_TIERS
+                            }
+                        }
+                    } else {
+                        st.bidLevels = st.bidLevels.set(loc.tier, LevelMeta{count: newCount})
+                    }
+                } else {
+                    const askLevel = st.askLevels.get(loc.tier)!
+
+                    var askSlotIdx = SLOTS_PER_LEVEL
+                    for scanJ in 0 to SLOTS_PER_LEVEL {
+                        if (scanJ < askLevel.count) {
+                            const scanAskKey = loc.tier * SLOTS_PER_LEVEL + scanJ
+                            const scanAskSlot = st.askSlots.get(scanAskKey)!
+                            if (askSlotIdx == SLOTS_PER_LEVEL && scanAskSlot.orderId == msg.orderId) {
+                                askSlotIdx = scanJ
+                            }
+                        }
+                    }
+                    assert (askSlotIdx < SLOTS_PER_LEVEL) throw ERR_NO_ORDER
+
+                    const targetAskKey = loc.tier * SLOTS_PER_LEVEL + askSlotIdx
+                    const targetAskSlot = st.askSlots.get(targetAskKey)!
+                    assert (targetAskSlot.trader == in.senderAddress) throw ERR_NOT_OWNER
+
+                    for shiftJ in 0 to SLOTS_PER_LEVEL {
+                        if (shiftJ >= askSlotIdx && (shiftJ + 1) < askLevel.count) {
+                            const srcAskKey = loc.tier * SLOTS_PER_LEVEL + shiftJ + 1
+                            const dstAskKey = loc.tier * SLOTS_PER_LEVEL + shiftJ
+                            const srcAskSlot = st.askSlots.get(srcAskKey)!
+                            st.askSlots = st.askSlots.set(dstAskKey, srcAskSlot)
+                        }
+                    }
+                    const lastAskKey = loc.tier * SLOTS_PER_LEVEL + askLevel.count - 1
+                    st.askSlots = st.askSlots.delete(lastAskKey)
+
+                    const newAskCount = askLevel.count - 1
+                    if (newAskCount == 0) {
+                        st.askLevels = st.askLevels.delete(loc.tier)
+                        if (st.bestAskTier == loc.tier) {
+                            // --- bounded upward rescan for the next-best
+                            // active ask tier (CONSTANT MAX_PRICE_TIERS). ---
+                            var askRescanFound = false
+                            for rescanJ in 0 to MAX_PRICE_TIERS {
+                                if (!askRescanFound && rescanJ > loc.tier && st.askLevels.has(rescanJ)) {
+                                    st.bestAskTier = rescanJ
+                                    askRescanFound = true
+                                    break
+                                }
+                            }
+                            if (!askRescanFound) {
+                                st.bestAskTier = MAX_PRICE_TIERS
+                            }
+                        }
+                    } else {
+                        st.askLevels = st.askLevels.set(loc.tier, LevelMeta{count: newAskCount})
+                    }
+                }
+
+                st.orderLocation = st.orderLocation.delete(msg.orderId)
+                st.save()
+            }
+
+            MatchOrder => {
+                var st = lazy OrderBookStorage.load()
+
+                for step in 0 to MAX_MATCH_STEPS {
+                    if (!st.bidLevels.has(st.bestBidTier) || !st.askLevels.has(st.bestAskTier)) {
+                        break
+                    }
+                    if (st.bestBidTier < st.bestAskTier) {
+                        break
+                    }
+
+                    const matchBidTier = st.bestBidTier
+                    const matchAskTier = st.bestAskTier
+                    const bidLevel = st.bidLevels.get(matchBidTier)!
+                    const askLevel = st.askLevels.get(matchAskTier)!
+                    const bidHeadKey = matchBidTier * SLOTS_PER_LEVEL + 0
+                    const askHeadKey = matchAskTier * SLOTS_PER_LEVEL + 0
+                    const bidHead = st.bidSlots.get(bidHeadKey)!
+                    const askHead = st.askSlots.get(askHeadKey)!
+
+                    const tradeQty = (bidHead.amount < askHead.amount) ? bidHead.amount : askHead.amount
+
+                    // --- consume the bid head: either fully drain it (shift
+                    // the rest of the level down, bounded by the CONSTANT
+                    // SLOTS_PER_LEVEL) or partially fill it in place by
+                    // rebuilding its slot with the reduced amount. ---
+                    if (bidHead.amount == tradeQty) {
+                        for bidShiftI in 0 to SLOTS_PER_LEVEL {
+                            if ((bidShiftI + 1) < bidLevel.count) {
+                                const bidSrcKey = matchBidTier * SLOTS_PER_LEVEL + bidShiftI + 1
+                                const bidDstKey = matchBidTier * SLOTS_PER_LEVEL + bidShiftI
+                                const bidSrcSlot = st.bidSlots.get(bidSrcKey)!
+                                st.bidSlots = st.bidSlots.set(bidDstKey, bidSrcSlot)
+                            }
+                        }
+                        const lastBidKey = matchBidTier * SLOTS_PER_LEVEL + bidLevel.count - 1
+                        st.bidSlots = st.bidSlots.delete(lastBidKey)
+                        st.orderLocation = st.orderLocation.delete(bidHead.orderId)
+
+                        const newBidCount = bidLevel.count - 1
+                        if (newBidCount == 0) {
+                            st.bidLevels = st.bidLevels.delete(matchBidTier)
+                            var bidMatchRescanFound = false
+                            for bidRescanI in 0 to MAX_PRICE_TIERS {
+                                const bidCandidate = MAX_PRICE_TIERS - 1 - bidRescanI
+                                if (!bidMatchRescanFound && bidCandidate < matchBidTier && st.bidLevels.has(bidCandidate)) {
+                                    st.bestBidTier = bidCandidate
+                                    bidMatchRescanFound = true
+                                    break
+                                }
+                            }
+                            if (!bidMatchRescanFound) {
+                                st.bestBidTier = MAX_PRICE_TIERS
+                            }
+                        } else {
+                            st.bidLevels = st.bidLevels.set(matchBidTier, LevelMeta{count: newBidCount})
+                        }
+                    } else {
+                        const remainingBid = bidHead.amount - tradeQty
+                        st.bidSlots = st.bidSlots.set(bidHeadKey, OrderSlot{orderId: bidHead.orderId, trader: bidHead.trader, amount: remainingBid})
+                    }
+
+                    // --- mirror for the ask head. ---
+                    if (askHead.amount == tradeQty) {
+                        for askShiftI in 0 to SLOTS_PER_LEVEL {
+                            if ((askShiftI + 1) < askLevel.count) {
+                                const askSrcKey = matchAskTier * SLOTS_PER_LEVEL + askShiftI + 1
+                                const askDstKey = matchAskTier * SLOTS_PER_LEVEL + askShiftI
+                                const askSrcSlot = st.askSlots.get(askSrcKey)!
+                                st.askSlots = st.askSlots.set(askDstKey, askSrcSlot)
+                            }
+                        }
+                        const lastAskKey2 = matchAskTier * SLOTS_PER_LEVEL + askLevel.count - 1
+                        st.askSlots = st.askSlots.delete(lastAskKey2)
+                        st.orderLocation = st.orderLocation.delete(askHead.orderId)
+
+                        const newAskCount2 = askLevel.count - 1
+                        if (newAskCount2 == 0) {
+                            st.askLevels = st.askLevels.delete(matchAskTier)
+                            var askMatchRescanFound = false
+                            for askRescanI in 0 to MAX_PRICE_TIERS {
+                                if (!askMatchRescanFound && askRescanI > matchAskTier && st.askLevels.has(askRescanI)) {
+                                    st.bestAskTier = askRescanI
+                                    askMatchRescanFound = true
+                                    break
+                                }
+                            }
+                            if (!askMatchRescanFound) {
+                                st.bestAskTier = MAX_PRICE_TIERS
+                            }
+                        } else {
+                            st.askLevels = st.askLevels.set(matchAskTier, LevelMeta{count: newAskCount2})
+                        }
+                    } else {
+                        const remainingAsk = askHead.amount - tradeQty
+                        st.askSlots = st.askSlots.set(askHeadKey, OrderSlot{orderId: askHead.orderId, trader: askHead.trader, amount: remainingAsk})
+                    }
+                }
+
+                st.save()
+            }
+
+            else => {
+                assert (in.body.isEmpty()) throw ERR_BAD_MSG
+            }
+        }
+    }
+
+    @bounced
+    func onBouncedMessage(in: InMessageBounced) {
+    }
+
+    // Best bid = highest tier with resting buy liquidity. Sentinel
+    // MAX_PRICE_TIERS means "no bids in the book". O(1) in the common case
+    // (cached hint valid); falls back to the SAME bounded downward rescan
+    // used by CancelOrder/MatchOrder when the hint is stale (read-only --
+    // does not persist the correction, unlike the mutating handlers above).
+    @get
+    func bestBid(): uint64 {
+        const st = lazy OrderBookStorage.load()
+        if (st.bidLevels.has(st.bestBidTier)) {
+            return st.bestBidTier
+        }
+        for i in 0 to MAX_PRICE_TIERS {
+            const candidate = MAX_PRICE_TIERS - 1 - i
+            if (st.bidLevels.has(candidate)) {
+                return candidate
+            }
+        }
+        return MAX_PRICE_TIERS
+    }
+
+    // Best ask = lowest tier with resting sell liquidity. Sentinel
+    // MAX_PRICE_TIERS means "no asks in the book".
+    @get
+    func bestAsk(): uint64 {
+        const st = lazy OrderBookStorage.load()
+        if (st.askLevels.has(st.bestAskTier)) {
+            return st.bestAskTier
+        }
+        for i in 0 to MAX_PRICE_TIERS {
+            if (st.askLevels.has(i)) {
+                return i
+            }
+        }
+        return MAX_PRICE_TIERS
+    }
+
+    // Number of resting orders at a given (side, tier), 0 if the level is
+    // empty or does not exist.
+    @get
+    func levelDepth(isBuy: bool, tier: uint64): uint64 {
+        const st = lazy OrderBookStorage.load()
+        if (isBuy) {
+            const existing = st.bidLevels.get(tier)
+            if (existing == null) {
+                return 0
+            }
+            const level = existing!
+            return level.count
+        }
+        const existingAsk = st.askLevels.get(tier)
+        if (existingAsk == null) {
+            return 0
+        }
+        const askLevel = existingAsk!
+        return askLevel.count
+    }
+
+    // Remaining resting amount for a still-active order, 0 if the order was
+    // never placed, has been fully matched, or was cancelled (this contract
+    // always DELETES a slot/location entry rather than leaving a zeroed
+    // one, so 0 is unambiguous -- the same convention multi_id_ledger.atlx
+    // uses for fully-burned balances).
+    @get
+    func orderAmount(orderId: uint64): uint256 {
+        const st = lazy OrderBookStorage.load()
+        const existingLoc = st.orderLocation.get(orderId)
+        if (existingLoc == null) {
+            return 0
+        }
+        const loc = existingLoc!
+        if (loc.isBuy) {
+            const existingLevel = st.bidLevels.get(loc.tier)
+            if (existingLevel == null) {
+                return 0
+            }
+            const level = existingLevel!
+            for i in 0 to SLOTS_PER_LEVEL {
+                if (i < level.count) {
+                    const key = loc.tier * SLOTS_PER_LEVEL + i
+                    const slot = st.bidSlots.get(key)!
+                    if (slot.orderId == orderId) {
+                        return slot.amount
+                    }
+                }
+            }
+            return 0
+        }
+        const existingAskLevel = st.askLevels.get(loc.tier)
+        if (existingAskLevel == null) {
+            return 0
+        }
+        const askLvl = existingAskLevel!
+        for i in 0 to SLOTS_PER_LEVEL {
+            if (i < askLvl.count) {
+                const askKey = loc.tier * SLOTS_PER_LEVEL + i
+                const askSlot = st.askSlots.get(askKey)!
+                if (askSlot.orderId == orderId) {
+                    return askSlot.amount
+                }
+            }
+        }
+        return 0
+    }
+
+    // Whether an orderId currently refers to a still-active resting order.
+    @get
+    func orderActive(orderId: uint64): uint64 {
+        const st = lazy OrderBookStorage.load()
+        return st.orderLocation.has(orderId) ? 1 : 0
+    }
+}

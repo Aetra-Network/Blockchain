@@ -11,7 +11,11 @@ permissions:
   contents: read
 
 env:
-  GOFLAGS: "-p=1"
+  # -tags purego,noadx: force gnark-crypto (AVM Phase D BN254 opcodes) onto its
+  # pure-Go arithmetic path, closing the ADX-dispatch cross-arch/runtime-CPU-
+  # feature determinism hazard -- see docs/architecture/avm-phase-d-zk-design.md
+  # (Status). Applies to every go build/test invocation below via GOFLAGS.
+  GOFLAGS: "-p=1 -tags=purego,noadx"
   AETRA_BINARY: build/aetrad.exe
   BUF_VERSION: "1.70.0"
 

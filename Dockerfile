@@ -30,8 +30,16 @@ ARG DATE=unknown
 ARG APP_NAME=aetrad
 
 # Build the binary with version ldflags
+# -tags purego,noadx: force gnark-crypto (AVM Phase D BN254 opcodes) onto its
+# pure-Go arithmetic path on every validator build, closing the ADX-dispatch
+# cross-architecture/runtime-CPU-feature determinism hazard documented in
+# docs/architecture/avm-phase-d-zk-design.md (Status / owner-decisions). This
+# is the INTERIM alternative (no vendoring); see that doc for the tradeoff
+# accepted (amd64-vs-arm64 divergence stays open as a known gap) and every
+# other place this flag combo must be passed.
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
     go build \
+    -tags purego,noadx \
     -ldflags="-X github.com/sovereign-l1/l1/cmd/l1d/cmd.appVersion=${VERSION} \
               -X github.com/sovereign-l1/l1/cmd/l1d/cmd.gitCommit=${COMMIT} \
               -X github.com/sovereign-l1/l1/cmd/l1d/cmd.buildDate=${DATE} \

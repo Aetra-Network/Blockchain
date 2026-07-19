@@ -18,6 +18,8 @@ import (
 	"strings"
 
 	sdkmath "cosmossdk.io/math"
+	"github.com/consensys/gnark-crypto/ecc/bn254"
+	"github.com/consensys/gnark-crypto/ecc/bn254/fr/poseidon2"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	secp256k1 "github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4/ecdsa"
@@ -234,6 +236,100 @@ const (
 	// non-negative) without the result silently keeping the wrong tag.
 	OpNarrowToInt256 Opcode = 0x5b
 
+	// BN254 (alt_bn128) G1 elliptic-curve primitives -- Phase D's ZK/pairing
+	// track (docs/architecture/avm-phase-d-zk-design.md, v3 + Status
+	// corrections). Points are the fixed-width 64-byte uncompressed X‖Y
+	// encoding (32-byte big-endian field elements, NO compression/mask bits --
+	// a raw coordinate pair, matching the byte-string ABI the rest of the AVM's
+	// byte ops already use). Every decoded point MUST pass IsOnCurve() and
+	// every decoded coordinate MUST be a canonical field element strictly less
+	// than the BN254 base field modulus p (rejected, never silently reduced
+	// mod p) before use -- no exception. Malformed input (wrong length,
+	// non-canonical coordinate, off-curve point) soft-fails to the empty-bytes
+	// sentinel (mirroring OpEcrecover's convention), never traps; only a
+	// wrong RuntimeValue TAG (not bytes/string/hash at all) is a type error
+	// (trap). The all-zero 64-byte encoding is the point-at-infinity/identity
+	// element -- gnark-crypto's own IsOnCurve() already accepts (0,0) with no
+	// AVM-side special-casing needed (see the design doc's Status section).
+	// G1's subgroup equals BN254's full prime-order group, so IsOnCurve() is
+	// the complete validation; no separate subgroup check is needed for G1
+	// (unlike the G2/pairing opcodes deferred to a later stage of this track).
+	OpBn254G1Add Opcode = 0x5c
+	// OpBn254G1ScalarMul: point (pushed first) then a uint256 scalar (pushed
+	// last, popped first) -- mirrors OpVerifySecp256k1's "last operand pushed
+	// is popped first" convention. A negative scalar (reachable because
+	// runtimeNumeric accepts signed tags) soft-fails to empty bytes rather
+	// than trapping, consistent with this opcode family's malformed-input
+	// convention.
+	OpBn254G1ScalarMul Opcode = 0x5d
+	// OpBn254G1IsOnCurve: optional 7th opcode from the design (cheap, useful
+	// standalone validation primitive). Pushes false (never traps) for any
+	// malformed or off-curve input.
+	OpBn254G1IsOnCurve Opcode = 0x5e
+
+	// BN254 G2 / pairing primitives -- the second (final) stage of Phase D's
+	// ZK/pairing track. Points are the fixed-width 128-byte uncompressed
+	// X.A0‖X.A1‖Y.A0‖Y.A1 encoding (four 32-byte big-endian fp elements, no
+	// mask bits), matching the G1 codec's shape one degree up the tower.
+	// UNLIKE G1 (whose subgroup equals BN254's full prime-order group), G2's
+	// subgroup does NOT coincide with the full curve group -- per the design
+	// doc's blocker-1 fix, every decoded G2 point MUST pass IsOnCurve() AND
+	// IsInSubGroup() (gnark-crypto bn254.G2Affine), no exception, before it
+	// reaches a scalar-mul, add, or Miller loop. Skipping the subgroup check
+	// is exactly the invalid-curve/small-subgroup forgery the design's first
+	// adversarial round flagged. Each 32-byte coordinate must additionally be
+	// a canonical field element strictly < the BN254 base field modulus p
+	// (SetBytesCanonical rejects, never silently reduces, per the same
+	// canonicalization requirement as G1). The all-zero 128-byte encoding is
+	// the point-at-infinity/identity element -- gnark-crypto's own
+	// IsOnCurve()/IsInSubGroup() already accept (0,0) with no AVM-side
+	// special-casing needed (see the design doc's Status section). Malformed
+	// input (wrong length, non-canonical coordinate, off-curve, or
+	// out-of-subgroup point) soft-fails to the empty-bytes sentinel
+	// (mirroring OpEcrecover/G1's convention), never traps; only a wrong
+	// RuntimeValue TAG is a type error (trap).
+	//
+	// OpBn254G2Add: two 128-byte G2 points in (b on top, pushed last, then
+	// a), 128-byte sum out.
+	OpBn254G2Add Opcode = 0x5f
+	// OpBn254G2ScalarMul: 128-byte G2 point (pushed first) + uint256 scalar
+	// (pushed last, popped first) in, 128-byte product out. A negative
+	// scalar (reachable via signed tags) soft-fails to empty bytes rather
+	// than trapping, mirroring OpBn254G1ScalarMul.
+	OpBn254G2ScalarMul Opcode = 0x60
+	// OpBn254PairingCheck(g1s, g2s, k): packed 64-byte-per-record G1 points,
+	// packed 128-byte-per-record G2 points, then a uint256 pair count k
+	// (pushed last, popped first) -- evaluates prod_i e(g1s[i], g2s[i]) =? 1
+	// via gnark-crypto's bn254.PairingCheck. k is HARD-CAPPED at 16 (a
+	// consensus-critical DoS bound, not a soft convenience limit) --
+	// exceeding it soft-fails to false without even reading the point
+	// blobs, exactly like every other malformed-input case for this opcode
+	// family. len(g1s) MUST equal 64*k and len(g2s) MUST equal 128*k;
+	// either point slice MUST decode every record under the SAME
+	// mandatory validation as the standalone point opcodes above (on-curve
+	// for G1, on-curve+subgroup for G2, canonical coordinates for both).
+	// Any of these failing soft-fails to false; only a non-bytes/non-numeric
+	// operand TAG traps.
+	OpBn254PairingCheck Opcode = 0x61
+	// OpPoseidon2Bn254(data, n): a packed blob of n 32-byte BN254 SCALAR-field
+	// (fr, not fp) elements, then n itself (uint256, pushed last, popped
+	// first) -- hashes them via gnark-crypto's own canonical
+	// ecc/bn254/fr/poseidon2.NewMerkleDamgardHasher() (the library's
+	// registered POSEIDON2_BN254 construction, reused as-is rather than a
+	// hand-rolled sponge/padding scheme -- see the doc comment on
+	// runtimePoseidon2Bn254 for why), producing a single 32-byte digest.
+	// UNLIKE every other opcode in this family, a malformed LENGTH (len(data)
+	// != 32*n, or n not fitting uint32) TRAPS rather than soft-failing --
+	// there is no "invalid point" failure mode for a plain hash, just a
+	// length precondition, per the design doc's own reasoning. A
+	// non-canonical 32-byte chunk (>= the BN254 scalar field modulus r) ALSO
+	// traps, for the same reason: there is no defined soft-fail sentinel for
+	// a hash primitive (unlike the point opcodes' distinguishable
+	// empty-bytes-vs-N-bytes convention), so silently reducing mod r (or
+	// otherwise accepting non-canonical input) would be the "silently
+	// reduce" canonicalization gap the design doc's fixes exist to close.
+	OpPoseidon2Bn254 Opcode = 0x62
+
 	OpWallClock Opcode = 0xf0
 	OpRandom    Opcode = 0xf1
 	OpFileRead  Opcode = 0xf2
@@ -277,6 +373,19 @@ type Module struct {
 	MetadataHash [MetadataHashLength]byte
 	Code         []Instruction
 }
+
+// StateReadHintMap tags an OpReadStorage single-key instruction (Arg field)
+// whose compiler-known declared field type is a Map<K,V> family type. When
+// the key is absent from storage entirely (a fresh/genesis contract that
+// never wrote this field), the read must default to an empty TagMap rather
+// than the generic TagUint64(0) fallback used for every other scalar field
+// -- otherwise the first map method call (get/set/has/keys/...) on a
+// genesis-fresh contract traps with "expected map, got uint64". See
+// runtimeValueFromStorageHinted and the OpReadStorage single-key branch in
+// Run(). Arg is otherwise unused by OpReadStorage (0 = no hint, the prior
+// unconditional uint64(0) default), so this is purely additive and does not
+// change behavior for any non-Map field or any pre-existing compiled module.
+const StateReadHintMap uint64 = 1
 
 type Instruction struct {
 	Op   Opcode
@@ -487,7 +596,57 @@ func DefaultParams() Params {
 			OpNarrowToUint128: 3,
 			OpNarrowToInt128:  3,
 			OpNarrowToInt256:  3,
+			// BN254 G1 primitives (Phase D). Calibrated against the existing
+			// OpVerifySecp256k1=6_000 anchor: a scalar multiplication is a full
+			// double-and-add over a 256-bit scalar (comparable cost class to a
+			// secp256k1 verify), point addition is far cheaper (one field
+			// inversion + a handful of multiplies), and the standalone
+			// on-curve check is cheaper still (two squarings + a compare, no
+			// group operation). Flat, fixed-size operands, no per-byte term.
+			OpBn254G1Add:       500,
+			OpBn254G1ScalarMul: 6_000,
+			OpBn254G1IsOnCurve: 300,
+			// BN254 G2 / pairing primitives. Calibrated per
+			// docs/architecture/avm-phase-d-zk-design.md's corrected gas
+			// section: G2_ADD_BASE=1_500, G2_SCALARMUL_BASE=18_000,
+			// G2_SUBGROUP_CHECK_COST=6_000 (comparable to a G1 scalar-mul,
+			// per the design's own reasoning -- IsInSubGroup does a
+			// handful of Jacobian scalar-mul-shaped group operations over
+			// G2). G2 ops cost roughly an order of magnitude more than
+			// their G1 counterparts because every field operation is now
+			// over the quadratic extension E2 (2x the Fp arithmetic per
+			// "field op"), on top of the mandatory subgroup check G1 never
+			// needs.
+			//
+			// OpBn254G2Add        = G2_ADD_BASE + 2*G2_SUBGROUP_CHECK_COST
+			//                     = 1_500 + 2*6_000 = 13_500
+			//   (both operands must pass IsInSubGroup, not just IsOnCurve)
+			OpBn254G2Add: 1_500 + 2*bn254G2SubgroupCheckCost,
+			// OpBn254G2ScalarMul  = G2_SCALARMUL_BASE + G2_SUBGROUP_CHECK_COST
+			//                     = 18_000 + 6_000 = 24_000
+			OpBn254G2ScalarMul: 18_000 + bn254G2SubgroupCheckCost,
+			// OpBn254PairingCheck(k) = 45_000 + 34_000*k + k*G2_SUBGROUP_CHECK_COST.
+			// This map entry is the FLAT k=0 floor component (45_000); the
+			// k-proportional remainder (34_000 + G2_SUBGROUP_CHECK_COST per
+			// pair, i.e. 40_000/pair) is charged at runtime via
+			// chargeOperandUnits once k is known (see the OpBn254PairingCheck
+			// case in Run) -- k is hard-capped at 16 so the total never
+			// exceeds 45_000 + 40_000*16 = 685_000. The anchor is Ethereum's
+			// post-Istanbul EIP-1108 ECPAIRING pricing (45_000 flat +
+			// 34_000/pair -- NOT the reversed 34_000+45_000/pair the design's
+			// v1 draft mistakenly cited), with G2_SUBGROUP_CHECK_COST added
+			// as this AVM's own mandatory-validation surcharge on top since
+			// unlike the EVM precompile, this opcode does not assume
+			// pre-validated subgroup membership.
+			OpBn254PairingCheck: 45_000,
+			// OpPoseidon2Bn254: flat dispatch + hasher-init overhead. The
+			// n-proportional cost (one full Poseidon2 permutation per
+			// absorbed 32-byte block) is charged at runtime via
+			// chargeOperandUnits, see poseidon2Bn254PerBlockCost below and
+			// the OpPoseidon2Bn254 case in Run.
+			OpPoseidon2Bn254: 300,
 		},
+
 		// See the GasPerOperandUnit doc comment: 1 extra gas per map entry /
 		// tuple element / byte cloned or iterated, on top of the flat
 		// opcode cost above. A typical contract value (a handful of struct
@@ -632,6 +791,13 @@ func (p Params) Validate() error {
 		OpNarrowToUint128,
 		OpNarrowToInt128,
 		OpNarrowToInt256,
+		OpBn254G1Add,
+		OpBn254G1ScalarMul,
+		OpBn254G1IsOnCurve,
+		OpBn254G2Add,
+		OpBn254G2ScalarMul,
+		OpBn254PairingCheck,
+		OpPoseidon2Bn254,
 	} {
 		if p.GasSchedule[op] == 0 {
 			return fmt.Errorf("gas schedule missing opcode 0x%02x", byte(op))
@@ -799,7 +965,7 @@ func (r *Runner) Run(module Module, storage Storage, ctx RuntimeContext) (Execut
 				if !chargeOperandUnits(&exec.GasUsed, gasLimit, r.params.GasPerOperandUnit, uint64(len(state[key]))) {
 					return rollback(async.ResultLimitExceeded, nil)
 				}
-				value = runtimeValueFromStorage(state[key])
+				value = runtimeValueFromStorageHinted(state[key], ins.Arg)
 			}
 			if len(stack) >= int(r.params.MaxStackDepth) {
 				return rollback(async.ResultLimitExceeded, nil)
@@ -1624,6 +1790,158 @@ func (r *Runner) Run(module Module, storage Storage, ctx RuntimeContext) (Execut
 				return rollback(async.ResultExecutionFailed, err)
 			}
 			stack = append(stack, ValueBytes(recovered))
+		case OpBn254G1Add:
+			// bn254G1Add(a, b): b on top (pushed last), then a. Both operands
+			// must decode to a 64-byte X‖Y point that passes IsOnCurve();
+			// malformed/off-curve input soft-fails to empty bytes (never
+			// traps) -- see the opcode's doc comment for the full contract.
+			bVal, ok := pop(&stack)
+			if !ok {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on bn254G1Add second point"))
+			}
+			aVal, ok := pop(&stack)
+			if !ok {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on bn254G1Add first point"))
+			}
+			sum, err := runtimeBn254G1Add(aVal, bVal)
+			if err != nil {
+				return rollback(async.ResultExecutionFailed, err)
+			}
+			stack = append(stack, ValueBytes(sum))
+		case OpBn254G1ScalarMul:
+			// bn254G1ScalarMul(point, scalar): scalar on top (pushed last),
+			// then point. Malformed/off-curve point or a negative scalar
+			// soft-fails to empty bytes (never traps).
+			scalarVal, ok := pop(&stack)
+			if !ok {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on bn254G1ScalarMul scalar"))
+			}
+			pointVal, ok := pop(&stack)
+			if !ok {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on bn254G1ScalarMul point"))
+			}
+			product, err := runtimeBn254G1ScalarMul(pointVal, scalarVal)
+			if err != nil {
+				return rollback(async.ResultExecutionFailed, err)
+			}
+			stack = append(stack, ValueBytes(product))
+		case OpBn254G1IsOnCurve:
+			// bn254G1IsOnCurve(point): pushes false (never traps) for any
+			// malformed, non-canonical, or off-curve input.
+			pointVal, ok := pop(&stack)
+			if !ok {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on bn254G1IsOnCurve point"))
+			}
+			onCurve, err := runtimeBn254G1IsOnCurve(pointVal)
+			if err != nil {
+				return rollback(async.ResultExecutionFailed, err)
+			}
+			stack = append(stack, ValueBool(onCurve))
+		case OpBn254G2Add:
+			// bn254G2Add(a, b): b on top (pushed last), then a. Both operands
+			// must decode to a 128-byte X.A0‖X.A1‖Y.A0‖Y.A1 point that passes
+			// IsOnCurve() AND IsInSubGroup() (unlike G1); malformed/off-curve/
+			// out-of-subgroup input soft-fails to empty bytes (never traps).
+			bVal, ok := pop(&stack)
+			if !ok {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on bn254G2Add second point"))
+			}
+			aVal, ok := pop(&stack)
+			if !ok {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on bn254G2Add first point"))
+			}
+			sum, err := runtimeBn254G2Add(aVal, bVal)
+			if err != nil {
+				return rollback(async.ResultExecutionFailed, err)
+			}
+			stack = append(stack, ValueBytes(sum))
+		case OpBn254G2ScalarMul:
+			// bn254G2ScalarMul(point, scalar): scalar on top (pushed last),
+			// then point. Malformed/off-curve/out-of-subgroup point or a
+			// negative scalar soft-fails to empty bytes (never traps).
+			scalarVal, ok := pop(&stack)
+			if !ok {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on bn254G2ScalarMul scalar"))
+			}
+			pointVal, ok := pop(&stack)
+			if !ok {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on bn254G2ScalarMul point"))
+			}
+			product, err := runtimeBn254G2ScalarMul(pointVal, scalarVal)
+			if err != nil {
+				return rollback(async.ResultExecutionFailed, err)
+			}
+			stack = append(stack, ValueBytes(product))
+		case OpBn254PairingCheck:
+			// bn254PairingCheck(g1s, g2s, k): k on top (pushed last, popped
+			// first), then g2s, then g1s. k > bn254PairingMaxPairs (16) --
+			// the consensus-critical hard cap -- soft-fails to false WITHOUT
+			// even popping/reading the point blobs' gas cost, exactly like
+			// every other malformed-input case in this family.
+			kVal, ok := pop(&stack)
+			if !ok {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on bn254PairingCheck pair count"))
+			}
+			g2sVal, ok := pop(&stack)
+			if !ok {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on bn254PairingCheck g2 points"))
+			}
+			g1sVal, ok := pop(&stack)
+			if !ok {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on bn254PairingCheck g1 points"))
+			}
+			k, inRange, err := runtimeBn254PairingCheckCount(kVal)
+			if err != nil {
+				return rollback(async.ResultExecutionFailed, err)
+			}
+			if !inRange {
+				stack = append(stack, ValueBool(false))
+				break
+			}
+			// OpBn254PairingCheck(k) = 45_000 + 34_000*k + k*G2_SUBGROUP_CHECK_COST.
+			// The flat 45_000 floor is already charged (GasSchedule, top of
+			// loop); charge the k-proportional remainder
+			// (bn254PairingPerPairMarginal = 34_000 + G2_SUBGROUP_CHECK_COST
+			// per pair) here, BEFORE decoding/pairing the points, so an
+			// in-range-but-maximal k=16 request cannot do the expensive work
+			// at a price that only reflects k=0.
+			if !chargeOperandUnits(&exec.GasUsed, gasLimit, bn254PairingPerPairMarginal, k) {
+				return rollback(async.ResultLimitExceeded, nil)
+			}
+			verified, err := runtimeBn254PairingCheck(g1sVal, g2sVal, k)
+			if err != nil {
+				return rollback(async.ResultExecutionFailed, err)
+			}
+			stack = append(stack, ValueBool(verified))
+		case OpPoseidon2Bn254:
+			// poseidon2Bn254(data, n): n on top (pushed last, popped first),
+			// then data (n packed 32-byte BN254 scalar-field elements).
+			// UNLIKE every other opcode in this family, a malformed length
+			// (or a non-canonical field element) TRAPS rather than
+			// soft-failing -- see runtimePoseidon2Bn254's doc comment.
+			// Charge n-proportional gas (one Poseidon2 permutation per
+			// absorbed block) BEFORE hashing, mirroring the byte-hash
+			// opcodes' "charge before the expensive work runs" convention.
+			nVal, ok := pop(&stack)
+			if !ok {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on poseidon2Bn254 element count"))
+			}
+			dataVal, ok := pop(&stack)
+			if !ok {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on poseidon2Bn254 data"))
+			}
+			n, err := runtimeByteIndex(nVal, "poseidon2Bn254 element count")
+			if err != nil {
+				return rollback(async.ResultExecutionFailed, err)
+			}
+			if !chargeOperandUnits(&exec.GasUsed, gasLimit, poseidon2Bn254PerBlockCost, uint64(n)) {
+				return rollback(async.ResultLimitExceeded, nil)
+			}
+			digest, err := runtimePoseidon2Bn254(dataVal, n)
+			if err != nil {
+				return rollback(async.ResultExecutionFailed, err)
+			}
+			stack = append(stack, ValueBytes(digest))
 		case OpCounterfactualAddress, OpAutoDeployAddress:
 			value, ok := pop(&stack)
 			if !ok {
@@ -1888,6 +2206,19 @@ func runtimeValueFromStorage(bz []byte) RuntimeValue {
 		return value
 	}
 	return ValueBytes(bz)
+}
+
+// runtimeValueFromStorageHinted is runtimeValueFromStorage plus a
+// compiler-supplied type hint (see StateReadHintMap) consulted ONLY for the
+// truly-absent case (len(bz)==0). Once anything has actually been written to
+// the key, the stored bytes are self-describing (CanonicalDecode already
+// carries a tag) and the hint is irrelevant -- this only changes the
+// fresh/genesis default, never a real stored value's decoding.
+func runtimeValueFromStorageHinted(bz []byte, hint uint64) RuntimeValue {
+	if len(bz) == 0 && hint == StateReadHintMap {
+		return ValueMapEmpty()
+	}
+	return runtimeValueFromStorage(bz)
 }
 
 func runtimeStorageSnapshotValue(state Storage) RuntimeValue {
@@ -3112,6 +3443,388 @@ func runtimeEcrecover(msgHash, signature RuntimeValue) ([]byte, error) {
 	return append([]byte(nil), uncompressed[1:]...), nil
 }
 
+// bn254G1PointSize is the byte length of the fixed-width uncompressed G1
+// point encoding this opcode family uses: 32-byte big-endian X, then
+// 32-byte big-endian Y, with NO compression/mask bits -- a raw coordinate
+// pair, not gnark-crypto's own Bytes()/RawBytes() wire format (which ORs a
+// metadata mask into X's top bits; harmless in practice here since every
+// canonical BN254 field element is < 2^254 so those bits are always zero,
+// but this codec is written to be explicit rather than rely on that
+// coincidence).
+const bn254G1PointSize = 64
+
+// bn254DecodeG1 parses a bn254G1PointSize-byte uncompressed G1 point and
+// validates it per the Phase D design's no-exception requirement
+// (docs/architecture/avm-phase-d-zk-design.md): each 32-byte coordinate MUST
+// be a canonical field element strictly less than the BN254 base field
+// modulus p -- SetBytesCanonical REJECTS (never silently reduces) any
+// encoding >= p -- and the decoded point MUST pass IsOnCurve(). No AVM-side
+// point-at-infinity special-casing is needed: gnark-crypto's IsOnCurve()
+// already treats the all-zero (0,0) encoding as the valid identity element.
+// G1's subgroup equals BN254's full prime-order group, so IsOnCurve() alone
+// is the complete validation (no separate IsInSubGroup check, unlike G2).
+// ok=false on any decode/validation failure; callers soft-fail on this, they
+// never trap.
+func bn254DecodeG1(buf []byte) (p bn254.G1Affine, ok bool) {
+	if len(buf) != bn254G1PointSize {
+		return bn254.G1Affine{}, false
+	}
+	if err := p.X.SetBytesCanonical(buf[:32]); err != nil {
+		return bn254.G1Affine{}, false
+	}
+	if err := p.Y.SetBytesCanonical(buf[32:64]); err != nil {
+		return bn254.G1Affine{}, false
+	}
+	if !p.IsOnCurve() {
+		return bn254.G1Affine{}, false
+	}
+	return p, true
+}
+
+// bn254EncodeG1 is the inverse of bn254DecodeG1: 32-byte big-endian X then
+// 32-byte big-endian Y, no mask bits.
+func bn254EncodeG1(p bn254.G1Affine) []byte {
+	x := p.X.Bytes()
+	y := p.Y.Bytes()
+	out := make([]byte, bn254G1PointSize)
+	copy(out[:32], x[:])
+	copy(out[32:], y[:])
+	return out
+}
+
+// runtimeBn254G1Add adds two BN254 G1 points. Either operand failing
+// bn254DecodeG1 (wrong length, non-canonical coordinate, off-curve) soft-fails
+// to empty bytes; only a non-bytes/string/hash RuntimeValue tag is a trap
+// (via runtimeRawBytes).
+func runtimeBn254G1Add(a, b RuntimeValue) ([]byte, error) {
+	aRaw, err := runtimeRawBytes(a)
+	if err != nil {
+		return nil, err
+	}
+	bRaw, err := runtimeRawBytes(b)
+	if err != nil {
+		return nil, err
+	}
+	pa, ok := bn254DecodeG1(aRaw)
+	if !ok {
+		return []byte{}, nil
+	}
+	pb, ok := bn254DecodeG1(bRaw)
+	if !ok {
+		return []byte{}, nil
+	}
+	var sum bn254.G1Affine
+	sum.Add(&pa, &pb)
+	return bn254EncodeG1(sum), nil
+}
+
+// runtimeBn254G1ScalarMul multiplies a BN254 G1 point by a uint256 scalar. A
+// malformed/off-curve point, or a scalar with a negative magnitude (reachable
+// because runtimeNumeric accepts signed tags), soft-fails to empty bytes;
+// only a non-bytes/string/hash point tag or a non-numeric scalar tag is a
+// trap.
+func runtimeBn254G1ScalarMul(point, scalar RuntimeValue) ([]byte, error) {
+	pointRaw, err := runtimeRawBytes(point)
+	if err != nil {
+		return nil, err
+	}
+	pa, ok := bn254DecodeG1(pointRaw)
+	if !ok {
+		return []byte{}, nil
+	}
+	s, err := runtimeNumeric(scalar)
+	if err != nil {
+		return nil, err
+	}
+	if s.Sign() < 0 {
+		return []byte{}, nil
+	}
+	var out bn254.G1Affine
+	out.ScalarMultiplication(&pa, s)
+	return bn254EncodeG1(out), nil
+}
+
+// runtimeBn254G1IsOnCurve reports whether a decoded point is a valid BN254 G1
+// point (on-curve, canonical coordinates). Never traps on malformed input;
+// only a non-bytes/string/hash tag is a trap (via runtimeRawBytes).
+func runtimeBn254G1IsOnCurve(point RuntimeValue) (bool, error) {
+	pointRaw, err := runtimeRawBytes(point)
+	if err != nil {
+		return false, err
+	}
+	_, ok := bn254DecodeG1(pointRaw)
+	return ok, nil
+}
+
+// bn254G2PointSize is the byte length of the fixed-width uncompressed G2
+// point encoding this opcode family uses: X.A0‖X.A1‖Y.A0‖Y.A1, four 32-byte
+// big-endian fp elements, no mask bits -- the design doc's Status-corrected
+// size (128, not the halved 64 v3 originally stated for the point-at-infinity
+// sentinel discussion).
+const bn254G2PointSize = 128
+
+// bn254G2SubgroupCheckCost, bn254PairingBaseFlat, and
+// bn254PairingPerPairMarginal are the named gas constants the design doc
+// requires to appear literally (not just in prose) alongside the formula
+// they price -- see the OpBn254G2Add/OpBn254G2ScalarMul GasSchedule entries
+// above and the OpBn254PairingCheck case in Run below, both of which
+// reference G2_SUBGROUP_CHECK_COST inline.
+const (
+	// G2_SUBGROUP_CHECK_COST: gas for one IsInSubGroup() call. Priced
+	// comparable to a G1 scalar multiplication (bn254G1ScalarMulCost),
+	// per the design doc's own reasoning: IsInSubGroup performs a small
+	// constant number of scalar-mul-shaped group operations (mulBySeed,
+	// psi endomorphisms) over G2, the same cost CLASS as a G1 scalar-mul,
+	// even though it is not literally the same operation.
+	bn254G2SubgroupCheckCost = 6_000
+	// bn254PairingBaseFlat mirrors the OpBn254PairingCheck GasSchedule
+	// entry (45_000) -- duplicated here as a named constant so the
+	// per-pair formula below can reference it symbolically instead of a
+	// bare literal.
+	bn254PairingBaseFlat = 45_000
+	// bn254PairingPerPairMarginal = 34_000 + G2_SUBGROUP_CHECK_COST =
+	// 40_000: the k-proportional term of
+	// OpBn254PairingCheck(k) = 45_000 + 34_000*k + k*G2_SUBGROUP_CHECK_COST.
+	// The G2_SUBGROUP_CHECK_COST term is INLINE in this formula (not just
+	// prose) -- this is the exact self-contradiction v2 of the design was
+	// rejected for (Section 4's formula box omitted it while Section 7's
+	// prose claimed it was included); this implementation does not repeat
+	// that bug.
+	bn254PairingPerPairMarginal = 34_000 + bn254G2SubgroupCheckCost
+	// bn254PairingMaxPairs is OpBn254PairingCheck's hard cap on k: a
+	// consensus-critical DoS bound (not a soft convenience limit) per the
+	// design doc's explicit instruction. k > this soft-fails to false
+	// without reading either point blob.
+	bn254PairingMaxPairs = 16
+	// poseidon2Bn254PerBlockCost: gas per absorbed 32-byte block (one full
+	// Poseidon2 width-2 permutation -- 6 full rounds + 50 partial rounds of
+	// BN254-scalar-field (fr) arithmetic). Priced well above the flat
+	// per-byte hash rate (OpSha256/OpKeccak256/etc. charge 1
+	// GasPerOperandUnit per byte via chargeOperandGas, i.e. 32 gas for an
+	// equivalent 32-byte block) since each round performs multiple field
+	// multiplications rather than the bitwise/additive mixing a
+	// SHA2/Keccak/Blake2b compression round does, but well below a full EC
+	// scalar multiplication (bn254G1ScalarMulCost = 6_000) since Poseidon2
+	// has no point doublings/additions or field inversions -- just Fr
+	// multiplications and additions.
+	poseidon2Bn254PerBlockCost = 1_200
+)
+
+// bn254DecodeG2 parses a bn254G2PointSize-byte uncompressed G2 point
+// (X.A0‖X.A1‖Y.A0‖Y.A1) and validates it per the Phase D design's
+// no-exception requirement: each 32-byte coordinate MUST be a canonical fp
+// element strictly less than the BN254 base field modulus p (SetBytesCanonical
+// rejects, never silently reduces, any encoding >= p), the decoded point MUST
+// pass IsOnCurve(), AND -- unlike G1, where the subgroup equals the full
+// curve group -- MUST additionally pass IsInSubGroup(). This is the mandatory
+// check the design doc's blocker-1 fix requires with no exception: G2's
+// subgroup does NOT coincide with the full curve group, so an on-curve-but-
+// out-of-subgroup point is a real invalid-curve/small-subgroup forgery input
+// that must never reach a Miller loop. No AVM-side point-at-infinity
+// special-casing is needed: gnark-crypto's IsOnCurve() (and therefore
+// IsInSubGroup(), which calls IsOnCurve() first) already treats the all-zero
+// (0,0,0,0) encoding as the valid identity element. ok=false on any
+// decode/validation failure; callers soft-fail on this, they never trap.
+func bn254DecodeG2(buf []byte) (p bn254.G2Affine, ok bool) {
+	if len(buf) != bn254G2PointSize {
+		return bn254.G2Affine{}, false
+	}
+	if err := p.X.A0.SetBytesCanonical(buf[0:32]); err != nil {
+		return bn254.G2Affine{}, false
+	}
+	if err := p.X.A1.SetBytesCanonical(buf[32:64]); err != nil {
+		return bn254.G2Affine{}, false
+	}
+	if err := p.Y.A0.SetBytesCanonical(buf[64:96]); err != nil {
+		return bn254.G2Affine{}, false
+	}
+	if err := p.Y.A1.SetBytesCanonical(buf[96:128]); err != nil {
+		return bn254.G2Affine{}, false
+	}
+	if !p.IsOnCurve() {
+		return bn254.G2Affine{}, false
+	}
+	if !p.IsInSubGroup() {
+		return bn254.G2Affine{}, false
+	}
+	return p, true
+}
+
+// bn254EncodeG2 is the inverse of bn254DecodeG2: X.A0‖X.A1‖Y.A0‖Y.A1, four
+// 32-byte big-endian fp elements, no mask bits.
+func bn254EncodeG2(p bn254.G2Affine) []byte {
+	xa0 := p.X.A0.Bytes()
+	xa1 := p.X.A1.Bytes()
+	ya0 := p.Y.A0.Bytes()
+	ya1 := p.Y.A1.Bytes()
+	out := make([]byte, bn254G2PointSize)
+	copy(out[0:32], xa0[:])
+	copy(out[32:64], xa1[:])
+	copy(out[64:96], ya0[:])
+	copy(out[96:128], ya1[:])
+	return out
+}
+
+// runtimeBn254G2Add adds two BN254 G2 points. Either operand failing
+// bn254DecodeG2 (wrong length, non-canonical coordinate, off-curve, or
+// out-of-subgroup) soft-fails to empty bytes; only a non-bytes/string/hash
+// RuntimeValue tag is a trap (via runtimeRawBytes).
+func runtimeBn254G2Add(a, b RuntimeValue) ([]byte, error) {
+	aRaw, err := runtimeRawBytes(a)
+	if err != nil {
+		return nil, err
+	}
+	bRaw, err := runtimeRawBytes(b)
+	if err != nil {
+		return nil, err
+	}
+	pa, ok := bn254DecodeG2(aRaw)
+	if !ok {
+		return []byte{}, nil
+	}
+	pb, ok := bn254DecodeG2(bRaw)
+	if !ok {
+		return []byte{}, nil
+	}
+	var sum bn254.G2Affine
+	sum.Add(&pa, &pb)
+	return bn254EncodeG2(sum), nil
+}
+
+// runtimeBn254G2ScalarMul multiplies a BN254 G2 point by a uint256 scalar. A
+// malformed/off-curve/out-of-subgroup point, or a scalar with a negative
+// magnitude (reachable because runtimeNumeric accepts signed tags),
+// soft-fails to empty bytes; only a non-bytes/string/hash point tag or a
+// non-numeric scalar tag is a trap.
+func runtimeBn254G2ScalarMul(point, scalar RuntimeValue) ([]byte, error) {
+	pointRaw, err := runtimeRawBytes(point)
+	if err != nil {
+		return nil, err
+	}
+	pa, ok := bn254DecodeG2(pointRaw)
+	if !ok {
+		return []byte{}, nil
+	}
+	s, err := runtimeNumeric(scalar)
+	if err != nil {
+		return nil, err
+	}
+	if s.Sign() < 0 {
+		return []byte{}, nil
+	}
+	var out bn254.G2Affine
+	out.ScalarMultiplication(&pa, s)
+	return bn254EncodeG2(out), nil
+}
+
+// runtimeBn254PairingCheckCount validates and returns the pair count k for
+// OpBn254PairingCheck: k must be a non-negative value that fits uint64 and
+// does not exceed bn254PairingMaxPairs (16, a hard consensus-critical DoS
+// cap, not a soft limit). ok=false covers every soft-fail case (negative,
+// too large to fit uint64, or > 16); callers push false and stop -- they
+// never even look at the point blobs for an out-of-range k. Only a
+// non-numeric scalar tag is a trap (via runtimeNumeric).
+func runtimeBn254PairingCheckCount(kVal RuntimeValue) (k uint64, ok bool, err error) {
+	num, err := runtimeNumeric(kVal)
+	if err != nil {
+		return 0, false, err
+	}
+	if num.Sign() < 0 || !num.IsUint64() {
+		return 0, false, nil
+	}
+	k = num.Uint64()
+	if k > bn254PairingMaxPairs {
+		return 0, false, nil
+	}
+	return k, true, nil
+}
+
+// runtimeBn254PairingCheck evaluates prod_i e(g1s[i], g2s[i]) =? 1 for k
+// pairs packed into g1s (64 bytes/record) and g2s (128 bytes/record). Every
+// soft-fail case (k out of [0,16], a length mismatch against k, or any
+// record failing bn254DecodeG1/bn254DecodeG2's mandatory on-curve/subgroup/
+// canonical-coordinate validation) returns (false, nil) -- never traps. Only
+// a non-bytes/non-numeric operand TAG is a trap. Callers are responsible for
+// charging the k-proportional gas (bn254PairingPerPairMarginal * k) BEFORE
+// calling this, once k is known to be in range -- see the OpBn254PairingCheck
+// case in Run.
+func runtimeBn254PairingCheck(g1sVal, g2sVal RuntimeValue, k uint64) (bool, error) {
+	g1sRaw, err := runtimeRawBytes(g1sVal)
+	if err != nil {
+		return false, err
+	}
+	g2sRaw, err := runtimeRawBytes(g2sVal)
+	if err != nil {
+		return false, err
+	}
+	if uint64(len(g1sRaw)) != k*bn254G1PointSize || uint64(len(g2sRaw)) != k*bn254G2PointSize {
+		return false, nil
+	}
+	g1s := make([]bn254.G1Affine, k)
+	g2s := make([]bn254.G2Affine, k)
+	for i := uint64(0); i < k; i++ {
+		p1, ok := bn254DecodeG1(g1sRaw[i*bn254G1PointSize : (i+1)*bn254G1PointSize])
+		if !ok {
+			return false, nil
+		}
+		p2, ok := bn254DecodeG2(g2sRaw[i*bn254G2PointSize : (i+1)*bn254G2PointSize])
+		if !ok {
+			return false, nil
+		}
+		g1s[i] = p1
+		g2s[i] = p2
+	}
+	result, err := bn254.PairingCheck(g1s, g2s)
+	if err != nil {
+		// bn254.PairingCheck itself never errors for slices of equal,
+		// already-validated length (its own doc comment notes it does not
+		// re-check subgroup membership, which this decode path already
+		// enforced above) -- soft-fail rather than trap anyway, consistent
+		// with this opcode family's never-trap-on-malformed-input
+		// convention.
+		return false, nil
+	}
+	return result, nil
+}
+
+// runtimePoseidon2Bn254 hashes n packed 32-byte BN254 SCALAR-field (fr, not
+// fp) elements into a single 32-byte digest via gnark-crypto's own canonical
+// ecc/bn254/fr/poseidon2.NewMerkleDamgardHasher() construction (the same one
+// the library registers as gnarkHash.POSEIDON2_BN254) -- reused unmodified
+// rather than hand-building a custom sponge/rate/capacity/padding scheme,
+// which would repeat exactly the "hand-rolled crypto under-tested" failure
+// mode the design doc's blocker 3 (on the Groth16 verify equation) warned
+// against, just for the hash primitive instead of the pairing equation.
+//
+// UNLIKE every other opcode in this family: a malformed length -- len(data)
+// != 32*n bytes, for whatever n was supplied -- TRAPS rather than
+// soft-failing, per the design doc's own stated reasoning: there is no
+// "invalid point" failure mode for a plain hash, just a length
+// precondition. A non-canonical 32-byte chunk (>= the BN254 scalar field
+// modulus r) also traps: MerkleDamgardHasher.Write threads
+// fr.Element.SetBytesCanonical's rejection back out as an error, and unlike
+// the point opcodes (which have a distinguishable empty-bytes-vs-N-bytes
+// soft-fail sentinel), a hash primitive's output is always exactly 32 bytes,
+// so there is no safe sentinel value to soft-fail to without risking
+// collision with a legitimate digest -- trapping is the conservative choice.
+func runtimePoseidon2Bn254(data RuntimeValue, n uint32) ([]byte, error) {
+	raw, err := runtimeRawBytes(data)
+	if err != nil {
+		return nil, err
+	}
+	want := uint64(n) * 32
+	if want != uint64(len(raw)) {
+		return nil, fmt.Errorf("AVM poseidon2Bn254 requires exactly 32*n bytes of input (n=%d, got %d bytes)", n, len(raw))
+	}
+	hasher := poseidon2.NewMerkleDamgardHasher()
+	for i := 0; i < len(raw); i += 32 {
+		if _, werr := hasher.Write(raw[i : i+32]); werr != nil {
+			return nil, fmt.Errorf("AVM poseidon2Bn254 non-canonical field element at index %d: %w", i/32, werr)
+		}
+	}
+	return hasher.Sum(nil), nil
+}
+
 func runtimeCounterfactualAddress(ctx RuntimeContext, value RuntimeValue) (*contracttypes.StateInit, string, error) {
 	stateInit, err := runtimeStateInitFromValue(ctx, value)
 	if err != nil {
@@ -4014,7 +4727,14 @@ func IsAllowedOpcode(op Opcode) bool {
 		OpMulDivNearest,
 		OpNarrowToUint128,
 		OpNarrowToInt128,
-		OpNarrowToInt256:
+		OpNarrowToInt256,
+		OpBn254G1Add,
+		OpBn254G1ScalarMul,
+		OpBn254G1IsOnCurve,
+		OpBn254G2Add,
+		OpBn254G2ScalarMul,
+		OpBn254PairingCheck,
+		OpPoseidon2Bn254:
 		return true
 	default:
 		return false
