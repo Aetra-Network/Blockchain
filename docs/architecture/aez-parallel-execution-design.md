@@ -203,3 +203,30 @@ throughput strategy?) rather than a v3 automated pass. Recommend surfacing this 
 design docs' accumulated owner-decision lists, directly to the owner. AEZ's existing isolation/fairness
 properties (Phase 1-2, 6, already shipped) are unaffected by this pause and remain valid and in production
 regardless of how or whether real parallel execution is ever pursued.
+
+**Update (2026-07-19)**: one of the two structural blockers this document's v2 round identified —
+"`x/contracts`'s actual current storage architecture is structurally incompatible with zone-goroutine
+concurrency... a textbook lost-update race whose outcome depends on OS thread-scheduling order between
+validators, a genuine `AppHash`-divergence fork vector" (v2 blocker 2, above) — has since been fixed,
+as part of unrelated work: `docs/architecture/avm-call-mechanism-v5-design.md` §8 widens `x/contracts`'
+`k.txMu` lock to cover every mutating keeper method's *entire* read-mutate-write critical section (not
+just the final `assignGenesis` write, which is all the pre-existing `k.mu` covered), and fixes the
+state-root computation's redundant double-`Normalize()`. This is a real, independently valuable
+correctness fix, verified under `-race` (`x/contracts/keeper/txmu_test.go`, `writegenesis_race_test.go`).
+
+**This does NOT unlock real concurrent zone execution, and this track stays paused.** The v5 document
+says so explicitly, in its own §8.5, and that reasoning is restated here so this document cannot be
+misread in isolation as "the blocker is gone, try again": making `k.genesis` internally lock-consistent
+only matters *if* a concurrent caller exists, and none does — this app has no `PrepareProposal`/custom
+mempool/concurrent-tx-executor (confirmed zero hits for
+`SetPrepareProposal|PrepareProposalHandler|SetMempool|ParallelTx` across `app/`, and
+`baseapp.SetOptimisticExecution()` is speculative *next-height* pipelining of the same sequential
+one-tx-at-a-time path, not concurrent execution within a block or across transactions). Building that
+executor is a separate, substantially larger Cosmos-SDK-level architecture change, explicitly out of
+scope for both this document and the v5 pass that landed the lock fix. Every other blocker recorded above
+is untouched by this update: v2's newly-introduced fatal-crash-vs-per-tx-isolation contradiction (v2
+blockers 1 and 3), the admission-time `BlockGasMeter` staleness problem (v1's major finding), and the
+Phase 5 sequencing question all still require direct owner/architect resolution before any further
+automated design round. AEZ's separate "preserve throughput under load" goal remains met by the
+unrelated, already-shipped admission-control feature noted elsewhere in this repo's task history, not by
+anything in this update.

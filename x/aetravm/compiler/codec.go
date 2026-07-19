@@ -399,6 +399,9 @@ func canonicalCodecValue(typ TypeRef, value reflect.Value) (any, error) {
 	if spec, ok := financialStructFieldSpecs[canonical]; ok {
 		return canonicalFinancialStructValue(typ.Name, spec, value)
 	}
+	if canonical == "map" && len(typ.Args) == 2 {
+		return canonicalMapCodecValue(typ, value)
+	}
 	switch canonical {
 	case "bool":
 		return value.Bool(), nil
@@ -441,6 +444,40 @@ func canonicalCodecValue(typ TypeRef, value reflect.Value) (any, error) {
 		}
 		return fmt.Sprintf("%v", value.Interface()), nil
 	}
+}
+
+// canonicalMapCodecValue encodes a Map<K,V> field as a JSON object whose keys
+// are the canonical text of the declared key type and whose values are
+// encoded per the declared value type. The generic mapToCanonical fallback
+// cannot serve here: it stringifies keys with %v and encodes every value as
+// opaque bytes, which the runtime's message-body decoder (see
+// runtimeMapFromJSONField in x/aetravm/avm/avm.go) cannot reconstruct into a
+// typed map.
+func canonicalMapCodecValue(typ TypeRef, value reflect.Value) (any, error) {
+	if value.Kind() != reflect.Map {
+		return nil, fmt.Errorf("encode %s: expected a map value, got %s", typ.String(), value.Kind())
+	}
+	keyType, valueType := typ.Args[0], typ.Args[1]
+	out := make(map[string]any, value.Len())
+	iter := value.MapRange()
+	for iter.Next() {
+		encodedKey, err := canonicalCodecValue(keyType, iter.Key())
+		if err != nil {
+			return nil, fmt.Errorf("encode %s key: %w", typ.String(), err)
+		}
+		// JSON object keys are always strings, so a numeric key encodes as
+		// its decimal text — the form the runtime's integer decoders accept.
+		keyText := fmt.Sprintf("%v", encodedKey)
+		if _, dup := out[keyText]; dup {
+			return nil, fmt.Errorf("encode %s: duplicate key %q", typ.String(), keyText)
+		}
+		encodedValue, err := canonicalCodecValue(valueType, iter.Value())
+		if err != nil {
+			return nil, fmt.Errorf("encode %s value for key %q: %w", typ.String(), keyText, err)
+		}
+		out[keyText] = encodedValue
+	}
+	return out, nil
 }
 
 // canonicalFinancialStructValue encodes a registered financial struct type

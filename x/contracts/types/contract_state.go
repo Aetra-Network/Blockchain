@@ -982,7 +982,14 @@ func ComputeContractReceiptID(receipt ContractReceipt) string {
 func RefreshStateRoot(gs GenesisState) GenesisState {
 	gs.State = gs.State.Normalize()
 	gs.State.Receipts = pruneReceipts(gs.State.Receipts)
-	gs.StateRoot = ComputeContractsStateRoot(gs)
+	// design doc §8.4: gs.State is already normalized on the line above
+	// (pruneReceipts only truncates the tail of an already-sorted slice, it
+	// doesn't disturb Normalize()'s ordering invariant), so call the
+	// skip-normalize variant directly -- this is the hottest path in the
+	// module (every single mutating keeper method ends here), and the
+	// public ComputeContractsStateRoot would otherwise deep-clone-and-sort
+	// the WHOLE state a second, redundant time on every call.
+	gs.StateRoot = computeContractsStateRootNormalized(gs)
 	return gs
 }
 

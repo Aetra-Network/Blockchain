@@ -9,6 +9,16 @@ type IRProgram struct {
 	TraceCommitments map[string]string       `json:"trace_commitments,omitempty"`
 	Dependencies     []ResolvedDependency    `json:"dependencies,omitempty"`
 	LoweringRules    []StatementLoweringRule `json:"lowering_rules,omitempty"`
+	// CalledFunctions holds every plain user function actually reached by a
+	// real intra-contract CALL/RET (design doc §1.7) -- i.e. every function
+	// whose body tryInlineUserFunctionCall could not represent as a single
+	// spliced expression. Each is a self-contained code block (parameter-
+	// binding prologue + body + terminating IRStmtRet), sorted by Name for
+	// deterministic placement regardless of map-iteration discovery order.
+	// buildModule places these AFTER every entrypoint/handler/getter block,
+	// exactly mirroring how those blocks are placed, then links every
+	// OpCall instruction's target to the right one.
+	CalledFunctions []IREntry `json:"called_functions,omitempty"`
 }
 
 type IREntry struct {
@@ -39,19 +49,37 @@ const (
 	IRStmtJumpIfZero   IRStmtKind = "jump_if_zero"
 	IRStmtAbort        IRStmtKind = "abort"
 	IRStmtReturn       IRStmtKind = "return"
+	// IRStmtRet is a called-function return (call mechanism v5 design doc
+	// §1.7.1): pops one frame off the AVM's intra-contract call stack and
+	// resumes the caller, as opposed to IRStmtReturn's whole-execution halt.
+	// Emitted for a `return` statement lexically inside a real (CALL/RET-
+	// compiled) function body; IRStmtReturn is unchanged and still used for
+	// every top-level entrypoint/handler `return`.
+	IRStmtRet IRStmtKind = "ret"
+	// IRStmtDestructureTuple is `const (a, b, ...) = expr` (design doc
+	// §2.4): evaluates Expr once (must yield a TagTuple RuntimeValue with
+	// exactly len(Slots) elements), then for each slot in order: OpDup
+	// (skipped on the LAST slot, since nothing needs the tuple value again
+	// after it), OpReadField(Data=decimal index), OpStoreLocal(slot) --
+	// four existing opcodes in sequence, no new runtime primitive.
+	IRStmtDestructureTuple IRStmtKind = "destructure_tuple"
 )
 
 type IRStmt struct {
-	Kind     IRStmtKind `json:"kind"`
-	Name     string     `json:"name,omitempty"`
-	Key      string     `json:"key,omitempty"`
-	Slot     uint32     `json:"slot,omitempty"`
-	Opcode   uint32     `json:"opcode,omitempty"`
-	Arg      uint64     `json:"arg,omitempty"`
-	Data     []byte     `json:"data,omitempty"`
-	Target   string     `json:"target,omitempty"`
-	Expr     *IRExpr    `json:"expr,omitempty"`
-	Position Position   `json:"position"`
+	Kind   IRStmtKind `json:"kind"`
+	Name   string     `json:"name,omitempty"`
+	Key    string     `json:"key,omitempty"`
+	Slot   uint32     `json:"slot,omitempty"`
+	Opcode uint32     `json:"opcode,omitempty"`
+	Arg    uint64     `json:"arg,omitempty"`
+	Data   []byte     `json:"data,omitempty"`
+	Target string     `json:"target,omitempty"`
+	Expr   *IRExpr    `json:"expr,omitempty"`
+	// Slots carries the per-name destination local slots for
+	// IRStmtDestructureTuple only, in tuple-index order. Empty for every
+	// other IRStmtKind.
+	Slots    []uint32 `json:"slots,omitempty"`
+	Position Position `json:"position"`
 }
 
 type IRExprKind string
@@ -237,6 +265,27 @@ const (
 	// malformed length or a non-canonical scalar -- see OpPoseidon2Bn254's
 	// doc comment in avm.go.
 	IRExprPoseidon2Bn254 IRExprKind = "poseidon2_bn254"
+
+	// IRExprCallUser (call mechanism v5 design doc §1.7): a real intra-
+	// contract call to a declared, non-trivial (branching/looping/multi-
+	// statement) user function, replacing tryInlineUserFunctionCall's AST-
+	// splice for everything that mechanism cannot represent. Text carries
+	// the callee's (mangled, for a future monomorphized instantiation --
+	// plain function name today) call-target name, resolved to an absolute
+	// PC only in buildModule's link pass once every entry AND function
+	// block has been placed in the module -- see emitIRExpr's OpCall
+	// emission (a placeholder Arg=0 carrying Text in Instruction.Data) and
+	// resolveCallTargets. Args are the caller's argument expressions,
+	// evaluated left-to-right (push order) exactly like any other multi-
+	// operand IR node; the callee pops them in reverse (last pushed, first
+	// popped) in its own compiled prologue.
+	IRExprCallUser IRExprKind = "call_user"
+
+	// IRExprMakeTuple (design doc §2.5): a tuple literal `(a, b, ...)`.
+	// Args are the element expressions, evaluated left-to-right (push
+	// order); the number of Args IS the OpMakeTuple Arg (element count),
+	// so no separate count field is carried on the IR node itself.
+	IRExprMakeTuple IRExprKind = "make_tuple"
 )
 
 type IRStructField struct {

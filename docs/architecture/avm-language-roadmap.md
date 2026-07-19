@@ -89,28 +89,48 @@ structured error propagation. (Recursion deliberately bounded.)
 ### Phase E status
 DONE: struct field access on locals AND function/method parameters (commit `1165cf4f`); nested (3+
 segment) struct field READ chains of arbitrary depth (`o.inner.z`, `st.outer.z`, ...) through local
-bindings, storage/`state` aliases, and struct-typed parameters -- `lowerExprToIR`'s `ExprPath` case now
-chains `IRExprField`/`OpReadField` per segment instead of erroring past depth 2, verified end-to-end
-through the real AVM runner at 3- and 4-segment depth (`struct_field_access_test.go`); hard-abort,
-real tag-compare-and-jump match codegen for the message-opcode-union match path (`match(msg)` handlers);
-Move-style RESOURCE ABILITIES as a compiler-only, intra-function-scoped static linear-use check (`@resource`
-struct annotation + `CheckResourceAbilities`, commit `52d02d47`) -- now WIRED into `Compiler.Compile()`'s
-automatic pipeline (called from `typecheck()` as the last check before codegen, no longer opt-in; still
-dormant/zero-cost in practice since no shipped example declares `@resource` yet).
+bindings, storage/`state` aliases, and struct-typed parameters (commit `b1d4555a`) -- `lowerExprToIR`'s
+`ExprPath` case now chains `IRExprField`/`OpReadField` per segment instead of erroring past depth 2,
+verified end-to-end through the real AVM runner at 3- and 4-segment depth
+(`struct_field_access_test.go`); the same commit found and closed the adjacent silent-corruption bug the
+read-side fix made newly reachable -- a 3+ segment `set` target (`set st.outer.b = st.spare`) previously
+compiled clean and silently overwrote the WHOLE `outer` struct with `spare`'s value instead of just field
+`b`; now rejected explicitly at compile time (`E_SET_NESTED_UNSUPPORTED`) rather than corrupting state
+(genuine write support -- actually lowering to a nested-field update -- is still not implemented, see
+below); hard-abort, real tag-compare-and-jump match codegen for the message-opcode-union match path
+(`match(msg)` handlers); Move-style RESOURCE ABILITIES as a compiler-only, intra-function-scoped static
+linear-use check (`@resource` struct annotation + `CheckResourceAbilities`, commit `52d02d47`), now WIRED
+into `Compiler.Compile()`'s automatic pipeline (commit `b1d4555a`, called from `typecheck()` as the last
+check before codegen, no longer opt-in; still dormant/zero-cost in practice since no shipped example
+declares `@resource` yet).
+
+**DONE — the call-mechanism prerequisite shipped** (v5 design, see
+`docs/architecture/avm-call-mechanism-v5-design.md`): real intra-contract CALL/RET (`OpCall`/`OpRet`, a
+genuine VM call stack replacing `tryInlineUserFunctionCall`'s single-return-expression AST-splice,
+`MaxCallDepth=32` runtime-enforced against adversarial raw bytecode) now compiles any non-trivial
+(branching/looping/multi-statement) function body, which for the first time unblocks early return /
+structured error propagation for such bodies, and tuples/multi-value returns (the value representation
+and wire/ABI encoding already existed; destructuring syntax, tuple literals, and positional field access
+are new). Proven via a refactored reference contract -- `bridge_verify.atlx`'s three duplicated
+Merkle-walk-loop copies and two duplicated quorum-loop copies (duplicated specifically because the old
+inliner could only splice a single return expression, never a loop) collapsed into two real shared
+functions (`merkleWalk`, `verifyQuorum`), with the pre-existing, unmodified `TestAcceptanceBridgeVerify`
+still passing byte-for-byte -- plus a new example (`batch_stats.atlx`: a 4-tuple-returning function with
+an early-return guard and a mutating loop). Tuples are call/return/local-position only by deliberate scope
+decision (never a `@storage`/`@message`/`@event` field type -- the wire codec's bare-JSON-array tuple
+shape doesn't round-trip through the generic field-access-off-raw-bytes path used for message/storage
+fields).
 
 STILL NOT supported: field access through a MAP-FETCHED struct value (e.g. `m.get(k)!.field`), for either
 read or write -- rejected at parse time (`unexpected expression token "."`; `parsePrimary` has no postfix
-field-access loop after a call/`!`-unwrap), so it never reaches the lowering pass above. This stays blocked
-on the paused Phase F call-mechanism prerequisite below.
+field-access loop after a call/`!`-unwrap), so it never reaches the lowering pass above. This is an
+independent parser gap, not a consequence of the call mechanism -- the v5 pass did not attempt it, and it
+remains open follow-up work, not inherited blocked status from anything below.
 
-Separately, a pre-existing gap the read-side fix makes more reachable rather than causes: nested-field
-WRITE (`set st.outer.b = ...` for a 3+-segment path) silently corrupts state today, with no compiler
-diagnostic and no runtime failure. `validateStatement`/`lowerStatementsToIR`'s `StatementSet` handling only
-ever inspects `stmt.Path[1]`, regardless of `len(stmt.Path)`; for a 3-segment target it typechecks the RHS
-against the *container* field's type (`outer`, not `b`) and lowering then overwrites the whole container
-with the RHS, discarding the trailing segment. Not yet fixed -- `set` should reject `len(Path) >= 3` with a
-clear "not supported" error (mirroring the read side's pre-fix behavior) until write-side nested-field
-support is implemented.
+Genuine nested-field WRITE support (the compiler actually lowering `set st.outer.b = ...` to a targeted
+field update, instead of refusing to compile it) is likewise still not implemented -- only the
+explicit-rejection half of that gap has landed (see DONE above). A real linked-list order book, for
+example, still needs a new-struct-literal-and-whole-field-reassignment workaround.
 
 OPEN, real gap (not cosmetic): the match path for user-declared enums/`Option`/`Result`/structs (i.e. every
 match EXCEPT the message-opcode-union one) still only handles its scrutinee via compile-time constant
@@ -120,20 +140,56 @@ shipped example declares a user enum), but a real, fund-loss-class correctness g
 uses non-trivial enum/Option/Result matching. Needs the same tag-compare-and-jump codegen the message-match
 path already has.
 
-BLOCKED on the paused Phase F call-mechanism prerequisite (see `docs/architecture/avm-phase-ef-call-design.md`
-— four rounds rejected, no convergence, paused pending direct owner design): full generics, tuples/multi-value
-returns (no tuple value representation, wire/ABI encoding, or destructuring syntax exists at all), traits with
-dynamic dispatch, early return / structured error propagation for non-trivial (branching, looping,
-multi-statement) function bodies. `tryInlineUserFunctionCall`, the only current intra-contract "call"
-mechanism, is an AST-splice supporting strictly one lazy-storage-binding-then-return shape and structurally
-cannot support any of these — they are not independent Phase E work, they inherit Phase F's blocked status.
+Generics and traits (v5 design §4/§5): scoped down deliberately, and STILL NOT BUILT this pass (design-only
+so far, confirmed against the shipped code, not merely unmentioned):
+- Full generics via compile-time monomorphization with **explicit type arguments only**
+  (`max<uint64>(x, y)`, no inference engine) was designed but not implemented -- zero type-parameter-list
+  grammar exists anywhere in `parser.go`/`types.go` today.
+- Static trait dispatch (a `trait` as a compile-time signature contract, direct dispatch on a concrete
+  non-generic receiver resolved before the whole-program recursion checker runs) was designed but not
+  implemented -- `trait Demo {}` is still rejected by a pinned regression test (`surface_test.go:422-427`).
+- Dynamic trait dispatch (trait-typed values, vtables) is deferred **permanently**, not merely delayed --
+  it needs an indirect call target, which is in direct, structural tension with the call mechanism's
+  compile-time-immediate `OpCall` target invariant that the rest of that design's safety argument depends
+  on. Trait dispatch on an in-scope generic type parameter (as opposed to a concrete receiver) is deferred
+  for a related but distinct reason: its concrete callee is only known post-monomorphization, after the
+  recursion checker has already run on the un-substituted declarations, so allowing it today would let a
+  dispatch cycle bypass the acyclicity guarantee the call mechanism's own safety argument relies on.
+
+No longer BLOCKED on a paused call-mechanism design: `docs/architecture/avm-phase-ef-call-design.md`'s
+four-times-rejected v1-v4 synchronous-cross-contract-call track is superseded by the v5 design
+(`docs/architecture/avm-call-mechanism-v5-design.md`), which re-scoped to an intra-contract-only call
+mechanism and shipped it (see DONE above). Full generics, trait dispatch beyond a concrete-receiver static
+case, and map-fetched-struct field access remain genuinely not-done follow-up work with their own reasons
+(stated above), not inherited "blocked pending Phase F" status.
 
 ## Phase F — composability + safety
 Synchronous contract-to-contract calls with return values, atomic rollback/revert/abort, a transactional
 journal, call-depth + reentrancy guards, a shared gas meter across the call tree, read-only calls, batched
-calls, and a capability model (a MintCapability object gates minting, not an address compare). Async
-cross-zone stays the AEZ message bus (exactly-once, bounce, timeout) -- never promise atomicity across
-independent zones.
+calls, and a capability model (a MintCapability object gates minting, not an address compare).
+
+### Phase F status
+Synchronous cross-contract MUTATION with atomic rollback (the original scope above) is **not pursued, and
+will not be pursued** -- this is the v5 design's own considered architectural position (§7), not merely an
+inherited constraint. Four independent design rounds (v1-v4, `docs/architecture/avm-phase-ef-call-design.md`)
+each fixed the prior round's fund-loss bug and found a new one, with no convergence in severity -- v4's
+finding (silent destruction of an ordinary counterparty's pre-existing balance on the single most common
+real-world code path) was worse than v1's. Separately, AEZ's entire future value proposition is zone
+isolation, and a synchronous atomic call across a future zone boundary is fundamentally incompatible with
+that isolation model, so even a version made fully safe for today's single-zone reality would become a
+standing liability the day zones actually split. Cross-contract mutation stays on the existing async
+message bus (`x/aez/keeper/outbox.go`/`inbox.go`/`drain.go` -- exactly-once delivery, bounded queue depth,
+bounce-on-failure, deadline-based timeout, already shipped and safe), permanently, by design.
+
+Read-only cross-contract calls (a contract synchronously calling a `@get` getter on another
+already-deployed contract, reading its current committed storage, with no write path and therefore no
+atomicity/rollback problem at all) were designed in full (v5 §6: a keeper-side resolver callback preserving
+`avm.go`'s existing acyclicity, gas metering charged across the module boundary, a separate, small
+`MaxExternalGetDepth` bound since this is the one place real Go-level recursion is used) but **not
+implemented this pass** -- confirmed directly against the shipped code: zero `OpCallExternalGet` opcode in
+`avm.go`, zero new grammar, zero `RuntimeContext.ExternalGetResolver` field. Left as real, designed-but-
+unbuilt follow-up work; the design itself is considered sound (a read cannot corrupt anything), just not
+yet built or tested.
 
 ## Phase G — storage + lifecycle (DONE, scoped)
 Nested maps (Map<Address, Map<TokenId, u256>>), ordered maps / trees / heaps for order books, bounded
@@ -144,8 +200,9 @@ kept storage) + state migration + timelock + permanent upgrade lock.
 Shipped (commits `2140d2b1`, `b5d1cddc`): nested maps already worked pre-Phase-G (see `multi_id_ledger.atlx`);
 this phase added `examples/avm/orderbook/order_book.atlx` (price-bucketed order book: fixed-tier Map book
 sides + fixed-capacity per-level FIFO slot arrays, since AVM v1 has no native ordered-map/heap and no
-map-fetched-struct field WRITE — a real linked-list order book is not expressible until Phase F's call
-mechanism unblocks that); `examples/avm/collections/{pagination_stdlib,bitmap_stdlib}.atlx` (page-sharded
+map-fetched-struct field WRITE, and nested (3+ segment) struct field WRITE is still explicitly rejected
+rather than supported (see Phase E status) — a real linked-list order book is not expressible until those
+land); `examples/avm/collections/{pagination_stdlib,bitmap_stdlib}.atlx` (page-sharded
 bounded pagination, word-packed bitmap); and `MsgScheduleContractUpgrade`/`MsgApplyScheduledUpgrade`
 (governed `MinUpgradeDelay` timelock + the pre-existing permanent upgrade lock, both keyed off the REAL
 chain block height at the gRPC layer, not a caller-supplied `Height` field — see

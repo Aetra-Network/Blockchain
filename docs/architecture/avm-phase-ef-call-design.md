@@ -1,5 +1,14 @@
 # AVM Phase E/F call mechanism — design v1-v4, ALL REJECTED
 
+> **SUPERSEDED 2026-07-19 — see `docs/architecture/avm-call-mechanism-v5-design.md`.** Rather than
+> attempting a fifth round of the synchronous-cross-contract-call shape rejected below, v5 re-scoped
+> the problem: intra-contract calls (same contract, same transaction, same gas meter) never touch a
+> second contract's storage or balance, so none of v1-v4's fund-loss bugs can recur structurally.
+> Cross-contract mutation stays async-only, permanently, by deliberate architectural choice, not
+> because a safe synchronous design was ever found. This document is kept in full below as the
+> historical record of why that track was abandoned — read it before ever revisiting synchronous
+> cross-contract mutation. See the "Status" section at the end of this document for what shipped.
+
 Status: **FOUR adversarial review rounds run so far (v1-v4); each found a genuinely NEW, serious,
 fund-loss-class bug, not a repeat of a prior one, with NO convergence in severity round over round (unlike
 Phase D's design track, which converged after 3 rounds). Do not implement any version below. Paused pending
@@ -277,17 +286,50 @@ interaction), plus, new in v4:
 
 ## Status
 
-**Not started. Do not implement.** FOUR consecutive design rounds (v1, v2, v3, v4) have now each been
-rejected for a genuinely NEW, non-repeating, fund-loss-class bug. Unlike Phase D's ZK/pairing design (three
-rounds, strictly DECREASING severity: 3 blockers → 2 → 1 spec-typo, converging toward owner sign-off), this
-track shows NO convergence after four rounds — v4's findings are, if anything, more severe in real-world
-impact than v1's (silent destruction of a real counterparty's existing balance on the ordinary happy path,
-vs. v1's reentrancy-triggered lost-update requiring a specific opt-in). The core unresolved capability gap
-(how does `avm.go` learn a real, un-touched address's real balance without importing `x/contracts/keeper` and
-without breaking the established acyclicity invariant) has never been designed, only worked around, across
-all four rounds. This is now well past the point where a fifth automated round is a reasonable next step:
-recommend this track stay paused for direct owner/architect design of the missing capability (see the new
-owner-decision item above) before any further automated design→review iteration, and recommend the
-newly-found pre-existing `deliverInternalMessage` auto-deploy double-commit bug be fixed independently and
-promptly, since it is real and live regardless of this track's outcome. Other roadmap phases are not blocked
-by this pause.
+**SUPERSEDED by v5 — see `docs/architecture/avm-call-mechanism-v5-design.md`.** FOUR consecutive design
+rounds (v1, v2, v3, v4) were each rejected for a genuinely NEW, non-repeating, fund-loss-class bug, with
+no convergence in severity — v4's findings were, if anything, more severe in real-world impact than v1's
+(silent destruction of a real counterparty's existing balance on the ordinary happy path, vs. v1's
+reentrancy-triggered lost-update requiring a specific opt-in). That full history is preserved above,
+unedited, as the record of why this shape was abandoned rather than iterated on a fifth time.
+
+Per direct owner/architect scoping, no fifth round of this same shape was attempted. The v5 design instead
+re-scoped the problem entirely: the four blockers above were all instances of one underlying issue —
+atomically committing writes to a second contract's storage/balance from inside a first contract's
+execution, when the VM has no access to that second contract's real ledger state. v5 does not solve that
+problem; it removes the need to solve it, by never crossing a contract boundary for anything that writes.
+
+**Implemented and verified** (see v5 design doc + `x/aetravm/avm/avm.go`,
+`x/aetravm/compiler/{compile.go,ir.go,parser.go}`), all same-contract/same-transaction/same-gas-meter,
+none of which can reproduce any v1-v4 bug class (proven, not asserted, in v5 §9's exhaustive adversarial
+self-check of exactly what data the new opcodes can reference):
+- Real intra-contract CALL/RET (`OpCall`/`OpRet`, a genuine VM call stack, `Params.MaxCallDepth=32`
+  runtime-enforced against adversarial raw bytecode) replacing `tryInlineUserFunctionCall`'s
+  single-return-expression AST-splice for any non-trivial (branching/looping/multi-statement) function
+  body.
+- Tuples (destructuring, literals, multi-value returns, positional field access) and early return /
+  structured error propagation, both falling out of the call mechanism.
+- The `x/contracts` storage-locking (`k.txMu`) and state-root double-`Normalize()` fixes (v5 §8) —
+  independent of the call mechanism, shipped in the same pass.
+
+**Explicitly deferred, not silently dropped** (full reasoning in v5's own "Explicitly deferred" section):
+- Full generics with type inference — v5 scopes generics down to compile-time monomorphization with
+  explicit type arguments only (no inference engine), and confirms this scoped-down version was itself
+  **not yet built** this pass (zero type-parameter-list grammar in the shipped code).
+- Static trait dispatch (compile-time signature conformance, direct dispatch on a concrete receiver) —
+  designed and scoped in v5 §5, likewise **not yet built** this pass (`trait Demo {}` still rejected by a
+  pinned regression test).
+- Dynamic trait dispatch (trait-typed values, vtables) — deferred **permanently**, not for lack of time:
+  it needs an indirect call target, architecturally in tension with the compile-time-immediate `OpCall`
+  target invariant the whole call mechanism's safety argument depends on.
+- Read-only synchronous cross-contract calls (`OpCallExternalGet`, v5 §6) — designed in full (resolver
+  callback, cross-boundary gas metering, a separate `MaxExternalGetDepth`) but **not implemented this
+  pass** (zero opcode, zero grammar, zero `RuntimeContext.ExternalGetResolver` field exist in the shipped
+  code).
+- Catchable per-call exceptions distinct from `return` — a materially bigger feature, deferred with
+  reasoning in v5 §3.
+
+The pre-existing `deliverInternalMessage` auto-deploy double-commit bug this track found as a byproduct
+(item 3 of the v4 findings above) was fixed separately and independently of this design track, as noted
+when found. Other roadmap phases are not blocked by anything in this file — see
+`docs/architecture/avm-language-roadmap.md`'s Phase E/F sections for current status.

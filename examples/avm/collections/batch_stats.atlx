@@ -1,0 +1,179 @@
+// Reference contract for the AVM call mechanism (design doc:
+// docs/architecture/avm-call-mechanism-v5-design.md, §1 intra-contract
+// CALL/RET, §2 tuples, §3 early return) -- a small, focused, VM-executed
+// demonstration that these three land together as real, usable language
+// features, not just synthetic compiler-unit-test shapes.
+//
+// batchStats(values) walks a flat array of big-endian uint32 entries and
+// returns FOUR values at once -- (count, min, max, sum) -- as one real
+// tuple (§2), from a single real function call (§1: a genuine multi-
+// statement, looping, early-returning function body, compiled to
+// OpCall/OpRet -- this could never have been expressed via the OLD
+// inline-only mechanism, whose tryInlineUserFunctionCall only accepts a
+// single return EXPRESSION, never a loop or more than one statement). An
+// empty batch takes an early `return` (§3) before the loop even starts,
+// exercising a genuine non-tail-position return alongside the loop's own
+// eventual return -- exactly the "early return / structured error
+// propagation" §3 describes, falling out of §1 for free.
+//
+// WHAT THIS FILE DELIBERATELY DOES NOT DEMONSTRATE, AND WHY: generics
+// (design doc §4), static trait dispatch (§5), and read-only
+// cross-contract calls (§6) are all still 100% unimplemented in this
+// tree as of this file's writing -- confirmed directly, not assumed:
+// `grep -i trait` across x/aetravm/compiler hits nothing semantic beyond
+// surface_test.go's own regression pin that `trait Demo {}` is REJECTED
+// ("unexpected top-level declaration"); there is no type-parameter-list
+// grammar anywhere in parser.go/types.go; and avm.go has no
+// OpCallExternalGet opcode or ExternalGetResolver field. All three were
+// deliberately scoped OUT of this implementation pass (documented
+// reasoning: docs/architecture/avm-call-mechanism-v5-design.md's own
+// "Explicitly deferred" section), so this file only exercises the THREE
+// features that actually have real, VM-executed, gas-charged support
+// today: intra-contract CALL/RET, tuples, and early return.
+
+const ERR_BAD_MSG = 0xFFFF
+
+// Big-endian uint32 entry width inside the flat `values` blob.
+const ENTRY_LEN = 4
+
+@storage
+struct BatchStatsStorage {
+    // Number of entries in the last computed batch.
+    count: uint64 = 0
+    // Smallest entry in the last computed batch (0 for an empty batch).
+    min: uint64 = 0
+    // Largest entry in the last computed batch (0 for an empty batch).
+    max: uint64 = 0
+    // Sum of all entries in the last computed batch.
+    sum: uint64 = 0
+}
+
+// Submit a flat array of big-endian uint32 entries (4 bytes each, `values`'
+// length MUST be a multiple of ENTRY_LEN) to have their (count, min, max,
+// sum) computed and committed to storage. An empty `values` blob is valid
+// (yields count=min=max=sum=0, via computeStats' own early return below),
+// but a length that is not a whole multiple of ENTRY_LEN is rejected
+// (all-zero result, verdict left as the fresh/default storage values)
+// rather than silently truncated.
+@message(0xC201)
+struct ComputeStats {
+    values: bytes
+}
+
+type BatchStatsMsg = ComputeStats
+
+contract BatchStats {
+    author: "Aetralis example"
+    description: "Reference contract for real intra-contract CALL/RET + tuples + early return (design doc avm-call-mechanism-v5): computeStats(values) -> (count, min, max, sum) in one real function call"
+    version: "0.01.0"
+
+    storage: BatchStatsStorage
+    incomingMessages: BatchStatsMsg
+
+    @store
+    func BatchStatsStorage.load() {
+        return BatchStatsStorage.fromChunk(contract.getData())
+    }
+
+    @store
+    func BatchStatsStorage.save(self) {
+        contract.setData(self.toChunk())
+    }
+
+    // The real function this file exists to demonstrate: a genuinely
+    // non-trivial body (an early return, a mutating while-loop with FOUR
+    // live accumulators, and a four-value tuple return) that the old
+    // inline-only call mechanism could never have compiled at all --
+    // tryInlineUserFunctionCall only accepts a single return expression.
+    // Not @pure: the accumulator loop reassigns locals every iteration,
+    // which validateFunction's direct-effect check requires an explicit
+    // @impure (or @store) annotation for on a plain, non-handler function.
+    @impure
+    func computeStats(values: bytes): (uint64, uint64, uint64, uint64) {
+        const n = len(values)
+        // Length discipline: reject a ragged blob (not a whole number of
+        // ENTRY_LEN-byte entries) up front, before any subBytes call on it
+        // -- same discipline bridge_verify.atlx's merkleWalk/verifyQuorum
+        // use for their own untrusted byte-blob arguments.
+        const entryCount = n / ENTRY_LEN
+        const lenOk = n == entryCount * ENTRY_LEN
+
+        // Early return (design doc §3): an empty (or malformed-length)
+        // batch never enters the loop at all -- this is a genuine
+        // non-tail-position `return`, reachable only because real
+        // OpCall/OpRet exists (see the file header).
+        if (!lenOk || entryCount == 0) {
+            return (0, 0, 0, 0)
+        }
+
+        var i = 0
+        var runningMin = fromBytesBE(subBytes(values, 0, ENTRY_LEN))
+        var runningMax = runningMin
+        var runningSum = 0
+        while (i < entryCount) {
+            const entry = fromBytesBE(subBytes(values, i * ENTRY_LEN, ENTRY_LEN))
+            if (entry < runningMin) {
+                runningMin = entry
+            }
+            if (entry > runningMax) {
+                runningMax = entry
+            }
+            runningSum += entry
+            i += 1
+        }
+        return (entryCount, runningMin, runningMax, runningSum)
+    }
+
+    @internal
+    func onInternalMessage(in: InMessage) {
+        const msg = lazy BatchStatsMsg.fromSegment(in.body)
+        match (msg) {
+            ComputeStats => {
+                var st = lazy BatchStatsStorage.load()
+                // Destructuring bind (design doc §2.4): one real call,
+                // one tuple, four names bound from it in a single
+                // statement.
+                const (count, minV, maxV, sumV) = computeStats(msg.values)
+                st.count = count
+                st.min = minV
+                st.max = maxV
+                st.sum = sumV
+                st.save()
+            }
+            else => {
+                assert (in.body.isEmpty()) throw ERR_BAD_MSG
+            }
+        }
+    }
+
+    @bounced
+    func onBouncedMessage(in: InMessageBounced) {
+        // No outbound messages are sent, so there is nothing to reconcile.
+    }
+
+    // ---- Getters: read back the last computed batch's statistics. ----
+
+    @get
+    func count(): uint64 {
+        const st = lazy BatchStatsStorage.load()
+        return st.count
+    }
+
+    @get
+    func min(): uint64 {
+        const st = lazy BatchStatsStorage.load()
+        return st.min
+    }
+
+    @get
+    func max(): uint64 {
+        const st = lazy BatchStatsStorage.load()
+        return st.max
+    }
+
+    @get
+    func sum(): uint64 {
+        const st = lazy BatchStatsStorage.load()
+        return st.sum
+    }
+}

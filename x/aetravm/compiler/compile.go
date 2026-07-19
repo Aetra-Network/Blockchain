@@ -1225,6 +1225,15 @@ func (c *Compiler) validateType(typ TypeRef, structs map[string]*StructDecl, enu
 	}
 	switch canonicalCodecTypeName(typ.Name) {
 	case "bool", "u2", "u4", "u8", "u16", "u32", "u64", "u128", "u256", "i2", "i4", "i8", "i16", "i32", "i64", "i128", "i256", "uint2", "uint4", "uint8", "uint16", "uint32", "uint64", "uint128", "uint256", "int2", "int4", "int8", "int16", "int32", "int64", "int128", "int256", "bytes", "string", "hash32", "address", "coins", "timestamp", "messageenvelope", "inmessage", "inmessagebounced", "contractcontext":
+	case "tuple":
+		// Synthetic multi-value return type (design doc §2.6): only ever
+		// produced by parseTupleReturnType, which already enforces >= 2
+		// element types at parse time -- re-checked here defensively since
+		// validateType is the one place every TypeRef, however constructed,
+		// is confirmed well-formed.
+		if len(typ.Args) < 2 {
+			return fail("E_TYPE_ARITY", typ.Pos, "tuple type requires at least 2 element types")
+		}
 	default:
 		if desc, ok := standards.DefaultRegistry().Find(typ.Name); ok {
 			if strings.EqualFold(desc.Name, "Chunk") && len(typ.Args) == 1 {
@@ -1538,6 +1547,35 @@ func (c *Compiler) inferBuiltinMethodCallType(expr Expr, env map[string]TypeRef,
 func (c *Compiler) validateStatement(stmt Statement, env map[string]TypeRef, mutables map[string]bool, scope map[string]struct{}, consts map[string]constValue, storage *StructDecl, structs map[string]*StructDecl, enums map[string]*EnumDecl, types map[string]*TypeDecl, ret *TypeRef, functions map[string]*FunctionDecl, inPure bool, loopDepth int) error {
 	switch stmt.Kind {
 	case StatementBinding:
+		if stmt.Names != nil {
+			// Destructuring binding, `const (a, b) = f()` (design doc
+			// §2.4): Value must infer to a Tuple-shaped type (design doc
+			// §2.6's synthetic TypeRef{Name:"Tuple", Args:[...]}, produced
+			// by a call to a function declared with a parenthesized
+			// multi-value return type) with exactly as many elements as
+			// names. Each name binds to its own tuple-position type.
+			for _, name := range stmt.Names {
+				if _, exists := scope[name]; exists {
+					return fail("E_DUP_BINDING", stmt.Pos, fmt.Sprintf("duplicate binding %q in the same scope", name))
+				}
+			}
+			valType, err := c.inferExprType(stmt.Value, env, storage, structs, enums, types, functions, consts, inPure)
+			if err != nil {
+				return err
+			}
+			if !strings.EqualFold(valType.Name, "Tuple") || len(valType.Args) != len(stmt.Names) {
+				return fail("E_LOWER_BINDING", stmt.Pos, fmt.Sprintf("destructuring binding expects a %d-element tuple value, got %s", len(stmt.Names), valType.String()))
+			}
+			if mutables == nil {
+				mutables = map[string]bool{}
+			}
+			for i, name := range stmt.Names {
+				scope[name] = struct{}{}
+				env[name] = valType.Args[i]
+				mutables[name] = stmt.Mutable
+			}
+			return nil
+		}
 		if _, exists := scope[stmt.Name]; exists {
 			return fail("E_DUP_BINDING", stmt.Pos, fmt.Sprintf("duplicate binding %q in the same scope", stmt.Name))
 		}
@@ -2785,6 +2823,22 @@ func (c *Compiler) inferExprType(expr Expr, env map[string]TypeRef, storage *Str
 			return t, nil
 		}
 		return t, nil
+	case ExprTupleLiteral:
+		// Design doc §2.5/§2.6: a tuple literal's type is the synthetic
+		// TypeRef{Name:"Tuple", Args:[...]} built from each element's own
+		// inferred type, the same shape a function's parenthesized
+		// multi-value return type produces -- so `const (a, b) = (1, 2)`
+		// type-checks through the identical Tuple-arity/per-position path
+		// as `const (a, b) = someFunc()`.
+		elems := make([]TypeRef, len(expr.Args))
+		for i, arg := range expr.Args {
+			t, err := c.inferExprType(arg, env, storage, structs, enums, types, functions, consts, inPure)
+			if err != nil {
+				return TypeRef{}, err
+			}
+			elems[i] = t
+		}
+		return TypeRef{Name: "Tuple", Args: elems, Pos: expr.Pos}, nil
 	default:
 		return TypeRef{}, fail("E_EXPR", expr.Pos, fmt.Sprintf("unsupported expression kind %q", expr.Kind))
 	}
@@ -3003,6 +3057,17 @@ func (c *Compiler) resolvePathType(path []string, env map[string]TypeRef, storag
 				return TypeRef{}, fail("E_PATH_FIELD", pos, fmt.Sprintf("field %q not found in %s", path[i], current.Name))
 			}
 			current = fieldType
+			continue
+		}
+		if strings.EqualFold(current.Name, "Tuple") {
+			// Tuple positional field access, `p.1` (design doc §2.1):
+			// bounds-checked decimal index into the tuple's own element
+			// types (design doc §2.6's synthetic Tuple TypeRef).
+			idx, err := strconv.Atoi(path[i])
+			if err != nil || idx < 0 || idx >= len(current.Args) {
+				return TypeRef{}, fail("E_PATH_FIELD", pos, fmt.Sprintf("tuple index %q out of range for %s", path[i], current.String()))
+			}
+			current = current.Args[idx]
 			continue
 		}
 		return TypeRef{}, fail("E_PATH_TYPE", pos, fmt.Sprintf("cannot select field %q from %s", path[i], current.String()))
@@ -3616,6 +3681,38 @@ func (c *Compiler) buildModule(file *SourceFile, contract *ContractDecl, manifes
 		relocateJumpTargets(lowered, entryBase)
 		code = append(code, lowered...)
 	}
+	// Called-function blocks (design doc §1.7): placed AFTER every
+	// entrypoint/handler/getter block, exactly mirroring entryBase's role
+	// one level down -- each function never gets its own module.Exports
+	// entry (it is never dispatched from outside, only reached via OpCall
+	// from inside this same module), just a funcBase offset used purely to
+	// resolve OpCall's placeholder target below. ir.CalledFunctions is
+	// already sorted by name (buildIR), so this placement is deterministic
+	// regardless of which entrypoint discovered a given callee first.
+	funcBase := map[string]uint32{}
+	for _, fn := range ir.CalledFunctions {
+		base := uint32(len(code))
+		funcBase[fn.Name] = base
+		lowered, err := c.lowerIREntry(fn)
+		if err != nil {
+			return avm.Module{}, nil, nil, err
+		}
+		relocateJumpTargets(lowered, base)
+		code = append(code, lowered...)
+	}
+	// Two-pass call-target link (design doc §1.7): every OpCall emitted by
+	// emitIRExpr's IRExprCallUser case carries a placeholder Arg=0 plus the
+	// callee's name in Data, because the callee's absolute PC isn't known
+	// until every entrypoint AND function block has been placed above. Now
+	// that funcBase is complete, resolve every one of them; a name that
+	// doesn't resolve is an internal compiler error (buildIR should never
+	// discover a call target it doesn't also compile), not a user-facing
+	// one, so it fails loudly rather than shipping a dangling OpCall.
+	if len(funcBase) > 0 {
+		if err := resolveCallTargets(code, funcBase); err != nil {
+			return avm.Module{}, nil, nil, err
+		}
+	}
 	module.Code = code
 	module.Imports = importsForCode(code)
 	encoded, err := avm.EncodeModule(module)
@@ -3623,6 +3720,27 @@ func (c *Compiler) buildModule(file *SourceFile, contract *ContractDecl, manifes
 		return avm.Module{}, nil, nil, err
 	}
 	return module, encoded, ir, nil
+}
+
+// resolveCallTargets patches every OpCall instruction's placeholder Arg to
+// the callee's now-known absolute PC (funcBase[name]) and clears the
+// name payload that was temporarily riding in Instruction.Data -- the final
+// encoded module carries no such payload; OpCall's only operand is the
+// compile-time-immediate target PC, exactly like OpJump's (design doc §1.2).
+func resolveCallTargets(code []avm.Instruction, funcBase map[string]uint32) error {
+	for i := range code {
+		if code[i].Op != avm.OpCall {
+			continue
+		}
+		name := string(code[i].Data)
+		target, ok := funcBase[name]
+		if !ok {
+			return fmt.Errorf("internal compiler error: unresolved call target %q", name)
+		}
+		code[i].Arg = uint64(target)
+		code[i].Data = nil
+	}
+	return nil
 }
 
 func relocateJumpTargets(code []avm.Instruction, base uint32) {
@@ -3674,6 +3792,59 @@ func (c *Compiler) buildIR(file *SourceFile, contract *ContractDecl, registry Se
 		Dependencies:     append([]ResolvedDependency(nil), lock.Entries...),
 		LoweringRules:    StatementLoweringRules(),
 	}
+	// callRegistry is this module's single, shared bookkeeping object for
+	// the intra-contract call mechanism (design doc §1.1/§1.7): the
+	// module-wide local-slot counter every entrypoint/handler/getter/called-
+	// function region draws its own disjoint range from, and the dedup
+	// cache of which plain user functions have actually been reached by a
+	// real CALL/RET so far. Threaded by reference into every top-level
+	// loweringEnv below (and, from there, into every nested clone) via
+	// baseEnv's helper, so a call site discovered arbitrarily deep inside
+	// one entrypoint's body can register a callee compiled once and shared
+	// by every other call site anywhere else in the module.
+	callRegistry := &callTargetRegistry{
+		slotCounter: new(uint32),
+		compiled:    map[string]*IREntry{},
+		inProgress:  map[string]bool{},
+	}
+	// baseEnv constructs the starting loweringEnv for one top-level region
+	// (an entrypoint/handler/getter body), claiming its own slot range at
+	// wherever callRegistry.slotCounter currently stands, and returns a
+	// closure that -- once that region's own lowerStatementsToIR call has
+	// returned -- advances callRegistry.slotCounter past every slot the
+	// region touched (including its deepest nested branch, via
+	// peakLocalSlot's shared high-water mark), so the NEXT region's range
+	// cannot alias anything this one used.
+	baseEnv := func() (loweringEnv, func()) {
+		start := *callRegistry.slotCounter
+		peak := start
+		env := loweringEnv{
+			types:             map[string]TypeRef{},
+			consts:            consts,
+			msgOpcodes:        msgOpcodes,
+			storageFieldTypes: storageFieldTypes,
+			structs:           structs,
+			compiler:          c,
+			callTargets:       callRegistry,
+			nextLocalSlot:     start,
+			peakLocalSlot:     &peak,
+		}
+		// Monotonic max, not a bare assignment: claimLocalSlot already keeps
+		// *callRegistry.slotCounter in sync continuously as this region's own
+		// locals are claimed (including advancing past any called function
+		// discovered mid-region), so by the time this closure runs, the
+		// counter may already sit ABOVE this region's own peak (e.g. a
+		// called function's body needed more slots than this region's own
+		// locals did). Overwriting with a bare `= peak` here would regress
+		// the counter backward and reopen that function's already-reserved
+		// range to the next region -- the same class of bug claimLocalSlot fixes.
+		advanceSlots := func() {
+			if peak > *callRegistry.slotCounter {
+				*callRegistry.slotCounter = peak
+			}
+		}
+		return env, advanceSlots
+	}
 	externalPrelude := func(params []ParamDecl) []IRStmt {
 		if len(params) != 1 {
 			return nil
@@ -3715,10 +3886,12 @@ func (c *Compiler) buildIR(file *SourceFile, contract *ContractDecl, registry Se
 				Statements: []IRStmt{{Kind: IRStmtTrace, Data: commit[:], Position: msg.Pos}},
 				Pos:        msg.Pos,
 			}
-			body, err := c.lowerStatementsToIR(msg.Body, msg.Params, msg.ReturnType, false, true, functions, structs, msgOpcodes, loweringEnv{types: map[string]TypeRef{}, consts: consts, msgOpcodes: msgOpcodes, storageFieldTypes: storageFieldTypes}, c.initialScope(msg.Params, true), nil)
+			regionEnv, advanceSlots := baseEnv()
+			body, err := c.lowerStatementsToIR(msg.Body, msg.Params, msg.ReturnType, false, true, functions, structs, msgOpcodes, regionEnv, c.initialScope(msg.Params, true), nil)
 			if err != nil {
 				return nil, err
 			}
+			advanceSlots()
 			entry.Statements = append(entry.Statements, body...)
 			if block.entrypoint == avm.EntryReceiveExternal {
 				entry.Statements = append(externalPrelude(msg.Params), entry.Statements...)
@@ -3749,10 +3922,12 @@ func (c *Compiler) buildIR(file *SourceFile, contract *ContractDecl, registry Se
 		if err != nil {
 			return nil, err
 		}
-		body, err := c.lowerStatementsToIR(fn.Body, fn.Params, &fn.ReturnType, false, true, functions, structs, msgOpcodes, loweringEnv{types: map[string]TypeRef{}, consts: consts, msgOpcodes: msgOpcodes, storageFieldTypes: storageFieldTypes}, c.initialScope(fn.Params, true), nil)
+		regionEnv, advanceSlots := baseEnv()
+		body, err := c.lowerStatementsToIR(fn.Body, fn.Params, &fn.ReturnType, false, true, functions, structs, msgOpcodes, regionEnv, c.initialScope(fn.Params, true), nil)
 		if err != nil {
 			return nil, err
 		}
+		advanceSlots()
 		program.TraceCommitments[entrypointName(entrypoint)+":"+fn.Name] = fmt.Sprintf("%x", commit[:])
 		statements := append([]IRStmt{{Kind: IRStmtTrace, Data: commit[:], Position: fn.Pos}}, body...)
 		if entrypoint == avm.EntryReceiveExternal {
@@ -3785,10 +3960,12 @@ func (c *Compiler) buildIR(file *SourceFile, contract *ContractDecl, registry Se
 		if err != nil {
 			return nil, err
 		}
-		body, err := c.lowerStatementsToIR(fn.Body, fn.Params, &fn.ReturnType, true, true, functions, structs, msgOpcodes, loweringEnv{types: map[string]TypeRef{}, consts: consts, msgOpcodes: msgOpcodes, storageFieldTypes: storageFieldTypes}, c.initialScope(fn.Params, true), nil)
+		regionEnv, advanceSlots := baseEnv()
+		body, err := c.lowerStatementsToIR(fn.Body, fn.Params, &fn.ReturnType, true, true, functions, structs, msgOpcodes, regionEnv, c.initialScope(fn.Params, true), nil)
 		if err != nil {
 			return nil, err
 		}
+		advanceSlots()
 		program.TraceCommitments[entrypointName(avm.EntryQuery)+":"+fn.Name] = fmt.Sprintf("%x", commit[:])
 		program.Entries = append(program.Entries, IREntry{
 			Name:       fn.Name,
@@ -3817,10 +3994,12 @@ func (c *Compiler) buildIR(file *SourceFile, contract *ContractDecl, registry Se
 			Statements: []IRStmt{{Kind: IRStmtTrace, Data: commit[:], Position: get.Pos}},
 			Pos:        get.Pos,
 		}
-		body, err := c.lowerStatementsToIR(get.Body, get.Params, &ret, true, true, functions, structs, msgOpcodes, loweringEnv{types: map[string]TypeRef{}, consts: consts, msgOpcodes: msgOpcodes, storageFieldTypes: storageFieldTypes}, c.initialScope(get.Params, true), nil)
+		regionEnv, advanceSlots := baseEnv()
+		body, err := c.lowerStatementsToIR(get.Body, get.Params, &ret, true, true, functions, structs, msgOpcodes, regionEnv, c.initialScope(get.Params, true), nil)
 		if err != nil {
 			return nil, err
 		}
+		advanceSlots()
 		entry.Statements = append(entry.Statements, body...)
 		program.TraceCommitments[entrypointName(entry.Entrypoint)+":"+entry.Name] = fmt.Sprintf("%x", commit[:])
 		program.Entries = append(program.Entries, entry)
@@ -3834,6 +4013,26 @@ func (c *Compiler) buildIR(file *SourceFile, contract *ContractDecl, registry Se
 	for i := range program.Entries {
 		for j := range program.Entries[i].Statements {
 			coerceStructLiteralFieldTypes(program.Entries[i].Statements[j].Expr, structs)
+		}
+	}
+	// Drain the call-target registry into program.CalledFunctions, sorted
+	// by name so the module's final code layout is deterministic regardless
+	// of which entrypoint/handler/getter happened to discover a given
+	// callee first (map iteration order is never used to decide bytecode
+	// layout -- design doc §1.7, and this codebase's absolute determinism
+	// requirement).
+	if len(callRegistry.compiled) > 0 {
+		names := make([]string, 0, len(callRegistry.compiled))
+		for name := range callRegistry.compiled {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			entry := callRegistry.compiled[name]
+			for j := range entry.Statements {
+				coerceStructLiteralFieldTypes(entry.Statements[j].Expr, structs)
+			}
+			program.CalledFunctions = append(program.CalledFunctions, *entry)
 		}
 	}
 	return program, nil
@@ -3896,6 +4095,47 @@ func (c *Compiler) lowerStatementsToIR(stmts []Statement, params []ParamDecl, re
 	for _, stmt := range stmts {
 		switch stmt.Kind {
 		case StatementBinding:
+			if stmt.Names != nil {
+				// Destructuring binding, `const (a, b) = f()` (design doc
+				// §2.4). Value is evaluated ONCE (IRStmtDestructureTuple's
+				// own lowering emits it a single time, then unpacks each
+				// slot) -- each name claims its own fresh module-wide-
+				// disjoint local slot exactly like an ordinary binding.
+				for _, name := range stmt.Names {
+					if _, exists := scope[name]; exists {
+						return nil, fail("E_LOWER_BINDING", stmt.Pos, fmt.Sprintf("duplicate binding %q in the same scope", name))
+					}
+				}
+				// Per-position element types, when statically resolvable
+				// (a call to a function with a declared multi-value return
+				// type) -- mirrors the ordinary single-name binding's own
+				// resolveUserFunction heuristic just below, so
+				// `const (a, b) = f()` followed by `a.field`/`b.field`
+				// resolves the same way a single-name binding's field
+				// access already does.
+				var elemTypes []TypeRef
+				if fn := resolveUserFunction(stmt.Value, functions); fn != nil && len(fn.ReturnType.Args) == len(stmt.Names) {
+					elemTypes = fn.ReturnType.Args
+				}
+				valueExpr, err := lowerExprToIR(stmt.Value, env, functions, map[string]bool{})
+				if err != nil {
+					return nil, err
+				}
+				slots := make([]uint32, len(stmt.Names))
+				for i, name := range stmt.Names {
+					slot := claimLocalSlot(&env)
+					slots[i] = slot
+					var elemType TypeRef
+					if elemTypes != nil {
+						elemType = elemTypes[i]
+						env.types[name] = elemType
+					}
+					env.locals[name] = localBinding{Slot: slot, Type: elemType, Mutable: stmt.Mutable}
+					scope[name] = struct{}{}
+				}
+				out = append(out, IRStmt{Kind: IRStmtDestructureTuple, Expr: valueExpr, Slots: slots, Position: stmt.Pos})
+				continue
+			}
 			if _, exists := scope[stmt.Name]; exists {
 				return nil, fail("E_LOWER_BINDING", stmt.Pos, fmt.Sprintf("duplicate binding %q in the same scope", stmt.Name))
 			}
@@ -3952,8 +4192,9 @@ func (c *Compiler) lowerStatementsToIR(stmts []Statement, params []ParamDecl, re
 				env.storageAliases[stmt.Name] = struct{}{}
 				continue
 			}
-			binding := localBinding{Slot: env.nextLocalSlot, Type: env.types[stmt.Name], Mutable: stmt.Mutable, FromHandlerMessage: exprIsHandlerMessage(stmt.Value, env)}
-			env.nextLocalSlot++
+			bindingType := env.types[stmt.Name]
+			bindingFromHandlerMessage := exprIsHandlerMessage(stmt.Value, env)
+			binding := localBinding{Slot: claimLocalSlot(&env), Type: bindingType, Mutable: stmt.Mutable, FromHandlerMessage: bindingFromHandlerMessage}
 			env.locals[stmt.Name] = binding
 			scope[stmt.Name] = struct{}{}
 			expr, err := lowerExprToIR(stmt.Value, env, functions, map[string]bool{})
@@ -4194,6 +4435,18 @@ func (c *Compiler) lowerStatementsToIR(stmts []Statement, params []ParamDecl, re
 			if err != nil {
 				return nil, err
 			}
+			if env.insideCalledFunction {
+				// A called function's `return` pops one call-stack frame
+				// and resumes the caller (design doc §1.7.1/§3) -- the
+				// value, if any, stays on the shared stack for the caller
+				// to consume immediately, exactly like OpReturn already
+				// does; there is no Arg-encoded whole-execution result code
+				// concept for OpRet, so (unlike the whole-execution
+				// IRStmtReturn case below) the constU64-only shortcut does
+				// not apply here.
+				out = append(out, IRStmt{Kind: IRStmtRet, Expr: expr, Position: stmt.Pos})
+				break
+			}
 			resultCode := uint64(0)
 			if ret == nil {
 				if v, ok := constU64(stmt.Value); ok {
@@ -4391,8 +4644,7 @@ func (c *Compiler) lowerStatementsToIR(stmts []Statement, params []ParamDecl, re
 								if _, exists := armScope[bind]; exists {
 									return nil, fail("E_LOWER_MATCH", arm.Pos, fmt.Sprintf("duplicate match binding %q", bind))
 								}
-								binding := localBinding{Slot: armEnv.nextLocalSlot, Type: st.Fields[i].Type, Mutable: false}
-								armEnv.nextLocalSlot++
+								binding := localBinding{Slot: claimLocalSlot(&armEnv), Type: st.Fields[i].Type, Mutable: false}
 								armEnv.locals[bind] = binding
 								armEnv.types[bind] = st.Fields[i].Type
 								armScope[bind] = struct{}{}
@@ -4481,8 +4733,7 @@ func (c *Compiler) lowerStatementsToIR(stmts []Statement, params []ParamDecl, re
 				return nil, fail("E_LOWER_FOR", stmt.Pos, fmt.Sprintf("duplicate binding %q in the same scope", stmt.Index))
 			}
 			bodyEnv := cloneLoweringEnv(env)
-			bodyBinding := localBinding{Slot: bodyEnv.nextLocalSlot, Type: TypeRef{Name: "uint64"}, Mutable: false}
-			bodyEnv.nextLocalSlot++
+			bodyBinding := localBinding{Slot: claimLocalSlot(&bodyEnv), Type: TypeRef{Name: "uint64"}, Mutable: false}
 			bodyEnv.locals[stmt.Index] = bodyBinding
 			bodyEnv.types[stmt.Index] = TypeRef{Name: "uint64"}
 			bodyScope := map[string]struct{}{stmt.Index: struct{}{}}
@@ -4519,7 +4770,14 @@ func (c *Compiler) lowerStatementsToIR(stmts []Statement, params []ParamDecl, re
 			return nil, fail("E_LOWER_STMT", stmt.Pos, fmt.Sprintf("unsupported statement %q", stmt.Kind))
 		}
 	}
-	if ensureReturn && (len(out) == 0 || out[len(out)-1].Kind != IRStmtReturn) {
+	if ensureReturn && env.insideCalledFunction && (len(out) == 0 || out[len(out)-1].Kind != IRStmtRet) {
+		// A called function whose body doesn't end in an explicit `return`
+		// still needs a terminator so control doesn't fall through into
+		// whatever code happens to follow its block in the module -- an
+		// implicit `ret` with no value (design doc §1.7.1), mirroring the
+		// implicit `return` an entrypoint/handler body gets below.
+		out = append(out, IRStmt{Kind: IRStmtRet})
+	} else if ensureReturn && !env.insideCalledFunction && (len(out) == 0 || out[len(out)-1].Kind != IRStmtReturn) {
 		out = append(out, IRStmt{Kind: IRStmtReturn, Arg: 0})
 	}
 	return out, nil
@@ -4601,6 +4859,31 @@ func (c *Compiler) lowerIREntry(entry IREntry) ([]avm.Instruction, error) {
 				}
 			}
 			code = append(code, avm.Instruction{Op: avm.OpReturn, Arg: stmt.Arg})
+		case IRStmtRet:
+			// Called-function return (design doc §1.7.1): the value, if
+			// any, stays on the shared stack exactly like IRStmtReturn's
+			// does -- OpRet just pops one call-stack frame and resumes the
+			// caller there instead of halting the whole execution.
+			if stmt.Expr != nil {
+				if err := emitIRExpr(stmt.Expr, &code); err != nil {
+					return nil, err
+				}
+			}
+			code = append(code, avm.Instruction{Op: avm.OpRet})
+		case IRStmtDestructureTuple:
+			// design doc §2.4: evaluate the tuple value once, then unpack
+			// each slot via OpDup (all but the last) + OpReadField(index) +
+			// OpStoreLocal -- four existing opcodes, no new primitive.
+			if err := emitIRExpr(stmt.Expr, &code); err != nil {
+				return nil, err
+			}
+			for i, slot := range stmt.Slots {
+				if i < len(stmt.Slots)-1 {
+					code = append(code, avm.Instruction{Op: avm.OpDup})
+				}
+				code = append(code, avm.Instruction{Op: avm.OpReadField, Data: []byte(strconv.Itoa(i))})
+				code = append(code, avm.Instruction{Op: avm.OpStoreLocal, Arg: uint64(slot)})
+			}
 		default:
 			return nil, fail("E_LOWER_IR", stmt.Position, fmt.Sprintf("unsupported IR statement %q", stmt.Kind))
 		}
@@ -4625,6 +4908,39 @@ type loweringEnv struct {
 	storageAliases map[string]struct{}
 	unknowns       map[string]struct{}
 	nextLocalSlot  uint32
+	// insideCalledFunction marks that the region currently being lowered is
+	// a real (CALL/RET-compiled) function's own body, not an
+	// entrypoint/handler/getter's (design doc §1.7.1). It is a plain
+	// per-scope VALUE (copied, not shared, by cloneLoweringEnv -- exactly
+	// like nextLocalSlot's per-scope semantics, and unlike peakLocalSlot's
+	// shared-pointer semantics), which is exactly what's wanted here: a
+	// nested if/while/match block inside a called function's body is still
+	// "inside a called function" (so a `return` nested arbitrarily deep
+	// must still emit IRStmtRet, per §1.7.1), and since every recursive
+	// lowerStatementsToIR call already clones its parent's env before
+	// recursing, this value propagates to every nested scope for free, with
+	// zero changes needed to any of lowerStatementsToIR's existing
+	// recursive call sites. Defaults to false (ordinary IRStmtReturn
+	// whole-execution-halt semantics, byte-for-byte unchanged) everywhere
+	// except the one new call-target-lowering call site this design adds.
+	insideCalledFunction bool
+	// peakLocalSlot, if non-nil, is a pointer SHARED (not reset) across
+	// every clone of this env for the whole region currently being lowered
+	// (one entrypoint/handler/getter body, or one called-function body --
+	// see the module-wide slot allocator, design doc §1.1). Every site that
+	// hands out a new local slot bumps *peakLocalSlot to slot+1 if higher,
+	// in addition to bumping its own (per-scope, reused-across-sibling-
+	// branches) nextLocalSlot value exactly as before. This is what lets
+	// buildIR learn "how many slots did this whole region use, including
+	// its deepest nested if/while/match branch" after lowering finishes,
+	// so it can advance the module-wide counter far enough that the NEXT
+	// region's own slot range cannot alias ANY slot this region touched --
+	// required once a function's body can be reached by OpCall while its
+	// caller's own locals (possibly deep in a branch) are still live.
+	// Nil for call sites that don't care about cross-region disjointness
+	// (there are none left after this design lands, but nil is the safe
+	// zero value regardless -- every write is guarded by a nil check).
+	peakLocalSlot *uint32
 	// msgOpcodes is the file-wide map of @message(N) struct name -> opcode,
 	// threaded through here (rather than as its own lowerExprToIR parameter)
 	// so wrapMessage() can resolve an opcode from any expression position,
@@ -4641,6 +4957,64 @@ type loweringEnv struct {
 	// Map<K,V> field) instead of the generic uint64(0) fallback. See
 	// runtimeValueFromStorage / OpReadStorage in x/aetravm/avm/avm.go.
 	storageFieldTypes map[string]TypeRef
+	// structs is the file-wide struct-declaration table, threaded through
+	// the same way as msgOpcodes/storageFieldTypes (read-only, shared by
+	// reference) so a real called-function body (compileCalledFunction) can
+	// invoke c.lowerStatementsToIR without buildIR having to re-derive it.
+	structs map[string]*StructDecl
+	// compiler, if non-nil, is the *Compiler currently driving this whole
+	// lowering pass, threaded through purely so free functions deep in the
+	// lowerExprToIR/tryInlineUserFunctionCall call chain (which have no
+	// receiver of their own) can invoke Compiler methods -- specifically
+	// c.lowerStatementsToIR, to lower a called function's own body the
+	// first time it's discovered (design doc §1.7). Safe to call reentrant:
+	// the only mutable Compiler state touched, c.labelSeq (via
+	// c.nextLabel), is a monotonic counter with no reentrancy hazard, and
+	// c.globalConsts is read-only from this call path (buildIR alone sets
+	// it, via its own defer-restored assignment, before any lowering
+	// starts). Shared by reference across every clone, never reassigned.
+	compiler *Compiler
+	// callTargets, if non-nil, is the shared, module-wide registry of real
+	// (CALL/RET) call targets discovered while lowering this module --
+	// dedup cache (so a function called from N sites is compiled once) plus
+	// the module-wide local-slot counter every entrypoint/handler/getter/
+	// function region draws its own disjoint range from (design doc §1.1).
+	// Shared by reference across every clone; see callTargetRegistry.
+	callTargets *callTargetRegistry
+}
+
+// callTargetRegistry is buildIR's single, module-wide bookkeeping object for
+// the intra-contract call mechanism (design doc §1.7/§4.2): which declared
+// functions have actually been called somewhere (and so need their own
+// compiled code block plus a claimed, disjoint local-slot range), and the
+// one shared slot counter every region (entrypoint, handler, getter, or
+// called function) advances as it's lowered. A single instance is created
+// once per buildIR call and threaded by reference through every loweringEnv
+// clone for the whole module, so a call site discovered ten statements deep
+// inside a while-loop inside a match arm still shares the same counter and
+// dedup cache as the top-level entrypoint bodies.
+type callTargetRegistry struct {
+	// slotCounter is the module-wide "next free slot" cursor. Every region
+	// starts its own local lowering with nextLocalSlot == *slotCounter, and
+	// advances *slotCounter to its own peakLocalSlot high-water mark once
+	// lowering that region finishes -- so the next region (whichever kind)
+	// can never alias a slot the previous one touched.
+	slotCounter *uint32
+	// compiled maps a call target's (mangled, for a future generic
+	// instantiation -- plain function name today) name to its already-
+	// lowered, self-contained IREntry (prologue + body + IRStmtRet
+	// terminator), ready for buildModule to place and link exactly like an
+	// entrypoint block. Acts as both the dedup cache (checked before
+	// compiling the same function twice) and the source buildIR drains,
+	// in sorted-by-name order for determinism, into IRProgram.CalledFunctions.
+	compiled map[string]*IREntry
+	// inProgress defensively guards against a compile-time infinite loop if
+	// a cycle ever reached this code path despite validateFunctionRecursion
+	// already rejecting it earlier in the pipeline (compile.go's typecheck
+	// phase, unconditional, on every declared function) -- turns an
+	// otherwise-impossible cycle into a clean compiler error instead of a
+	// stack overflow, rather than relying solely on that earlier check.
+	inProgress map[string]bool
 }
 
 type localBinding struct {
@@ -4666,15 +5040,20 @@ type loopContext struct {
 
 func cloneLoweringEnv(in loweringEnv) loweringEnv {
 	out := loweringEnv{
-		params:            map[string]int{},
-		consts:            map[string]constValue{},
-		types:             map[string]TypeRef{},
-		locals:            map[string]localBinding{},
-		storageAliases:    map[string]struct{}{},
-		unknowns:          map[string]struct{}{},
-		nextLocalSlot:     in.nextLocalSlot,
-		msgOpcodes:        in.msgOpcodes,
-		storageFieldTypes: in.storageFieldTypes,
+		params:               map[string]int{},
+		consts:               map[string]constValue{},
+		types:                map[string]TypeRef{},
+		locals:               map[string]localBinding{},
+		storageAliases:       map[string]struct{}{},
+		unknowns:             map[string]struct{}{},
+		nextLocalSlot:        in.nextLocalSlot,
+		peakLocalSlot:        in.peakLocalSlot,
+		insideCalledFunction: in.insideCalledFunction,
+		msgOpcodes:           in.msgOpcodes,
+		storageFieldTypes:    in.storageFieldTypes,
+		structs:              in.structs,
+		compiler:             in.compiler,
+		callTargets:          in.callTargets,
 	}
 	for k, v := range in.params {
 		out.params[k] = v
@@ -4695,6 +5074,80 @@ func cloneLoweringEnv(in loweringEnv) loweringEnv {
 		out.unknowns[k] = struct{}{}
 	}
 	return out
+}
+
+// bumpPeakLocalSlot records env.nextLocalSlot (after a fresh local has just
+// claimed the slot below it) into the region-wide peakLocalSlot high-water
+// mark, if that pointer is set and this is a new high. See loweringEnv's
+// peakLocalSlot doc comment: this is what lets buildIR learn the TRUE total
+// slot-range width a whole region consumed, including its deepest nested
+// if/while/match branch, even though those branches each clone env and so
+// never write their own slot growth back into the outer scope's ordinary
+// (reused-across-siblings) nextLocalSlot value.
+func bumpPeakLocalSlot(env loweringEnv) {
+	if env.peakLocalSlot != nil && env.nextLocalSlot > *env.peakLocalSlot {
+		*env.peakLocalSlot = env.nextLocalSlot
+	}
+}
+
+// claimLocalSlot hands out the next fresh VM local slot for *env's current
+// region (an entrypoint/handler/getter body, a match arm, a for-loop body,
+// or a called function's own body), keeping env.nextLocalSlot synchronized
+// with the module-wide call-target slot counter
+// (env.callTargets.slotCounter, design doc §1.1) in BOTH directions. This
+// closes a real bug found while building reference-contract evidence for
+// the call mechanism (not a hypothetical): before this fix, a called
+// function's slot range was carved out of *slotCounter only at the moment
+// tryRealUserFunctionCall first discovered it (compileCalledFunction's own
+// `base := *reg.slotCounter`), while an entrypoint/arm's OWN ordinary
+// locals were claimed purely from its own per-region env.nextLocalSlot --
+// two counters only ever reconciled at the very end of a whole top-level
+// region's lowering (baseEnv's advanceSlots closure), never continuously
+// as each individual local was claimed. Concretely, in bridge_verify.atlx's
+// LightClientVerify handler (`const (valid, quorum) = verifyQuorum(...);
+// const merkleOk = merkleWalk(...)`, both called from more than one match
+// arm), the SECOND real call in that arm reused a slot the arm's own
+// still-live `valid`/`quorum` locals occupied, silently overwriting them
+// with the callee's own internal value -- no trap, a wrong answer
+// committed straight to storage. Reproduced and fixed via
+// TestCompileTwoRealCallsShareNoSlotWithCallerLocals.
+//
+//   - env.nextLocalSlot is raised to *slotCounter first, if that is
+//     currently higher, so the freshly claimed slot can never alias a slot
+//     any called function (compiled from an earlier call site, anywhere in
+//     the module) has already reserved for itself.
+//   - *slotCounter is immediately raised past the freshly claimed slot (if
+//     that's a new high), symmetrically, so a function compiled or
+//     dedup-reused LATER can never reuse a slot this caller's own local
+//     already occupies either.
+//
+// This does cost the "match-arm siblings reuse the same slot range" space
+// optimization baseEnv/cloneLoweringEnv were designed around (§1.1's own
+// rationale for why that reuse was safe no longer holds once ANY local
+// anywhere might alias a called function's fixed range) -- slot usage now
+// grows monotonically across the whole module instead of being bounded by
+// the deepest single branch. That is the correct, conservative trade: it
+// only spends more of the existing MaxStackDepth-bounded slot budget
+// (design doc §4.4 already treats that budget as a generous, if
+// conservative, ceiling that fails closed with a compile error, never a
+// silent wrong answer) in exchange for closing a real state-corruption bug.
+// Still records the claim into env.peakLocalSlot via bumpPeakLocalSlot,
+// exactly as every call site already did before this helper existed.
+func claimLocalSlot(env *loweringEnv) uint32 {
+	if env.callTargets != nil && env.callTargets.slotCounter != nil {
+		if *env.callTargets.slotCounter > env.nextLocalSlot {
+			env.nextLocalSlot = *env.callTargets.slotCounter
+		}
+	}
+	slot := env.nextLocalSlot
+	env.nextLocalSlot++
+	bumpPeakLocalSlot(*env)
+	if env.callTargets != nil && env.callTargets.slotCounter != nil {
+		if env.nextLocalSlot > *env.callTargets.slotCounter {
+			*env.callTargets.slotCounter = env.nextLocalSlot
+		}
+	}
+	return slot
 }
 
 // nestedMessageOpcodeField is the synthetic field wrapMessage() injects into
@@ -4856,6 +5309,18 @@ func lowerExprToIR(expr Expr, env loweringEnv, functions map[string]*FunctionDec
 		return &IRExpr{Kind: IRExprConstString, Text: expr.Text, Pos: expr.Pos}, nil
 	case ExprBytes:
 		return &IRExpr{Kind: IRExprConstBytes, Data: append([]byte(nil), expr.Bytes...), Pos: expr.Pos}, nil
+	case ExprTupleLiteral:
+		// Design doc §2.5: (a, b, ...) -- lower each element in source
+		// order, MaxTupleElements is enforced at the AVM layer
+		// (validateInstructionArg on the emitted OpMakeTuple).
+		if len(expr.Args) > int(avm.MaxTupleElements) {
+			return nil, fail("E_LOWER_EXPR", expr.Pos, fmt.Sprintf("tuple literal has %d elements, exceeds limit %d", len(expr.Args), avm.MaxTupleElements))
+		}
+		args, err := lowerExprArgs(expr.Args, env, functions, seen)
+		if err != nil {
+			return nil, err
+		}
+		return &IRExpr{Kind: IRExprMakeTuple, Args: args, Pos: expr.Pos}, nil
 	case ExprBool:
 		if expr.Bool {
 			return &IRExpr{Kind: IRExprConstU64, Value: 1, Pos: expr.Pos}, nil
@@ -5660,7 +6125,21 @@ func lowerExprToIR(expr Expr, env loweringEnv, functions map[string]*FunctionDec
 		value, ok := evalConstExpr(expr, env, functions, seen)
 		if !ok {
 			if inlined, handled, err := tryInlineUserFunctionCall(expr, env, functions, seen); handled {
-				return inlined, err
+				if err == nil {
+					return inlined, nil
+				}
+				// tryInlineUserFunctionCall's narrow AST-splice path
+				// (lazy storage bindings + a single return expression)
+				// couldn't represent this call -- fall back to a real
+				// intra-contract CALL/RET (design doc §1.7), which can
+				// handle branching, looping, multiple statements, and
+				// early return. Only reached for calls that DO resolve to
+				// a declared function (handled=true), so this cannot
+				// silently swallow an "unknown call" error.
+				if real, realHandled, realErr := tryRealUserFunctionCall(expr, env, functions, seen); realHandled {
+					return real, realErr
+				}
+				return nil, err
 			}
 			return nil, fail("E_LOWER_CALL", expr.Pos, fmt.Sprintf("call %q cannot be lowered by AVM v1", callDisplayName(expr)))
 		}
@@ -5855,6 +6334,33 @@ func emitIRExpr(expr *IRExpr, code *[]avm.Instruction) error {
 		*code = append(*code, avm.Instruction{Op: avm.OpPushBytes, Data: append([]byte(nil), expr.Data...)})
 	case IRExprLocalLoad:
 		*code = append(*code, avm.Instruction{Op: avm.OpLoadLocal, Arg: uint64(expr.Slot)})
+	case IRExprMakeTuple:
+		for _, arg := range expr.Args {
+			if err := emitIRExpr(arg, code); err != nil {
+				return err
+			}
+		}
+		*code = append(*code, avm.Instruction{Op: avm.OpMakeTuple, Arg: uint64(len(expr.Args))})
+	case IRExprCallUser:
+		// Evaluate each argument left-to-right (push order) -- identical to
+		// how every other multi-operand IR node's Args already emit; the
+		// callee's own compiled prologue pops them in reverse (design doc
+		// §1.3). The OpCall's real target (an absolute PC into the callee's
+		// own module-wide code block, placed elsewhere in the module) is
+		// not known yet at this point in compilation -- buildModule places
+		// entry blocks first, then called-function blocks, only after
+		// which every function's base offset (funcBase) exists. Emit a
+		// placeholder Arg=0 carrying the callee's name in Instruction.Data;
+		// resolveCallTargets (buildModule's link pass, run once the whole
+		// module's code is assembled) patches Arg to funcBase[name] and
+		// clears Data. Never left unresolved in the final encoded module --
+		// resolveCallTargets errors loudly if any name doesn't resolve.
+		for _, arg := range expr.Args {
+			if err := emitIRExpr(arg, code); err != nil {
+				return err
+			}
+		}
+		*code = append(*code, avm.Instruction{Op: avm.OpCall, Data: []byte(expr.Text)})
 	case IRExprNull:
 		*code = append(*code, avm.Instruction{Op: avm.OpPushNull})
 	case IRExprStateRead:
@@ -7108,6 +7614,161 @@ func tryInlineUserFunctionCall(expr Expr, env loweringEnv, functions map[string]
 	return lowered, true, nil
 }
 
+// tryRealUserFunctionCall handles a call to a declared, plain (single-
+// segment, non-generic, non-trait-bound -- see the v5 design doc's §5.2
+// scoping decision) function whose body tryInlineUserFunctionCall's AST-
+// splice cannot represent: branching, looping, multiple statements, or an
+// early return not in tail position (design doc §1.7). Lazily compiles the
+// callee's body ONCE, the first time any call site reaches it (deduped via
+// env.callTargets.compiled), claiming a fresh module-wide-disjoint local-
+// slot range for it (env.callTargets.slotCounter -- design doc §1.1), and
+// returns an IRExprCallUser referencing it by name. Returns handled=false
+// only when expr does not resolve to a declared function at all, so the
+// caller can fall through to its ordinary "unknown call" error.
+func tryRealUserFunctionCall(expr Expr, env loweringEnv, functions map[string]*FunctionDecl, seen map[string]bool) (*IRExpr, bool, error) {
+	fn := resolveUserFunction(expr, functions)
+	if fn == nil {
+		return nil, false, nil
+	}
+	name := callDisplayName(expr)
+	if len(expr.Path) != 1 {
+		// Receiver-style calls (x.method(y)) are exactly the shape the
+		// design doc's §5.2 review finding flagged: collectFunctionCallsFromExpr
+		// only emits a call-graph edge for a single-segment Path, so a
+		// multi-segment call site is invisible to validateFunctionRecursion
+		// (compile.go's whole-program cycle check, which §1.1's entire
+		// disjoint-locals-slot safety argument depends on). Static trait
+		// dispatch on a concrete receiver type is deferred to its own
+		// dedicated lowering path (not this one) specifically so it can
+		// apply §5.2's fix (resolving to a single-segment name BEFORE the
+		// recursion check runs); this function must never treat a
+		// multi-segment call as a plain real-call target.
+		return nil, true, fail("E_LOWER_CALL", expr.Pos, fmt.Sprintf("call %q: receiver-style calls are not supported as real intra-contract calls in this pass", name))
+	}
+	if len(expr.Args) != len(fn.Params) {
+		return nil, true, fail("E_LOWER_CALL", expr.Pos, fmt.Sprintf("call %q expects %d arguments, got %d", name, len(fn.Params), len(expr.Args)))
+	}
+	if env.compiler == nil || env.callTargets == nil {
+		return nil, true, fail("E_LOWER_CALL", expr.Pos, fmt.Sprintf("call %q cannot be compiled: no call-target registry in scope (internal compiler error)", name))
+	}
+	args, err := lowerExprArgs(expr.Args, env, functions, seen)
+	if err != nil {
+		return nil, true, err
+	}
+	reg := env.callTargets
+	if _, ok := reg.compiled[fn.Name]; !ok {
+		if reg.inProgress[fn.Name] {
+			// Unreachable given validateFunctionRecursion's whole-program
+			// pre-lowering cycle check already rejects any recursion
+			// through a plain (single-segment) call path before buildIR
+			// ever runs -- defensive only, converting an otherwise-
+			// impossible cycle into a clean error instead of infinite
+			// compile-time recursion.
+			return nil, true, fail("E_LOWER_CALL", expr.Pos, fmt.Sprintf("call %q: cycle detected while compiling call targets (internal compiler error)", name))
+		}
+		reg.inProgress[fn.Name] = true
+		if err := compileCalledFunction(fn, env, functions); err != nil {
+			return nil, true, err
+		}
+		delete(reg.inProgress, fn.Name)
+	}
+	return &IRExpr{Kind: IRExprCallUser, Text: fn.Name, Args: args, Pos: expr.Pos}, true, nil
+}
+
+// compileCalledFunction lowers fn's body exactly once into its own self-
+// contained IREntry (parameter-binding prologue + body + implicit trailing
+// IRStmtRet), claims fn its own disjoint local-slot range off the shared
+// module-wide counter, and records the result in the registry so buildModule
+// can place it as its own code block after every entrypoint/handler/getter
+// block and link OpCall's target to it (design doc §1.7).
+//
+// Parameters bind directly into env.locals (not the entrypoint-style
+// env.params + message-field-read mechanism -- there is no incoming
+// "message" for a called function; its arguments arrive on the shared VM
+// stack, popped by this function's own compiled prologue). Read-only
+// enforcement is deliberately NOT re-derived per call site here: this
+// function's body is compiled exactly once and may be reached from both a
+// read-only (@get getter) and a non-read-only call site, so any storage
+// write inside it must be allowed to compile -- it is still correctly
+// rejected AT RUNTIME by the VM's existing, unconditional readOnly gate
+// (avm.go's four `if readOnly` checks) whenever the actual call chain
+// originated from a getter, exactly the same way §6.1 relies on for
+// read-only cross-contract calls. This trades a compile-time error for a
+// runtime trap in the (already nonsensical) case of a getter transitively
+// calling a function that writes storage -- not a safety regression.
+func compileCalledFunction(fn *FunctionDecl, env loweringEnv, functions map[string]*FunctionDecl) error {
+	reg := env.callTargets
+	base := *reg.slotCounter
+	calleeEnv := loweringEnv{
+		types:                map[string]TypeRef{},
+		locals:               map[string]localBinding{},
+		storageAliases:       map[string]struct{}{},
+		unknowns:             map[string]struct{}{},
+		consts:               env.consts,
+		insideCalledFunction: true,
+		msgOpcodes:           env.msgOpcodes,
+		storageFieldTypes:    env.storageFieldTypes,
+		structs:              env.structs,
+		compiler:             env.compiler,
+		callTargets:          reg,
+	}
+	for i, param := range fn.Params {
+		slot := base + uint32(i)
+		calleeEnv.locals[param.Name] = localBinding{Slot: slot, Type: param.Type}
+		calleeEnv.types[param.Name] = param.Type
+	}
+	calleeEnv.nextLocalSlot = base + uint32(len(fn.Params))
+	peak := calleeEnv.nextLocalSlot
+	calleeEnv.peakLocalSlot = &peak
+	// Reserve this function's own parameter range in *reg.slotCounter BEFORE
+	// lowering its body, not just at the end (see the monotonic-max fix
+	// below). Without this, a nested real call made as the very first thing
+	// this body does -- before it claims any local of its own via
+	// claimLocalSlot, which is what normally keeps the counter in sync --
+	// would read a stale *reg.slotCounter that doesn't yet know about
+	// [base, base+len(fn.Params)), letting the nested callee's own slot
+	// range overlap this function's still-live parameter slots.
+	if calleeEnv.nextLocalSlot > *reg.slotCounter {
+		*reg.slotCounter = calleeEnv.nextLocalSlot
+	}
+
+	body, err := env.compiler.lowerStatementsToIR(fn.Body, nil, &fn.ReturnType, false, true, functions, env.structs, env.msgOpcodes, calleeEnv, map[string]struct{}{}, nil)
+	if err != nil {
+		return err
+	}
+	// Argument-binding prologue: N OpStoreLocal instructions, argument N
+	// popped first -- last pushed, first popped, matching the caller's
+	// left-to-right push order (design doc §1.3). OpStoreLocal already
+	// clones the value being stored (avm.go), so this gets caller/callee
+	// value-semantics isolation for free from existing machinery.
+	prologue := make([]IRStmt, 0, len(fn.Params))
+	for i := len(fn.Params) - 1; i >= 0; i-- {
+		prologue = append(prologue, IRStmt{Kind: IRStmtStoreLocal, Slot: base + uint32(i), Position: fn.Pos})
+	}
+
+	reg.compiled[fn.Name] = &IREntry{
+		Name:       fn.Name,
+		Kind:       "function",
+		Statements: append(prologue, body...),
+		Pos:        fn.Pos,
+	}
+	// Advance the module-wide counter past every slot this function's body
+	// touched anywhere (including its deepest nested branch), so the next
+	// region compiled -- another called function, or a sibling call
+	// discovered later while lowering a different entrypoint -- cannot
+	// alias any of them. Monotonic max, not a bare assignment: claimLocalSlot
+	// already keeps *reg.slotCounter in sync as this function's OWN body
+	// claims locals (including any NESTED call this body makes, which can
+	// push the counter higher than this function's own peak), so by the
+	// time we get here the counter may already sit above peak -- a bare
+	// assignment would regress it backward and reopen an already-reserved
+	// range.
+	if peak > *reg.slotCounter {
+		*reg.slotCounter = peak
+	}
+	return nil
+}
+
 func staticOpcode(stmt Statement) (uint32, error) {
 	if stmt.Extra != nil {
 		if expr, ok := stmt.Extra["opcode"]; ok {
@@ -7250,6 +7911,13 @@ type canonicalStmt struct {
 	Start string            `json:"start,omitempty"`
 	End   string            `json:"end,omitempty"`
 	Index string            `json:"index,omitempty"`
+	// Names is a destructuring binding's target name list (design doc
+	// §2.4), carried separately from Name so the trace commitment actually
+	// binds to WHICH names a `const (a, b) = ...` statement declares --
+	// without this, two destructuring statements differing only in target
+	// names but sharing the same Value expression would canonicalize
+	// identically, a real gap in what the commitment is supposed to prove.
+	Names []string `json:"names,omitempty"`
 }
 
 type canonicalArm struct {
@@ -7303,7 +7971,7 @@ func (c *Compiler) collectGetters(contract *ContractDecl) []canonicalHandle {
 func canonicalStatements(stmts []Statement) []canonicalStmt {
 	out := make([]canonicalStmt, 0, len(stmts))
 	for _, stmt := range stmts {
-		c := canonicalStmt{Kind: string(stmt.Kind), Name: stmt.Name, Path: append([]string(nil), stmt.Path...), Value: canonicalExprString(stmt.Value), Args: canonicalExprStrings(stmt.Args), Extra: map[string]string{}, Start: canonicalExprString(stmt.Start), End: canonicalExprString(stmt.End), Index: stmt.Index}
+		c := canonicalStmt{Kind: string(stmt.Kind), Name: stmt.Name, Names: append([]string(nil), stmt.Names...), Path: append([]string(nil), stmt.Path...), Value: canonicalExprString(stmt.Value), Args: canonicalExprStrings(stmt.Args), Extra: map[string]string{}, Start: canonicalExprString(stmt.Start), End: canonicalExprString(stmt.End), Index: stmt.Index}
 		if len(stmt.Extra) == 0 {
 			c.Extra = nil
 		} else {
@@ -7394,6 +8062,8 @@ func canonicalExprString(expr Expr) string {
 		}
 		b.WriteString("}")
 		return b.String()
+	case ExprTupleLiteral:
+		return "(" + strings.Join(canonicalExprStrings(expr.Args), ",") + ")"
 	default:
 		return string(expr.Kind)
 	}

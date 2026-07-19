@@ -306,10 +306,26 @@ func (k Keeper) readGenesisState(ctx context.Context) (types.GenesisState, store
 // Records that survived an import unmentioned would be resurrected by the next
 // read, since these records are authoritative rather than a mirror of some other
 // copy.
-func (k *Keeper) writeReplacingState(ctx context.Context, gs types.GenesisState) error {
+//
+// design doc §8.3 (extended): its only caller, InitGenesisState, invokes this
+// AFTER InitGenesis has already returned (and released txMu) -- never nested
+// -- so acquiring txMu here is deadlock-free. Needed for the same reason
+// writeGenesis (keeper.go) needs it: this method bare-reads/writes
+// k.written/k.writtenResidual via readGenesisState/writeDiff, which must be
+// serialized against every other txMu-locked critical section, not just
+// against loadForBlock's own. k.genesis itself is read AFTER the lock is
+// acquired (not by the caller beforehand) for the same reason: computing
+// gs := types.RefreshStateRoot(k.genesis) outside the lock would reopen
+// exactly the bare-read gap this fix closes elsewhere, even though
+// InitGenesisState (a startup/genesis-import path, never a concurrent
+// wire-level entrypoint) is not part of the demonstrated race.
+func (k *Keeper) writeReplacingState(ctx context.Context) error {
+	k.txMu.Lock()
+	defer k.txMu.Unlock()
 	if k.storeService == nil {
 		return nil
 	}
+	gs := types.RefreshStateRoot(k.genesis)
 	_, baseline, _, err := k.readGenesisState(ctx)
 	if err != nil {
 		return err

@@ -18,6 +18,31 @@
 // getters below. The proof arguments therefore arrive as message fields (the
 // "explicit args"); nothing about the check reads chain-internal state.
 //
+// REAL CALL/RET REFACTOR (docs/architecture/avm-call-mechanism-v5-design.md
+// §1): before the AVM had CALL/RET, every ordinary function call was
+// textually inlined at its call site, and inlining only succeeded for a
+// single-return-expression callee body (compile.go's
+// tryInlineUserFunctionCall). The Merkle-walk loop and the distinct-signer
+// quorum loop below are both mutating, multi-statement, early-returning
+// routines -- exactly the shape that mechanism could never factor into a
+// shared helper -- so all four match arms below used to carry their OWN
+// verbatim copy of whichever loop(s) they needed (VerifyMerkleSha and
+// VerifyMerkleKeccak each had their own Merkle walk; VerifySigs and
+// LightClientVerify each had their own distinct-signer quorum loop;
+// LightClientVerify ALSO carried a third copy of the Merkle walk), all
+// duplicated within this SAME file for lack of a real call mechanism, not
+// merely across files. Now that OpCall/OpRet exist, `merkleWalk` and
+// `verifyQuorum` below are genuine functions -- each compiled ONCE, called
+// from every site that needs it, both using an early `return` (design doc
+// §3) for the length-guard/loop-exit path instead of a fallthrough
+// default-then-overwrite. This is the exact refactor
+// TestFinanceZKStdlibDuplicatesStayInSync's sibling commit (examples:
+// provenance comments + drift test for structurally-forced duplication)
+// documented as impossible before this session; TestAcceptanceBridgeVerify
+// (x/aetravm/conformance/bridge_acceptance_test.go) is unchanged and still
+// passes byte-for-byte against the same independent Go oracle, proving the
+// refactor is behavior-preserving, not just "still compiles."
+//
 // SECURITY-CRITICAL invariants encoded here (a subtle break silently accepts a
 // forged proof, which on a bridge means minting unbacked funds):
 //
@@ -201,6 +226,94 @@ contract BridgeVerify {
             && (byteAt(a, PUBKEY_LEN - 1) == byteAt(b, PUBKEY_LEN - 1))
     }
 
+    // --- Real CALL/RET helpers (see the file header): each of these bodies
+    //     mutates a local accumulator in a loop and returns early on a
+    //     length-guard failure, so each needs the explicit @impure
+    //     annotation (a plain, non-handler function with a local
+    //     reassignment is rejected by validateFunction's direct-effect
+    //     check unless annotated @impure or @store -- auto-inferred purity
+    //     alone is not sufficient for a bare `func`). Both are called from
+    //     more than one match arm below -- the concrete duplication this
+    //     refactor removes. ---
+
+    // Domain-separated Merkle walk shared by VerifyMerkleSha, VerifyMerkleKeccak,
+    // and LightClientVerify's inclusion leg. `useKeccak` selects the hash
+    // family (0 = sha256, 1 = keccak256) so one function serves both hash
+    // choices rather than needing a second near-identical copy. Returns 1 iff
+    // `leaf` is proven included under `root` via `proof`/`directions`; 0 on
+    // any length-discipline failure OR a genuine mismatch -- identical
+    // verdict shape to the pre-refactor inline code.
+    @impure
+    func merkleWalk(useKeccak: uint64, leaf: bytes, proof: bytes, directions: bytes, root: bytes): uint64 {
+        const n = len(proof) / HASH_LEN
+        // Length discipline: the proof blob must be a whole number of
+        // 32-byte siblings, one direction per level, 32-byte root. Early
+        // return (design doc §3) replaces the old "var result = 0; if
+        // (lenOk) { ... }" fallthrough-then-overwrite shape.
+        const lenOk = (len(proof) == n * HASH_LEN)
+            && (len(directions) == n)
+            && (len(root) == HASH_LEN)
+        if (!lenOk) {
+            return 0
+        }
+
+        // Start from the DOMAIN-SEPARATED leaf hash H(0x00||leaf), not the
+        // raw leaf, so an internal digest can never pose as a leaf.
+        var cur = leafHashSha(leaf)
+        if (useKeccak == 1) {
+            cur = leafHashKeccak(leaf)
+        }
+        var i = 0
+        while (i < n) {
+            const sib = subBytes(proof, i * HASH_LEN, HASH_LEN)
+            const goLeft = byteAt(directions, i) == 0
+            if (useKeccak == 1) {
+                cur = goLeft ? hashNodeKeccak(cur, sib) : hashNodeKeccak(sib, cur)
+            } else {
+                cur = goLeft ? hashNodeSha(cur, sib) : hashNodeSha(sib, cur)
+            }
+            i += 1
+        }
+        return (fromBytesBE(cur) == fromBytesBE(root)) ? 1 : 0
+    }
+
+    // Batched, distinct-signer validator quorum shared by VerifySigs and
+    // LightClientVerify. Returns (validCount, quorumMet) as a real tuple
+    // (design doc §2) -- the caller destructures both values from the one
+    // call instead of this function committing directly to storage, so it
+    // stays a computation over its explicit arguments only (no storage
+    // read/write of its own); @impure only because of its local
+    // accumulator loop, per the note above.
+    @impure
+    func verifyQuorum(headerHash: bytes, pubkeys: bytes, sigs: bytes): (uint64, uint64) {
+        var valid = 0
+        var i = 0
+        const k = len(sigs) / SIG_LEN
+        while (i < k) {
+            const pk = subBytes(pubkeys, i * PUBKEY_LEN, PUBKEY_LEN)
+            const sig = subBytes(sigs, i * SIG_LEN, SIG_LEN)
+            // Distinct-signer dedup: skip this key if it already appeared
+            // earlier in the batch, so a replayed validator cannot be
+            // counted twice toward the super-majority.
+            var seen = 0
+            var j = 0
+            while (j < i) {
+                const pkj = subBytes(pubkeys, j * PUBKEY_LEN, PUBKEY_LEN)
+                if (pubkeyEq(pk, pkj)) {
+                    seen = 1
+                }
+                j += 1
+            }
+            if (seen == 0 && verifySecp256k1(headerHash, sig, pk)) {
+                valid += 1
+            }
+            i += 1
+        }
+        const total = len(pubkeys) / PUBKEY_LEN
+        const quorum = (valid * 3 > total * 2) ? 1 : 0
+        return (valid, quorum)
+    }
+
     @internal
     func onInternalMessage(in: InMessage) {
         const msg = lazy BridgeMsg.fromSegment(in.body)
@@ -209,25 +322,7 @@ contract BridgeVerify {
             // ---- 1a. sha256 Merkle inclusion --------------------------------
             VerifyMerkleSha => {
                 var st = lazy BridgeStorage.load()
-                const n = len(msg.proof) / HASH_LEN
-                // Length discipline: the proof blob must be a whole number of
-                // 32-byte siblings, one direction per level, 32-byte root.
-                const lenOk = (len(msg.proof) == n * HASH_LEN)
-                    && (len(msg.directions) == n)
-                    && (len(msg.root) == HASH_LEN)
-                var result = 0
-                if (lenOk) {
-                    // Start from the DOMAIN-SEPARATED leaf hash H(0x00||leaf), not
-                    // the raw leaf, so an internal digest can never pose as a leaf.
-                    var cur = leafHashSha(msg.leaf)
-                    var i = 0
-                    while (i < n) {
-                        const sib = subBytes(msg.proof, i * HASH_LEN, HASH_LEN)
-                        cur = (byteAt(msg.directions, i) == 0) ? hashNodeSha(cur, sib) : hashNodeSha(sib, cur)
-                        i += 1
-                    }
-                    result = (fromBytesBE(cur) == fromBytesBE(msg.root)) ? 1 : 0
-                }
+                const result = merkleWalk(0, msg.leaf, msg.proof, msg.directions, msg.root)
                 st.merkleShaResult = result
                 st.save()
             }
@@ -235,21 +330,7 @@ contract BridgeVerify {
             // ---- 1b. keccak256 (Ethereum) Merkle inclusion ------------------
             VerifyMerkleKeccak => {
                 var st = lazy BridgeStorage.load()
-                const n = len(msg.proof) / HASH_LEN
-                const lenOk = (len(msg.proof) == n * HASH_LEN)
-                    && (len(msg.directions) == n)
-                    && (len(msg.root) == HASH_LEN)
-                var result = 0
-                if (lenOk) {
-                    var cur = leafHashKeccak(msg.leaf)
-                    var i = 0
-                    while (i < n) {
-                        const sib = subBytes(msg.proof, i * HASH_LEN, HASH_LEN)
-                        cur = (byteAt(msg.directions, i) == 0) ? hashNodeKeccak(cur, sib) : hashNodeKeccak(sib, cur)
-                        i += 1
-                    }
-                    result = (fromBytesBE(cur) == fromBytesBE(msg.root)) ? 1 : 0
-                }
+                const result = merkleWalk(1, msg.leaf, msg.proof, msg.directions, msg.root)
                 st.merkleKeccakResult = result
                 st.save()
             }
@@ -258,32 +339,9 @@ contract BridgeVerify {
             //      Each DISTINCT public key counts at most once toward the tally.
             VerifySigs => {
                 var st = lazy BridgeStorage.load()
-                var valid = 0
-                var i = 0
-                const k = len(msg.sigs) / SIG_LEN
-                while (i < k) {
-                    const pk = subBytes(msg.pubkeys, i * PUBKEY_LEN, PUBKEY_LEN)
-                    const sig = subBytes(msg.sigs, i * SIG_LEN, SIG_LEN)
-                    // Distinct-signer dedup: skip this key if it already appeared
-                    // earlier in the batch, so a replayed validator cannot be
-                    // counted twice toward the super-majority.
-                    var seen = 0
-                    var j = 0
-                    while (j < i) {
-                        const pkj = subBytes(msg.pubkeys, j * PUBKEY_LEN, PUBKEY_LEN)
-                        if (pubkeyEq(pk, pkj)) {
-                            seen = 1
-                        }
-                        j += 1
-                    }
-                    if (seen == 0 && verifySecp256k1(msg.headerHash, sig, pk)) {
-                        valid += 1
-                    }
-                    i += 1
-                }
-                const total = len(msg.pubkeys) / PUBKEY_LEN
+                const (valid, quorum) = verifyQuorum(msg.headerHash, msg.pubkeys, msg.sigs)
                 st.sigCount = valid
-                st.thresholdResult = (valid * 3 > total * 2) ? 1 : 0
+                st.thresholdResult = quorum
                 st.save()
             }
 
@@ -292,46 +350,11 @@ contract BridgeVerify {
                 var st = lazy BridgeStorage.load()
 
                 // (a) validator quorum over the header hash, distinct signers.
-                var valid = 0
-                var i = 0
-                const k = len(msg.sigs) / SIG_LEN
-                while (i < k) {
-                    const pk = subBytes(msg.pubkeys, i * PUBKEY_LEN, PUBKEY_LEN)
-                    const sig = subBytes(msg.sigs, i * SIG_LEN, SIG_LEN)
-                    var seen = 0
-                    var j = 0
-                    while (j < i) {
-                        const pkj = subBytes(msg.pubkeys, j * PUBKEY_LEN, PUBKEY_LEN)
-                        if (pubkeyEq(pk, pkj)) {
-                            seen = 1
-                        }
-                        j += 1
-                    }
-                    if (seen == 0 && verifySecp256k1(msg.headerHash, sig, pk)) {
-                        valid += 1
-                    }
-                    i += 1
-                }
-                const total = len(msg.pubkeys) / PUBKEY_LEN
-                const quorum = (valid * 3 > total * 2) ? 1 : 0
+                const (valid, quorum) = verifyQuorum(msg.headerHash, msg.pubkeys, msg.sigs)
 
                 // (b) domain-separated Merkle inclusion under the header's
                 //     stateRoot, with the same length discipline as leg 1.
-                const n = len(msg.proof) / HASH_LEN
-                const lenOk = (len(msg.proof) == n * HASH_LEN)
-                    && (len(msg.directions) == n)
-                    && (len(msg.stateRoot) == HASH_LEN)
-                var merkleOk = 0
-                if (lenOk) {
-                    var cur = leafHashSha(msg.leaf)
-                    var m = 0
-                    while (m < n) {
-                        const sib = subBytes(msg.proof, m * HASH_LEN, HASH_LEN)
-                        cur = (byteAt(msg.directions, m) == 0) ? hashNodeSha(cur, sib) : hashNodeSha(sib, cur)
-                        m += 1
-                    }
-                    merkleOk = (fromBytesBE(cur) == fromBytesBE(msg.stateRoot)) ? 1 : 0
-                }
+                const merkleOk = merkleWalk(0, msg.leaf, msg.proof, msg.directions, msg.stateRoot)
 
                 // Accept only when the quorum AND the inclusion proof both hold.
                 st.sigCount = valid

@@ -358,11 +358,26 @@ func (p *parser) parseFunctionTail() ([]ParamDecl, *TypeRef, []Statement, error)
 		if err := p.read(); err != nil {
 			return nil, nil, nil, err
 		}
-		typ, err := p.parseTypeRef()
-		if err != nil {
-			return nil, nil, nil, err
+		if p.cur.kind == tokenLParen {
+			// Multi-value return type, `-> (T1, T2, ...)` (design doc
+			// §2.6) -- additive, and deliberately scoped to ONLY this one
+			// call site rather than parseTypeRef itself, so a tuple type
+			// can never appear in a param, struct-field, or generic-arg
+			// position (design doc §2.7's "call/return/local-only" scope
+			// decision is enforced structurally here, not by a separate
+			// rejection check elsewhere).
+			typ, err := p.parseTupleReturnType()
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			ret = &typ
+		} else {
+			typ, err := p.parseTypeRef()
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			ret = &typ
 		}
-		ret = &typ
 	}
 	body, err := p.parseBlock()
 	if err != nil {
@@ -860,6 +875,44 @@ func (p *parser) parseStatement() (Statement, error) {
 		if err := p.read(); err != nil {
 			return Statement{}, err
 		}
+		// Destructuring binding, `const (a, b) = f()` (design doc §2.4):
+		// additive -- only taken when the name position is immediately
+		// followed by `(`, which is never valid in the existing single-name
+		// grammar (expectBindingName always requires a bare identifier
+		// there), so no existing program's parse changes.
+		if p.cur.kind == tokenLParen {
+			if err := p.read(); err != nil {
+				return Statement{}, err
+			}
+			var names []string
+			for {
+				name, err := p.expectBindingName()
+				if err != nil {
+					return Statement{}, err
+				}
+				names = append(names, name)
+				if p.cur.kind != tokenComma {
+					break
+				}
+				if err := p.read(); err != nil {
+					return Statement{}, err
+				}
+			}
+			if len(names) < 2 {
+				return Statement{}, fmt.Errorf("destructuring binding requires at least 2 names at %s", pos)
+			}
+			if err := p.expect(tokenRParen); err != nil {
+				return Statement{}, err
+			}
+			if err := p.expect(tokenEqual); err != nil {
+				return Statement{}, err
+			}
+			expr, err := p.parseExpr()
+			if err != nil {
+				return Statement{}, err
+			}
+			return Statement{Kind: StatementBinding, Names: names, Value: expr, Mutable: mutable, Pos: pos}, nil
+		}
 		name, err := p.expectBindingName()
 		if err != nil {
 			return Statement{}, err
@@ -1347,6 +1400,22 @@ func (p *parser) parsePath() ([]string, error) {
 		if err := p.read(); err != nil {
 			return nil, err
 		}
+		// A decimal-number path segment, `p.1` (design doc §2.1's tuple
+		// positional field access), is accepted here in addition to an
+		// ordinary identifier segment -- only ever reachable AFTER at
+		// least one `.`, so the path's own leading segment (an ordinary
+		// expression can never start with a bare digit as a name) is
+		// completely unaffected. The segment's own text (decimal digits)
+		// flows through unchanged to runtimeFieldValue's already-extended
+		// TagTuple branch, which resolves it the same way for both a
+		// struct-shaped `.field` name and a tuple `.N` index.
+		if p.cur.kind == tokenNumber {
+			out = append(out, p.cur.text)
+			if err := p.read(); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		next, err := p.expectName()
 		if err != nil {
 			return nil, err
@@ -1741,12 +1810,36 @@ func (p *parser) parsePrimary() (Expr, error) {
 		}
 		return finish(Expr{Kind: ExprPath, Path: path, Pos: pos})
 	case tokenLParen:
+		pos := p.cur.pos
 		if err := p.read(); err != nil {
 			return Expr{}, err
 		}
 		expr, err := p.parseExpr()
 		if err != nil {
 			return Expr{}, err
+		}
+		if p.cur.kind == tokenComma {
+			// Tuple literal, `(a, b, ...)` (design doc §2.5): additive --
+			// today a comma here is unconditionally a parse error (the only
+			// path was `expect(tokenRParen)` immediately after one
+			// expression), so there is no existing program this collides
+			// with. The ordinary single-expression grouping case above
+			// (`(a)`, no comma) is completely unchanged.
+			elems := []Expr{expr}
+			for p.cur.kind == tokenComma {
+				if err := p.read(); err != nil {
+					return Expr{}, err
+				}
+				next, err := p.parseExpr()
+				if err != nil {
+					return Expr{}, err
+				}
+				elems = append(elems, next)
+			}
+			if err := p.expect(tokenRParen); err != nil {
+				return Expr{}, err
+			}
+			return finish(Expr{Kind: ExprTupleLiteral, Args: elems, Pos: pos})
 		}
 		if err := p.expect(tokenRParen); err != nil {
 			return Expr{}, err
@@ -1823,6 +1916,43 @@ func (p *parser) looksLikeStructLiteral() bool {
 		return false
 	}
 	return clone.cur.kind == tokenColon
+}
+
+// parseTupleReturnType parses a parenthesized multi-value return type,
+// `(T1, T2, ...)` (design doc §2.6), into a synthetic
+// TypeRef{Name: "Tuple", Args: [...]} -- zero schema change, reusing the
+// existing TypeRef.Args shape already used for Map<K,V>/Option<T>/Result<T,E>.
+// Only ever called from parseFunctionTail's return-type position; every
+// other TypeRef-parsing call site (params, struct fields, generic type
+// arguments) goes through parseTypeRef alone and can never produce this
+// shape, structurally enforcing design doc §2.7's "tuples are call/return/
+// local-only" scope decision without a separate rejection check.
+func (p *parser) parseTupleReturnType() (TypeRef, error) {
+	pos := p.cur.pos
+	if err := p.expect(tokenLParen); err != nil {
+		return TypeRef{}, err
+	}
+	var elems []TypeRef
+	for {
+		elem, err := p.parseTypeRef()
+		if err != nil {
+			return TypeRef{}, err
+		}
+		elems = append(elems, elem)
+		if p.cur.kind != tokenComma {
+			break
+		}
+		if err := p.read(); err != nil {
+			return TypeRef{}, err
+		}
+	}
+	if len(elems) < 2 {
+		return TypeRef{}, fmt.Errorf("tuple return type requires at least 2 element types at %s", pos)
+	}
+	if err := p.expect(tokenRParen); err != nil {
+		return TypeRef{}, err
+	}
+	return TypeRef{Name: "Tuple", Args: elems, Pos: pos}, nil
 }
 
 func (p *parser) parseTypeRef() (TypeRef, error) {

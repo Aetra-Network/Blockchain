@@ -225,8 +225,29 @@ func RootContribution(gs GenesisState) (coretypes.RootContribution, error) {
 	return coretypes.NewRootContribution(coretypes.RootType(ModuleName), ModuleName, gs.StateRoot)
 }
 
+// ComputeContractsStateRoot computes the genesis state root, normalizing
+// gs.State first. Kept as the public entry point precisely because not
+// every caller has already normalized (DefaultGenesis and Validate may both
+// run against a gs.State that hasn't been -- Validate in particular is
+// called on a freshly-unmarshaled genesis before any RefreshStateRoot call).
+// A caller that HAS already normalized (RefreshStateRoot, the hottest path
+// in the module, immediately above its own explicit Normalize() call)
+// should use computeContractsStateRootNormalized directly instead, to avoid
+// paying for a second, redundant deep-clone-and-sort of the entire state on
+// every single mutating call (design doc §8.4). Behavior for every existing
+// caller is unchanged -- this function still normalizes, exactly as before.
 func ComputeContractsStateRoot(gs GenesisState) string {
-	stateJSON, err := json.Marshal(gs.State.Normalize())
+	gs.State = gs.State.Normalize()
+	return computeContractsStateRootNormalized(gs)
+}
+
+// computeContractsStateRootNormalized is ComputeContractsStateRoot's core,
+// skipping the Normalize() call: the caller MUST already have a normalized
+// gs.State (RefreshStateRoot is the only intended caller). See
+// ComputeContractsStateRoot's doc comment for why the public function keeps
+// normalizing for its own (not-necessarily-pre-normalized) callers.
+func computeContractsStateRootNormalized(gs GenesisState) string {
+	stateJSON, err := json.Marshal(gs.State)
 	if err != nil {
 		panic(err)
 	}

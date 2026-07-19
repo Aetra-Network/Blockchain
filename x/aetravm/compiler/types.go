@@ -245,7 +245,14 @@ type Statement struct {
 	End     Expr
 	Index   string
 	Mutable bool
-	Pos     Position
+	// Names is set instead of Name for a destructuring binding,
+	// `const (a, b) = f()` (call mechanism v5 design doc §2.4) -- nil for
+	// every ordinary single-name StatementBinding, so no existing program's
+	// AST shape changes. Value must lower to a TagTuple RuntimeValue with
+	// exactly len(Names) elements; each name is bound, in order, to the
+	// tuple element at its own index.
+	Names []string
+	Pos   Position
 }
 
 type MatchArm struct {
@@ -287,6 +294,13 @@ const (
 	ExprLogic   ExprKind = "logic"
 	ExprTernary ExprKind = "ternary"
 	ExprStruct  ExprKind = "struct"
+	// ExprTupleLiteral is a parenthesized, comma-separated expression list,
+	// `(a, b, ...)` (call mechanism v5 design doc §2.5) -- distinct from an
+	// ordinary parenthesized grouping expression (`(a)`, still just `Args[0]`
+	// unwrapped by the parser, unchanged), which this is additive to: a
+	// comma inside the parens is what selects this Kind instead. Elements
+	// live in Args, in source order.
+	ExprTupleLiteral ExprKind = "tuple_literal"
 )
 
 type ExprField struct {

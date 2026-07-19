@@ -330,6 +330,39 @@ const (
 	// reduce" canonicalization gap the design doc's fixes exist to close.
 	OpPoseidon2Bn254 Opcode = 0x62
 
+	// Intra-contract call stack (AVM call mechanism v5,
+	// docs/architecture/avm-call-mechanism-v5-design.md §1). OpCall's Arg is
+	// an absolute target PC, a compile-time-immediate operand exactly like
+	// OpJump's -- there is no runtime-computed or indirect call target, no
+	// vtable, and nothing on the operand stack ever identifies the callee.
+	// Runtime behavior: push the return address (pc+1) onto a NEW,
+	// Run()-local return-address stack (never part of Storage/Execution/
+	// RuntimeContext -- pure interpreter-local control metadata, discarded
+	// on any rollback path exactly like `stack`/`locals` already are), check
+	// the MaxCallDepth cap (Params.MaxCallDepth) BEFORE pushing, then jump.
+	// See avm-phase-ef-call-design.md (the rejected v1-v4 track) for why
+	// this is deliberately NOT a cross-contract mechanism: the instruction
+	// format has no operand slot for a contract address at all.
+	OpCall Opcode = 0x63
+	// OpRet is a function return, distinct from OpReturn: OpReturn's
+	// existing whole-execution-halt semantics are completely untouched and
+	// still used for every top-level `return` statement outside a called
+	// function. OpRet pops one return address off the call stack and
+	// resumes there; the return value is not moved anywhere separately --
+	// it is whatever RuntimeValue the callee left on top of the shared
+	// `stack`, exactly like OpReturn already does. Popping an empty call
+	// stack is unreachable for compiler-produced output (the compiler
+	// enforces a recursion-free, call/ret-balanced call graph) but
+	// reachable via raw adversarial MsgStoreCode bytecode -- traps rather
+	// than panics, deterministically, on every validator alike.
+	OpRet Opcode = 0x64
+	// OpMakeTuple (design doc §2.2): Arg = element count N, a compile-time
+	// constant matching the tuple literal's or multi-value return's arity.
+	// Pops N values off `stack` (reverse push order, the same convention
+	// every other multi-operand opcode in this file already uses) and
+	// pushes one ValueTuple(...) built from them.
+	OpMakeTuple Opcode = 0x65
+
 	OpWallClock Opcode = 0xf0
 	OpRandom    Opcode = 0xf1
 	OpFileRead  Opcode = 0xf2
@@ -364,6 +397,21 @@ type Params struct {
 	// GasSchedule cost, so small/typical values (a handful of struct
 	// fields) incur only a negligible extra charge.
 	GasPerOperandUnit uint64
+	// MaxCallDepth bounds the intra-contract OpCall/OpRet return-address
+	// stack (call mechanism v5 design doc §1.6). This is a genuinely
+	// runtime-enforced check, not merely a restatement of a compiler
+	// invariant: the compiler's own output is always recursion-free (so
+	// well-formed compiled code never approaches this bound), but raw
+	// adversarial MsgStoreCode bytecode can trivially self-recurse via
+	// OpCall, and without this cap such a module would grow the
+	// return-address stack unboundedly, limited only by the flat gas meter
+	// -- a real multi-GB allocation blowup before the interpreter would
+	// otherwise notice (see the design doc's worked-through gas-vs-depth
+	// arithmetic). Deliberately a SEPARATE budget from
+	// async.Params.MaxRecursionDepth, which bounds a completely different
+	// resource (cross-block/cross-message mailbox amplification), not this
+	// same-transaction, same-Run()-call, native-stack-adjacent depth.
+	MaxCallDepth uint32
 }
 
 type Module struct {
@@ -462,6 +510,12 @@ const DefaultMaxStackDepth = 1024
 // instructions. Callers (e.g. x/contracts) impose their own, lower
 // per-execution gas caps below this value.
 const MaxRuntimeGasLimit = 1_000_000_000
+
+// DefaultMaxCallDepth is the canonical intra-contract OpCall/OpRet depth
+// limit (call mechanism v5 design doc §1.6): unchanged from every prior
+// design round's carry-forward proposal, deliberately separate from
+// async.Params.MaxRecursionDepth (a different resource entirely).
+const DefaultMaxCallDepth = 32
 
 func DefaultParams() Params {
 	return Params{
@@ -645,6 +699,16 @@ func DefaultParams() Params {
 			// chargeOperandUnits, see poseidon2Bn254PerBlockCost below and
 			// the OpPoseidon2Bn254 case in Run.
 			OpPoseidon2Bn254: 300,
+			// Intra-contract call stack. OpCall/OpRet are priced flat, like
+			// OpJump/OpReturn -- they touch only pc + a small return-address
+			// stack, no operand-size-proportional work. OpMakeTuple's flat
+			// dispatch cost is priced like OpDup/OpReturn; its genuinely
+			// per-element cost is charged via chargeOperandGas at
+			// construction time, the same pattern already used for other
+			// tuple-touching opcodes (design doc §2.2).
+			OpCall:      1,
+			OpRet:       1,
+			OpMakeTuple: 1,
 		},
 
 		// See the GasPerOperandUnit doc comment: 1 extra gas per map entry /
@@ -655,6 +719,9 @@ func DefaultParams() Params {
 		// costs proportionally more the more it is cloned, closing
 		// FINDING-001.
 		GasPerOperandUnit: 1,
+
+		// See the MaxCallDepth doc comment on the Params field itself.
+		MaxCallDepth: DefaultMaxCallDepth,
 	}
 }
 
@@ -697,6 +764,13 @@ func (p Params) Validate() error {
 	// accidental zero-value Params to disable the mitigation.
 	if p.GasPerOperandUnit == 0 {
 		return errors.New("gas per operand unit must be positive")
+	}
+	// MaxCallDepth must be positive: it is the ONLY runtime enforcement of
+	// the intra-contract call stack's depth against adversarial raw
+	// MsgStoreCode bytecode (the compiler's own recursion-freedom guarantee
+	// does not apply to hand-crafted modules). See the field's doc comment.
+	if p.MaxCallDepth == 0 {
+		return errors.New("max call depth must be positive")
 	}
 	for _, op := range []Opcode{
 		OpNop,
@@ -798,6 +872,9 @@ func (p Params) Validate() error {
 		OpBn254G2ScalarMul,
 		OpBn254PairingCheck,
 		OpPoseidon2Bn254,
+		OpCall,
+		OpRet,
+		OpMakeTuple,
 	} {
 		if p.GasSchedule[op] == 0 {
 			return fmt.Errorf("gas schedule missing opcode 0x%02x", byte(op))
@@ -889,6 +966,16 @@ func (r *Runner) Run(module Module, storage Storage, ctx RuntimeContext) (Execut
 	state := CloneStorage(storage)
 	stack := make([]RuntimeValue, 0)
 	locals := make([]RuntimeValue, 0)
+	// callStack is the intra-contract OpCall/OpRet return-address stack
+	// (call mechanism v5 design doc §1). It is pure Run()-local control
+	// metadata -- a stack of absolute code offsets to resume at -- never
+	// part of Storage/Execution/RuntimeContext, so it needs no special
+	// handling on any rollback path: it is simply not returned, exactly
+	// like `stack`/`locals` themselves, discarded by the Go garbage
+	// collector along with everything else in this call. It never
+	// references a second contract, a balance, or a storage key -- only
+	// uint32 code offsets within THIS module's own Code slice.
+	callStack := make([]uint32, 0)
 	// randomNonce domain-separates successive OpReadRandom reads within this
 	// execution so each random() call yields an independent, deterministic value.
 	var randomNonce uint64
@@ -1151,6 +1238,69 @@ func (r *Runner) Run(module Module, storage Storage, ctx RuntimeContext) (Execut
 				pc = uint32(ins.Arg)
 				continue
 			}
+		case OpCall:
+			// Compile-time-immediate target, exactly like OpJump -- the
+			// same runtime bounds check, not a weaker guarantee (design
+			// doc §1.2).
+			if ins.Arg >= uint64(len(module.Code)) {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM call target out of range"))
+			}
+			// MaxCallDepth is checked BEFORE pushing the new return address
+			// (design doc §1.6) -- this is the runtime enforcement that
+			// bounds adversarial raw-bytecode self-recursion; well-formed
+			// compiler output never approaches it because the compiler's
+			// own call graph is recursion-free by construction.
+			if len(callStack) >= int(r.params.MaxCallDepth) {
+				return rollback(async.ResultLimitExceeded, nil)
+			}
+			callStack = append(callStack, pc+1)
+			pc = uint32(ins.Arg)
+			continue
+		case OpRet:
+			if len(callStack) == 0 {
+				// Unreachable for compiler-produced output (every OpRet the
+				// compiler emits is inside a called function's body, whose
+				// only entry is via OpCall); reachable only via raw
+				// adversarial MsgStoreCode bytecode. Trap deterministically
+				// rather than let pc run off in an undefined direction.
+				return rollback(async.ResultExecutionFailed, errors.New("AVM return with empty call stack"))
+			}
+			target := callStack[len(callStack)-1]
+			callStack = callStack[:len(callStack)-1]
+			pc = target
+			continue
+		case OpMakeTuple:
+			// Arg = element count N (design doc §2.2), already bounds-checked
+			// against MaxTupleElements by validateInstructionArg. Pops N
+			// values in reverse push order (last pushed, first popped -- the
+			// same convention every other multi-operand opcode in this file
+			// already uses) and reassembles them into original left-to-right
+			// order before constructing the tuple.
+			n := int(ins.Arg)
+			if len(stack) < n {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on make tuple"))
+			}
+			elements := make([]RuntimeValue, n)
+			var tupleUnits uint64
+			for i := n - 1; i >= 0; i-- {
+				value, ok := pop(&stack)
+				if !ok {
+					return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on make tuple"))
+				}
+				tupleUnits += runtimeValueSizeUnits(value)
+				elements[i] = value
+			}
+			// Tuples are already priced per-element for OpDup/OpLoadLocal/
+			// OpReturn via runtimeValueSizeUnits; OpMakeTuple gets the same
+			// per-element charge at construction time (design doc §2.2), not
+			// a new pricing model.
+			if !chargeOperandUnits(&exec.GasUsed, gasLimit, r.params.GasPerOperandUnit, tupleUnits) {
+				return rollback(async.ResultLimitExceeded, nil)
+			}
+			if len(stack) >= int(r.params.MaxStackDepth) {
+				return rollback(async.ResultLimitExceeded, nil)
+			}
+			stack = append(stack, ValueTuple(elements))
 		case OpAbort:
 			return rollback(uint32(ins.Arg), fmt.Errorf("AVM abort with exit code %d", ins.Arg))
 		case OpDup:
@@ -1292,12 +1442,12 @@ func (r *Runner) Run(module Module, storage Storage, ctx RuntimeContext) (Execut
 			if len(stack) >= int(r.params.MaxStackDepth) {
 				return rollback(async.ResultLimitExceeded, nil)
 			}
-			stack = append(stack, ValueCoins(ctx.OriginalBalance.BigInt()))
+			stack = append(stack, ValueCoins(coinsAmountOrZero(ctx.OriginalBalance)))
 		case OpReadAttachedValue:
 			if len(stack) >= int(r.params.MaxStackDepth) {
 				return rollback(async.ResultLimitExceeded, nil)
 			}
-			stack = append(stack, ValueCoins(ctx.AttachedValue.BigInt()))
+			stack = append(stack, ValueCoins(coinsAmountOrZero(ctx.AttachedValue)))
 		case OpReadLogicalTime:
 			if len(stack) >= int(r.params.MaxStackDepth) {
 				return rollback(async.ResultLimitExceeded, nil)
@@ -2945,7 +3095,8 @@ func runtimeFieldValue(source RuntimeValue, field string) (RuntimeValue, error) 
 		}
 		return value, nil
 	case TagTuple:
-		switch strings.ToLower(strings.TrimSpace(field)) {
+		normalized := strings.ToLower(strings.TrimSpace(field))
+		switch normalized {
 		case "key", "first", "left", "0":
 			if len(source.tupleVal) >= 1 {
 				return source.tupleVal[0].clone(), nil
@@ -2954,11 +3105,103 @@ func runtimeFieldValue(source RuntimeValue, field string) (RuntimeValue, error) 
 			if len(source.tupleVal) >= 2 {
 				return source.tupleVal[1].clone(), nil
 			}
+		default:
+			// General N-ary tuple indexing (design doc §2.1): any decimal
+			// index beyond the 0/1 map-entry aliases above, bounds-checked
+			// against the actual element count. Additive -- the named
+			// aliases and the 0/1 shorthands above are checked first and
+			// keep their exact existing behavior for map-entry pairs.
+			if idx, err := strconv.Atoi(normalized); err == nil && idx >= 0 && idx < len(source.tupleVal) {
+				return source.tupleVal[idx].clone(), nil
+			}
 		}
 		return RuntimeValue{}, fmt.Errorf("AVM field access requires a structured bytes value, got %s", source.Tag)
 	default:
 		return RuntimeValue{}, fmt.Errorf("AVM field access requires a structured bytes value, got %s", source.Tag)
 	}
+}
+
+// splitMapKind recognizes a declared `map<key,value>` field type and returns
+// its two type arguments. Only the top-level comma separates them, so a
+// nested map value type (map<uint64,map<...>>) splits correctly.
+func splitMapKind(kind string) (string, string, bool) {
+	if !strings.HasPrefix(kind, "map<") || !strings.HasSuffix(kind, ">") {
+		return "", "", false
+	}
+	inner := kind[len("map<") : len(kind)-1]
+	depth := 0
+	for i, r := range inner {
+		switch r {
+		case '<':
+			depth++
+		case '>':
+			depth--
+		case ',':
+			if depth == 0 {
+				key := strings.TrimSpace(inner[:i])
+				value := strings.TrimSpace(inner[i+1:])
+				if key == "" || value == "" {
+					return "", "", false
+				}
+				return key, value, true
+			}
+		}
+	}
+	return "", "", false
+}
+
+// runtimeMapFromJSONField decodes a map-typed message-body field from its
+// wire form — a JSON object whose keys are the canonical text of the map's
+// key type and whose values are encoded per the map's value type.
+//
+// Both sides are decoded through runtimeValueFromJSONField itself, so a map
+// field supports exactly the element types every other body field supports
+// (including a nested map). Keys arrive as JSON strings because JSON object
+// keys always are; the integer decoders already accept the decimal-string
+// form, so numeric keys need no special case.
+func runtimeMapFromJSONField(keyKind, valueKind string, raw json.RawMessage) (RuntimeValue, error) {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return RuntimeValue{}, err
+	}
+	if uint32(len(obj)) > MaxTupleElements {
+		return RuntimeValue{}, fmt.Errorf("map entry count %d exceeds limit %d", len(obj), MaxTupleElements)
+	}
+	entries := make([]runtimeMapEntry, 0, len(obj))
+	seen := make(map[string]struct{}, len(obj))
+	for keyText, valueRaw := range obj {
+		keyRaw, err := json.Marshal(keyText)
+		if err != nil {
+			return RuntimeValue{}, err
+		}
+		keyValue, err := runtimeValueFromJSONField(keyKind, keyRaw)
+		if err != nil {
+			return RuntimeValue{}, fmt.Errorf("map key %q: %w", keyText, err)
+		}
+		// Distinct JSON keys may still canonicalize to the same map key (for
+		// a uint64 key, "1" and "01" both decode to 1). Silently collapsing
+		// them would make the decoded map depend on Go's randomized map
+		// iteration order, so reject the ambiguity outright.
+		keyBytes, err := CanonicalEncode(keyValue)
+		if err != nil {
+			return RuntimeValue{}, fmt.Errorf("map key %q: %w", keyText, err)
+		}
+		if _, dup := seen[string(keyBytes)]; dup {
+			return RuntimeValue{}, fmt.Errorf("duplicate map key %q after canonicalization", keyText)
+		}
+		seen[string(keyBytes)] = struct{}{}
+
+		value, err := runtimeValueFromJSONField(valueKind, valueRaw)
+		if err != nil {
+			return RuntimeValue{}, fmt.Errorf("map value for key %q: %w", keyText, err)
+		}
+		entries = append(entries, runtimeMapEntry{Key: keyValue, Value: value, keyBytes: keyBytes})
+	}
+	normalized, err := runtimeMapNormalize(entries)
+	if err != nil {
+		return RuntimeValue{}, err
+	}
+	return RuntimeValue{Tag: TagMap, mapVal: normalized}, nil
 }
 
 func runtimeValueFromJSONField(typ string, raw json.RawMessage) (RuntimeValue, error) {
@@ -2973,6 +3216,13 @@ func runtimeValueFromJSONField(typ string, raw json.RawMessage) (RuntimeValue, e
 	}
 	if len(raw) == 0 || string(raw) == "null" {
 		return ValueNull(), nil
+	}
+	if keyKind, valueKind, ok := splitMapKind(kind); ok {
+		value, err := runtimeMapFromJSONField(keyKind, valueKind, raw)
+		if err != nil {
+			return RuntimeValue{}, decodeErr(err)
+		}
+		return value, nil
 	}
 	switch kind {
 	case "bool":
@@ -4418,6 +4668,19 @@ func runtimeLegacyMessageEnvelopeFromValue(value RuntimeValue, ctx RuntimeContex
 	return msg, nil
 }
 
+// coinsAmountOrZero returns v's big.Int, or zero when v is an uninitialized
+// sdkmath.Int. sdkmath.Int's zero value wraps a nil *big.Int, and BigInt()
+// hands that nil straight to ValueCoins, whose FillBytes call then panics —
+// crashing the whole VM (and its host process) instead of trapping the
+// message. Every value-reading opcode therefore normalizes through here: an
+// absent balance is semantically zero, never a panic.
+func coinsAmountOrZero(v sdkmath.Int) *big.Int {
+	if v.IsNil() {
+		return big.NewInt(0)
+	}
+	return v.BigInt()
+}
+
 func (r *Runner) AsyncHandler(module Module, storage Storage, ctx RuntimeContext) async.Handler {
 	// autoDetectEntry is fixed once at registration time: it reflects whether
 	// the caller asked for per-message routing (Entry left zero/EntryDeploy)
@@ -4440,6 +4703,17 @@ func (r *Runner) AsyncHandler(module Module, storage Storage, ctx RuntimeContext
 		}
 		callCtx.ContractAddress = contract.Address
 		callCtx.Message = msg
+		// Feed the value-reading opcodes from the account and envelope this
+		// call actually runs against. Without this, getBalance() /
+		// getAttachedValue() inside an async-executed message read whatever
+		// the registration-time template happened to hold — for the common
+		// zero-value template, an uninitialized sdkmath.Int.
+		if !contract.BalanceNaet.IsNil() {
+			callCtx.OriginalBalance = contract.BalanceNaet
+		}
+		if !msg.Value.Amount.IsNil() {
+			callCtx.AttachedValue = msg.Value.Amount
+		}
 		if msg.ExecutionBlockHeight != 0 {
 			callCtx.BlockHeight = msg.ExecutionBlockHeight
 		}
@@ -4744,7 +5018,10 @@ func IsAllowedOpcode(op Opcode) bool {
 		OpBn254G2Add,
 		OpBn254G2ScalarMul,
 		OpBn254PairingCheck,
-		OpPoseidon2Bn254:
+		OpPoseidon2Bn254,
+		OpCall,
+		OpRet,
+		OpMakeTuple:
 		return true
 	default:
 		return false
@@ -4795,6 +5072,16 @@ func validateInstructionArg(ins Instruction) error {
 	case OpLoadLocal, OpStoreLocal:
 		if ins.Arg > maxUint32 {
 			return fmt.Errorf("AVM local slot %d exceeds uint32", ins.Arg)
+		}
+	case OpCall:
+		// OpCall's target is a compile-time-immediate absolute PC, exactly
+		// like OpJump's -- same bound check (design doc §1.2).
+		if ins.Arg > maxUint32 {
+			return fmt.Errorf("AVM call target %d exceeds uint32", ins.Arg)
+		}
+	case OpMakeTuple:
+		if ins.Arg > uint64(MaxTupleElements) {
+			return fmt.Errorf("AVM tuple element count %d exceeds limit %d", ins.Arg, MaxTupleElements)
 		}
 	}
 	return nil

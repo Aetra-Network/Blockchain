@@ -64,7 +64,24 @@ type Keeper struct {
 	// pointer receiver and go through snapshotGenesis/assignGenesis below —
 	// a value-receiver copy of Keeper itself would read the genesis field
 	// unsynchronized as part of the copy, defeating the lock.
-	mu                      *sync.RWMutex
+	mu *sync.RWMutex
+	// txMu is a SEPARATE lock from mu, serializing the entire logical
+	// read-mutate-write critical section of every top-level mutating
+	// entrypoint (design doc avm-call-mechanism-v5-design.md §8) -- mu
+	// alone only ever guarded the final k.genesis field-swap
+	// (assignGenesis), leaving every method's OWN preceding bare reads of
+	// k.genesis unsynchronized against a concurrent reader. txMu closes
+	// that gap by covering the whole method body, acquired once at entry
+	// (defer txMu.Unlock()) by every listed top-level entrypoint (see the
+	// enumeration and the deadlock-avoidance analysis in this file's
+	// per-method comments); mu/snapshotGenesis/assignGenesis continue to
+	// guard the raw field swap itself exactly as before, unchanged and
+	// still needed for query-side correctness independent of txMu.
+	// Deliberately NOT reentrant (plain *sync.Mutex, not RWMutex): the
+	// nested nested-commit helpers (persistContractAt/chargeContractRentAt)
+	// must NEVER acquire it, since they only ever run from inside an
+	// already-txMu-locked top-level call -- see their own doc comments.
+	txMu                    *sync.Mutex
 	accountStatusReader     AccountStatusReader
 	bankKeeper              BankKeeper
 	runtimeCtx              context.Context
@@ -124,11 +141,11 @@ type StorageRentRateProvider interface {
 }
 
 func NewKeeper() Keeper {
-	return Keeper{genesis: types.DefaultGenesis(), mu: &sync.RWMutex{}}
+	return Keeper{genesis: types.DefaultGenesis(), mu: &sync.RWMutex{}, txMu: &sync.Mutex{}}
 }
 
 func NewPersistentKeeper(storeService corestore.KVStoreService) Keeper {
-	return Keeper{genesis: types.DefaultGenesis(), storeService: storeService, mu: &sync.RWMutex{}}
+	return Keeper{genesis: types.DefaultGenesis(), storeService: storeService, mu: &sync.RWMutex{}, txMu: &sync.Mutex{}}
 }
 
 func NewKeeperWithAccountStatus(reader AccountStatusReader) Keeper {
@@ -157,6 +174,8 @@ func DefaultGenesis() types.GenesisState {
 }
 
 func (k *Keeper) InitGenesis(gs types.GenesisState) error {
+	k.txMu.Lock() // design doc §8.3: serializes this whole read-mutate-write critical section.
+	defer k.txMu.Unlock()
 	gs = types.RefreshStateRoot(gs)
 	if err := gs.Validate(); err != nil {
 		return err
@@ -173,7 +192,9 @@ func (k *Keeper) InitGenesisState(ctx context.Context, gs types.GenesisState) er
 	// Not writeGenesis: importing a genesis over a populated store must also
 	// DELETE the records genesis does not mention, which needs the committed
 	// baseline rather than this keeper's (empty) idea of what it has written.
-	return k.writeReplacingState(ctx, types.RefreshStateRoot(k.genesis))
+	// writeReplacingState reads k.genesis itself, under its own txMu lock,
+	// rather than taking it as a pre-computed argument here.
+	return k.writeReplacingState(ctx)
 }
 
 func (k Keeper) ExportGenesis() types.GenesisState {
@@ -266,6 +287,11 @@ func (k *Keeper) StoreCode(msg types.MsgStoreCode) (types.StoreCodeResponse, err
 }
 
 func (k *Keeper) storeCodeUnchecked(msg types.MsgStoreCode) (types.StoreCodeResponse, error) {
+	// design doc §8.3: shared by StoreCode and StoreCodeState (both thin
+	// wrappers, neither locks itself), so locking here alone already
+	// covers the whole critical section for both entry shapes.
+	k.txMu.Lock()
+	defer k.txMu.Unlock()
 	if len(msg.Bytecode) > 0 {
 		if err := types.ValidateAVMBytecode(k.genesis.Params, msg.Bytecode); err != nil {
 			return types.StoreCodeResponse{}, err
@@ -359,6 +385,14 @@ func (k *Keeper) DeployContractState(ctx context.Context, msg types.MsgDeployCon
 	return res, k.writeGenesis(ctx)
 }
 
+// deployContract does a bare, unsynchronized read of k.genesis.Params
+// (ValidateBasic below) before delegating to the txMu-locked
+// instantiateContract. This is a KNOWN, DOCUMENTED, ACCEPTED gap (design
+// doc §8.3's "wrapper adapter" finding): closing it fully requires pulling
+// this method's own locking up a level and turning instantiateContract into
+// a non-relocking internal variant when called from here, which is a larger
+// restructuring deferred past this pass (no live concurrent writer exists
+// today to actually race this read -- see §8.1/§8.5).
 func (k *Keeper) deployContract(ctx context.Context, msg types.MsgDeployContract) (types.InstantiateContractResponse, error) {
 	if err := msg.ValidateBasic(k.genesis.Params); err != nil {
 		return types.InstantiateContractResponse{}, err
@@ -392,6 +426,10 @@ func (k *Keeper) ExecuteExternalState(ctx context.Context, msg types.MsgExecuteE
 	return res, k.writeGenesis(ctx)
 }
 
+// executeExternal has the same known, documented, accepted wrapper-adapter
+// locking gap as deployContract above: its own bare reads (ValidateBasic,
+// findContract) before delegating to the txMu-locked instantiateContract/
+// executeContract sit outside those methods' locks.
 func (k *Keeper) executeExternal(ctx context.Context, msg types.MsgExecuteExternal) (types.ExecuteContractResponse, error) {
 	if err := msg.ValidateBasic(k.genesis.Params); err != nil {
 		return types.ExecuteContractResponse{}, err
@@ -426,6 +464,10 @@ func (k *Keeper) executeExternal(ctx context.Context, msg types.MsgExecuteExtern
 	})
 }
 
+// ExecuteInternal has the same known, documented, accepted wrapper-adapter
+// locking gap as deployContract above: its own ValidateBasic bare read
+// before delegating to the txMu-locked ReceiveInternalMessage sits outside
+// that method's lock.
 func (k *Keeper) ExecuteInternal(msg types.MsgExecuteInternal) (types.InternalMessage, error) {
 	if err := msg.ValidateBasic(k.genesis.Params); err != nil {
 		return types.InternalMessage{}, err
@@ -449,6 +491,8 @@ func (k *Keeper) ExecuteInternal(msg types.MsgExecuteInternal) (types.InternalMe
 	})
 }
 
+// SendInternalMessage has the same known, documented, accepted wrapper-
+// adapter locking gap as deployContract above.
 func (k *Keeper) SendInternalMessage(msg types.MsgSendInternalMessage) (types.InternalMessage, error) {
 	if err := msg.ValidateBasic(k.genesis.Params); err != nil {
 		return types.InternalMessage{}, err
@@ -473,6 +517,8 @@ func (k *Keeper) SendInternalMessage(msg types.MsgSendInternalMessage) (types.In
 }
 
 func (k *Keeper) UpdateContractParams(msg types.MsgUpdateContractParams) error {
+	k.txMu.Lock() // design doc §8.3
+	defer k.txMu.Unlock()
 	if err := msg.ValidateBasic(); err != nil {
 		return err
 	}
@@ -487,6 +533,8 @@ func (k *Keeper) UpdateContractParams(msg types.MsgUpdateContractParams) error {
 }
 
 func (k *Keeper) SubmitSecurityAttestation(msg types.MsgSubmitSecurityAttestation) (types.MsgSubmitSecurityAttestationResponse, error) {
+	k.txMu.Lock() // design doc §8.3
+	defer k.txMu.Unlock()
 	if err := msg.ValidateBasic(k.genesis.Params); err != nil {
 		return types.MsgSubmitSecurityAttestationResponse{}, err
 	}
@@ -508,6 +556,8 @@ func (k *Keeper) SubmitSecurityAttestation(msg types.MsgSubmitSecurityAttestatio
 }
 
 func (k *Keeper) RevokeSecurityAttestation(msg types.MsgRevokeSecurityAttestation) (types.MsgRevokeSecurityAttestationResponse, error) {
+	k.txMu.Lock() // design doc §8.3
+	defer k.txMu.Unlock()
 	if err := msg.ValidateBasic(k.genesis.Params); err != nil {
 		return types.MsgRevokeSecurityAttestationResponse{}, err
 	}
@@ -918,6 +968,20 @@ func (k *Keeper) buildInstantiateContract(ctx context.Context, msg types.MsgInst
 }
 
 func (k *Keeper) instantiateContract(ctx context.Context, msg types.MsgInstantiateContract) (types.InstantiateContractResponse, error) {
+	// design doc §8.3: shared by DeployContract/DeployContractState (via
+	// deployContract), ExecuteExternal/ExecuteExternalState (via
+	// executeExternal's auto-deploy path), and InstantiateContract/
+	// InstantiateContractState -- none of which lock themselves, so
+	// locking here alone covers the critical section for every entry
+	// shape. Known, accepted, documented gap: deployContract's and
+	// executeExternal's OWN bare pre-call reads of k.genesis (their
+	// ValidateBasic/findContract checks before reaching this method) sit
+	// outside this lock -- closing that fully needs those wrappers'
+	// locking pulled up a level with THIS method's own lock turned into a
+	// non-relocking internal variant, deferred per the design doc's §8.3
+	// correction as a larger, riskier restructuring than this pass's scope.
+	k.txMu.Lock()
+	defer k.txMu.Unlock()
 	next := k.genesis
 	next.State.Contracts = append([]types.Contract(nil), k.genesis.State.Contracts...)
 	_, resp, initialStorageFee, err := k.buildInstantiateContract(ctx, msg, &next)
@@ -944,6 +1008,8 @@ func (k *Keeper) InstantiateContractState(ctx context.Context, msg types.MsgInst
 }
 
 func (k *Keeper) UpgradeContractCode(msg types.MsgUpgradeContractCode) (types.ContractReceipt, error) {
+	k.txMu.Lock() // design doc §8.3
+	defer k.txMu.Unlock()
 	if err := msg.ValidateBasic(k.genesis.Params); err != nil {
 		return types.ContractReceipt{}, err
 	}
@@ -1020,6 +1086,8 @@ func (k *Keeper) UpgradeContractCode(msg types.MsgUpgradeContractCode) (types.Co
 }
 
 func (k *Keeper) MigrateContractState(msg types.MsgMigrateContractState) (types.ContractReceipt, error) {
+	k.txMu.Lock() // design doc §8.3
+	defer k.txMu.Unlock()
 	if err := msg.ValidateBasic(k.genesis.Params); err != nil {
 		return types.ContractReceipt{}, err
 	}
@@ -1082,6 +1150,8 @@ func (k *Keeper) MigrateContractState(msg types.MsgMigrateContractState) (types.
 }
 
 func (k *Keeper) SetContractAdmin(msg types.MsgSetContractAdmin) (types.ContractReceipt, error) {
+	k.txMu.Lock() // design doc §8.3
+	defer k.txMu.Unlock()
 	if err := msg.ValidateBasic(k.genesis.Params); err != nil {
 		return types.ContractReceipt{}, err
 	}
@@ -1114,6 +1184,8 @@ func (k *Keeper) SetContractAdmin(msg types.MsgSetContractAdmin) (types.Contract
 }
 
 func (k *Keeper) DisableContractUpgrades(msg types.MsgDisableContractUpgrades) (types.ContractReceipt, error) {
+	k.txMu.Lock() // design doc §8.3
+	defer k.txMu.Unlock()
 	if err := msg.ValidateBasic(k.genesis.Params); err != nil {
 		return types.ContractReceipt{}, err
 	}
@@ -1192,6 +1264,8 @@ func (k *Keeper) DisableContractUpgrades(msg types.MsgDisableContractUpgrades) (
 // SystemOwned/governance-only access to it) -- flagged here rather than done
 // silently, since it would be a real behavior change for existing callers.
 func (k *Keeper) ScheduleContractUpgrade(msg types.MsgScheduleContractUpgrade) (types.MsgScheduleContractUpgradeResponse, error) {
+	k.txMu.Lock() // design doc §8.3
+	defer k.txMu.Unlock()
 	if err := msg.ValidateBasic(k.genesis.Params); err != nil {
 		return types.MsgScheduleContractUpgradeResponse{}, err
 	}
@@ -1255,6 +1329,8 @@ func (k *Keeper) ScheduleContractUpgrade(msg types.MsgScheduleContractUpgrade) (
 // that happens during the delay window is honored rather than the schedule
 // blindly applying anyway.
 func (k *Keeper) ApplyScheduledContractUpgrade(msg types.MsgApplyScheduledUpgrade) (types.ContractReceipt, error) {
+	k.txMu.Lock() // design doc §8.3
+	defer k.txMu.Unlock()
 	if err := msg.ValidateBasic(k.genesis.Params); err != nil {
 		return types.ContractReceipt{}, err
 	}
@@ -1657,6 +1733,13 @@ func (k *Keeper) ExecuteContract(msg types.MsgExecuteContract) (types.ExecuteCon
 }
 
 func (k *Keeper) executeContract(ctx context.Context, msg types.MsgExecuteContract) (types.ExecuteContractResponse, error) {
+	// design doc §8.3: shared by ExecuteContract/ExecuteContractState and
+	// executeExternal's tail call -- neither locks itself. persistContractAt
+	// (via chargeContractRentAt, reached from inside this method's own
+	// body) deliberately does NOT re-acquire txMu -- see its own doc
+	// comment; sync.Mutex is not reentrant.
+	k.txMu.Lock()
+	defer k.txMu.Unlock()
 	if !k.genesis.Params.Enabled {
 		return types.ExecuteContractResponse{}, errors.New(types.ErrExecutionFailed + ": module disabled")
 	}
@@ -1886,6 +1969,8 @@ func (k *Keeper) ExecuteContractState(ctx context.Context, msg types.MsgExecuteC
 }
 
 func (k *Keeper) TopUpContract(msg types.MsgTopUpContract) (types.Contract, error) {
+	k.txMu.Lock() // design doc §8.3
+	defer k.txMu.Unlock()
 	if !k.genesis.Params.Enabled { // SA2 #8: honor the AVM kill-switch
 		return types.Contract{}, errors.New(types.ErrExecutionFailed + ": module disabled")
 	}
@@ -1940,6 +2025,8 @@ func (k *Keeper) TopUpContractState(ctx context.Context, msg types.MsgTopUpContr
 }
 
 func (k *Keeper) PayContractStorageDebt(msg types.MsgPayContractStorageDebt) (types.Contract, error) {
+	k.txMu.Lock() // design doc §8.3
+	defer k.txMu.Unlock()
 	if !k.genesis.Params.Enabled { // SA2 #8: honor the AVM kill-switch
 		return types.Contract{}, errors.New(types.ErrExecutionFailed + ": module disabled")
 	}
@@ -2003,6 +2090,10 @@ func (k *Keeper) UnfreezeContractState(ctx context.Context, msg types.MsgUnfreez
 }
 
 func (k *Keeper) unfreezeContract(ctx context.Context, msg types.MsgUnfreezeContract) (types.Contract, error) {
+	// design doc §8.3: shared by UnfreezeContract/UnfreezeContractState,
+	// neither of which locks itself.
+	k.txMu.Lock()
+	defer k.txMu.Unlock()
 	if !k.genesis.Params.Enabled { // SA2 #8: honor the AVM kill-switch
 		return types.Contract{}, errors.New(types.ErrExecutionFailed + ": module disabled")
 	}
@@ -2041,6 +2132,8 @@ func (k *Keeper) unfreezeContract(ctx context.Context, msg types.MsgUnfreezeCont
 }
 
 func (k *Keeper) GrantNativeStakingCapability(msg types.MsgGrantNativeStakingCapability) (types.ContractCapability, error) {
+	k.txMu.Lock() // design doc §8.3
+	defer k.txMu.Unlock()
 	if err := k.genesis.Params.Authorize(msg.Authority); err != nil {
 		return types.ContractCapability{}, err
 	}
@@ -2071,6 +2164,11 @@ func (k *Keeper) GrantNativeStakingCapability(msg types.MsgGrantNativeStakingCap
 }
 
 func (k *Keeper) InjectNativeStaking(msg types.MsgInjectNativeStaking) (types.NativeStakingInjectionRecord, error) {
+	// design doc §8.3. persistContractAt (via chargeContractRentAt, reached
+	// from inside this method's own body) deliberately does NOT re-acquire
+	// txMu -- sync.Mutex is not reentrant.
+	k.txMu.Lock()
+	defer k.txMu.Unlock()
 	if msg.Amount == 0 || msg.Height == 0 {
 		return types.NativeStakingInjectionRecord{}, errors.New("native staking injection amount and height must be positive")
 	}
@@ -2117,6 +2215,16 @@ func (k *Keeper) InjectNativeStaking(msg types.MsgInjectNativeStaking) (types.Na
 }
 
 func (k *Keeper) ReceiveInternalMessage(msg types.MsgReceiveInternalMessage) (types.InternalMessage, error) {
+	// design doc §8.3: shared by ExecuteInternal/SendInternalMessage (both
+	// thin wrappers, neither locks itself -- their own bare
+	// ValidateBasic(k.genesis.Params) reads before reaching here are a
+	// known, documented, accepted gap, same shape as deployContract's,
+	// deferred per §8.3's correction) and deliverQueuedInternalMessage
+	// (called from EndBlocker's own loop, also unlocked). persistContractAt
+	// (via chargeContractRentAt, reached from inside this method's own
+	// body) deliberately does NOT re-acquire txMu.
+	k.txMu.Lock()
+	defer k.txMu.Unlock()
 	// Honor the module kill switch on the internal-message path too. StoreCode,
 	// instantiate and external-execute already gate on Params.Enabled; without
 	// this guard the publicly-routable ExecuteInternal/SendInternalMessage
@@ -2610,6 +2718,12 @@ func (k *Keeper) EndBlocker(ctx sdk.Context) error {
 // dropQueuedInternalMessage removes a single queued message by ID without
 // delivering it (used for SEND_IGNORE_ERRORS messages whose delivery failed).
 func (k *Keeper) dropQueuedInternalMessage(messageID string) bool {
+	// design doc §8.3: called from EndBlocker's own loop (which does not
+	// hold txMu across the loop, and completes each earlier loadForBlock/
+	// deliverQueuedInternalMessage lock cycle before this one starts, so
+	// this is sequential, not nested).
+	k.txMu.Lock()
+	defer k.txMu.Unlock()
 	if messageID == "" {
 		return false
 	}
@@ -2779,6 +2893,8 @@ func (k Keeper) AssetOwner(req types.QueryAssetOwnerRequest) (types.QueryAssetOw
 }
 
 func (k *Keeper) SetAssetOwner(record types.AssetOwnershipRecord) error {
+	k.txMu.Lock() // design doc §8.3
+	defer k.txMu.Unlock()
 	if err := record.Validate(); err != nil {
 		return err
 	}
@@ -2844,6 +2960,11 @@ func normalizeAccountIdentity(userAddress string) (string, error) {
 	return aetraaddress.FormatUserFriendly(identity)
 }
 
+// chargeContractRentAt is an internal, nested-only helper: it is called from
+// inside executeContract/InjectNativeStaking/ReceiveInternalMessage's own
+// (already txMu-locked) bodies. It must NEVER acquire txMu itself --
+// sync.Mutex is not reentrant, and doing so would deadlock every one of
+// those callers (design doc §8.2/§8.3's confirmed deadlock hazard).
 func (k *Keeper) chargeContractRentAt(ctx context.Context, idx int, contract types.Contract, height uint64) (types.Contract, uint64, error) {
 	prevBalance := contract.Balance
 	contract, changed, err := k.chargeRent(contract, height)
@@ -2870,6 +2991,10 @@ func (k Keeper) storageRentFrozenStatus(contract types.Contract) string {
 	return types.ContractStatusFrozen
 }
 
+// persistContractAt is an internal, nested-only helper, called from inside
+// chargeContractRentAt's own already-txMu-locked body. It must NEVER
+// acquire txMu itself, for the same reason chargeContractRentAt's doc
+// comment states.
 func (k *Keeper) persistContractAt(idx int, contract types.Contract) error {
 	if idx < 0 || idx >= len(k.genesis.State.Contracts) {
 		return errors.New(types.ErrContractNotFound + ": contract index out of bounds")
@@ -3126,6 +3251,20 @@ func hasAnyNativeStakingCapability(caps []types.ContractCapability, contract str
 // handlers within a block stay consistent. See SEC-HIGH: contracts keeper drives
 // state off in-memory genesis never restored on restart/state-sync.
 func (k *Keeper) loadForBlock(ctx context.Context) error {
+	// design doc §8.3 (corrected): an earlier draft of this fix excluded
+	// loadForBlock on the mistaken assumption it only ever runs already
+	// nested inside a txMu-locked call. Verified false: every msg-server RPC
+	// handler (grpc_server.go) and EndBlocker call this FIRST, SEPARATELY,
+	// before calling any mutating ...State method -- so it is the single
+	// most frequently executed read-mutate-write critical section in the
+	// module (it does unsynchronized bare writes to k.runtimeCtx, k.written,
+	// k.writtenResidual below, none previously behind any lock at all), and
+	// giving it its own independent lock/unlock cycle here is what actually
+	// closes that gap. Safe: callers invoke it sequentially (call it, let it
+	// return, THEN separately call the mutating method), never nested, so
+	// this introduces no additional nesting or deadlock risk.
+	k.txMu.Lock()
+	defer k.txMu.Unlock()
 	k.runtimeCtx = ctx
 	if k.storeService == nil {
 		return nil
@@ -3150,7 +3289,23 @@ func (k *Keeper) loadForBlock(ctx context.Context) error {
 	return nil
 }
 
+// writeGenesis persists the keeper's current in-memory genesis to the store.
+// Every one of its ~9 call sites invokes it AFTER a txMu-locked mutating
+// method has already returned (and unlocked) -- e.g.
+// TopUpContractState calls TopUpContract (txMu-locked internally) and then
+// writeGenesis, never while still holding the lock. This method's own bare
+// read of k.genesis, and writeDiff's bare reads/writes of k.written/
+// k.writtenResidual below, were therefore UNPROTECTED by txMu even after
+// design doc §8.3's fix: two goroutines both calling ...State methods
+// concurrently could genuinely race here (confirmed empirically -- see
+// TestConcurrentStateWrapperPersistDoesNotRace, which reproduces "WARNING:
+// DATA RACE" in writeDiff at persistence.go before this lock was added).
+// Acquiring txMu here closes that gap. Safe: since every caller reaches this
+// method only after its own preceding txMu-locked call has already
+// unlocked (never nested), this cannot deadlock.
 func (k *Keeper) writeGenesis(ctx context.Context) error {
+	k.txMu.Lock()
+	defer k.txMu.Unlock()
 	if k.storeService == nil {
 		return nil
 	}
