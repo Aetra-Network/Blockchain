@@ -212,7 +212,7 @@ func (p *parser) parseAnnotationList() ([]Annotation, error) {
 			}
 		}
 		switch ann.Name {
-		case "@internal", "@external", "@bounced", "@get", "@pure", "@impure", "@storage", "@message", "@store":
+		case "@internal", "@external", "@bounced", "@get", "@pure", "@impure", "@storage", "@message", "@store", "@resource":
 		default:
 			return nil, fmt.Errorf("unknown annotation %q at %s", ann.Name, pos)
 		}
@@ -743,6 +743,10 @@ func validateAnnotationCompatibility(annotations []Annotation, target string, po
 					return fmt.Errorf("annotation %q requires an opcode at %s", annotation.Name, pos)
 				}
 				hasMessage = true
+			case "@resource":
+				if annotation.Value != nil {
+					return fmt.Errorf("annotation %q does not take an argument at %s", annotation.Name, pos)
+				}
 			default:
 				return fmt.Errorf("annotation %q is not valid on struct at %s", annotation.Name, pos)
 			}
