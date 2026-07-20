@@ -53,6 +53,14 @@ const (
 	tokenPipe
 	tokenLBracket
 	tokenRBracket
+	// tokenColonColon is '::', the generic-instantiation turbofish marker
+	// (AVM generics v1 design, revised §1.1). Introduced alongside this
+	// design: no two-colon sequence was ever a valid token before (`:` had
+	// no multi-character lookahead, unlike every other multi-char operator
+	// below), so every ATLX source that contained "::" was already an
+	// unconditional parse error — repurposing it here changes no existing
+	// program's meaning.
+	tokenColonColon
 )
 
 type token struct {
@@ -103,6 +111,10 @@ func (l *lexer) nextToken() (token, error) {
 		l.advance(size)
 		return token{kind: tokenComma, text: ",", pos: start}, nil
 	case ':':
+		if strings.HasPrefix(l.src[l.offset:], "::") {
+			l.advance(2)
+			return token{kind: tokenColonColon, text: "::", pos: start}, nil
+		}
 		l.advance(size)
 		return token{kind: tokenColon, text: ":", pos: start}, nil
 	case ';':

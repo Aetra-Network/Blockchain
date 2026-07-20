@@ -56,7 +56,7 @@ contract ResourceDemo {
 func TestResourceAbilityValidSingleUseCompilesAndExecutes(t *testing.T) {
 	src, err := ParseSource(resourceValidSource)
 	require.NoError(t, err)
-	require.NoError(t, CheckResourceAbilities(src), "a resource used exactly once must be accepted")
+	require.NoError(t, CheckResourceAbilities(src, nil), "a resource used exactly once must be accepted")
 
 	c, err := New(DefaultOptions())
 	require.NoError(t, err)
@@ -123,7 +123,7 @@ func TestResourceAbilityRejectsDoubleUse(t *testing.T) {
 	src, err := ParseSource(resourceDoubleUseSource)
 	require.NoError(t, err)
 
-	err = CheckResourceAbilities(src)
+	err = CheckResourceAbilities(src, nil)
 	require.Error(t, err)
 	var abilityErr *ResourceAbilityError
 	require.ErrorAs(t, err, &abilityErr)
@@ -162,7 +162,7 @@ func TestResourceAbilityRejectsUnused(t *testing.T) {
 	src, err := ParseSource(resourceUnusedSource)
 	require.NoError(t, err)
 
-	err = CheckResourceAbilities(src)
+	err = CheckResourceAbilities(src, nil)
 	require.Error(t, err)
 	var abilityErr *ResourceAbilityError
 	require.ErrorAs(t, err, &abilityErr)
@@ -204,7 +204,7 @@ func TestResourceAbilityRejectsDoubleUseOnParameter(t *testing.T) {
 	src, err := ParseSource(resourceParamDoubleUseSource)
 	require.NoError(t, err)
 
-	err = CheckResourceAbilities(src)
+	err = CheckResourceAbilities(src, nil)
 	require.Error(t, err)
 	var abilityErr *ResourceAbilityError
 	require.ErrorAs(t, err, &abilityErr)

@@ -70,6 +70,18 @@ type Compiler struct {
 	diags        []Diagnostic
 	labelSeq     uint64
 	globalConsts map[string]constValue
+	// genericInstantiationCount is the module-wide, shared counter behind
+	// claimGenericInstantiationBudget (generics.go, AVM generics v1 design
+	// §1.6): every distinct (name, closed-type-argument-tuple) pair --
+	// function or struct -- draws from this SAME counter, regardless of
+	// whether it is discovered during the typecheck phase (inferExprType)
+	// or lazily during field-access resolution (structDeclFor). A single
+	// *Compiler flows by reference through the whole of CompileFiles (typecheck,
+	// buildArtifacts, buildModule/buildIR all run as methods on the same
+	// receiver, and buildIR threads it into every loweringEnv via
+	// env.compiler), so a plain field here -- not a pointer -- is already
+	// shared correctly everywhere it's needed.
+	genericInstantiationCount uint32
 }
 
 type Result struct {
@@ -706,7 +718,15 @@ func (c *Compiler) typecheck(file *SourceFile, contract *ContractDecl, functions
 	if err := validateFunctionRecursion(allFunctions); err != nil {
 		return err
 	}
-	if err := CheckResourceAbilities(file); err != nil {
+	// functions is threaded through here (AVM generics v1 design §1.3) so
+	// CheckResourceAbilities can track a resource-typed CALL RESULT, not
+	// just a struct-literal/local-copy RHS -- and, for a generic call site,
+	// resolve through to its already-instantiated concrete clone (every
+	// instantiation any call site anywhere in the module could need was
+	// already discovered and registered above, as a side effect of the
+	// validateFunction/validateMessage/validateGetter loops' own
+	// inferExprType walk, strictly before this final check runs).
+	if err := CheckResourceAbilities(file, functions); err != nil {
 		return err
 	}
 	return nil
@@ -716,7 +736,19 @@ func (c *Compiler) validateFunction(fn *FunctionDecl, inContract bool, structs m
 	if fn == nil {
 		return fail("E_FUNCTION", Position{}, "nil function")
 	}
-	if handlerAnn, ok := functionHandlerAnnotation(fn.Annotations); ok {
+	handlerAnn, isHandler := functionHandlerAnnotation(fn.Annotations)
+	if isHandler {
+		// E_GENERIC_HANDLER must run BEFORE the inContract/name/signature
+		// checks below, unconditionally: it is the SOLE protection against a
+		// generic handler (AVM generics v1 design §1.4 -- there is no
+		// second, redundant type-level barrier; MessageDecl/GetterDecl are
+		// never constructed by this parser, so contract.Messages/Getters
+		// are always empty and every annotated declaration, generic or
+		// not, reaches validateFunction as an ordinary *FunctionDecl
+		// through this one path).
+		if len(fn.TypeParams) > 0 {
+			return fail("E_GENERIC_HANDLER", fn.Pos, fmt.Sprintf("%s handlers cannot be generic: an externally/internally dispatched entrypoint must have one concrete signature", handlerAnn))
+		}
 		if !inContract {
 			return fail("E_HANDLER_SCOPE", fn.Pos, fmt.Sprintf("%s handlers are only allowed inside contract blocks", handlerAnn))
 		}
@@ -733,6 +765,20 @@ func (c *Compiler) validateFunction(fn *FunctionDecl, inContract bool, structs m
 	} else if reservedAnn, ok := reservedHandlerAnnotation(fn.Name); ok {
 		return fail("E_HANDLER_NAME", fn.Pos, fmt.Sprintf("`%s` is a reserved message handler name and can only be used with `%s`.", fn.Name, reservedAnn))
 	}
+	// A @get getter has the identical structural problem as a handler --
+	// exactly one selector, dispatched from OUTSIDE the module, with no
+	// compile-time type argument available at the external call site -- so
+	// it gets the same unconditional rejection. functionHandlerAnnotation
+	// itself does not recognize @get as a "handler" (it is dispatched
+	// through EntryQuery, not EntryReceive*), so this is a deliberate,
+	// narrow extension beyond the design doc's own literal E_GENERIC_HANDLER
+	// text: buildIR's @get-lowering loop (compile.go) lowers a contract
+	// function's body directly as a dispatched entrypoint the moment it
+	// sees the @get annotation, with no analogous per-call-site
+	// instantiation point a getter could ever route through.
+	if len(fn.TypeParams) > 0 && hasAnnotation(fn.Annotations, "@get") {
+		return fail("E_GENERIC_HANDLER", fn.Pos, fmt.Sprintf("@get getter %q cannot be generic: an externally dispatched selector must have one concrete signature", fn.Name))
+	}
 	if hasPureAnnotation(fn.Annotations) && !fn.Pure {
 		return fail("E_PURE_DECL", fn.Pos, fmt.Sprintf("function %q is annotated @pure but has side effects", fn.Name))
 	}
@@ -747,6 +793,51 @@ func (c *Compiler) validateFunction(fn *FunctionDecl, inContract bool, structs m
 	if err := validateParamNames(fn.Params, "function "+fn.Name, fn.Pos); err != nil {
 		return err
 	}
+	if len(fn.TypeParams) > 0 {
+		// AVM generics v1 design §3.2/§4.6: a generic function is only ever
+		// reachable as a real, plain (single-segment-name) intra-contract
+		// call target -- tryRealUserFunctionCall's own len(expr.Path)!=1
+		// rejection is the enforcement mechanism for plain functions
+		// generally, and a receiver-style (dotted) name would never be
+		// resolvable through that path regardless of generics. Reject it
+		// here, at the declaration, with a clear message instead of a
+		// confusing downstream "receiver-style calls are not supported" the
+		// first time anyone tries to call it.
+		if strings.Contains(fn.Name, ".") {
+			return fail("E_GENERIC_RECEIVER", fn.Pos, fmt.Sprintf("generic function %q cannot use a receiver-style (dotted) name: generic functions are callable only as plain, single-segment intra-contract call targets", fn.Name))
+		}
+		if err := validateTypeParamShadowing(fn.TypeParams, structs, enums, types, fn.Pos); err != nil {
+			return err
+		}
+		if fn.ReturnType.Name == "" {
+			return fail("E_GENERIC_RETURN_TYPE_REQUIRED", fn.Pos, fmt.Sprintf("generic function %q must declare an explicit return type", fn.Name))
+		}
+		// Every type-dependent check (return-type well-formedness, and the
+		// whole body's statement-by-statement validateStatement/
+		// inferExprType walk) is deferred to instantiation (design doc
+		// §3.0/§3.3): a type parameter such as `T` is not a real type until
+		// a concrete call site substitutes one in, so validating it now
+		// would reject every legal generic declaration. See
+		// instantiateGenericFunction (generics.go), which re-runs
+		// validateFunctionBody -- the EXACT SAME walk this function's own
+		// non-generic path runs below -- against every substituted,
+		// concrete clone before it can ever be lowered or called.
+		return nil
+	}
+	return c.validateFunctionBody(fn, structs, enums, types, functions, consts)
+}
+
+// validateFunctionBody runs the body-validation walk every non-generic
+// function declaration always ran inline before this file gained generics
+// support: validate the (already concrete) return type, build the
+// parameter/storage-less environment, then validateStatement over every
+// top-level statement. Extracted into its own method so
+// instantiateGenericFunction (generics.go) can run the IDENTICAL walk
+// against a generic function's substituted, concrete clone (design doc
+// §3.3) instead of maintaining a second, drifting copy of this logic.
+// validateFunction's own non-generic tail is now just a thin wrapper around
+// this -- behavior for every existing, non-generic program is unchanged.
+func (c *Compiler) validateFunctionBody(fn *FunctionDecl, structs map[string]*StructDecl, enums map[string]*EnumDecl, types map[string]*TypeDecl, functions map[string]*FunctionDecl, consts map[string]constValue) error {
 	if fn.ReturnType.Name != "" {
 		if err := c.validateType(fn.ReturnType, structs, enums, types); err != nil {
 			return err
@@ -876,8 +967,62 @@ func (c *Compiler) validateStruct(st *StructDecl, structs map[string]*StructDecl
 		if field.Lazy && !allowLazy {
 			return fail("E_LAZY_FIELD", field.Pos, fmt.Sprintf("lazy field %q is only allowed in storage structs", field.Name))
 		}
+	}
+	if len(st.TypeParams) > 0 {
+		// A generic struct's own field types name its TYPE PARAMETERS (e.g.
+		// `first: A`), which are not real types until an instantiation
+		// substitutes them in -- the identical "type-dependent checks wait
+		// for substitution" reasoning validateFunction applies to a generic
+		// function's body (AVM generics v1 design §1.2/§3.0). Field-type/
+		// default-value validation is therefore skipped entirely here and
+		// deferred to structDeclFor's (generics.go) per-instantiation field
+		// substitution.
+		//
+		// A generic struct can never legitimately be a contract's storage
+		// type or a @message payload (design doc §2's scope decision): a
+		// contract's single storage type / a message's wire layout must
+		// have ONE concrete field layout, not a family of them selected by
+		// a type argument nothing in the storage/message read path ever
+		// supplies. StorageTypeName resolution (typecheck, exact bare-name
+		// lookup against the file-level structs map) could never actually
+		// MATCH a mangled instantiation name in practice, so this could
+		// never silently "work" by accident -- reject explicitly, with a
+		// clear message, rather than letting it fail later as a confusing
+		// "storage type not found".
+		if allowLazy {
+			return fail("E_GENERIC_STORAGE", st.Pos, fmt.Sprintf("generic struct %q cannot be used as a contract's storage type", st.Name))
+		}
+		if structHasAnnotation(st, "@message") {
+			return fail("E_GENERIC_MESSAGE", st.Pos, fmt.Sprintf("generic struct %q cannot be @message-annotated: a message body must have one concrete wire layout", st.Name))
+		}
+		return validateTypeParamShadowing(st.TypeParams, structs, enums, types, st.Pos)
+	}
+	// restrictGenericFields bars a generic struct reference (even a
+	// correctly-instantiable one, e.g. `Pair<uint64,address>`) from
+	// appearing as a field's type inside a @storage or @message struct
+	// (design doc §2: "structs genericizable in value position only,
+	// never @storage/@message/@event field position"). A storage/message
+	// struct's field layout is read by buildArtifacts/codec.go to build a
+	// single, fixed wire codec (StorageLayout/Codec, compile.go) -- there
+	// is no per-instantiation variant of that codec, so a generic field
+	// type here would be silently frozen to whichever instantiation
+	// happened to be resolved first, which is not what "genericizable in
+	// value position only" is supposed to mean.
+	restrictGenericFields := allowLazy || structHasAnnotation(st, "@message")
+	for _, field := range st.Fields {
 		if err := c.validateType(field.Type, structs, enums, types); err != nil {
 			return err
+		}
+		if restrictGenericFields {
+			if fieldStruct, ok := structs[field.Type.Name]; ok && len(fieldStruct.TypeParams) > 0 {
+				kind := "message"
+				if allowLazy {
+					kind = "storage"
+				}
+				return fail("E_GENERIC_STORAGE_FIELD", field.Pos, fmt.Sprintf(
+					"field %q of %s %q cannot use generic struct %q: %s fields must have a single concrete wire layout",
+					field.Name, kind, st.Name, field.Type.Name, kind))
+			}
 		}
 		if field.Default.Kind != "" {
 			typ, err := c.inferExprType(field.Default, nil, st, structs, enums, types, nil, consts, false)
@@ -1047,7 +1192,20 @@ func inferMissingReturnTypes(funcs []*FunctionDecl, storage *StructDecl, structs
 	for changed {
 		changed = false
 		for _, fn := range funcs {
-			if fn == nil || fn.ReturnType.Name != "" {
+			// A generic function's return type must be given EXPLICITLY
+			// (AVM generics v1 design §1.1/§1.2's E_GENERIC_RETURN_TYPE_REQUIRED
+			// check, validateFunction) rather than inferred here: this pass
+			// walks `return` expressions using the DECLARATION's own
+			// (unsubstituted) parameter env, where a bare type-parameter-typed
+			// value's inferred type is just its type-parameter name (e.g.
+			// "T") -- syntactically valid but semantically meaningless
+			// before a call site substitutes a concrete type in, and a
+			// return expression that requires REAL type information (e.g.
+			// a numeric comparison) would fail HERE with a confusing
+			// low-level error instead of validateFunction's clean, dedicated
+			// one. Skipping a TypeParams-bearing declaration here is what
+			// lets that dedicated check actually be the one that fires.
+			if fn == nil || fn.ReturnType.Name != "" || len(fn.TypeParams) > 0 {
 				continue
 			}
 			inferred, ok, err := (&Compiler{}).inferFunctionReturnType(fn, storage, structs, enums, types, functions, consts)
@@ -1249,11 +1407,28 @@ func (c *Compiler) validateType(typ TypeRef, structs map[string]*StructDecl, enu
 			if desc.Arity != len(typ.Args) {
 				return fail("E_TYPE_ARITY", typ.Pos, fmt.Sprintf("type %q requires %d type arguments", typ.Name, desc.Arity))
 			}
-		} else if _, ok := structs[typ.Name]; !ok {
-			if _, ok := enums[typ.Name]; !ok {
-				if _, ok := types[typ.Name]; !ok {
-					return fail("E_UNKNOWN_TYPE", typ.Pos, fmt.Sprintf("unknown type %q", typ.Name))
-				}
+		} else if st, ok := structs[typ.Name]; ok {
+			// A generic struct reference (AVM generics v1 design §1.1/§3.5)
+			// must supply exactly as many type arguments as the declaration
+			// has type parameters -- checked here, the one place every
+			// TypeRef, however constructed, is confirmed well-formed,
+			// mirroring the stdlib-parametric-type arity check just above.
+			// A non-generic struct (TypeParams empty, the overwhelming
+			// majority) must conversely supply NONE, so a made-up type
+			// argument on an ordinary struct (`CounterState<uint64>`) is
+			// rejected here too, not silently accepted. This check does
+			// NOT itself instantiate the generic struct (no field-type
+			// substitution, no mangled registration, no budget charge) --
+			// that is structDeclFor's (generics.go) job, triggered lazily
+			// only where a value of this type is actually field-accessed,
+			// so a generic type reference that is merely well-formed but
+			// never used never costs anything beyond this arity check.
+			if len(st.TypeParams) != len(typ.Args) {
+				return fail("E_TYPE_ARITY", typ.Pos, fmt.Sprintf("type %q requires %d type argument(s), got %d", typ.Name, len(st.TypeParams), len(typ.Args)))
+			}
+		} else if _, ok := enums[typ.Name]; !ok {
+			if _, ok := types[typ.Name]; !ok {
+				return fail("E_UNKNOWN_TYPE", typ.Pos, fmt.Sprintf("unknown type %q", typ.Name))
 			}
 		}
 	}
@@ -1647,7 +1822,16 @@ func (c *Compiler) validateStatement(stmt Statement, env map[string]TypeRef, mut
 		if stmt.Path[0] == "state" {
 			targetStruct = storage
 		} else if rootType, ok := env[stmt.Path[0]]; ok {
-			targetStruct = structs[rootType.Name]
+			// structDeclFor (generics.go) resolves rootType's struct
+			// declaration, instantiating a generic struct's concrete,
+			// field-substituted layout on demand if rootType carries type
+			// arguments (AVM generics v1 design §1.1/§3.5) -- a zero-cost,
+			// zero-behavior-change passthrough for every non-generic type.
+			resolved, err := c.structDeclFor(rootType, structs, stmt.Pos)
+			if err != nil {
+				return err
+			}
+			targetStruct = resolved
 		}
 		if targetStruct == nil {
 			// Resolve the write target through the binding environment: a
@@ -1659,8 +1843,12 @@ func (c *Compiler) validateStatement(stmt Statement, env map[string]TypeRef, mut
 			// the two cases are indistinguishable at this point; the lenient
 			// fall-through preserves valid storage methods.
 			if rootType, ok := env[stmt.Path[0]]; ok {
-				resolved := resolveSingleMemberTypeRef(rootType, types)
-				if st, isStruct := structs[resolved.Name]; isStruct {
+				resolvedType := resolveSingleMemberTypeRef(rootType, types)
+				st, err := c.structDeclFor(resolvedType, structs, stmt.Pos)
+				if err != nil {
+					return err
+				}
+				if st != nil {
 					targetStruct = st
 				} else {
 					return fail("E_SET_TARGET", stmt.Pos, fmt.Sprintf("cannot assign to %q: %s is not an indexable struct", joinPath(stmt.Path), rootType.String()))
@@ -2341,7 +2529,18 @@ func (c *Compiler) inferExprType(expr Expr, env map[string]TypeRef, storage *Str
 			if isMapFamilyType(expr.Text) && len(expr.Fields) > 0 {
 				return TypeRef{}, fail("E_STRUCT", expr.Pos, "map literals do not support inline fields; use set() to populate a map")
 			}
-			return TypeRef{Name: expr.Text}, nil
+			if err := validateGenericStructLiteralArity(expr, structs, expr.Pos); err != nil {
+				return TypeRef{}, err
+			}
+			// Args carries the literal's own ::<...> type arguments (AVM
+			// generics v1 design §1.1/§3.5) so a generic struct literal's
+			// inferred type is distinguishable per-instantiation
+			// (Pair<uint64,address> vs Pair<uint64,uint64>) exactly like any
+			// other TypeRef with type arguments. Resolution into the
+			// concrete, field-substituted StructDecl this denotes happens
+			// lazily, only where a value of this type is actually
+			// field-accessed (structDeclFor) -- not here.
+			return TypeRef{Name: expr.Text, Args: append([]TypeRef(nil), expr.TypeArgs...)}, nil
 		}
 		if len(expr.Path) > 0 {
 			return TypeRef{Name: joinPath(expr.Path)}, nil
@@ -2370,14 +2569,24 @@ func (c *Compiler) inferExprType(expr Expr, env map[string]TypeRef, storage *Str
 			return TypeRef{}, fail("E_UNARY_OP", expr.Pos, fmt.Sprintf("unary %q is not supported", expr.Op))
 		}
 	case ExprCall:
-		if fn, ok := functions[joinPath(expr.Path)]; ok {
-			if inPure && !fn.Pure {
-				return TypeRef{}, fail("E_PURE_CALL", expr.Pos, fmt.Sprintf("pure functions cannot call impure function %q", fn.Name))
+		// resolveCallFunction (generics.go) resolves an ordinary call
+		// unchanged, and transparently performs generic monomorphization
+		// (AVM generics v1 design §1.1) for a call carrying explicit
+		// ::<...> type arguments -- instantiating (or reusing an
+		// already-cached instantiation of) the concrete, substituted
+		// FunctionDecl the call actually targets, so validateCallArgs/the
+		// returned type below see real, concrete parameter/return types
+		// exactly like any ordinary function call.
+		if resolvedFn, err := c.resolveCallFunction(expr, functions, structs, enums, types, consts, expr.Pos); err != nil {
+			return TypeRef{}, err
+		} else if resolvedFn != nil {
+			if inPure && !resolvedFn.Pure {
+				return TypeRef{}, fail("E_PURE_CALL", expr.Pos, fmt.Sprintf("pure functions cannot call impure function %q", resolvedFn.Name))
 			}
-			if err := c.validateCallArgs(expr, fn, env, storage, structs, enums, types, functions, consts, inPure); err != nil {
+			if err := c.validateCallArgs(expr, resolvedFn, env, storage, structs, enums, types, functions, consts, inPure); err != nil {
 				return TypeRef{}, err
 			}
-			return fn.ReturnType, nil
+			return resolvedFn.ReturnType, nil
 		}
 		if ret, ok, err := c.inferBuiltinMethodCallType(expr, env, storage, structs, enums, types, functions, consts, inPure); err != nil {
 			return TypeRef{}, err
@@ -3124,7 +3333,16 @@ func (c *Compiler) resolvePathType(path []string, env map[string]TypeRef, storag
 				continue
 			}
 		}
-		if st, ok := structs[current.Name]; ok {
+		// structDeclFor (generics.go) resolves current's struct declaration,
+		// instantiating a generic struct's concrete, field-substituted
+		// layout on demand if current carries type arguments (AVM generics
+		// v1 design §1.1/§3.5) -- a zero-cost, zero-behavior-change
+		// passthrough to structs[current.Name] for every non-generic type,
+		// so this is the only change needed here to make `.field` access
+		// resolve correctly through a generic-struct-typed value.
+		if st, err := c.structDeclFor(current, structs, pos); err != nil {
+			return TypeRef{}, err
+		} else if st != nil {
 			fieldType, ok := lookupStructField(st, path[i])
 			if !ok {
 				return TypeRef{}, fail("E_PATH_FIELD", pos, fmt.Sprintf("field %q not found in %s", path[i], current.Name))
@@ -4270,8 +4488,14 @@ func (c *Compiler) lowerStatementsToIR(stmts []Statement, params []ParamDecl, re
 				// (IRExprStruct -> OpMapEmpty/OpMapSet), and OpReadField already
 				// knows how to read a named field out of that map at runtime —
 				// the only missing piece was tagging the local's lowering-time
-				// type so `b.bps` isn't rejected by isFieldLikeType("").
-				env.types[stmt.Name] = TypeRef{Name: stmt.Value.Text, Pos: stmt.Value.Pos}
+				// type so `b.bps` isn't rejected by isFieldLikeType(""). Args
+				// carries the literal's own ::<...> type arguments (AVM
+				// generics v1 design §1.1/§3.5), so a generic struct literal's
+				// tracked type (e.g. Pair<uint64,address>) later resolves
+				// correctly through structDeclFor at the point `b.field` is
+				// actually accessed -- nil (the common, non-generic case)
+				// reproduces the exact TypeRef this line always produced.
+				env.types[stmt.Name] = TypeRef{Name: stmt.Value.Text, Args: append([]TypeRef(nil), stmt.Value.TypeArgs...), Pos: stmt.Value.Pos}
 			} else if stmt.Value.Kind == ExprIdent {
 				// Copying an existing struct-typed local/param (`var c = b`)
 				// must carry the source's field-like type forward too, so a
@@ -4359,7 +4583,16 @@ func (c *Compiler) lowerStatementsToIR(stmts []Statement, params []ParamDecl, re
 				if !isFieldLikeType(binding.Type.Name) {
 					return nil, fail("E_LOWER_SET", stmt.Pos, "local field assignment requires a struct-like binding")
 				}
-				targetStruct := structs[binding.Type.Name]
+				// structDeclFor (generics.go) resolves binding.Type's struct
+				// declaration, instantiating a generic struct's concrete,
+				// field-substituted layout on demand if binding.Type carries
+				// type arguments (AVM generics v1 design §1.1/§3.5) -- a
+				// zero-cost, zero-behavior-change passthrough for every
+				// non-generic type.
+				targetStruct, err := c.structDeclFor(binding.Type, structs, stmt.Pos)
+				if err != nil {
+					return nil, err
+				}
 				if targetStruct == nil {
 					return nil, fail("E_LOWER_SET", stmt.Pos, fmt.Sprintf("local binding %q has unknown struct type %s", stmt.Path[0], binding.Type.Name))
 				}
@@ -7481,6 +7714,26 @@ func evalConstValue(expr Expr, env loweringEnv, functions map[string]*FunctionDe
 			}
 			return evalConstValue(expr.Args[0], env, functions, seen)
 		}
+		if len(expr.TypeArgs) > 0 {
+			// A generic call site (f::<uint128>(...)) must never be folded
+			// here: functions[expr.Text] below is a bare-name lookup that
+			// ignores expr.TypeArgs entirely, so it would resolve to the
+			// ORIGINAL, still-generic declaration (whose params/body are
+			// typed after the type parameter, not the concrete instantiated
+			// type) instead of routing through resolveUserFunction's
+			// mangled-name lookup the way tryInlineUserFunctionCall and
+			// tryRealUserFunctionCall do. Folding through the generic
+			// declaration would also evaluate the arithmetic in unchecked
+			// native Go uint64 (no notion of the instantiation's declared
+			// width at all), silently wrapping on overflow instead of
+			// trapping the way runtimeAdd/enforceIntWidth (avm.go) does for
+			// every other call shape -- see
+			// TestGenericCallLiteralArgumentsOverflowTraps. Bailing out here
+			// sends the call through the real lowering path below, which
+			// resolves the concrete instantiation and emits actual
+			// width-checked opcodes instead of a pre-computed constant.
+			return constValue{}, false
+		}
 		fn, ok := functions[expr.Text]
 		if !ok || fn == nil {
 			return constValue{}, false
@@ -7603,14 +7856,27 @@ func callDisplayName(expr Expr) string {
 
 // resolveUserFunction finds the declared function a call refers to, both for
 // plain calls (walletAddressFor(...)) and receiver-style calls
-// (TokenWalletStorage.zeroFor(...)).
+// (TokenWalletStorage.zeroFor(...)) -- resolving through to a generic call's
+// (AVM generics v1 design §1.1) already-instantiated, concrete clone when
+// expr carries explicit ::<...> type arguments. Every generic call site's
+// instantiation is discovered and registered under its mangled name during
+// the typecheck phase (resolveCallFunction, generics.go, invoked from
+// inferExprType's ExprCall case), strictly before any IR lowering begins --
+// so the mangled lookup below is expected to always hit in a module that
+// has already typechecked successfully. A miss returns nil (a clean
+// "unknown call" error at the lowering call site) rather than silently
+// falling back to the GENERIC, unsubstituted declaration, which would be a
+// worse failure mode (wrong lowering, not a caught error).
 func resolveUserFunction(expr Expr, functions map[string]*FunctionDecl) *FunctionDecl {
-	if len(expr.Path) >= 2 {
-		if fn, ok := functions[strings.Join(expr.Path, ".")]; ok {
-			return fn
-		}
+	declared := resolveDeclaredFunction(expr, functions)
+	if declared == nil {
+		return nil
 	}
-	if fn, ok := functions[expr.Text]; ok {
+	if len(expr.TypeArgs) == 0 {
+		return declared
+	}
+	mangled := mangleGenericName(declared.Name, expr.TypeArgs)
+	if fn, ok := functions[mangled]; ok {
 		return fn
 	}
 	return nil

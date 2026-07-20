@@ -112,7 +112,15 @@ func (e *ResourceAbilityError) Error() string {
 // the runtime treats a @resource struct exactly like any other struct
 // (OpMapEmpty/OpMapSet/OpReadField) -- @resource changes zero bytes of
 // emitted bytecode, only what the static checker permits at compile time.
-func CheckResourceAbilities(src *SourceFile) error {
+//
+// functions is the whole-module, dotted-and-bare-name callable table
+// (typecheck()'s own `functions` parameter, unconditionally covering every
+// declared function -- including, by the time this runs at the END of
+// typecheck, every generic function's already-instantiated, concrete clones
+// registered under their mangled names, see generics.go) -- threaded
+// through so a resource-typed CALL RESULT (see resolveCallReturnTypeName
+// below) can be tracked, not just a struct-literal or local-copy RHS.
+func CheckResourceAbilities(src *SourceFile, functions map[string]*FunctionDecl) error {
 	if src == nil {
 		return nil
 	}
@@ -124,7 +132,7 @@ func CheckResourceAbilities(src *SourceFile) error {
 		if fn == nil {
 			continue
 		}
-		if err := checkResourceBody(fn.Params, fn.Body, resourceNames); err != nil {
+		if err := checkResourceBody(fn.Params, fn.Body, resourceNames, functions); err != nil {
 			return err
 		}
 	}
@@ -136,7 +144,7 @@ func CheckResourceAbilities(src *SourceFile) error {
 			if fn == nil {
 				continue
 			}
-			if err := checkResourceBody(fn.Params, fn.Body, resourceNames); err != nil {
+			if err := checkResourceBody(fn.Params, fn.Body, resourceNames, functions); err != nil {
 				return err
 			}
 		}
@@ -144,7 +152,7 @@ func CheckResourceAbilities(src *SourceFile) error {
 			if msg == nil {
 				continue
 			}
-			if err := checkResourceBody(msg.Params, msg.Body, resourceNames); err != nil {
+			if err := checkResourceBody(msg.Params, msg.Body, resourceNames, functions); err != nil {
 				return err
 			}
 		}
@@ -152,7 +160,7 @@ func CheckResourceAbilities(src *SourceFile) error {
 			if get == nil {
 				continue
 			}
-			if err := checkResourceBody(get.Params, get.Body, resourceNames); err != nil {
+			if err := checkResourceBody(get.Params, get.Body, resourceNames, functions); err != nil {
 				return err
 			}
 		}
@@ -162,6 +170,28 @@ func CheckResourceAbilities(src *SourceFile) error {
 
 // resourceStructNames returns the set of struct names annotated @resource.
 func resourceStructNames(structs []*StructDecl) map[string]bool {
+	names := map[string]bool{}
+	for _, st := range structs {
+		if st == nil {
+			continue
+		}
+		for _, ann := range st.Annotations {
+			if ann.Name == "@resource" {
+				names[st.Name] = true
+			}
+		}
+	}
+	return names
+}
+
+// resourceStructNamesFromMap is resourceStructNames' map-keyed twin, used by
+// instantiateGenericFunction (generics.go) to re-run the resource check
+// against a generic function's substituted, concrete clone (design doc
+// §3.3): the module-wide struct table is threaded through the compile as a
+// map[string]*StructDecl there, not the []*StructDecl a parsed SourceFile
+// exposes, so this avoids either duplicating the annotation-scan logic or
+// forcing an unnecessary map->slice->map round trip at every instantiation.
+func resourceStructNamesFromMap(structs map[string]*StructDecl) map[string]bool {
 	names := map[string]bool{}
 	for _, st := range structs {
 		if st == nil {
@@ -187,7 +217,7 @@ type resourceBinding struct {
 // checkResourceBody enforces exactly-once use for every @resource-typed
 // parameter and local binding within a single function-shaped body. See the
 // CheckResourceAbilities doc comment for the full scope statement.
-func checkResourceBody(params []ParamDecl, body []Statement, resourceNames map[string]bool) error {
+func checkResourceBody(params []ParamDecl, body []Statement, resourceNames map[string]bool, functions map[string]*FunctionDecl) error {
 	// localTypes tracks the inferred struct type name of every binding seen
 	// so far (parameters up front, locals as their StatementBinding is
 	// walked in document order -- an approximation of execution order that
@@ -202,7 +232,7 @@ func checkResourceBody(params []ParamDecl, body []Statement, resourceNames map[s
 		}
 	}
 
-	collectResourceLocalBindings(body, resourceNames, localTypes, &bindings)
+	collectResourceLocalBindings(body, resourceNames, localTypes, &bindings, functions)
 
 	if len(bindings) == 0 {
 		return nil
@@ -236,39 +266,74 @@ func checkResourceBody(params []ParamDecl, body []Statement, resourceNames map[s
 // nested if/else/match-arm/while/for/do bodies -- flat, not scope-aware, per
 // this pass's documented branch-insensitive design) collecting every
 // StatementBinding whose RHS resolves to a @resource struct type.
-func collectResourceLocalBindings(stmts []Statement, resourceNames map[string]bool, localTypes map[string]string, out *[]resourceBinding) {
+func collectResourceLocalBindings(stmts []Statement, resourceNames map[string]bool, localTypes map[string]string, out *[]resourceBinding, functions map[string]*FunctionDecl) {
 	for _, s := range stmts {
 		if s.Kind == StatementBinding {
-			if typ := bindingTypeName(s.Value, localTypes); typ != "" && resourceNames[typ] {
+			if typ := bindingTypeName(s.Value, localTypes, functions); typ != "" && resourceNames[typ] {
 				localTypes[s.Name] = typ
 				*out = append(*out, resourceBinding{name: s.Name, typ: typ, pos: s.Pos})
 			}
 		}
-		collectResourceLocalBindings(s.Then, resourceNames, localTypes, out)
-		collectResourceLocalBindings(s.Else, resourceNames, localTypes, out)
+		collectResourceLocalBindings(s.Then, resourceNames, localTypes, out, functions)
+		collectResourceLocalBindings(s.Else, resourceNames, localTypes, out, functions)
 		for _, arm := range s.Arms {
-			collectResourceLocalBindings(arm.Body, resourceNames, localTypes, out)
+			collectResourceLocalBindings(arm.Body, resourceNames, localTypes, out, functions)
 		}
 	}
 }
 
 // bindingTypeName infers a local binding's static struct type name from its
-// RHS expression, for the two shapes the existing (compile.go) lowering
-// already recognizes: a struct literal (ExprStruct, whose Text carries the
-// declared type name directly) or a copy of an already-known local/param
-// (bare ExprIdent looked up in localTypes). Anything else resolves to ""
-// (unknown/non-struct/non-resource), which this pass treats as "not a
-// resource" -- conservative in the safe direction: it only ever flags
-// bindings it can positively prove are @resource-typed.
-func bindingTypeName(value Expr, localTypes map[string]string) string {
+// RHS expression, for the three shapes recognized: a struct literal
+// (ExprStruct, whose Text carries the declared type name directly), a copy
+// of an already-known local/param (bare ExprIdent looked up in localTypes),
+// or a call to a declared function (ExprCall -- see resolveCallReturnTypeName;
+// this closes a gap that existed independently of generics: a
+// resource-returning real function call, e.g. `const t = mintToken(...)`,
+// was never tracked by this pass at all before this case was added).
+// Anything else resolves to "" (unknown/non-struct/non-resource), which
+// this pass treats as "not a resource" -- conservative in the safe
+// direction: it only ever flags bindings it can positively prove are
+// @resource-typed.
+func bindingTypeName(value Expr, localTypes map[string]string, functions map[string]*FunctionDecl) string {
 	switch value.Kind {
 	case ExprStruct:
 		return value.Text
 	case ExprIdent:
 		return localTypes[value.Text]
+	case ExprCall:
+		return resolveCallReturnTypeName(value, functions)
 	default:
 		return ""
 	}
+}
+
+// resolveCallReturnTypeName resolves a call expression's static return-type
+// name for @resource tracking. Delegates to resolveUserFunction (compile.go),
+// which is itself generics-aware (AVM generics v1 design, revised §1.3): for
+// a generic call site (`const t = dup::<Token>(x)`), resolveUserFunction
+// resolves through to the already-instantiated, concrete clone that
+// typecheck's own inferExprType pass registered under its mangled name
+// earlier in the SAME typecheck() call (CheckResourceAbilities runs last,
+// deliberately, in typecheck's own sequencing) -- so by the time this runs,
+// every call site's instantiation, if any, already exists. A miss (unknown
+// callee, a call shape resolveUserFunction doesn't resolve at all such as a
+// receiver-style call, or -- structurally impossible after a successful
+// typecheck, but checked defensively -- a still-generic declaration slipping
+// through) resolves to "": not positively provable as a resource type. This
+// is the checker's existing, already-documented conservative-safe default
+// (limitation 3 above, "no containment-safety check") -- this does not chase
+// resource-ness through a generic container's OWN field types (e.g. whether
+// Pair<Token,Token> itself contains a resource), which was already out of
+// scope for a non-generic container and stays exactly as out of scope here.
+func resolveCallReturnTypeName(call Expr, functions map[string]*FunctionDecl) string {
+	if call.Kind != ExprCall || len(call.Path) != 1 {
+		return ""
+	}
+	fn := resolveUserFunction(call, functions)
+	if fn == nil || len(fn.TypeParams) > 0 {
+		return ""
+	}
+	return fn.ReturnType.Name
 }
 
 // collectIdentRefCounts recursively walks a statement list and every

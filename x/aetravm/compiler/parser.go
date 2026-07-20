@@ -132,6 +132,17 @@ func (p *parser) parseFunction(annotations []Annotation) (*FunctionDecl, error) 
 		return nil, err
 	}
 	name := joinPath(nameParts)
+	// Declaration-site generic parameter list, `func name<T, U>(...)` (AVM
+	// generics v1 design, revised §1.1). parseFunctionTail unconditionally
+	// expects '(' next, so a following '<' here can only ever mean "the
+	// generic parameter list starts here" -- no speculative lookahead
+	// needed, unlike the call-site turbofish (parsePrimary), which needs
+	// the '::' marker specifically because bare '<' IS ambiguous in
+	// expression position.
+	typeParams, err := p.parseTypeParamList()
+	if err != nil {
+		return nil, err
+	}
 	params, ret, body, err := p.parseFunctionTail()
 	if err != nil {
 		return nil, err
@@ -146,7 +157,53 @@ func (p *parser) parseFunction(annotations []Annotation) (*FunctionDecl, error) 
 	if ret != nil {
 		rt = *ret
 	}
-	return &FunctionDecl{Annotations: canonicalAnnotations(annotations), Pure: functionIsPure(annotations), Name: name, Params: params, ReturnType: rt, Body: body, Pos: pos}, nil
+	return &FunctionDecl{Annotations: canonicalAnnotations(annotations), Pure: functionIsPure(annotations), Name: name, Params: params, ReturnType: rt, Body: body, TypeParams: typeParams, Pos: pos}, nil
+}
+
+// parseTypeParamList parses an optional declaration-site generic parameter
+// list, `<T, U, ...>` (AVM generics v1 design, revised §1.1). Returns
+// (nil, nil) when the current token isn't '<' -- callers (parseFunction,
+// parseStruct) invoke this unconditionally right after the declaration's
+// name, exactly where the existing grammar already unconditionally expects
+// '(' (func) or '{' (struct) next, so a following '<' is unambiguous. Each
+// parameter is a bare identifier; AVM generics v1 carries no bounds/traits/
+// constraints (design doc §5, "explicitly deferred"), so no further grammar
+// hangs off each name. Reuses expectTypeClose to close the list, exactly
+// like parseTypeRef's own type-argument list, so a single trailing '>' and
+// a lexer-merged '>>' (e.g. immediately followed by a call's own '(') are
+// both handled identically -- though in practice a param list is always
+// followed by '(' or '{', never another '>', so the '>>'-split path is
+// dead here in the common case and kept only for symmetry/robustness.
+func (p *parser) parseTypeParamList() ([]string, error) {
+	if p.cur.kind != tokenLess {
+		return nil, nil
+	}
+	if err := p.read(); err != nil {
+		return nil, err
+	}
+	var params []string
+	seen := map[string]struct{}{}
+	for {
+		name, err := p.expectName()
+		if err != nil {
+			return nil, err
+		}
+		if _, dup := seen[name]; dup {
+			return nil, fmt.Errorf("duplicate type parameter %q at %s", name, p.cur.pos)
+		}
+		seen[name] = struct{}{}
+		params = append(params, name)
+		if p.cur.kind != tokenComma {
+			break
+		}
+		if err := p.read(); err != nil {
+			return nil, err
+		}
+	}
+	if err := p.expectTypeClose(); err != nil {
+		return nil, err
+	}
+	return params, nil
 }
 
 func (p *parser) parseConstDecl() (*ConstDecl, error) {
@@ -395,6 +452,13 @@ func (p *parser) parseStruct(annotations []Annotation) (*StructDecl, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Declaration-site generic parameter list, `struct Pair<A, B> {...}`
+	// (AVM generics v1 design, revised §1.1) -- see parseFunction's
+	// identical call for why this position is unambiguous.
+	typeParams, err := p.parseTypeParamList()
+	if err != nil {
+		return nil, err
+	}
 	if err := p.expect(tokenLBrace); err != nil {
 		return nil, err
 	}
@@ -447,7 +511,7 @@ func (p *parser) parseStruct(annotations []Annotation) (*StructDecl, error) {
 	if err := validateAnnotationCompatibility(annotations, "struct", pos); err != nil {
 		return nil, err
 	}
-	return &StructDecl{Annotations: canonicalAnnotations(annotations), Name: name, Fields: fields, Pos: pos}, nil
+	return &StructDecl{Annotations: canonicalAnnotations(annotations), Name: name, Fields: fields, TypeParams: typeParams, Pos: pos}, nil
 }
 
 func (p *parser) parseEnum() (*EnumDecl, error) {
@@ -1791,19 +1855,60 @@ func (p *parser) parsePrimary() (Expr, error) {
 		if err != nil {
 			return Expr{}, err
 		}
+		// Call-site generic instantiation, `f::<T, U>(...)` /
+		// `Pair::<A,B>{...}` (AVM generics v1 design, revised §1.1): a
+		// mandatory, explicit turbofish marker, not bare `f<T>(...)`. This
+		// closes the grammar-ambiguity hole a bare-'<' design would reopen
+		// (`max < uint64 > (x, y)`, the legal chained-comparison
+		// interpretation, is genuinely indistinguishable from a generic call
+		// by lookahead alone) by construction: '::' was never a valid token
+		// sequence before this design (lexer.go had no two-character
+		// lookahead on ':'), so there is no existing expression shape this
+		// collides with, and therefore no ambiguity to resolve -- only one
+		// interpretation was ever reachable through a tokenColonColon at
+		// all. Comparison parsing (parseComparison) is completely untouched
+		// and never even sees a tokenColonColon.
+		var typeArgs []TypeRef
+		if p.cur.kind == tokenColonColon {
+			if err := p.read(); err != nil {
+				return Expr{}, err
+			}
+			if err := p.expect(tokenLess); err != nil {
+				return Expr{}, err
+			}
+			for {
+				arg, err := p.parseTypeRef()
+				if err != nil {
+					return Expr{}, err
+				}
+				typeArgs = append(typeArgs, arg)
+				if p.cur.kind != tokenComma {
+					break
+				}
+				if err := p.read(); err != nil {
+					return Expr{}, err
+				}
+			}
+			if err := p.expectTypeClose(); err != nil {
+				return Expr{}, err
+			}
+		}
 		if p.cur.kind == tokenLParen {
 			args, err := p.parseExprList()
 			if err != nil {
 				return Expr{}, err
 			}
-			return finish(Expr{Kind: ExprCall, Text: path[0], Path: path, Args: args, Pos: pos})
+			return finish(Expr{Kind: ExprCall, Text: path[0], Path: path, Args: args, TypeArgs: typeArgs, Pos: pos})
 		}
 		if p.cur.kind == tokenLBrace && p.looksLikeStructLiteral() {
 			fields, err := p.parseExprStructFields()
 			if err != nil {
 				return Expr{}, err
 			}
-			return finish(Expr{Kind: ExprStruct, Text: joinPath(path), Path: path, Fields: fields, Pos: pos})
+			return finish(Expr{Kind: ExprStruct, Text: joinPath(path), Path: path, Fields: fields, TypeArgs: typeArgs, Pos: pos})
+		}
+		if typeArgs != nil {
+			return Expr{}, fmt.Errorf("expected '(' or a struct literal after '::<...>' at %s", p.cur.pos)
 		}
 		if len(path) == 1 {
 			return finish(Expr{Kind: ExprIdent, Text: path[0], Pos: pos})

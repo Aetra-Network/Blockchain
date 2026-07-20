@@ -1,0 +1,165 @@
+// generic_pair.atlx is the reference contract for AVM generics v1
+// (compile-time monomorphization for functions and value-typed structs).
+// It exercises, deliberately, every mechanism the design's own adversarial
+// self-check calls out:
+//
+//   - A generic value struct, Pair<A, B>, constructed via the mandatory
+//     turbofish call-site marker (`Pair::<A, B>{...}`) and later read back
+//     via ordinary `.field` access -- proving struct instantiation
+//     (structDeclFor, generics.go) resolves a generic struct's CONCRETE
+//     field types correctly on demand, not just its bare name.
+//
+//   - A generic function, maxOf<T>, whose body branches (`if`/`return`) --
+//     NOT representable by the inliner's single-expression AST splice
+//     (tryInlineUserFunctionCall), so every call to it is compiled through
+//     the REAL intra-contract CALL/RET mechanism
+//     (tryRealUserFunctionCall/compileCalledFunction), the exact path whose
+//     module-wide local-slot allocator (claimLocalSlot) generics.go's
+//     monomorphization pass reuses rather than inventing a parallel one.
+//
+//   - A generic function, makePair<A, B>, whose body IS a single return
+//     expression -- inlined by tryInlineUserFunctionCall instead, proving
+//     generics work correctly through BOTH existing call-lowering paths,
+//     not just the real-call one.
+//
+//   - A generic function, largestPair<T>, that calls BOTH of the above with
+//     its OWN type parameter forwarded to each nested call site
+//     (`maxOf::<T>`, `makePair::<T, T>`) -- exercising nested-call
+//     type-argument substitution (a generic function's substituted body
+//     must itself substitute every TypeArgs list it contains before a
+//     nested call is resolved).
+//
+//   - TWO DISTINCT instantiations of largestPair/maxOf (uint64 and
+//     uint128) compiled into the SAME module, each claiming its own,
+//     disjoint module-wide local-slot range -- the specific property most
+//     likely to be gotten wrong (a sibling generic-instantiation
+//     slot-overlap bug, structurally analogous to the real
+//     sibling-call-stack slot-overlap bug call_slot_allocator_test.go
+//     pins for the plain intra-contract call mechanism). If the two
+//     instantiations' compiled locals ever aliased, mixing the uint64 and
+//     uint128 results together, the getters below would return wrong
+//     numbers instead of the ones asserted in the accompanying test.
+//
+// Getters intentionally return only SCALAR values (never a generic-struct
+// type directly): a getter's return type is part of the external ABI
+// surface (SelectorRegistry/GetterCodecs), which generics v1 deliberately
+// never touches (design scope: "structs genericizable in value position
+// only, never @storage/@message/@event field position" -- a getter's own
+// return-type position is likewise kept out of scope here, even though
+// nothing in the language grammar strictly forbids it, specifically to
+// avoid buildArtifacts' codec-generation pass ever needing to resolve a
+// mangled instantiation name it was never taught to look for). Every
+// generic value in this file lives and dies inside ordinary function
+// bodies, exactly as the design intends for v1.
+struct Pair<A, B> {
+  first: A
+  second: B
+}
+
+func maxOf<T>(a: T, b: T) -> T {
+  if (a > b) {
+    return a
+  }
+  return b
+}
+
+func makePair<A, B>(a: A, b: B) -> Pair<A, B> {
+  return Pair::<A, B>{ first: a, second: b }
+}
+
+func largestPair<T>(a: T, b: T, c: T, d: T) -> Pair<T, T> {
+  const m1 = maxOf::<T>(a, b)
+  const m2 = maxOf::<T>(c, d)
+  return makePair::<T, T>(m1, m2)
+}
+
+struct GenericPairState {
+  touchCount: uint64 = 0
+}
+
+@message(0x9001)
+struct Touch {
+  nonce: uint64
+}
+
+type ExternalMsg = Touch
+
+contract GenericPairDemo {
+  author: "AVM generics v1 reference"
+  description: "Generic Pair<A,B> plus maxOf<T>/makePair<A,B>/largestPair<T>, proving monomorphized functions and value structs compile and execute correctly."
+
+  storage: GenericPairState
+  incomingExternal: ExternalMsg
+
+  @external
+  func onExternalMessage(inMsg: Segment) {
+    const msg = lazy ExternalMsg.fromSegment(inMsg)
+    match (msg) {
+      Touch => {
+        var st = lazy GenericPairState.load()
+        st.touchCount += 1
+        st.save()
+      }
+      else => {
+        assert (inMsg.isEmpty()) throw 0xFFFF
+      }
+    }
+  }
+
+  @bounced
+  func onBouncedMessage(in: InMessageBounced) {
+  }
+
+  // maxU64 exercises maxOf<T> instantiated with T=uint64 in isolation
+  // (no Pair involved): maxOf(5, 12) must pick the larger argument.
+  @get
+  func maxU64(): uint64 {
+    return maxOf::<uint64>(5, 12)
+  }
+
+  // largestFirstU64 / largestSecondU64 instantiate largestPair<T> (and,
+  // transitively, maxOf<T> and makePair<A,B>) with T=uint64:
+  //   m1 = maxOf(3, 9)   = 9
+  //   m2 = maxOf(7, 2)   = 7
+  //   largestPair(3,9,7,2) = Pair{ first: 9, second: 7 }
+  @get
+  func largestFirstU64(): uint64 {
+    const p = largestPair::<uint64>(3, 9, 7, 2)
+    return p.first
+  }
+
+  @get
+  func largestSecondU64(): uint64 {
+    const p = largestPair::<uint64>(3, 9, 7, 2)
+    return p.second
+  }
+
+  // largestFirstU128 / largestSecondU128 instantiate the SAME generic
+  // declarations again, but with T=uint128 -- a SECOND, DISTINCT set of
+  // compiled call targets (maxOf$uint128, makePair$uint128$uint128,
+  // largestPair$uint128), sharing the same module-wide local-slot counter
+  // as the uint64 instantiations above:
+  //   m1 = maxOf(100, 250) = 250
+  //   m2 = maxOf(999, 500) = 999
+  //   largestPair(100,250,999,500) = Pair{ first: 250, second: 999 }
+  // If the uint64 and uint128 instantiations' compiled locals ever
+  // overlapped, one pair's still-live intermediate values would corrupt
+  // the other's, and these two getters would not return 250/999.
+  @get
+  func largestFirstU128(): uint128 {
+    const p = largestPair::<uint128>(100, 250, 999, 500)
+    return p.first
+  }
+
+  @get
+  func largestSecondU128(): uint128 {
+    const p = largestPair::<uint128>(100, 250, 999, 500)
+    return p.second
+  }
+
+  @get
+  func touchCount(): uint64 {
+    const st = lazy GenericPairState.load()
+    return st.touchCount
+  }
+}
