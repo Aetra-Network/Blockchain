@@ -83,12 +83,18 @@ func (k Keeper) WithZoneResolver(zr NameZoneResolver) Keeper {
 // just because the zone layer happens to be absent, mirroring
 // x/native-account/keeper.Keeper.ZoneOf's same rule for account zones.
 func (k *Keeper) NameZone(ctx context.Context, name string) (NameZone, error) {
+	// Read through viewGenesis (not k.genesis directly) so this answers
+	// correctly on a freshly restarted/state-synced persistent keeper too --
+	// see viewGenesis's doc comment.
+	gs, err := k.viewGenesis(ctx)
+	if err != nil {
+		return NameZone{}, err
+	}
 	k.lockR()
-	rootNamespace := k.genesis.IdentityParams.RootNamespace
 	resolver := k.zoneResolver
 	k.unlockR()
 
-	normalized, err := types.NormalizeName(name, rootNamespace)
+	normalized, err := types.NormalizeName(name, gs.IdentityParams.RootNamespace)
 	if err != nil {
 		return NameZone{}, err
 	}

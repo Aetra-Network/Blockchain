@@ -1,0 +1,158 @@
+syntax = "proto3";
+package l1.aez.v1;
+
+option go_package = "github.com/sovereign-l1/l1/x/aez/types";
+
+// x/aez's Query service, describing the ACTUAL hand-rolled Go surface
+// implemented in x/aez/types/service.go.
+//
+// This tree has NO protoc/buf toolchain wired to these files: the Go response
+// types carry hand-written gogoproto descriptors (see service.go's
+// buildServiceFileDescriptor) that register message NAMES only -- gogoproto
+// marshals the real struct fields straight off their `protobuf:"..."` tags.
+// This .proto is documentation only -- keep it byte-for-byte accurate to those
+// tags (field numbers, names, repeated-ness) rather than to any aspirational
+// shape.
+//
+// Every method here is a pure read of committed state; the write surface is
+// the single Msg in tx.proto.
+//
+// NOTE on Params/PrototypeParams/GasQuotaParams/ZoneGasQuota/MessageQuotaParams
+// /ZoneMessageQuota below: unlike every top-level Query request/response
+// message in this file, the underlying Go structs for these nested types
+// (x/aez/types/params.go's Params, GasQuotaParams, ZoneGasQuota,
+// MessageQuotaParams, ZoneMessageQuota, and x/internal/prototype's Params)
+// carry NO individual `protobuf:"..."` field tags of their own -- only the
+// top-level QueryParamsResponse.params field is tagged (bytes,1,opt,
+// name=params,proto3). Field numbers for the nested messages below are
+// therefore documentation ordering (matching Go struct declaration order),
+// not independently wire-verified tags.
+
+message QueryParamsRequest {}
+
+message QueryParamsResponse {
+  Params params = 1;
+}
+
+// PrototypeParams mirrors x/internal/prototype.Params, embedded in Params as
+// "prototype". Params.Prototype.Enabled is FALSE at genesis, so a disabled
+// x/aez can never fail a block.
+message PrototypeParams {
+  bool enabled = 1;
+  bool testnet_profile = 2;
+  string production_version_gate = 3;
+  string authority = 4;
+  uint64 default_query_limit = 5;
+  uint64 max_query_limit = 6;
+}
+
+// ZoneGasQuota is one zone's slice of the global per-block gas budget (Phase
+// 6). Elastic zones (zone_id 1..3) carry a hard max_gas cap and reserved_gas
+// == 0; the Core Zone (zone_id 0) carries a guaranteed reserved_gas floor and
+// max_gas == 0 (uncapped).
+message ZoneGasQuota {
+  uint32 zone_id = 1;
+  uint64 max_gas = 2;
+  uint64 reserved_gas = 3;
+}
+
+// GasQuotaParams is the whole per-zone tx-admission gas budget, carried inside
+// Params as "gas_quota". Quotas holds exactly ZoneCount (4) entries in
+// ascending, dense zone_id order.
+message GasQuotaParams {
+  uint64 max_block_gas = 1;
+  repeated ZoneGasQuota quotas = 2;
+}
+
+// ZoneMessageQuota is one zone's slice of the cross-zone message-bus's
+// per-block drain budget (Phase 6b) -- same shape as ZoneGasQuota but for a
+// different resource (BeginBlock message-bus drain gas, not ante-time tx
+// admission gas).
+message ZoneMessageQuota {
+  uint32 zone_id = 1;
+  uint64 max_gas = 2;
+  uint64 reserved_gas = 3;
+}
+
+// MessageQuotaParams is the whole per-zone message-bus drain budget, carried
+// inside Params as "message_quota".
+message MessageQuotaParams {
+  uint64 total_message_gas_per_block = 1;
+  repeated ZoneMessageQuota quotas = 2;
+}
+
+// Params is the x/aez module's committed parameters.
+message Params {
+  PrototypeParams prototype = 1;
+  uint64 routing_epoch_length = 2;
+  GasQuotaParams gas_quota = 3;
+  MessageQuotaParams message_quota = 4;
+}
+
+message QueryRoutingTableRequest {
+  // version selects a specific routing table version. Zero means "the
+  // current table".
+  uint64 version = 1;
+}
+
+message QueryRoutingTableResponse {
+  uint64 version = 1;
+  uint64 epoch = 2;
+  int64 activation_height = 3;
+  // buckets is the full bucket->zone map, index-ordered.
+  repeated uint32 buckets = 4;
+  string table_hash = 5;
+}
+
+// QueryPendingRoutingTableRequest asks for the table scheduled to activate.
+message QueryPendingRoutingTableRequest {}
+
+// QueryPendingRoutingTableResponse reports the pending table, if any. found is
+// an explicit field rather than a NotFound error because "no table is
+// pending" is the NORMAL state of the chain.
+message QueryPendingRoutingTableResponse {
+  bool found = 1;
+  QueryRoutingTableResponse table = 2;
+  // blocks_until_activation is activation_height - current height.
+  int64 blocks_until_activation = 3;
+}
+
+message QueryZonesRequest {}
+
+message QueryZonesResponse {
+  repeated QueryZone zones = 1;
+}
+
+message QueryZone {
+  uint32 id = 1;
+  // kind is a ZoneKind string: "CORE" or "ELASTIC".
+  string kind = 2;
+}
+
+// QueryZoneOfRequest asks which zone an entity resolves to.
+message QueryZoneOfRequest {
+  // kind is an EntityKind: "address", "contract" or "name".
+  string kind = 1;
+  // entity is the address in either encoding ("AE..." or "ae1..."), or a
+  // normalized FQDN when kind is "name".
+  string entity = 2;
+}
+
+message QueryZoneOfResponse {
+  uint32 zone = 1;
+  string namespace = 2;
+  // pinned reports that the entity is Core-pinned and bypassed the table.
+  bool pinned = 3;
+  // hashed reports that the bucket hash was entered. False for pinned entities.
+  bool hashed = 4;
+  uint32 bucket = 5;
+  uint64 table_version = 6;
+}
+
+service Query {
+  rpc Params(QueryParamsRequest) returns (QueryParamsResponse);
+  rpc RoutingTable(QueryRoutingTableRequest) returns (QueryRoutingTableResponse);
+  rpc PendingRoutingTable(QueryPendingRoutingTableRequest) returns (QueryPendingRoutingTableResponse);
+  rpc Zones(QueryZonesRequest) returns (QueryZonesResponse);
+  rpc ZoneOf(QueryZoneOfRequest) returns (QueryZoneOfResponse);
+}

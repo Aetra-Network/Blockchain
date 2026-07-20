@@ -13,6 +13,9 @@ func RegisterLegacyAminoCodec(cdc *codec.LegacyAmino) {
 	cdc.RegisterConcrete(&MsgPlaceBid{}, "l1/identityroot/MsgPlaceBid", nil)
 	cdc.RegisterConcrete(&MsgStartAuction{}, "l1/identityroot/MsgStartAuction", nil)
 	cdc.RegisterConcrete(&MsgUpdatePriceTable{}, "l1/identityroot/MsgUpdatePriceTable", nil)
+	cdc.RegisterConcrete(&MsgListForSale{}, "l1/identityroot/MsgListForSale", nil)
+	cdc.RegisterConcrete(&MsgDelistName{}, "l1/identityroot/MsgDelistName", nil)
+	cdc.RegisterConcrete(&MsgBuyListedName{}, "l1/identityroot/MsgBuyListedName", nil)
 	cdc.RegisterConcrete(&MsgAttachDomain{}, "l1/identityroot/MsgAttachDomain", nil)
 	cdc.RegisterConcrete(&MsgDetachDomain{}, "l1/identityroot/MsgDetachDomain", nil)
 	cdc.RegisterConcrete(&MsgDisownAttachment{}, "l1/identityroot/MsgDisownAttachment", nil)
@@ -36,6 +39,9 @@ func RegisterInterfaces(registry codectypes.InterfaceRegistry) {
 		&MsgPlaceBid{},
 		&MsgStartAuction{},
 		&MsgUpdatePriceTable{},
+		&MsgListForSale{},
+		&MsgDelistName{},
+		&MsgBuyListedName{},
 		&MsgAttachDomain{},
 		&MsgDetachDomain{},
 		&MsgDisownAttachment{},
@@ -53,6 +59,9 @@ func RegisterInterfaces(registry codectypes.InterfaceRegistry) {
 		&MsgPlaceBidResponse{},
 		&MsgStartAuctionResponse{},
 		&MsgUpdatePriceTableResponse{},
+		&MsgListForSaleResponse{},
+		&MsgDelistNameResponse{},
+		&MsgBuyListedNameResponse{},
 		&MsgAttachDomainResponse{},
 		&MsgDetachDomainResponse{},
 		&MsgDisownAttachmentResponse{},

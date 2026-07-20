@@ -749,7 +749,7 @@ rounds, both addressed), and the load-test proof:
 | I-8 | `bucket → zone` changes only at a routing-epoch boundary | `x/aez/keeper/routing_table.go` (pending table + activation height) |
 | I-9 | The Core Zone never migrates | `x/aez/types/namespace.go` `CorePinned` — bypasses the table entirely; no table version can express a Core move |
 | I-10 | Money never leaves the Core Zone | Permanent module pinning (§4.7); `x/aez` holds no module account (`app/aetra_core_wiring.go:26-28`, `:43-45`) |
-| I-11 | No direct foreign-zone writes | Zone-prefixed keys (Phases 3, 5); `x/aez` keeper holds no other module's store handle; review gate |
+| I-11 | No direct foreign-zone writes | Zone-prefixed keys (Phases 3, 5); `x/aez` keeper holds no other module's store handle (Phase 6c exception below); review gate |
 | I-12 | Delivery no earlier than `H+1` | `x/aez/keeper/inbox.go` + re-check in `drain.go` (the check absent at `x/contracts/keeper/keeper.go:2216-2244`) |
 | I-13 | Exactly-once delivery | `message_id` + non-caller-settable `src_seq` + processed marker (`x/aez/keeper/inbox.go`), replacing dequeue-by-id (`x/contracts/keeper/keeper.go:2121-2142`) |
 | I-14 | Failure bounces or refunds; bounces never loop | `x/aez/keeper/drain.go`, `MaxBounceDepth` in `x/aez/types/quota.go` |
@@ -762,6 +762,40 @@ rounds, both addressed), and the load-test proof:
 | I-21 | All state is bounded | `x/aez/types/quota.go` queue depths (cf. `x/contracts/types/api.go:26` = 65536) |
 | I-22 | No wall clock, randomness, floats, or map-iteration order in zone code | `scripts/security/determinism-gate.ps1` (see `docs/security/determinism-gate.md`) |
 | I-23 | A disabled `x/aez` never fails a block | `prototype.DefaultParams()` → `Enabled: false`; every feed a silent no-op (the `x/load` rule, `docs/architecture/load-and-zones.md:65-66`) |
+
+### 7.1 I-11 exception: Phase 6c `LoadSignal`
+
+Phase 6c (`drainWeighted` fairness-partitioning the shared rollover pool by
+x/load's live congestion band) is the first time `x/aez`'s own `Keeper`
+struct holds a reference to another module at all — previously `x/aez` was
+purely a module *others* point at (`x/fees`/`x/identity-root` hold
+`ZoneResolver`s pointing at it; it held nothing pointing outward). This is a
+deliberate, reviewed exception to I-11's "holds no other module's store
+handle" clause, not a silent erosion of it:
+
+- `x/aez/keeper.LoadSignal` is a narrow, two-method structural interface
+  (`CurrentBand(ctx) (loadtypes.LoadBand, error)`), declared on the consumer
+  (`x/aez`) side and imported only as `x/load/types` (a leaf package,
+  stdlib-only) — never `x/load` or `x/load/keeper`. It is not a
+  `corestore.KVStoreService` and cannot read or write any key outside
+  x/load's own store; I-11's actual concern (custody / module-account
+  permissions, per I-10) is unaffected.
+- The interface's one method must hydrate fresh from x/load's own committed
+  store on every call (`x/load/keeper.Keeper.CurrentBand` deliberately does
+  NOT use `ExportGenesisState`'s in-memory-cache shortcut, specifically
+  because this is the first cross-module CONSUMER of that state — see the
+  doc comment on `CurrentBand`), so it carries none of I-20's caching risk
+  either.
+- The read is proven ephemeral and inert at LOW: `TestLoadSignalReadTouchesNoAEZStoreKeys`
+  and `TestDrainWeightedIdenticalStoreStateWhenLoadSignalIsUnwiredVsExplicitlyLow`
+  (`x/aez/keeper/bus_test.go`) are the regression guards for this specific
+  claim.
+
+Any future `With*()` interface field added to `x/aez.Keeper` following this
+same pattern (narrow, read-only, consumer-declared, no store handle) is
+consistent with this exception. A field that instead caches a VALUE across
+calls, or that grants write access into another module's store, is not — that
+remains squarely inside what I-11 forbids.
 
 ## 8. Test plan
 

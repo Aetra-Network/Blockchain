@@ -1,6 +1,7 @@
 package keeper
 
 import (
+	"context"
 	"encoding/hex"
 	"strings"
 	"testing"
@@ -64,7 +65,7 @@ func TestRegisterName(t *testing.T) {
 	require.Equal(t, types.DomainRentPayerOwner, record.RentPayerPolicy)
 	require.Equal(t, uint64(10), record.LastStorageChargeHeight)
 
-	_, found, err := k.NameRecord("ALICE.AET")
+	_, found, err := k.NameRecord(context.Background(), "ALICE.AET")
 	require.NoError(t, err)
 	require.True(t, found)
 }
@@ -91,7 +92,7 @@ func TestResolverUpdateAndResolve(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, resolverRoot("a"), resolver.ResolverRoot)
 
-	_, resolved, active, err := k.ResolveName("alice", 12)
+	_, resolved, active, err := k.ResolveName(context.Background(), "alice", 12)
 	require.NoError(t, err)
 	require.True(t, active)
 	require.Equal(t, resolverRoot("a"), resolved.ResolverRoot)
@@ -109,7 +110,7 @@ func TestReverseRecord(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "alice.aet", reverse.Name)
 
-	queried, found, err := k.ReverseRecord(ownerA)
+	queried, found, err := k.ReverseRecord(context.Background(), ownerA)
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Equal(t, reverse, queried)
@@ -121,7 +122,7 @@ func TestExpiryAndRenewal(t *testing.T) {
 	require.NoError(t, err)
 
 	// Past its expiry the name stops resolving.
-	_, _, active, err := k.ResolveName("alice", 110)
+	_, _, active, err := k.ResolveName(context.Background(), "alice", 110)
 	require.NoError(t, err)
 	require.False(t, active)
 
@@ -131,7 +132,7 @@ func TestExpiryAndRenewal(t *testing.T) {
 	renewed, err := k.RenewName(types.MsgRenewName{Owner: ownerA, Name: "alice", Height: 90})
 	require.NoError(t, err)
 	require.Equal(t, uint64(210), renewed.ExpiryHeight)
-	_, _, active, err = k.ResolveName("alice", 200)
+	_, _, active, err = k.ResolveName(context.Background(), "alice", 200)
 	require.NoError(t, err)
 	require.True(t, active)
 }
@@ -204,7 +205,7 @@ func TestGetOwnerReturnsCorrectOwnerAfterRegisterAndTransfer(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, ownerA, record.Owner)
 
-	queried, found, err := k.NameRecord("alice")
+	queried, found, err := k.NameRecord(context.Background(), "alice")
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Equal(t, ownerA, queried.Owner)
@@ -213,7 +214,7 @@ func TestGetOwnerReturnsCorrectOwnerAfterRegisterAndTransfer(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, ownerB, transferred.Owner)
 
-	queried, found, err = k.NameRecord("alice")
+	queried, found, err = k.NameRecord(context.Background(), "alice")
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Equal(t, ownerB, queried.Owner)
@@ -261,12 +262,12 @@ func TestDomainRegistryExportImportPreservesOwnerResolverAndRent(t *testing.T) {
 	target := NewKeeper()
 	require.NoError(t, target.InitGenesis(exported))
 	require.Equal(t, exported, target.ExportGenesis())
-	record, found, err := target.NameRecord("alice.aet")
+	record, found, err := target.NameRecord(context.Background(), "alice.aet")
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Equal(t, ownerA, record.Owner)
 	require.NotZero(t, record.StorageRentDebt)
-	_, resolver, active, err := target.ResolveName("alice", 13)
+	_, resolver, active, err := target.ResolveName(context.Background(), "alice", 13)
 	require.NoError(t, err)
 	require.True(t, active)
 	require.Equal(t, resolverRoot("b"), resolver.ResolverRoot)

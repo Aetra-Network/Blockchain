@@ -198,14 +198,14 @@ func TestRegisterFreeOpensAuctionTakenRejected(t *testing.T) {
 	require.Equal(t, "alice.aet", res.Name)
 	require.Equal(t, uint64(11), res.DeadlineHeight)
 	require.Equal(t, sdkmath.NewInt(5000), moduleBalance(bank), "opening bid is escrowed")
-	auction, found, err := k.auctionView("alice")
+	auction, found, err := k.auctionView(context.Background(), "alice")
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Equal(t, types.AuctionKindIssuance, auction.Kind)
 
 	// Close it so the name becomes taken & active.
 	runEndBlock(t, k, 11)
-	record, found, err := k.NameRecord("alice")
+	record, found, err := k.NameRecord(context.Background(), "alice")
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Equal(t, ownerA, record.Owner)
@@ -248,7 +248,7 @@ func TestPlaceBidEnforcesRaiseAndRefundsLosers(t *testing.T) {
 
 	// Close: ownerB wins; ownerA (loser) keeps their refund; proceeds retained.
 	runEndBlock(t, k, 11)
-	record, found, err := k.NameRecord("alice")
+	record, found, err := k.NameRecord(context.Background(), "alice")
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Equal(t, ownerB, record.Owner)
@@ -265,18 +265,18 @@ func TestAuctionCloseGrantsFreshTerm(t *testing.T) {
 
 	// Not yet due.
 	runEndBlock(t, k, 10)
-	_, found, err := k.NameRecord("alice")
+	_, found, err := k.NameRecord(context.Background(), "alice")
 	require.NoError(t, err)
 	require.False(t, found, "auction has not closed yet")
 
 	// Due at 11: winner gets a fresh RegistrationPeriod term from the close height.
 	runEndBlock(t, k, 11)
-	record, found, err := k.NameRecord("alice")
+	record, found, err := k.NameRecord(context.Background(), "alice")
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Equal(t, ownerA, record.Owner)
 	require.Equal(t, uint64(111), record.ExpiryHeight) // 11 + RegistrationPeriod(100)
-	_, closed, err := k.auctionView("alice")
+	_, closed, err := k.auctionView(context.Background(), "alice")
 	require.NoError(t, err)
 	require.False(t, closed, "auction is removed after close")
 }
@@ -311,7 +311,7 @@ func TestPurchaseResetsTermTransferDoesNot(t *testing.T) {
 	_, err := k.SendToNameCollection(types.MsgSendToNameCollection{Sender: ownerA, Opcode: types.OpcodeRegister, Comment: "alice", AmountNaet: 5000, Height: 1})
 	require.NoError(t, err)
 	runEndBlock(t, k, 11)
-	record, _, err := k.NameRecord("alice")
+	record, _, err := k.NameRecord(context.Background(), "alice")
 	require.NoError(t, err)
 	require.Equal(t, uint64(111), record.ExpiryHeight)
 
@@ -417,7 +417,7 @@ func TestStartAuctionOwnerListedPaysSeller(t *testing.T) {
 
 	// Close: buyer wins with a fresh term; seller is paid the proceeds.
 	runEndBlock(t, k, 82)
-	record, found, err := k.NameRecord("alice")
+	record, found, err := k.NameRecord(context.Background(), "alice")
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Equal(t, ownerB, record.Owner)

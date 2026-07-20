@@ -90,6 +90,18 @@ type QueryAuctionResponse struct {
 	Auction	QueryAuction	`protobuf:"bytes,2,opt,name=auction,proto3" json:"auction"`
 }
 
+// QueryListingRequest/Response is the ANS Phase B get-method for "is this name
+// currently listed for a fixed-price sale, and at what price" (see
+// x/identity-root/types/listing.go's Listing type and keeper/listing.go's
+// ListForSale/DelistName/BuyListedName).
+type QueryListingRequest struct {
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+}
+type QueryListingResponse struct {
+	Found	bool		`protobuf:"varint,1,opt,name=found,proto3" json:"found,omitempty"`
+	Listing	QueryListing	`protobuf:"bytes,2,opt,name=listing,proto3" json:"listing"`
+}
+
 type QueryDomainStatusRequest struct {
 	Name	string	`protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	Height	uint64	`protobuf:"varint,2,opt,name=height,proto3" json:"height,omitempty"`
@@ -176,6 +188,7 @@ type QueryServer interface {
 	PriceForLabel(context.Context, *QueryPriceForLabelRequest) (*QueryPriceForLabelResponse, error)
 	Auctions(context.Context, *QueryAuctionsRequest) (*QueryAuctionsResponse, error)
 	Auction(context.Context, *QueryAuctionRequest) (*QueryAuctionResponse, error)
+	Listing(context.Context, *QueryListingRequest) (*QueryListingResponse, error)
 	DomainStatus(context.Context, *QueryDomainStatusRequest) (*QueryDomainStatusResponse, error)
 	NameRecord(context.Context, *QueryNameRecordRequest) (*QueryNameRecordResponse, error)
 	ResolveName(context.Context, *QueryResolveNameRequest) (*QueryResolveNameResponse, error)
@@ -208,6 +221,9 @@ var Query_serviceDesc = grpcgo.ServiceDesc{
 		})),
 		queryMethodDesc("Auction", queryHandler("Auction", func() interface{} { return new(QueryAuctionRequest) }, func(ctx context.Context, srv interface{}, req interface{}) (interface{}, error) {
 			return srv.(QueryServer).Auction(ctx, req.(*QueryAuctionRequest))
+		})),
+		queryMethodDesc("Listing", queryHandler("Listing", func() interface{} { return new(QueryListingRequest) }, func(ctx context.Context, srv interface{}, req interface{}) (interface{}, error) {
+			return srv.(QueryServer).Listing(ctx, req.(*QueryListingRequest))
 		})),
 		queryMethodDesc("DomainStatus", queryHandler("DomainStatus", func() interface{} { return new(QueryDomainStatusRequest) }, func(ctx context.Context, srv interface{}, req interface{}) (interface{}, error) {
 			return srv.(QueryServer).DomainStatus(ctx, req.(*QueryDomainStatusRequest))
@@ -260,6 +276,8 @@ func init() {
 			"QueryAuction",
 			"QueryAuctionsRequest", "QueryAuctionsResponse",
 			"QueryAuctionRequest", "QueryAuctionResponse",
+			"QueryListing",
+			"QueryListingRequest", "QueryListingResponse",
 			"QueryDomainStatusRequest", "QueryDomainStatusResponse",
 			"QueryNameRecordRequest", "QueryNameRecordResponse",
 			"QueryResolveNameRequest", "QueryResolveNameResponse",
@@ -273,6 +291,7 @@ func init() {
 			{"PriceForLabel", "QueryPriceForLabelRequest", "QueryPriceForLabelResponse"},
 			{"Auctions", "QueryAuctionsRequest", "QueryAuctionsResponse"},
 			{"Auction", "QueryAuctionRequest", "QueryAuctionResponse"},
+			{"Listing", "QueryListingRequest", "QueryListingResponse"},
 			{"DomainStatus", "QueryDomainStatusRequest", "QueryDomainStatusResponse"},
 			{"NameRecord", "QueryNameRecordRequest", "QueryNameRecordResponse"},
 			{"ResolveName", "QueryResolveNameRequest", "QueryResolveNameResponse"},
@@ -326,6 +345,9 @@ func registerQueryTypes() {
 		{(*QueryAuctionsResponse)(nil), "l1.identityroot.v1.QueryAuctionsResponse"},
 		{(*QueryAuctionRequest)(nil), "l1.identityroot.v1.QueryAuctionRequest"},
 		{(*QueryAuctionResponse)(nil), "l1.identityroot.v1.QueryAuctionResponse"},
+		{(*QueryListing)(nil), "l1.identityroot.v1.QueryListing"},
+		{(*QueryListingRequest)(nil), "l1.identityroot.v1.QueryListingRequest"},
+		{(*QueryListingResponse)(nil), "l1.identityroot.v1.QueryListingResponse"},
 		{(*QueryDomainStatusRequest)(nil), "l1.identityroot.v1.QueryDomainStatusRequest"},
 		{(*QueryDomainStatusResponse)(nil), "l1.identityroot.v1.QueryDomainStatusResponse"},
 		{(*QueryNameRecordRequest)(nil), "l1.identityroot.v1.QueryNameRecordRequest"},
@@ -354,6 +376,9 @@ func (m *QueryAuctionsRequest) Reset()		{ *m = QueryAuctionsRequest{} }
 func (m *QueryAuctionsResponse) Reset()		{ *m = QueryAuctionsResponse{} }
 func (m *QueryAuctionRequest) Reset()		{ *m = QueryAuctionRequest{} }
 func (m *QueryAuctionResponse) Reset()		{ *m = QueryAuctionResponse{} }
+func (m *QueryListing) Reset()			{ *m = QueryListing{} }
+func (m *QueryListingRequest) Reset()		{ *m = QueryListingRequest{} }
+func (m *QueryListingResponse) Reset()		{ *m = QueryListingResponse{} }
 func (m *QueryDomainStatusRequest) Reset()	{ *m = QueryDomainStatusRequest{} }
 func (m *QueryDomainStatusResponse) Reset()	{ *m = QueryDomainStatusResponse{} }
 func (m *QueryNameRecordRequest) Reset()	{ *m = QueryNameRecordRequest{} }
@@ -378,6 +403,9 @@ func (m *QueryAuctionsRequest) String() string		{ return gogoproto.CompactTextSt
 func (m *QueryAuctionsResponse) String() string		{ return gogoproto.CompactTextString(m) }
 func (m *QueryAuctionRequest) String() string		{ return gogoproto.CompactTextString(m) }
 func (m *QueryAuctionResponse) String() string		{ return gogoproto.CompactTextString(m) }
+func (m *QueryListing) String() string			{ return gogoproto.CompactTextString(m) }
+func (m *QueryListingRequest) String() string		{ return gogoproto.CompactTextString(m) }
+func (m *QueryListingResponse) String() string		{ return gogoproto.CompactTextString(m) }
 func (m *QueryDomainStatusRequest) String() string	{ return gogoproto.CompactTextString(m) }
 func (m *QueryDomainStatusResponse) String() string	{ return gogoproto.CompactTextString(m) }
 func (m *QueryNameRecordRequest) String() string	{ return gogoproto.CompactTextString(m) }
@@ -402,6 +430,9 @@ func (*QueryAuctionsRequest) ProtoMessage()		{}
 func (*QueryAuctionsResponse) ProtoMessage()		{}
 func (*QueryAuctionRequest) ProtoMessage()		{}
 func (*QueryAuctionResponse) ProtoMessage()		{}
+func (*QueryListing) ProtoMessage()			{}
+func (*QueryListingRequest) ProtoMessage()		{}
+func (*QueryListingResponse) ProtoMessage()		{}
 func (*QueryDomainStatusRequest) ProtoMessage()		{}
 func (*QueryDomainStatusResponse) ProtoMessage()	{}
 func (*QueryNameRecordRequest) ProtoMessage()		{}

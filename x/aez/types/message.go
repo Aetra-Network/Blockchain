@@ -58,6 +58,22 @@ const (
 	// x/fees MaxTxGas (1,000,000) so one message can never claim the whole
 	// block budget.
 	MaxGasPerDelivery = uint64(1_000_000)
+
+	// MaxPayloadBytes bounds ZoneMessage.Payload. Without it, nothing in x/aez's
+	// own invariants relates a message's byte size to anything: the per-block
+	// drain budget is keyed entirely on the caller-declared, clamped GasLimit
+	// (clampDeliveryGas, drain.go), which has no relationship to len(Payload);
+	// scanDueInbox (inbox.go) unconditionally json.Unmarshals a due message's
+	// full stored bytes -- Payload included -- into memory before any
+	// gas-budget check runs. The only bound today comes from OUTSIDE this
+	// module (x/native-account's SendZoneNote caps its own note at 512 bytes
+	// before ever calling EnqueueMessage) -- a real gap at the module's own
+	// boundary, not currently exploitable via any wired live path, but zero
+	// defense-in-depth against a future or misconfigured caller of
+	// EnqueueMessage. Picked as 8x the existing native-account note bound
+	// (512 bytes) to leave headroom for other producers while still being a
+	// small, deliberate, documented cap rather than unbounded.
+	MaxPayloadBytes = 4096
 )
 
 // MessageKind is the closed set of cross-zone message kinds. It is lifted from
@@ -294,6 +310,9 @@ func (m ZoneMessage) Validate() error {
 	}
 	if len(m.Recipient) == 0 {
 		return fmt.Errorf("%w: recipient is required", ErrInvalidMessage)
+	}
+	if len(m.Payload) > MaxPayloadBytes {
+		return fmt.Errorf("%w: payload %d bytes exceeds max %d", ErrInvalidMessage, len(m.Payload), MaxPayloadBytes)
 	}
 	if m.QueuedHeight < 0 {
 		return fmt.Errorf("%w: queued height must not be negative", ErrInvalidMessage)

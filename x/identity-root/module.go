@@ -16,6 +16,7 @@ import (
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/cosmos/cosmos-sdk/types/module"
 
+	"github.com/sovereign-l1/l1/x/identity-root/client/cli"
 	"github.com/sovereign-l1/l1/x/identity-root/keeper"
 	"github.com/sovereign-l1/l1/x/identity-root/types"
 )
@@ -106,8 +107,8 @@ func (am AppModule) ExportGenesis(ctx sdk.Context, _ codec.JSONCodec) json.RawMe
 }
 
 func (AppModule) ConsensusVersion() uint64	{ return ConsensusVersion }
-func (AppModule) GetTxCmd() *cobra.Command	{ return nil }
-func (AppModule) GetQueryCmd() *cobra.Command	{ return nil }
+func (AppModule) GetTxCmd() *cobra.Command	{ return cli.GetTxCmd() }
+func (AppModule) GetQueryCmd() *cobra.Command	{ return cli.GetQueryCmd() }
 
 func mustMarshalGenesis(moduleName string, value any) json.RawMessage {
 	bz, err := json.Marshal(value)

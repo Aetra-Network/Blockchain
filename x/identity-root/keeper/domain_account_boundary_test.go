@@ -1,6 +1,7 @@
 package keeper
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -38,7 +39,7 @@ func TestDomainOwnerQueryDoesNotReadAccountMetadata(t *testing.T) {
 	registry := setupKeeper(t)
 	_, err := registry.RegisterName(identitytypes.MsgRegisterName{Owner: ownerA, Name: "alice", Height: 10})
 	require.NoError(t, err)
-	record, found, err := registry.NameRecord("alice.aet")
+	record, found, err := registry.NameRecord(context.Background(), "alice.aet")
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Equal(t, ownerA, record.Owner)

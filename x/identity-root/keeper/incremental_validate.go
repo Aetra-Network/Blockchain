@@ -46,10 +46,14 @@ import (
 
 // validateGlobal runs the O(1) checks every mutation must still pass:
 // prototype.Params.Validate() and IdentityRootParams.Validate() (the
-// "params.Validate() -- O(1)" invariant), plus the two collection-size caps
-// (len(Records) <= MaxRecords, len(ReservedNames) <= MaxReservedNames) that
-// the old code ONLY caught via a full Validate. len() is O(1) on a Go slice,
-// so this never scans a collection.
+// "params.Validate() -- O(1)" invariant), plus the three collection-size caps
+// (len(Records) <= MaxRecords, len(ReservedNames) <= MaxReservedNames,
+// len(Auctions) <= MaxAuctions) that the old code ONLY caught via a full
+// Validate. len() is O(1) on a Go slice, so this never scans a collection.
+// The Auctions cap is also enforced EARLY, at both open-auction call sites
+// (registerViaCollectionLocked, StartAuction in collection.go) -- this check
+// is the backstop, not the primary guard, matching the Records/ReservedNames
+// caps' existing pattern.
 func validateGlobal(gs GenesisState) error {
 	if err := gs.Params.Validate(); err != nil {
 		return err
@@ -62,6 +66,9 @@ func validateGlobal(gs GenesisState) error {
 	}
 	if uint32(len(gs.State.ReservedNames)) > gs.IdentityParams.MaxReservedNames {
 		return errors.New("identity root reserved name count exceeds limit")
+	}
+	if uint32(len(gs.State.Auctions)) > gs.IdentityParams.MaxAuctions {
+		return errors.New("identity root auction count exceeds limit")
 	}
 	return nil
 }

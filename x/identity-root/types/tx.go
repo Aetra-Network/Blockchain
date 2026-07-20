@@ -139,6 +139,55 @@ type MsgDisownAttachmentResponse struct {
 	Target	string	`protobuf:"bytes,2,opt,name=target,proto3" json:"target,omitempty"`
 }
 
+// MsgListForSale (ANS Phase B) lists a domain the caller owns for a fixed-price
+// sale (docs/architecture/ans.md "Owner fixed-price sale"): the owner sets any
+// PriceNaet they want; MsgBuyListedName by anyone paying it triggers an atomic
+// name-for-payment swap, reusing the same ownership-transfer mechanics as
+// TransferName plus the collection's bank-custody pattern for the payment. No
+// money moves at listing time.
+type MsgListForSale struct {
+	Owner		string	`protobuf:"bytes,1,opt,name=owner,proto3" json:"owner,omitempty"`
+	Name		string	`protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	PriceNaet	uint64	`protobuf:"varint,3,opt,name=price_naet,json=priceNaet,proto3" json:"price_naet,omitempty"`
+	Height		uint64	`protobuf:"varint,4,opt,name=height,proto3" json:"height,omitempty"`
+}
+
+type MsgListForSaleResponse struct {
+	Name		string	`protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	PriceNaet	uint64	`protobuf:"varint,2,opt,name=price_naet,json=priceNaet,proto3" json:"price_naet,omitempty"`
+}
+
+// MsgDelistName (ANS Phase B) clears an owner's fixed-price listing without a
+// sale -- the explicit delist path alongside the implicit clear-on-transfer (see
+// keeper.TransferName / keeper.grantAuctionName).
+type MsgDelistName struct {
+	Owner	string	`protobuf:"bytes,1,opt,name=owner,proto3" json:"owner,omitempty"`
+	Name	string	`protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	Height	uint64	`protobuf:"varint,3,opt,name=height,proto3" json:"height,omitempty"`
+}
+
+type MsgDelistNameResponse struct {
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+}
+
+// MsgBuyListedName (ANS Phase B) is the buyer side of MsgListForSale: paying the
+// LIVE listing price atomically transfers the NameRecord to Buyer and the price
+// from Buyer to the current owner, resetting the term like any other purchase (a
+// gift/TransferName does not). Buyer pays exactly the listing's current price --
+// read from the on-chain Listing by the keeper at execution time, not supplied
+// by the caller -- so there is no over/under-payment amount to carry on the wire.
+type MsgBuyListedName struct {
+	Buyer	string	`protobuf:"bytes,1,opt,name=buyer,proto3" json:"buyer,omitempty"`
+	Name	string	`protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	Height	uint64	`protobuf:"varint,3,opt,name=height,proto3" json:"height,omitempty"`
+}
+
+type MsgBuyListedNameResponse struct {
+	Name		string	`protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Owner		string	`protobuf:"bytes,2,opt,name=owner,proto3" json:"owner,omitempty"`
+	PriceNaet	uint64	`protobuf:"varint,3,opt,name=price_naet,json=priceNaet,proto3" json:"price_naet,omitempty"`
+}
+
 // MsgCreateSubdomainResponse is the wire response for MsgCreateSubdomain (whose
 // request struct lives in state.go, promoted to the wire with protobuf tags).
 type MsgCreateSubdomainResponse struct {
@@ -208,6 +257,9 @@ type MsgServer interface {
 	PlaceBid(context.Context, *MsgPlaceBid) (*MsgPlaceBidResponse, error)
 	StartAuction(context.Context, *MsgStartAuction) (*MsgStartAuctionResponse, error)
 	UpdatePriceTable(context.Context, *MsgUpdatePriceTable) (*MsgUpdatePriceTableResponse, error)
+	ListForSale(context.Context, *MsgListForSale) (*MsgListForSaleResponse, error)
+	DelistName(context.Context, *MsgDelistName) (*MsgDelistNameResponse, error)
+	BuyListedName(context.Context, *MsgBuyListedName) (*MsgBuyListedNameResponse, error)
 	AttachDomain(context.Context, *MsgAttachDomain) (*MsgAttachDomainResponse, error)
 	DetachDomain(context.Context, *MsgDetachDomain) (*MsgDetachDomainResponse, error)
 	DisownAttachment(context.Context, *MsgDisownAttachment) (*MsgDisownAttachmentResponse, error)
@@ -233,6 +285,15 @@ func (UnimplementedMsgServer) StartAuction(context.Context, *MsgStartAuction) (*
 }
 func (UnimplementedMsgServer) UpdatePriceTable(context.Context, *MsgUpdatePriceTable) (*MsgUpdatePriceTableResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method UpdatePriceTable not implemented")
+}
+func (UnimplementedMsgServer) ListForSale(context.Context, *MsgListForSale) (*MsgListForSaleResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListForSale not implemented")
+}
+func (UnimplementedMsgServer) DelistName(context.Context, *MsgDelistName) (*MsgDelistNameResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method DelistName not implemented")
+}
+func (UnimplementedMsgServer) BuyListedName(context.Context, *MsgBuyListedName) (*MsgBuyListedNameResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method BuyListedName not implemented")
 }
 func (UnimplementedMsgServer) AttachDomain(context.Context, *MsgAttachDomain) (*MsgAttachDomainResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method AttachDomain not implemented")
@@ -275,6 +336,9 @@ var Msg_serviceDesc = grpcgo.ServiceDesc{
 		{MethodName: "PlaceBid", Handler: _Msg_PlaceBid_Handler},
 		{MethodName: "StartAuction", Handler: _Msg_StartAuction_Handler},
 		{MethodName: "UpdatePriceTable", Handler: _Msg_UpdatePriceTable_Handler},
+		{MethodName: "ListForSale", Handler: _Msg_ListForSale_Handler},
+		{MethodName: "DelistName", Handler: _Msg_DelistName_Handler},
+		{MethodName: "BuyListedName", Handler: _Msg_BuyListedName_Handler},
 		{MethodName: "AttachDomain", Handler: _Msg_AttachDomain_Handler},
 		{MethodName: "DetachDomain", Handler: _Msg_DetachDomain_Handler},
 		{MethodName: "DisownAttachment", Handler: _Msg_DisownAttachment_Handler},
@@ -346,6 +410,51 @@ func _Msg_UpdatePriceTable_Handler(srv interface{}, ctx context.Context, dec fun
 	info := &grpcgo.UnaryServerInfo{Server: srv, FullMethod: "/l1.identityroot.v1.Msg/UpdatePriceTable"}
 	handler := func(ctx context.Context, request interface{}) (interface{}, error) {
 		return srv.(MsgServer).UpdatePriceTable(ctx, request.(*MsgUpdatePriceTable))
+	}
+	return interceptor(ctx, req, info, handler)
+}
+
+func _Msg_ListForSale_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpcgo.UnaryServerInterceptor) (interface{}, error) {
+	req := new(MsgListForSale)
+	if err := dec(req); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(MsgServer).ListForSale(ctx, req)
+	}
+	info := &grpcgo.UnaryServerInfo{Server: srv, FullMethod: "/l1.identityroot.v1.Msg/ListForSale"}
+	handler := func(ctx context.Context, request interface{}) (interface{}, error) {
+		return srv.(MsgServer).ListForSale(ctx, request.(*MsgListForSale))
+	}
+	return interceptor(ctx, req, info, handler)
+}
+
+func _Msg_DelistName_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpcgo.UnaryServerInterceptor) (interface{}, error) {
+	req := new(MsgDelistName)
+	if err := dec(req); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(MsgServer).DelistName(ctx, req)
+	}
+	info := &grpcgo.UnaryServerInfo{Server: srv, FullMethod: "/l1.identityroot.v1.Msg/DelistName"}
+	handler := func(ctx context.Context, request interface{}) (interface{}, error) {
+		return srv.(MsgServer).DelistName(ctx, request.(*MsgDelistName))
+	}
+	return interceptor(ctx, req, info, handler)
+}
+
+func _Msg_BuyListedName_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpcgo.UnaryServerInterceptor) (interface{}, error) {
+	req := new(MsgBuyListedName)
+	if err := dec(req); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(MsgServer).BuyListedName(ctx, req)
+	}
+	info := &grpcgo.UnaryServerInfo{Server: srv, FullMethod: "/l1.identityroot.v1.Msg/BuyListedName"}
+	handler := func(ctx context.Context, request interface{}) (interface{}, error) {
+		return srv.(MsgServer).BuyListedName(ctx, request.(*MsgBuyListedName))
 	}
 	return interceptor(ctx, req, info, handler)
 }
@@ -739,6 +848,52 @@ func buildIdentityRootTxFileDescriptor() []byte {
 				txField("name", 1, str),
 			},
 		},
+		{
+			Name: txDescriptorString("MsgListForSale"),
+			Field: []*descriptorpb.FieldDescriptorProto{
+				txField("owner", 1, str),
+				txField("name", 2, str),
+				txField("price_naet", 3, u64),
+				txField("height", 4, u64),
+			},
+		},
+		{
+			Name: txDescriptorString("MsgListForSaleResponse"),
+			Field: []*descriptorpb.FieldDescriptorProto{
+				txField("name", 1, str),
+				txField("price_naet", 2, u64),
+			},
+		},
+		{
+			Name: txDescriptorString("MsgDelistName"),
+			Field: []*descriptorpb.FieldDescriptorProto{
+				txField("owner", 1, str),
+				txField("name", 2, str),
+				txField("height", 3, u64),
+			},
+		},
+		{
+			Name: txDescriptorString("MsgDelistNameResponse"),
+			Field: []*descriptorpb.FieldDescriptorProto{
+				txField("name", 1, str),
+			},
+		},
+		{
+			Name: txDescriptorString("MsgBuyListedName"),
+			Field: []*descriptorpb.FieldDescriptorProto{
+				txField("buyer", 1, str),
+				txField("name", 2, str),
+				txField("height", 3, u64),
+			},
+		},
+		{
+			Name: txDescriptorString("MsgBuyListedNameResponse"),
+			Field: []*descriptorpb.FieldDescriptorProto{
+				txField("name", 1, str),
+				txField("owner", 2, str),
+				txField("price_naet", 3, u64),
+			},
+		},
 	}
 	fd := &descriptorpb.FileDescriptorProto{
 		Name:		txDescriptorString("l1/identityroot/v1/tx.proto"),
@@ -817,6 +972,21 @@ func buildIdentityRootTxFileDescriptor() []byte {
 					Name:		txDescriptorString("ReleaseReservedName"),
 					InputType:	txDescriptorString(".l1.identityroot.v1.MsgReleaseReservedName"),
 					OutputType:	txDescriptorString(".l1.identityroot.v1.MsgReleaseReservedNameResponse"),
+				},
+				{
+					Name:		txDescriptorString("ListForSale"),
+					InputType:	txDescriptorString(".l1.identityroot.v1.MsgListForSale"),
+					OutputType:	txDescriptorString(".l1.identityroot.v1.MsgListForSaleResponse"),
+				},
+				{
+					Name:		txDescriptorString("DelistName"),
+					InputType:	txDescriptorString(".l1.identityroot.v1.MsgDelistName"),
+					OutputType:	txDescriptorString(".l1.identityroot.v1.MsgDelistNameResponse"),
+				},
+				{
+					Name:		txDescriptorString("BuyListedName"),
+					InputType:	txDescriptorString(".l1.identityroot.v1.MsgBuyListedName"),
+					OutputType:	txDescriptorString(".l1.identityroot.v1.MsgBuyListedNameResponse"),
 				},
 			},
 			Options: &descriptorpb.ServiceOptions{
@@ -897,6 +1067,12 @@ func registerTxTypes() {
 	gogoproto.RegisterType((*MsgReserveNameResponse)(nil), "l1.identityroot.v1.MsgReserveNameResponse")
 	gogoproto.RegisterType((*MsgReleaseReservedName)(nil), "l1.identityroot.v1.MsgReleaseReservedName")
 	gogoproto.RegisterType((*MsgReleaseReservedNameResponse)(nil), "l1.identityroot.v1.MsgReleaseReservedNameResponse")
+	gogoproto.RegisterType((*MsgListForSale)(nil), "l1.identityroot.v1.MsgListForSale")
+	gogoproto.RegisterType((*MsgListForSaleResponse)(nil), "l1.identityroot.v1.MsgListForSaleResponse")
+	gogoproto.RegisterType((*MsgDelistName)(nil), "l1.identityroot.v1.MsgDelistName")
+	gogoproto.RegisterType((*MsgDelistNameResponse)(nil), "l1.identityroot.v1.MsgDelistNameResponse")
+	gogoproto.RegisterType((*MsgBuyListedName)(nil), "l1.identityroot.v1.MsgBuyListedName")
+	gogoproto.RegisterType((*MsgBuyListedNameResponse)(nil), "l1.identityroot.v1.MsgBuyListedNameResponse")
 }
 
 func (m *MsgSendToNameCollection) Reset()		{ *m = MsgSendToNameCollection{} }
@@ -927,6 +1103,12 @@ func (m *MsgReserveName) Reset()			{ *m = MsgReserveName{} }
 func (m *MsgReserveNameResponse) Reset()		{ *m = MsgReserveNameResponse{} }
 func (m *MsgReleaseReservedName) Reset()		{ *m = MsgReleaseReservedName{} }
 func (m *MsgReleaseReservedNameResponse) Reset()	{ *m = MsgReleaseReservedNameResponse{} }
+func (m *MsgListForSale) Reset()			{ *m = MsgListForSale{} }
+func (m *MsgListForSaleResponse) Reset()		{ *m = MsgListForSaleResponse{} }
+func (m *MsgDelistName) Reset()			{ *m = MsgDelistName{} }
+func (m *MsgDelistNameResponse) Reset()		{ *m = MsgDelistNameResponse{} }
+func (m *MsgBuyListedName) Reset()			{ *m = MsgBuyListedName{} }
+func (m *MsgBuyListedNameResponse) Reset()		{ *m = MsgBuyListedNameResponse{} }
 
 func (m *MsgSendToNameCollection) String() string		{ return gogoproto.CompactTextString(m) }
 func (m *MsgSendToNameCollectionResponse) String() string	{ return gogoproto.CompactTextString(m) }
@@ -956,6 +1138,12 @@ func (m *MsgReserveName) String() string			{ return gogoproto.CompactTextString(
 func (m *MsgReserveNameResponse) String() string		{ return gogoproto.CompactTextString(m) }
 func (m *MsgReleaseReservedName) String() string		{ return gogoproto.CompactTextString(m) }
 func (m *MsgReleaseReservedNameResponse) String() string	{ return gogoproto.CompactTextString(m) }
+func (m *MsgListForSale) String() string			{ return gogoproto.CompactTextString(m) }
+func (m *MsgListForSaleResponse) String() string		{ return gogoproto.CompactTextString(m) }
+func (m *MsgDelistName) String() string			{ return gogoproto.CompactTextString(m) }
+func (m *MsgDelistNameResponse) String() string		{ return gogoproto.CompactTextString(m) }
+func (m *MsgBuyListedName) String() string			{ return gogoproto.CompactTextString(m) }
+func (m *MsgBuyListedNameResponse) String() string		{ return gogoproto.CompactTextString(m) }
 
 func (*MsgSendToNameCollection) ProtoMessage()		{}
 func (*MsgSendToNameCollectionResponse) ProtoMessage()	{}
@@ -985,6 +1173,12 @@ func (*MsgReserveName) ProtoMessage()			{}
 func (*MsgReserveNameResponse) ProtoMessage()		{}
 func (*MsgReleaseReservedName) ProtoMessage()		{}
 func (*MsgReleaseReservedNameResponse) ProtoMessage()	{}
+func (*MsgListForSale) ProtoMessage()			{}
+func (*MsgListForSaleResponse) ProtoMessage()		{}
+func (*MsgDelistName) ProtoMessage()			{}
+func (*MsgDelistNameResponse) ProtoMessage()		{}
+func (*MsgBuyListedName) ProtoMessage()		{}
+func (*MsgBuyListedNameResponse) ProtoMessage()	{}
 
 // Descriptor returns the gzipped file descriptor and this message's index in the
 // file's message list. The v0.54.3 tx decoder's RejectUnknownFields walker calls
@@ -1076,4 +1270,22 @@ func (*MsgReleaseReservedName) Descriptor() ([]byte, []int) {
 }
 func (*MsgReleaseReservedNameResponse) Descriptor() ([]byte, []int) {
 	return fileDescriptorIdentityRootTx, []int{27}
+}
+func (*MsgListForSale) Descriptor() ([]byte, []int) {
+	return fileDescriptorIdentityRootTx, []int{28}
+}
+func (*MsgListForSaleResponse) Descriptor() ([]byte, []int) {
+	return fileDescriptorIdentityRootTx, []int{29}
+}
+func (*MsgDelistName) Descriptor() ([]byte, []int) {
+	return fileDescriptorIdentityRootTx, []int{30}
+}
+func (*MsgDelistNameResponse) Descriptor() ([]byte, []int) {
+	return fileDescriptorIdentityRootTx, []int{31}
+}
+func (*MsgBuyListedName) Descriptor() ([]byte, []int) {
+	return fileDescriptorIdentityRootTx, []int{32}
+}
+func (*MsgBuyListedNameResponse) Descriptor() ([]byte, []int) {
+	return fileDescriptorIdentityRootTx, []int{33}
 }

@@ -26,6 +26,12 @@ var (
 	// fee gate (see keeper.AccountHoldsDomain) and makes the one-per-wallet
 	// invariant structural: the wallet identity IS the primary key.
 	AttachKeyPrefix		= []byte{0x06}
+	// ListingKeyPrefix keys ANS Phase B owner fixed-price sale listings
+	// (docs/architecture/ans.md "Owner fixed-price sale"), one record per listed
+	// name, keyed by the normalized FQDN -- the same key shape as AuctionKey,
+	// since a listing and an auction are mutually exclusive "for sale" states
+	// for the same name.
+	ListingKeyPrefix	= []byte{0x07}
 )
 
 // NameKey is the per-record key for a NameRecord, keyed by its normalized FQDN.
@@ -53,4 +59,9 @@ func AuctionKey(name string) []byte {
 // enforces one domain per wallet and lets the fee gate do an O(1) presence read.
 func AttachKey(targetIdentityHex string) []byte {
 	return append(append([]byte(nil), AttachKeyPrefix...), []byte(targetIdentityHex)...)
+}
+
+// ListingKey is the per-record key for a Listing, keyed by its normalized FQDN.
+func ListingKey(name string) []byte {
+	return append(append([]byte(nil), ListingKeyPrefix...), []byte(name)...)
 }

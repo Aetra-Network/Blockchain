@@ -105,6 +105,36 @@ func buildNativeAccountTxFileDescriptor() []byte {
 			stepUpPolicyDescriptor(),
 			authPolicyDescriptor(),
 			accountMetadataDescriptor(),
+			// Phase 3 (AEZ zone-note messaging). Appended at the END of
+			// MessageType, not interleaved with the messages above: every
+			// existing message's Descriptor() method (tx.go) hardcodes its
+			// index into THIS slice, so inserting anything before index 24
+			// would silently renumber every message after it and break
+			// wire decoding for all of them. Only ever append here.
+			withSigner(&descriptorpb.DescriptorProto{
+				Name: descriptorString("MsgSendZoneNote"),
+				Field: []*descriptorpb.FieldDescriptorProto{
+					descriptorField("account_user", 1, descriptorpb.FieldDescriptorProto_TYPE_STRING),
+					descriptorField("recipient_user", 2, descriptorpb.FieldDescriptorProto_TYPE_STRING),
+					// Name is "zone_note", not "note": autocli derives the CLI
+					// flag name from this string, and "--note" collides with
+					// the SDK's own reserved memo flag, which panics the
+					// entire tx command tree at construction time. Field
+					// number (3) is unchanged, so wire compatibility holds.
+					descriptorField("zone_note", 3, descriptorpb.FieldDescriptorProto_TYPE_BYTES),
+				},
+			}, "account_user"),
+			{
+				Name: descriptorString("MsgSendZoneNoteResponse"),
+				Field: []*descriptorpb.FieldDescriptorProto{
+					descriptorField("message_id", 1, descriptorpb.FieldDescriptorProto_TYPE_BYTES),
+					descriptorField("cross_zone", 2, descriptorpb.FieldDescriptorProto_TYPE_BOOL),
+					descriptorField("source_zone", 3, descriptorpb.FieldDescriptorProto_TYPE_UINT32),
+					descriptorField("dest_zone", 4, descriptorpb.FieldDescriptorProto_TYPE_UINT32),
+					descriptorField("source_zone_resolved", 5, descriptorpb.FieldDescriptorProto_TYPE_BOOL),
+					descriptorField("dest_zone_resolved", 6, descriptorpb.FieldDescriptorProto_TYPE_BOOL),
+				},
+			},
 		},
 		Service: []*descriptorpb.ServiceDescriptorProto{
 			{
@@ -118,6 +148,7 @@ func buildNativeAccountTxFileDescriptor() []byte {
 					methodDescriptor("PayStorageDebt", "MsgPayStorageDebt", "MsgPayStorageDebtResponse"),
 					methodDescriptor("UnfreezeAccount", "MsgUnfreezeAccount", "MsgUnfreezeAccountResponse"),
 					methodDescriptor("UpdateAccountMetadata", "MsgUpdateAccountMetadata", "MsgUpdateAccountMetadataResponse"),
+					methodDescriptor("SendZoneNote", "MsgSendZoneNote", "MsgSendZoneNoteResponse"),
 				},
 			},
 		},

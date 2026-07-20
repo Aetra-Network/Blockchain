@@ -33,7 +33,18 @@ import (
 // identical whether the stash is applied or not -- i.e. identical whether the
 // handlers run the old full-Export/full-Validate path or the new
 // incremental one -- which is the byte-identity proof the task requires.
-const goldenCommittedStoreDigest = "767125ead5120ec4b7d439de78ec7d2b1dff9efb22c80dbc250acfd9c2d757c4"
+//
+// This fixture is NOT stable across a genesis-SCHEMA change (as opposed to a
+// handler-body refactor): the residual blob at genesisKey is a JSON
+// marshaling of the whole GenesisState, so adding a new struct field --
+// IdentityRootParams.MaxAuctions and IdentityRootState.Listings (ANS Phase B
+// fixed-price sale, x/identity-root/types/listing.go), both added after the
+// digest above was captured -- changes the residual bytes even when the new
+// field's value is empty/zero for every message in the mutation sequence
+// below (neither MaxAuctions nor Listings is touched here). Re-bumped once,
+// after both fields landed, by reading digestSnapshot's own t.Logf output;
+// bump it again the same way whenever a genesis-shape field is added.
+const goldenCommittedStoreDigest = "b3677bc539db37a9da4f44c7e7cb4e0bd2cb5e461fa326cb57d6e4b05143dd8c"
 
 // digestSnapshot renders a store snapshot into one order-independent-input,
 // order-DEPENDENT-output digest: every (key,value) pair, sorted by key so the
@@ -294,7 +305,7 @@ func TestTransferNameRejectsOwnerOnlyChildMismatch(t *testing.T) {
 	require.ErrorContains(t, err, "must follow parent ownership policy")
 
 	// The child's owner must be unchanged.
-	got, found, err := k.NameRecord("kid.root1.aet")
+	got, found, err := k.NameRecord(context.Background(), "kid.root1.aet")
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Equal(t, ownerA, got.Owner)
@@ -314,7 +325,7 @@ func TestTransferNameRejectsParentMovedAwayFromOwnerOnlyChildren(t *testing.T) {
 	_, err = k.TransferName(types.MsgTransferName{Owner: ownerA, Name: "root2", NewOwner: ownerB, Height: 12})
 	require.ErrorContains(t, err, "must follow parent ownership policy")
 
-	got, found, err := k.NameRecord("root2.aet")
+	got, found, err := k.NameRecord(context.Background(), "root2.aet")
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Equal(t, ownerA, got.Owner, "rejected transfer must not persist")
@@ -335,7 +346,7 @@ func TestMaxRecordsCapRejectsRegistration(t *testing.T) {
 	_, err = k.RegisterName(types.MsgRegisterName{Owner: ownerA, Name: "second", Height: 10})
 	require.ErrorContains(t, err, "exceeds limit")
 
-	_, found, err := k.NameRecord("second.aet")
+	_, found, err := k.NameRecord(context.Background(), "second.aet")
 	require.NoError(t, err)
 	require.False(t, found, "rejected registration must not persist")
 }
@@ -384,7 +395,7 @@ func TestEndBlockerRejectsAuctionGrantOverOwnerOnlyChildren(t *testing.T) {
 
 	// The record must be unchanged: the rejected EndBlocker must not have
 	// persisted a partial/inconsistent grant.
-	got, found, err := k.NameRecord("root3.aet")
+	got, found, err := k.NameRecord(context.Background(), "root3.aet")
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Equal(t, ownerA, got.Owner, "a rejected grant must not persist")
@@ -404,7 +415,7 @@ func TestRegisterNameRejectsMissingParent(t *testing.T) {
 	_, err := k.RegisterName(types.MsgRegisterName{Owner: ownerA, Name: "a.b.aet", Height: 10})
 	require.ErrorContains(t, err, "references missing parent")
 
-	_, found, err := k.NameRecord("a.b.aet")
+	_, found, err := k.NameRecord(context.Background(), "a.b.aet")
 	require.NoError(t, err)
 	require.False(t, found, "rejected registration must not persist")
 }
@@ -424,7 +435,7 @@ func TestRegisterNameRejectsOwnerOnlyParentPolicyMismatch(t *testing.T) {
 	_, err = k.RegisterName(types.MsgRegisterName{Owner: ownerB, Name: "x.b.aet", Height: 11})
 	require.ErrorContains(t, err, "must follow parent ownership policy")
 
-	_, found, err := k.NameRecord("x.b.aet")
+	_, found, err := k.NameRecord(context.Background(), "x.b.aet")
 	require.NoError(t, err)
 	require.False(t, found, "rejected registration must not persist")
 }
@@ -440,7 +451,7 @@ func TestRegisterNameRejectsDisabledParent(t *testing.T) {
 	_, err = k.RegisterName(types.MsgRegisterName{Owner: ownerA, Name: "x.c.aet", Height: 11})
 	require.ErrorContains(t, err, "disabled by parent policy")
 
-	_, found, err := k.NameRecord("x.c.aet")
+	_, found, err := k.NameRecord(context.Background(), "x.c.aet")
 	require.NoError(t, err)
 	require.False(t, found, "rejected registration must not persist")
 }

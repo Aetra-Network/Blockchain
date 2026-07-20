@@ -1,6 +1,7 @@
 package keeper
 
 import (
+	"context"
 	"testing"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
@@ -48,7 +49,7 @@ func TestMsgServerIgnoresUserSuppliedHeight(t *testing.T) {
 		require.Equal(t, uint64(blockHeightAt)+auctionDuration, res.DeadlineHeight,
 			"deadline must be derived from the block height, not the caller's msg.Height")
 
-		auction, found, err := k.auctionView("alice")
+		auction, found, err := k.auctionView(context.Background(), "alice")
 		require.NoError(t, err)
 		require.True(t, found)
 		require.Equal(t, uint64(blockHeightAt), auction.CreatedHeight,

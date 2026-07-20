@@ -252,6 +252,44 @@ func (gs GenesisState) validateParamsOnly() error {
 	return gs.IdentityParams.Validate()
 }
 
+// viewGenesis returns a read-only snapshot of the module's genesis state for
+// query handlers, WITHOUT the concurrency hazard loadForBlock would introduce
+// if a query called it: loadForBlock mutates k.genesis/k.written/
+// k.writtenResidual/k.runtimeCtx under lockW, and a query's own loadForBlock
+// call could interleave between an in-flight Msg handler's loadForBlock and
+// its later persistLocked (two separate lock acquisitions, not one held
+// span), corrupting what the write persists against (FINDING-008).
+//
+// When a store is wired, this reads it directly via readGenesisState -- a
+// pure value-receiver read that touches no keeper field and takes no lock --
+// so a freshly restarted or state-synced node's queries return the same
+// answer a continuously-running node's in-memory cache would. Before this,
+// every query accessor read k.genesis directly and NOTHING ever refreshed it
+// outside a Msg handler or EndBlocker, so a fresh NewPersistentKeeper over an
+// already-populated store answered every query with DefaultGenesis() until
+// the next consensus entry point ran -- the exact stale-cache-read class
+// x/aez's keeper (x/aez/keeper/keeper.go's doc comment) and this module's own
+// AccountHoldsDomain (attach.go) were deliberately built to avoid.
+//
+// Bare keepers built without a store (every existing unit test that calls
+// NewKeeper()) fall back to the in-memory cache under the read lock, matching
+// their prior behavior exactly.
+func (k *Keeper) viewGenesis(ctx context.Context) (GenesisState, error) {
+	if k.storeService == nil {
+		k.lockR()
+		defer k.unlockR()
+		return cloneGenesis(k.genesis), nil
+	}
+	gs, _, found, err := k.readGenesisState(ctx)
+	if err != nil {
+		return GenesisState{}, err
+	}
+	if !found {
+		return DefaultGenesis(), nil
+	}
+	return cloneGenesis(gs), nil
+}
+
 // persistLocked assigns next as the new in-memory genesis and, when custody is
 // wired, writes the per-record diff to the store. Assumes k.mu is held (write)
 // by the caller.
@@ -454,6 +492,14 @@ func (k *Keeper) TransferName(msg types.MsgTransferName) (types.NameRecord, erro
 	// store entry via the same diff mechanism as the reverse-record clear above.
 	// (Audit: reputation must be gated on live ownership, not carried on sale.)
 	next.State.Attachments = removeAttachmentByName(next.State.Attachments, record.Name)
+	// Any open fixed-price Listing for this name must clear on ownership change --
+	// its Seller field would otherwise go stale and no longer match the new
+	// Owner, breaking the invariant IdentityRootState.Validate() checks
+	// (state.go's "identity listing seller must match name owner"). This covers
+	// BOTH directions TransferName can be called for: a plain gift AND the
+	// eventual purchase settlement path, so an owner can never leave a stale
+	// buy-now listing live after giving the name away.
+	next.State.Listings = removeListingByName(next.State.Listings, record.Name)
 	if next.IdentityParams.NFTBindingEnabled {
 		next.State.NFTBindings = upsertBinding(next.State.NFTBindings, binding, next.IdentityParams)
 	}
@@ -694,67 +740,77 @@ func (k *Keeper) ReleaseReservedName(msg types.MsgReleaseReservedName) error {
 	return nil
 }
 
-func (k *Keeper) NameRecord(name string) (types.NameRecord, bool, error) {
-	k.lockR()
-	defer k.unlockR()
-	if err := k.genesis.Params.Validate(); err != nil {
-		return types.NameRecord{}, false, err
-	}
-	name, err := types.NormalizeName(name, k.genesis.IdentityParams.RootNamespace)
+func (k *Keeper) NameRecord(ctx context.Context, name string) (types.NameRecord, bool, error) {
+	gs, err := k.viewGenesis(ctx)
 	if err != nil {
 		return types.NameRecord{}, false, err
 	}
-	_, record, found := recordIndex(k.genesis.State.Records, name)
+	if err := gs.Params.Validate(); err != nil {
+		return types.NameRecord{}, false, err
+	}
+	normalized, err := types.NormalizeName(name, gs.IdentityParams.RootNamespace)
+	if err != nil {
+		return types.NameRecord{}, false, err
+	}
+	_, record, found := recordIndex(gs.State.Records, normalized)
 	return record, found, nil
 }
 
-func (k *Keeper) ResolveName(name string, height uint64) (types.NameRecord, types.ResolverRecord, bool, error) {
-	k.lockR()
-	defer k.unlockR()
-	if err := k.genesis.Params.Validate(); err != nil {
-		return types.NameRecord{}, types.ResolverRecord{}, false, err
-	}
-	normalized, err := types.NormalizeName(name, k.genesis.IdentityParams.RootNamespace)
+func (k *Keeper) ResolveName(ctx context.Context, name string, height uint64) (types.NameRecord, types.ResolverRecord, bool, error) {
+	gs, err := k.viewGenesis(ctx)
 	if err != nil {
 		return types.NameRecord{}, types.ResolverRecord{}, false, err
 	}
-	_, record, found := recordIndex(k.genesis.State.Records, normalized)
+	if err := gs.Params.Validate(); err != nil {
+		return types.NameRecord{}, types.ResolverRecord{}, false, err
+	}
+	normalized, err := types.NormalizeName(name, gs.IdentityParams.RootNamespace)
+	if err != nil {
+		return types.NameRecord{}, types.ResolverRecord{}, false, err
+	}
+	_, record, found := recordIndex(gs.State.Records, normalized)
 	if !found {
 		return types.NameRecord{}, types.ResolverRecord{}, false, nil
 	}
 	if !types.IsActive(record, height) {
 		return types.NameRecord{}, types.ResolverRecord{}, false, nil
 	}
-	_, resolver, resolverFound := resolverIndex(k.genesis.State.Resolvers, record.Name)
+	_, resolver, resolverFound := resolverIndex(gs.State.Resolvers, record.Name)
 	if !resolverFound {
 		resolver = types.ResolverRecord{Name: record.Name, ResolverRoot: record.ResolverRoot, UpdatedHeight: record.UpdatedHeight}
 	}
-	return record, resolver.Normalize(k.genesis.IdentityParams), true, nil
+	return record, resolver.Normalize(gs.IdentityParams), true, nil
 }
 
-func (k *Keeper) ReverseRecord(address string) (types.ReverseRecord, bool, error) {
-	k.lockR()
-	defer k.unlockR()
-	if err := k.genesis.Params.Validate(); err != nil {
+func (k *Keeper) ReverseRecord(ctx context.Context, address string) (types.ReverseRecord, bool, error) {
+	gs, err := k.viewGenesis(ctx)
+	if err != nil {
 		return types.ReverseRecord{}, false, err
 	}
-	_, reverse, found := reverseIndex(k.genesis.State.ReverseRecords, address)
+	if err := gs.Params.Validate(); err != nil {
+		return types.ReverseRecord{}, false, err
+	}
+	_, reverse, found := reverseIndex(gs.State.ReverseRecords, address)
 	return reverse, found, nil
 }
 
-func (k *Keeper) Subdomains(parentName string) ([]types.NameRecord, error) {
-	k.lockR()
-	defer k.unlockR()
-	if err := k.genesis.Params.Validate(); err != nil {
+func (k *Keeper) Subdomains(ctx context.Context, parentName string) ([]types.NameRecord, error) {
+	gs, err := k.viewGenesis(ctx)
+	if err != nil {
 		return nil, err
 	}
-	parentName, err := types.NormalizeName(parentName, k.genesis.IdentityParams.RootNamespace)
+	if err := gs.Params.Validate(); err != nil {
+		return nil, err
+	}
+	normalized, err := types.NormalizeName(parentName, gs.IdentityParams.RootNamespace)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]types.NameRecord, 0)
-	for _, record := range k.genesis.State.Export().Records {
-		if record.ParentName == parentName {
+	// gs is already a cloneGenesis()-produced snapshot (viewGenesis), so
+	// gs.State.Records is already exported/sorted; no need to Export() again.
+	for _, record := range gs.State.Records {
+		if record.ParentName == normalized {
 			out = append(out, record)
 		}
 	}
@@ -762,13 +818,15 @@ func (k *Keeper) Subdomains(parentName string) ([]types.NameRecord, error) {
 	return out, nil
 }
 
-func (k *Keeper) IdentityRootParams() (types.IdentityRootParams, error) {
-	k.lockR()
-	defer k.unlockR()
-	if err := k.genesis.IdentityParams.Validate(); err != nil {
+func (k *Keeper) IdentityRootParams(ctx context.Context) (types.IdentityRootParams, error) {
+	gs, err := k.viewGenesis(ctx)
+	if err != nil {
 		return types.IdentityRootParams{}, err
 	}
-	return k.genesis.IdentityParams, nil
+	if err := gs.IdentityParams.Validate(); err != nil {
+		return types.IdentityRootParams{}, err
+	}
+	return gs.IdentityParams, nil
 }
 
 type Migrator struct {

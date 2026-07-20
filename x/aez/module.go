@@ -16,6 +16,7 @@ import (
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/cosmos/cosmos-sdk/types/module"
 
+	"github.com/sovereign-l1/l1/x/aez/client/cli"
 	"github.com/sovereign-l1/l1/x/aez/keeper"
 	"github.com/sovereign-l1/l1/x/aez/types"
 	"github.com/sovereign-l1/l1/x/internal/prototype"
@@ -50,6 +51,12 @@ const ConsensusVersion = prototype.CurrentGenesisVersion
 //     this for system modules with the identical rule it applied to prototypes,
 //     so the promotion bought no relief here. The bus moves messages, never money;
 //     the value leg (Phase 4b) needs a Core-Zone x/bank escrow x/aez must not hold.
+//   - CLI: YES, now. GetTxCmd/GetQueryCmd used to both return nil -- the module's
+//     entire consensus-reachable write surface (MsgUpdateRoutingTable) was only
+//     reachable via raw gRPC. x/aez/client/cli mirrors x/fees/client/cli's group-
+//     command conventions and exposes every real Msg/Query RPC; see that
+//     package's tx.go for the routing-table JSON-file input format the 256-bucket
+//     message needed.
 var (
 	_	module.AppModuleBasic		= AppModule{}
 	_	module.HasGenesis		= AppModule{}
@@ -124,9 +131,9 @@ func (am AppModule) ExportGenesis(ctx sdk.Context, _ codec.JSONCodec) json.RawMe
 }
 
 func (AppModule) ConsensusVersion() uint64	{ return ConsensusVersion }
-func (AppModule) GetTxCmd() *cobra.Command	{ return nil }
+func (AppModule) GetTxCmd() *cobra.Command	{ return cli.GetTxCmd() }
 func (AppModule) GetQueryCmd() *cobra.Command {
-	return nil
+	return cli.GetQueryCmd()
 }
 
 func mustMarshalGenesis(moduleName string, value any) json.RawMessage {

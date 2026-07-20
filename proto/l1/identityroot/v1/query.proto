@@ -1,16 +1,128 @@
 syntax = "proto3";
 package l1.identityroot.v1;
 
-import "l1/identityroot/v1/genesis.proto";
-
 option go_package = "github.com/sovereign-l1/l1/x/identity-root/types";
+
+// x/identity-root's Query service, describing the ACTUAL hand-rolled Go surface
+// implemented in x/identity-root/types/query.go.
+//
+// This tree has NO protoc/buf toolchain wired to these files: the Go response
+// types carry hand-written gogoproto descriptors (see query.go's
+// buildQueryFileDescriptor) that register message NAMES only -- gogoproto
+// marshals the real struct fields straight off their `protobuf:"..."` tags. This
+// .proto is documentation only -- keep it byte-for-byte accurate to those tags
+// (field numbers, names, repeated-ness) rather than to any aspirational shape.
+//
+// Collection get-methods (CollectionParams, CollectionBalance, PriceForLabel,
+// Auctions, Auction) expose the message-driven .aet collection (pricing,
+// auctions, treasury). dns-item get-methods (DomainStatus, NameRecord,
+// ResolveName, ReverseRecord, Subdomains, NameZone) expose an individual name.
+//
+// There is no IdentityRootParams RPC returning the full module Params message
+// (registration/renewal periods, max records, NFT-binding toggle, etc). The
+// only params exposed over gRPC are the Phase-A collection/pricing params via
+// CollectionParams below, which returns a flattened, PARTIAL view -- not the
+// genesis IdentityRootParams shape.
+
+message QueryCollectionParamsRequest {}
+
+message QueryCollectionParamsResponse {
+  string root_namespace = 1;
+  bool enabled = 2;
+  uint64 collection_fee_naet = 3;
+  uint64 registration_period_blocks = 4;
+  uint64 renewal_window_blocks = 5;
+  uint64 issuance_auction_duration_blocks = 6;
+  uint64 min_bid_raise_pct_bps = 7;
+  uint64 sweep_interval_blocks = 8;
+  uint64 sweep_floor_naet = 9;
+  string treasury_module_name = 10;
+  // min_label_lens[i] pairs with prices_naet[i] (the price table, flattened
+  // into two parallel arrays -- same convention as MsgUpdatePriceTable).
+  repeated uint32 min_label_lens = 11;
+  repeated string prices_naet = 12;
+}
+
+message QueryCollectionBalanceRequest {}
+
+message QueryCollectionBalanceResponse {
+  // balance_naet is the module account's full naet balance.
+  uint64 balance_naet = 1;
+  // escrowed_naet is the portion locked in open-auction high bids.
+  uint64 escrowed_naet = 2;
+  // retained_naet is balance_naet - escrowed_naet: what a treasury sweep may
+  // move out (down to the sweep floor).
+  uint64 retained_naet = 3;
+}
+
+message QueryPriceForLabelRequest {
+  string label = 1;
+}
+
+message QueryPriceForLabelResponse {
+  bool found = 1;
+  string price_naet = 2;
+}
+
+// QueryAuction is a flattened, wire-friendly view of an Auction record.
+message QueryAuction {
+  string name = 1;
+  // kind is "issuance" or "owner_listed".
+  string kind = 2;
+  // seller is the listing owner for an owner-listed auction; "" for issuance.
+  string seller = 3;
+  string open_price_naet = 4;
+  // high_bid_naet is the standing high bid ("0" when none yet).
+  string high_bid_naet = 5;
+  // high_bidder is the AE address currently escrowed ("" when none).
+  string high_bidder = 6;
+  uint64 deadline_height = 7;
+  uint64 created_height = 8;
+}
+
+message QueryAuctionsRequest {}
+
+message QueryAuctionsResponse {
+  repeated QueryAuction auctions = 1;
+}
+
+message QueryAuctionRequest {
+  string name = 1;
+}
+
+message QueryAuctionResponse {
+  bool found = 1;
+  QueryAuction auction = 2;
+}
+
+message QueryDomainStatusRequest {
+  string name = 1;
+  uint64 height = 2;
+}
+
+message QueryDomainStatusResponse {
+  bool found = 1;
+  // active reports expiry_height > height.
+  bool active = 2;
+  bool in_auction = 3;
+  string owner = 4;
+  uint64 expiry_height = 5;
+}
 
 message QueryNameRecordRequest {
   string name = 1;
 }
 
+// QueryNameRecordResponse is a flattened, PARTIAL view of NameRecord -- it does
+// NOT carry renewal_height, subdomain_policy, nft_binding, storage-rent fields
+// or created/updated heights.
 message QueryNameRecordResponse {
-  NameRecord record = 1;
+  bool found = 1;
+  string name = 2;
+  string owner = 3;
+  string resolver_root = 4;
+  uint64 expiry_height = 5;
+  string parent_name = 6;
 }
 
 message QueryResolveNameRequest {
@@ -19,9 +131,10 @@ message QueryResolveNameRequest {
 }
 
 message QueryResolveNameResponse {
-  NameRecord record = 1;
-  ResolverRecord resolver = 2;
-  bool active = 3;
+  bool found = 1;
+  bool active = 2;
+  string name = 3;
+  string resolver_root = 4;
 }
 
 message QueryReverseRecordRequest {
@@ -29,27 +142,71 @@ message QueryReverseRecordRequest {
 }
 
 message QueryReverseRecordResponse {
-  ReverseRecord record = 1;
+  bool found = 1;
+  string name = 2;
+  string owner = 3;
 }
 
 message QuerySubdomainsRequest {
   string parent_name = 1;
 }
 
+// QuerySubdomainsResponse returns child NAMES only, not full records.
 message QuerySubdomainsResponse {
-  repeated NameRecord records = 1;
+  repeated string names = 1;
 }
 
-message QueryIdentityRootParamsRequest {}
+// QueryNameZoneRequest/Response expose the AEZ zone/bucket a name's canonical
+// entity id resolves to (x/aez EntityKindName), computed on-demand rather than
+// stored on NameRecord. name need not already be registered -- it only needs to
+// normalize -- since both values are a pure function of the normalized FQDN.
+message QueryNameZoneRequest {
+  string name = 1;
+}
 
-message QueryIdentityRootParamsResponse {
-  IdentityRootParams params = 1;
+message QueryNameZoneResponse {
+  // resolved is false when no AEZ zone resolver is wired (x/aez absent or
+  // disabled); zone and bucket are meaningless in that case.
+  bool resolved = 1;
+  // zone is the name's ACTUAL AEZ zone. It is unconditionally the Core Zone (0)
+  // for every name: x/aez's NamespaceName is Core-pinned, so this can never
+  // change under any routing-table update.
+  uint32 zone = 2;
+  // bucket is the canonical AEZ bucket (0..255) the name's entity id hashes
+  // into, even though it is never actually consulted for routing (see zone).
+  uint32 bucket = 3;
+}
+
+// QueryListing is a flattened view of an ANS Phase B fixed-price Listing (see
+// tx.proto's MsgListForSale/MsgDelistName/MsgBuyListedName).
+message QueryListing {
+  string name = 1;
+  string seller = 2;
+  string price_naet = 3;
+  uint64 created_height = 4;
+  uint64 updated_height = 5;
+}
+
+message QueryListingRequest {
+  string name = 1;
+}
+
+message QueryListingResponse {
+  bool found = 1;
+  QueryListing listing = 2;
 }
 
 service Query {
+  rpc CollectionParams(QueryCollectionParamsRequest) returns (QueryCollectionParamsResponse);
+  rpc CollectionBalance(QueryCollectionBalanceRequest) returns (QueryCollectionBalanceResponse);
+  rpc PriceForLabel(QueryPriceForLabelRequest) returns (QueryPriceForLabelResponse);
+  rpc Auctions(QueryAuctionsRequest) returns (QueryAuctionsResponse);
+  rpc Auction(QueryAuctionRequest) returns (QueryAuctionResponse);
+  rpc Listing(QueryListingRequest) returns (QueryListingResponse);
+  rpc DomainStatus(QueryDomainStatusRequest) returns (QueryDomainStatusResponse);
   rpc NameRecord(QueryNameRecordRequest) returns (QueryNameRecordResponse);
   rpc ResolveName(QueryResolveNameRequest) returns (QueryResolveNameResponse);
   rpc ReverseRecord(QueryReverseRecordRequest) returns (QueryReverseRecordResponse);
   rpc Subdomains(QuerySubdomainsRequest) returns (QuerySubdomainsResponse);
-  rpc IdentityRootParams(QueryIdentityRootParamsRequest) returns (QueryIdentityRootParamsResponse);
+  rpc NameZone(QueryNameZoneRequest) returns (QueryNameZoneResponse);
 }

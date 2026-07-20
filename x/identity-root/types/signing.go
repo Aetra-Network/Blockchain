@@ -58,6 +58,28 @@ func MsgUpdatePriceTableSigners(msg proto.Message) ([][]byte, error) {
 	return msgSignerFromAddressField(msg, "authority")
 }
 
+// MsgListForSaleSigners resolves the signer to the listing owner (ANS Phase B
+// owner fixed-price sale). Must be registered alongside the other three
+// hand-rolled Phase-B/C entries in app/keeperconfig/tx.go's CustomGetSigners map
+// -- that file is outside this session's edit scope, so this resolver exists
+// ready to be wired but is NOT yet reachable through the real signing context
+// until that registration lands. See the final report for this gap.
+func MsgListForSaleSigners(msg proto.Message) ([][]byte, error) {
+	return msgSignerFromAddressField(msg, "owner")
+}
+
+// MsgDelistNameSigners resolves the signer to the listing owner. Same
+// app/keeperconfig/tx.go wiring caveat as MsgListForSaleSigners above.
+func MsgDelistNameSigners(msg proto.Message) ([][]byte, error) {
+	return msgSignerFromAddressField(msg, "owner")
+}
+
+// MsgBuyListedNameSigners resolves the signer to the buyer. Same
+// app/keeperconfig/tx.go wiring caveat as MsgListForSaleSigners above.
+func MsgBuyListedNameSigners(msg proto.Message) ([][]byte, error) {
+	return msgSignerFromAddressField(msg, "buyer")
+}
+
 // MsgAttachDomainSigners resolves the signer to the FQDN owner.
 func MsgAttachDomainSigners(msg proto.Message) ([][]byte, error) {
 	return msgSignerFromAddressField(msg, "owner")

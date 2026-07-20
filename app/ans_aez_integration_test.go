@@ -102,7 +102,7 @@ func TestANSAEZFullAppIntegration(t *testing.T) {
 	grantCtx := ctx.WithBlockHeight(int64(regRes.DeadlineHeight))
 	require.NoError(t, testApp.IdentityRootKeeper.EndBlocker(grantCtx))
 
-	record, found, err := testApp.IdentityRootKeeper.NameRecord("alice")
+	record, found, err := testApp.IdentityRootKeeper.NameRecord(grantCtx, "alice")
 	require.NoError(t, err)
 	require.True(t, found, "the EndBlocker must have granted the auction to its sole bidder")
 	require.Equal(t, registrantAE, record.Owner, "the granted owner must be the registrant who won the auction")

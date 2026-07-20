@@ -88,6 +88,12 @@ func CustomGetSigners() map[protoreflect.FullName]signing.GetSignersFunc {
 		"l1.identityroot.v1.MsgSetReverseRecord":	identityroottypes.MsgSetReverseRecordSigners,
 		"l1.identityroot.v1.MsgReserveName":		identityroottypes.MsgReserveNameSigners,
 		"l1.identityroot.v1.MsgReleaseReservedName":	identityroottypes.MsgReleaseReservedNameSigners,
+		// ANS owner fixed-price sale. List/delist resolve to the listing
+		// owner; buy resolves to the buyer. Same hand-rolled shape as the
+		// Phase A/B/C messages above. See x/identity-root/types/signing.go.
+		"l1.identityroot.v1.MsgListForSale":		identityroottypes.MsgListForSaleSigners,
+		"l1.identityroot.v1.MsgDelistName":		identityroottypes.MsgDelistNameSigners,
+		"l1.identityroot.v1.MsgBuyListedName":		identityroottypes.MsgBuyListedNameSigners,
 	}
 }
 

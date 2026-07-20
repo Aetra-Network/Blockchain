@@ -58,6 +58,31 @@ anyone.
 a buyer paying it triggers the transfer (wrapper over existing `TransferName`,
 `x/identity-root/keeper/keeper.go:206`).
 
+**Implemented.** `MsgListForSale` / `MsgDelistName` / `MsgBuyListedName`
+(`x/identity-root/types/listing.go`, `x/identity-root/keeper/listing.go`),
+backed by a new per-record `Listing` collection (`ListingKeyPrefix=0x07`,
+de-blobbed like `Auctions`/`Attachments`, see `keeper/persistence.go`). Only the
+current owner can list an active domain at a positive price; a listing and an
+open auction for the same name are mutually exclusive (`ListForSale` rejects
+while an auction is open, `StartAuction` rejects while listed). Buying pays
+the buyer -> module -> current owner via the same `moveIn`/`moveOut`
+bank-custody helpers `collection.go` uses, atomically with the ownership
+transfer, and resets the term to a fresh `RegistrationPeriod` (a purchase, not
+a gift). `TransferName` and an auction grant (`grantAuctionName`) both clear
+any open listing for the name they touch, so a live listing's seller always
+matches the record's current owner (`IdentityRootState.Validate()` enforces
+this cross-check at genesis/import boundaries). Query: `Listing` (get-method
+for "is this name currently listed, and at what price").
+Wire-complete: the three messages' `CustomGetSigners` entries are registered
+in `app/keeperconfig/tx.go` (list/delist resolve to `owner`, buy resolves to
+`buyer`), guarded by `TestIdentityRootListingMsgsDecodeAndResolveSigner` in
+`app/identity_root_msg_wire_format_test.go`, the same wire-decode +
+signer-resolution proof the other Phase A/B/C messages carry. CLI:
+`l1d tx identityroot list-for-sale|delist-name|buy-listed-name`,
+`l1d query identityroot listing`. SDK: `MsgListForSaleType` /
+`MsgDelistNameType` / `MsgBuyListedNameType` in
+`ecosystem/sdk/src/tx/proto/identityRoot.ts`.
+
 ## Treasury sweep
 Once per `SweepIntervalBlocks` (17280 ≈ 1 day): if collection balance > 100 AET,
 send everything above 100 AET to the treasury module account, always leaving 100

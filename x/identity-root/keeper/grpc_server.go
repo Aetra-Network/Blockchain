@@ -119,6 +119,55 @@ func (m grpcMsgServer) UpdatePriceTable(ctx context.Context, msg *types.MsgUpdat
 	return &types.MsgUpdatePriceTableResponse{Tiers: uint32(tiers)}, nil
 }
 
+func (m grpcMsgServer) ListForSale(ctx context.Context, msg *types.MsgListForSale) (*types.MsgListForSaleResponse, error) {
+	if msg == nil {
+		return nil, errors.New("empty identity list-for-sale message")
+	}
+	if err := m.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
+	msg.Height = blockHeight(ctx)
+	listing, err := m.keeper.ListForSale(*msg)
+	if err != nil {
+		return nil, err
+	}
+	price, err := listing.Price()
+	if err != nil {
+		return nil, err
+	}
+	return &types.MsgListForSaleResponse{Name: listing.Name, PriceNaet: uintFromInt(price)}, nil
+}
+
+func (m grpcMsgServer) DelistName(ctx context.Context, msg *types.MsgDelistName) (*types.MsgDelistNameResponse, error) {
+	if msg == nil {
+		return nil, errors.New("empty identity delist message")
+	}
+	if err := m.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
+	msg.Height = blockHeight(ctx)
+	listing, err := m.keeper.DelistName(*msg)
+	if err != nil {
+		return nil, err
+	}
+	return &types.MsgDelistNameResponse{Name: listing.Name}, nil
+}
+
+func (m grpcMsgServer) BuyListedName(ctx context.Context, msg *types.MsgBuyListedName) (*types.MsgBuyListedNameResponse, error) {
+	if msg == nil {
+		return nil, errors.New("empty identity buy-listed-name message")
+	}
+	if err := m.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
+	msg.Height = blockHeight(ctx)
+	outcome, err := m.keeper.BuyListedName(*msg)
+	if err != nil {
+		return nil, err
+	}
+	return &types.MsgBuyListedNameResponse{Name: outcome.Name, Owner: outcome.Owner, PriceNaet: outcome.PriceNaet}, nil
+}
+
 func (m grpcMsgServer) AttachDomain(ctx context.Context, msg *types.MsgAttachDomain) (*types.MsgAttachDomainResponse, error) {
 	if msg == nil {
 		return nil, errors.New("empty identity attach message")
@@ -273,11 +322,11 @@ func (m grpcMsgServer) ReleaseReservedName(ctx context.Context, msg *types.MsgRe
 
 // --- Query server. Read-only; the keeper accessors take the read lock. ---
 
-func (q grpcQueryServer) CollectionParams(_ context.Context, req *types.QueryCollectionParamsRequest) (*types.QueryCollectionParamsResponse, error) {
+func (q grpcQueryServer) CollectionParams(ctx context.Context, req *types.QueryCollectionParamsRequest) (*types.QueryCollectionParamsResponse, error) {
 	if req == nil {
 		return nil, errors.New("empty identity collection params query")
 	}
-	params, enabled, err := q.keeper.collectionParamsView()
+	params, enabled, err := q.keeper.collectionParamsView(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -304,26 +353,54 @@ func (q grpcQueryServer) CollectionBalance(ctx context.Context, req *types.Query
 	if req == nil {
 		return nil, errors.New("empty identity collection balance query")
 	}
-	balance, escrow, retained := q.keeper.collectionBalanceView(ctx)
+	balance, escrow, retained, err := q.keeper.collectionBalanceView(ctx)
+	if err != nil {
+		return nil, err
+	}
 	return &types.QueryCollectionBalanceResponse{BalanceNaet: balance, EscrowedNaet: escrow, RetainedNaet: retained}, nil
 }
 
-func (q grpcQueryServer) PriceForLabel(_ context.Context, req *types.QueryPriceForLabelRequest) (*types.QueryPriceForLabelResponse, error) {
+func (q grpcQueryServer) PriceForLabel(ctx context.Context, req *types.QueryPriceForLabelRequest) (*types.QueryPriceForLabelResponse, error) {
 	if req == nil {
 		return nil, errors.New("empty identity price query")
 	}
-	price, found := q.keeper.priceForLabelView(req.Label)
+	price, found, err := q.keeper.priceForLabelView(ctx, req.Label)
+	if err != nil {
+		return nil, err
+	}
 	if !found {
 		return &types.QueryPriceForLabelResponse{Found: false}, nil
 	}
 	return &types.QueryPriceForLabelResponse{Found: true, PriceNaet: price.String()}, nil
 }
 
-func (q grpcQueryServer) Auctions(_ context.Context, req *types.QueryAuctionsRequest) (*types.QueryAuctionsResponse, error) {
+// Auctions returns every open auction, unpaginated.
+//
+// Known, deferred gap (audit: DoS resource-limits pass, LOW/informational):
+// neither this nor Subdomains below takes a
+// cosmos.base.query.v1beta1.PageRequest, so a large result set (Auctions is
+// now bounded by MaxAuctions -- see collection.go's capacity guards and
+// types/state.go's MaxAuctions field, but a busy chain could still have many
+// thousands open; Subdomains has no cap at all) is returned in one response.
+// Correctly scoped as low severity: gRPC/REST query paths run outside
+// consensus gas metering and are node-operator-rate-limitable, unlike a Msg
+// handler. Not implemented in this pass because both request/response types
+// are hand-rolled (no protoc/buf toolchain wired to this tree -- see
+// types/query.go's own doc comment), so adding PageRequest/PageResponse
+// fields means hand-editing the gogoproto field-number descriptors those
+// types carry; doing that correctly needs its own focused pass, not a
+// drive-by addition alongside unrelated fixes. Deferred as a scoped
+// follow-up: add PageRequest/PageResponse to QueryAuctionsRequest/Response
+// and QuerySubdomainsRequest/Response with a server-side default+max page
+// size clamp in both handlers.
+func (q grpcQueryServer) Auctions(ctx context.Context, req *types.QueryAuctionsRequest) (*types.QueryAuctionsResponse, error) {
 	if req == nil {
 		return nil, errors.New("empty identity auctions query")
 	}
-	auctions := q.keeper.auctionsView()
+	auctions, err := q.keeper.auctionsView(ctx)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]types.QueryAuction, 0, len(auctions))
 	for _, auction := range auctions {
 		out = append(out, types.AuctionView(auction))
@@ -331,29 +408,43 @@ func (q grpcQueryServer) Auctions(_ context.Context, req *types.QueryAuctionsReq
 	return &types.QueryAuctionsResponse{Auctions: out}, nil
 }
 
-func (q grpcQueryServer) Auction(_ context.Context, req *types.QueryAuctionRequest) (*types.QueryAuctionResponse, error) {
+func (q grpcQueryServer) Auction(ctx context.Context, req *types.QueryAuctionRequest) (*types.QueryAuctionResponse, error) {
 	if req == nil {
 		return nil, errors.New("empty identity auction query")
 	}
-	auction, found, err := q.keeper.auctionView(req.Name)
+	auction, found, err := q.keeper.auctionView(ctx, req.Name)
 	if err != nil {
 		return nil, err
 	}
 	return &types.QueryAuctionResponse{Found: found, Auction: types.AuctionView(auction)}, nil
 }
 
-func (q grpcQueryServer) DomainStatus(_ context.Context, req *types.QueryDomainStatusRequest) (*types.QueryDomainStatusResponse, error) {
+func (q grpcQueryServer) Listing(ctx context.Context, req *types.QueryListingRequest) (*types.QueryListingResponse, error) {
+	if req == nil {
+		return nil, errors.New("empty identity listing query")
+	}
+	listing, found, err := q.keeper.listingView(ctx, req.Name)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return &types.QueryListingResponse{Found: false}, nil
+	}
+	return &types.QueryListingResponse{Found: true, Listing: types.ListingView(listing)}, nil
+}
+
+func (q grpcQueryServer) DomainStatus(ctx context.Context, req *types.QueryDomainStatusRequest) (*types.QueryDomainStatusResponse, error) {
 	if req == nil {
 		return nil, errors.New("empty identity domain status query")
 	}
-	return q.keeper.domainStatusView(req.Name, req.Height)
+	return q.keeper.domainStatusView(ctx, req.Name, req.Height)
 }
 
-func (q grpcQueryServer) NameRecord(_ context.Context, req *types.QueryNameRecordRequest) (*types.QueryNameRecordResponse, error) {
+func (q grpcQueryServer) NameRecord(ctx context.Context, req *types.QueryNameRecordRequest) (*types.QueryNameRecordResponse, error) {
 	if req == nil {
 		return nil, errors.New("empty identity name record query")
 	}
-	record, found, err := q.keeper.NameRecord(req.Name)
+	record, found, err := q.keeper.NameRecord(ctx, req.Name)
 	if err != nil {
 		return nil, err
 	}
@@ -370,11 +461,11 @@ func (q grpcQueryServer) NameRecord(_ context.Context, req *types.QueryNameRecor
 	}, nil
 }
 
-func (q grpcQueryServer) ResolveName(_ context.Context, req *types.QueryResolveNameRequest) (*types.QueryResolveNameResponse, error) {
+func (q grpcQueryServer) ResolveName(ctx context.Context, req *types.QueryResolveNameRequest) (*types.QueryResolveNameResponse, error) {
 	if req == nil {
 		return nil, errors.New("empty identity resolve query")
 	}
-	record, resolver, active, err := q.keeper.ResolveName(req.Name, req.Height)
+	record, resolver, active, err := q.keeper.ResolveName(ctx, req.Name, req.Height)
 	if err != nil {
 		return nil, err
 	}
@@ -389,11 +480,11 @@ func (q grpcQueryServer) ResolveName(_ context.Context, req *types.QueryResolveN
 	}, nil
 }
 
-func (q grpcQueryServer) ReverseRecord(_ context.Context, req *types.QueryReverseRecordRequest) (*types.QueryReverseRecordResponse, error) {
+func (q grpcQueryServer) ReverseRecord(ctx context.Context, req *types.QueryReverseRecordRequest) (*types.QueryReverseRecordResponse, error) {
 	if req == nil {
 		return nil, errors.New("empty identity reverse record query")
 	}
-	reverse, found, err := q.keeper.ReverseRecord(req.Address)
+	reverse, found, err := q.keeper.ReverseRecord(ctx, req.Address)
 	if err != nil {
 		return nil, err
 	}
@@ -414,11 +505,11 @@ func (q grpcQueryServer) NameZone(ctx context.Context, req *types.QueryNameZoneR
 	return &types.QueryNameZoneResponse{Resolved: nz.Resolved, Zone: nz.Zone, Bucket: nz.Bucket}, nil
 }
 
-func (q grpcQueryServer) Subdomains(_ context.Context, req *types.QuerySubdomainsRequest) (*types.QuerySubdomainsResponse, error) {
+func (q grpcQueryServer) Subdomains(ctx context.Context, req *types.QuerySubdomainsRequest) (*types.QuerySubdomainsResponse, error) {
 	if req == nil {
 		return nil, errors.New("empty identity subdomains query")
 	}
-	records, err := q.keeper.Subdomains(req.ParentName)
+	records, err := q.keeper.Subdomains(ctx, req.ParentName)
 	if err != nil {
 		return nil, err
 	}
@@ -431,72 +522,86 @@ func (q grpcQueryServer) Subdomains(_ context.Context, req *types.QuerySubdomain
 
 // --- keeper read accessors used only by the query server (lockR). ---
 
-func (k *Keeper) collectionParamsView() (types.IdentityRootParams, bool, error) {
-	k.lockR()
-	defer k.unlockR()
-	if err := k.genesis.IdentityParams.Validate(); err != nil {
+func (k *Keeper) collectionParamsView(ctx context.Context) (types.IdentityRootParams, bool, error) {
+	gs, err := k.viewGenesis(ctx)
+	if err != nil {
 		return types.IdentityRootParams{}, false, err
 	}
-	return k.genesis.IdentityParams, k.genesis.Params.Enabled, nil
+	if err := gs.IdentityParams.Validate(); err != nil {
+		return types.IdentityRootParams{}, false, err
+	}
+	return gs.IdentityParams, gs.Params.Enabled, nil
 }
 
-func (k *Keeper) collectionBalanceView(ctx context.Context) (uint64, uint64, uint64) {
-	k.lockR()
-	defer k.unlockR()
-	escrow := openEscrowTotal(k.genesis.State.Auctions)
+func (k *Keeper) collectionBalanceView(ctx context.Context) (uint64, uint64, uint64, error) {
+	gs, err := k.viewGenesis(ctx)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	escrow := openEscrowTotal(gs.State.Auctions)
 	if !k.hasCustody() {
-		return 0, uintFromInt(escrow), 0
+		return 0, uintFromInt(escrow), 0, nil
 	}
 	balance := k.bankKeeper.SpendableCoins(ctx, CollectionModuleAddress()).AmountOf(types.CollectionDenom)
 	retained := balance.Sub(escrow)
 	if retained.IsNegative() {
 		retained = sdkmath.ZeroInt()
 	}
-	return uintFromInt(balance), uintFromInt(escrow), uintFromInt(retained)
+	return uintFromInt(balance), uintFromInt(escrow), uintFromInt(retained), nil
 }
 
-func (k *Keeper) priceForLabelView(label string) (sdkmath.Int, bool) {
-	k.lockR()
-	defer k.unlockR()
-	price, err := k.genesis.IdentityParams.PriceForLabel(label)
+func (k *Keeper) priceForLabelView(ctx context.Context, label string) (sdkmath.Int, bool, error) {
+	gs, err := k.viewGenesis(ctx)
 	if err != nil {
-		return sdkmath.ZeroInt(), false
+		return sdkmath.ZeroInt(), false, err
 	}
-	return price, true
+	price, err := gs.IdentityParams.PriceForLabel(label)
+	if err != nil {
+		return sdkmath.ZeroInt(), false, nil
+	}
+	return price, true, nil
 }
 
-func (k *Keeper) auctionsView() []types.Auction {
-	k.lockR()
-	defer k.unlockR()
-	return k.genesis.State.Export().Auctions
+func (k *Keeper) auctionsView(ctx context.Context) ([]types.Auction, error) {
+	gs, err := k.viewGenesis(ctx)
+	if err != nil {
+		return nil, err
+	}
+	// gs is already a cloneGenesis()-produced snapshot (viewGenesis), so
+	// gs.State.Auctions is already exported/sorted; no need to Export() again.
+	return gs.State.Auctions, nil
 }
 
-func (k *Keeper) auctionView(name string) (types.Auction, bool, error) {
-	k.lockR()
-	defer k.unlockR()
-	if err := k.genesis.Params.Validate(); err != nil {
+func (k *Keeper) auctionView(ctx context.Context, name string) (types.Auction, bool, error) {
+	gs, err := k.viewGenesis(ctx)
+	if err != nil {
 		return types.Auction{}, false, err
 	}
-	normalized, err := types.NormalizeName(name, k.genesis.IdentityParams.RootNamespace)
+	if err := gs.Params.Validate(); err != nil {
+		return types.Auction{}, false, err
+	}
+	normalized, err := types.NormalizeName(name, gs.IdentityParams.RootNamespace)
 	if err != nil {
 		return types.Auction{}, false, err
 	}
-	_, auction, found := auctionIndex(k.genesis.State.Auctions, normalized)
+	_, auction, found := auctionIndex(gs.State.Auctions, normalized)
 	return auction, found, nil
 }
 
-func (k *Keeper) domainStatusView(name string, height uint64) (*types.QueryDomainStatusResponse, error) {
-	k.lockR()
-	defer k.unlockR()
-	if err := k.genesis.Params.Validate(); err != nil {
-		return nil, err
-	}
-	normalized, err := types.NormalizeName(name, k.genesis.IdentityParams.RootNamespace)
+func (k *Keeper) domainStatusView(ctx context.Context, name string, height uint64) (*types.QueryDomainStatusResponse, error) {
+	gs, err := k.viewGenesis(ctx)
 	if err != nil {
 		return nil, err
 	}
-	_, inAuction := indexOfAuction(k.genesis.State.Auctions, normalized)
-	_, record, found := recordIndex(k.genesis.State.Records, normalized)
+	if err := gs.Params.Validate(); err != nil {
+		return nil, err
+	}
+	normalized, err := types.NormalizeName(name, gs.IdentityParams.RootNamespace)
+	if err != nil {
+		return nil, err
+	}
+	_, inAuction := indexOfAuction(gs.State.Auctions, normalized)
+	_, record, found := recordIndex(gs.State.Records, normalized)
 	if !found {
 		return &types.QueryDomainStatusResponse{Found: false, InAuction: inAuction}, nil
 	}

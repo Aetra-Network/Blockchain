@@ -1,6 +1,7 @@
 package keeper
 
 import (
+	"context"
 	"testing"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
@@ -109,7 +110,7 @@ func TestPhaseCMsgServerOverridesUserSuppliedHeight(t *testing.T) {
 	// attacker-supplied one.
 	reverseRes, err := srv.SetReverseRecord(ctx, &types.MsgSetReverseRecord{Owner: ownerA, Address: ownerA, Name: "alice", Height: attackerHeight})
 	require.NoError(t, err)
-	stored, found, err := k.ReverseRecord(reverseRes.Address)
+	stored, found, err := k.ReverseRecord(context.Background(), reverseRes.Address)
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Equal(t, uint64(blockHeightAt), stored.UpdatedHeight,

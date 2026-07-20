@@ -148,6 +148,24 @@ func TestMessageValidate(t *testing.T) {
 	require.ErrorIs(t, tampered.Validate(), types.ErrInvalidMessage)
 }
 
+// TestMessageValidateRejectsOversizedPayload is the regression guard for the
+// audit's payload-size-bound finding: ZoneMessage.Validate() used to have no
+// len(Payload) check at all, so nothing in x/aez's own invariants related a
+// message's byte size to the per-block drain gas budget (clampDeliveryGas is
+// keyed on the caller-declared GasLimit alone) or to what scanDueInbox must
+// json.Unmarshal into memory before any gas check runs. writeEnqueued
+// (outbox.go) calls Validate() before admitting any message, so this single
+// check closes the gap at every EnqueueMessage/bounce-producer call site.
+func TestMessageValidateRejectsOversizedPayload(t *testing.T) {
+	within := baseMessage()
+	within.Payload = make([]byte, types.MaxPayloadBytes)
+	require.NoError(t, within.Validate(), "a payload exactly at the cap must be accepted")
+
+	oversized := baseMessage()
+	oversized.Payload = make([]byte, types.MaxPayloadBytes+1)
+	require.ErrorIs(t, oversized.Validate(), types.ErrInvalidMessage)
+}
+
 func TestProcessedMarkerValidate(t *testing.T) {
 	ok := types.ProcessedMarker{MessageID: []byte("id"), Status: types.ReceiptStatusSuccess, Reason: types.FailureReasonNone, Height: 5}
 	require.NoError(t, ok.Validate())

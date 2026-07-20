@@ -43,6 +43,28 @@ import (
 // exported genesis is byte-identical to the pre-layout one for the same logical
 // state.
 //
+// # Known, deferred gap: loadForBlock/readGenesisState/viewGenesis are O(state)
+// on EVERY Msg handler, EndBlocker, and (as of the viewGenesis fix, see
+// keeper.go) every query, not just genesis/import boundaries. This is a
+// documented tradeoff, not a hidden bug -- it is gas-metered on the write
+// side (the caller's own tx pays for the bytes read) so it is not a
+// free-for-the-attacker amplification, but it does mean every message pays a
+// cost that grows with total registry size, worst as the registry approaches
+// its designed 100k-record steady state. A CONFIRMED audit finding (DoS
+// resource-limits pass) flagged this and proposed a concrete, larger fix
+// deliberately NOT implemented in this pass (would need: (1) a persisted O(1)
+// record/reserved-name counter so validateGlobal's size-cap checks stop
+// requiring a full materialized slice; (2) replacing loadForBlock's eager
+// full-scan with a lazy model where each handler point-Gets only the specific
+// record(s) it touches via types.NameKey/ResolverKey/etc., loading only the
+// small residual unconditionally; dueAuctions in the EndBlocker would remain
+// O(auctions), which is fine once bounded by MaxAuctions). Deferred as a
+// scoped follow-up: this is a comparable-sized refactor to the write-side
+// de-blobbing already done for this module, not a quick patch, and forcing it
+// through here risks exactly the kind of correctness regression the FD-02
+// incremental-validation rewrite (incremental_validate.go) was written to
+// avoid.
+//
 // # Determinism
 //
 // writeDiff decides what changed against k.written -- an in-memory map of the
@@ -64,6 +86,7 @@ type hotCollections struct {
 	reverses	[]types.ReverseRecord
 	auctions	[]types.Auction
 	attachments	[]types.Attachment
+	listings	[]types.Listing
 }
 
 // hotRecords maps a store key to the exact bytes believed committed under it.
@@ -85,18 +108,20 @@ func splitHotCollections(gs GenesisState) (GenesisState, hotCollections) {
 		reverses:	gs.State.ReverseRecords,
 		auctions:	gs.State.Auctions,
 		attachments:	gs.State.Attachments,
+		listings:	gs.State.Listings,
 	}
 	gs.State.Records = nil
 	gs.State.Resolvers = nil
 	gs.State.ReverseRecords = nil
 	gs.State.Auctions = nil
 	gs.State.Attachments = nil
+	gs.State.Listings = nil
 	return gs, hot
 }
 
 // marshalHotRecords renders the per-record write set: store key -> record bytes.
 func marshalHotRecords(hot hotCollections) (hotRecords, error) {
-	out := make(hotRecords, len(hot.records)+len(hot.resolvers)+len(hot.reverses)+len(hot.auctions)+len(hot.attachments))
+	out := make(hotRecords, len(hot.records)+len(hot.resolvers)+len(hot.reverses)+len(hot.auctions)+len(hot.attachments)+len(hot.listings))
 	for _, record := range hot.records {
 		bz, err := json.Marshal(record)
 		if err != nil {
@@ -131,6 +156,13 @@ func marshalHotRecords(hot hotCollections) (hotRecords, error) {
 			return nil, err
 		}
 		out[string(types.AttachKey(attachment.TargetIdentityHex))] = bz
+	}
+	for _, listing := range hot.listings {
+		bz, err := json.Marshal(listing)
+		if err != nil {
+			return nil, err
+		}
+		out[string(types.ListingKey(listing.Name))] = bz
 	}
 	return out, nil
 }
@@ -218,6 +250,10 @@ func (k Keeper) readGenesisState(ctx context.Context) (GenesisState, storeBaseli
 	if err != nil {
 		return GenesisState{}, storeBaseline{}, false, err
 	}
+	listings, err := scanRecords[types.Listing](store, types.ListingKeyPrefix, baseline.records)
+	if err != nil {
+		return GenesisState{}, storeBaseline{}, false, err
+	}
 
 	if len(gs.State.Records) == 0 {
 		gs.State.Records = records
@@ -233,6 +269,9 @@ func (k Keeper) readGenesisState(ctx context.Context) (GenesisState, storeBaseli
 	}
 	if len(gs.State.Attachments) == 0 {
 		gs.State.Attachments = attachments
+	}
+	if len(gs.State.Listings) == 0 {
+		gs.State.Listings = listings
 	}
 	return gs, baseline, true, nil
 }

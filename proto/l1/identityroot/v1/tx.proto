@@ -1,67 +1,188 @@
 syntax = "proto3";
 package l1.identityroot.v1;
 
-import "l1/identityroot/v1/genesis.proto";
-
 option go_package = "github.com/sovereign-l1/l1/x/identity-root/types";
 
-message MsgRegisterName {
+// x/identity-root's Msg service, describing the ACTUAL hand-rolled Go surface
+// implemented in x/identity-root/types/tx.go and x/identity-root/types/state.go
+// (request-only types for RenewName/TransferName/SetResolver/SetReverseRecord/
+// CreateSubdomain/ReserveName/ReleaseReservedName still live in state.go; their
+// responses live in tx.go).
+//
+// This tree has NO protoc/buf toolchain wired to these files: the Go types carry
+// hand-written gogoproto descriptors (see tx.go's buildIdentityRootTxFileDescriptor)
+// rather than being generated from this file. This .proto is documentation only --
+// keep it byte-for-byte accurate to the Go structs' `protobuf:"...,name=...,proto3"`
+// tags (field NUMBERS and NAMES) rather than to any aspirational shape.
+//
+// There is no MsgRegisterName. Name issuance is message-driven through
+// MsgSendToNameCollection with Opcode = OpcodeRegister (2); Opcode = OpcodeTopUp
+// (1) tops up the sender's escrow without registering anything. See
+// x/identity-root/types/collection.go for the opcode constants and
+// x/identity-root/keeper for the handler.
+
+message MsgSendToNameCollection {
+  string sender = 1;
+  // opcode is OpcodeTopUp (1) or OpcodeRegister (2).
+  uint32 opcode = 2;
+  // comment carries the label to register when opcode is OpcodeRegister.
+  string comment = 3;
+  uint64 amount_naet = 4;
+  uint64 height = 5;
+}
+
+message MsgSendToNameCollectionResponse {
+  string outcome = 1;
+  string name = 2;
+  uint64 refund_naet = 3;
+  uint64 fee_kept_naet = 4;
+  bool auction_opened = 5;
+  uint64 deadline_height = 6;
+}
+
+// MsgPlaceBid escrows amount_naet as a bid on an open auction for name. The
+// prior high bid is refunded to its bidder; a bid below the standing high plus
+// the minimum raise is rejected. signer: bidder.
+message MsgPlaceBid {
+  string bidder = 1;
+  string name = 2;
+  uint64 amount_naet = 3;
+  uint64 height = 4;
+}
+
+message MsgPlaceBidResponse {
+  string name = 1;
+  uint64 high_bid_naet = 2;
+  string high_bidder = 3;
+  uint64 refunded_previous_naet = 4;
+  uint64 deadline_height = 5;
+}
+
+// MsgStartAuction lists a domain the caller owns for an owner-listed auction of
+// duration_days (7..365) at a custom start price. No money moves at start.
+// signer: owner.
+message MsgStartAuction {
+  string owner = 1;
+  string name = 2;
+  uint64 start_price_naet = 3;
+  uint32 duration_days = 4;
+  uint64 height = 5;
+}
+
+message MsgStartAuctionResponse {
+  string name = 1;
+  uint64 deadline_height = 2;
+}
+
+// MsgUpdatePriceTable replaces the governance-owned price table. The table
+// travels as two parallel, index-aligned arrays (label lengths + naet price
+// strings): min_label_lens[i] pairs with prices_naet[i]. signer: authority.
+message MsgUpdatePriceTable {
+  string authority = 1;
+  repeated uint32 min_label_lens = 2;
+  repeated string prices_naet = 3;
+}
+
+message MsgUpdatePriceTableResponse {
+  uint32 tiers = 1;
+}
+
+// MsgListForSale (ANS Phase B) lists a domain the caller owns for a fixed-price
+// sale: the owner sets any price_naet they want; MsgBuyListedName by anyone
+// paying it triggers an atomic name-for-payment swap (a wrapper over the same
+// ownership-transfer mechanics as MsgTransferName, plus the collection's bank
+// custody pattern for the payment). No money moves at listing time. signer: owner.
+message MsgListForSale {
+  string owner = 1;
+  string name = 2;
+  uint64 price_naet = 3;
+  uint64 height = 4;
+}
+
+message MsgListForSaleResponse {
+  string name = 1;
+  uint64 price_naet = 2;
+}
+
+// MsgDelistName (ANS Phase B) clears an owner's fixed-price listing without a
+// sale -- the explicit delist path alongside the implicit clear-on-transfer.
+// signer: owner.
+message MsgDelistName {
   string owner = 1;
   string name = 2;
   uint64 height = 3;
-  string resolver_root = 4;
-  string subdomain_policy = 5;
-  IdentityNFTBindingReference nft_binding = 6;
 }
 
-message MsgRegisterNameResponse {
-  NameRecord record = 1;
+message MsgDelistNameResponse {
+  string name = 1;
 }
 
-message MsgRenewName {
-  string owner = 1;
+// MsgBuyListedName (ANS Phase B) is the buyer side of MsgListForSale: paying the
+// LIVE listing price atomically transfers the NameRecord to buyer and the price
+// from buyer to the current owner, resetting the term like any other purchase (a
+// gift/MsgTransferName does not). Buyer pays exactly the listing's current
+// price -- read from the on-chain Listing by the keeper at execution time, not
+// supplied by the caller -- so there is no amount field on the wire. signer: buyer.
+message MsgBuyListedName {
+  string buyer = 1;
   string name = 2;
   uint64 height = 3;
 }
 
-message MsgRenewNameResponse {
-  NameRecord record = 1;
+message MsgBuyListedNameResponse {
+  string name = 1;
+  string owner = 2;
+  uint64 price_naet = 3;
 }
 
-message MsgTransferName {
+// MsgAttachDomain (ANS Phase B) attaches an owned FQDN to a target wallet. The
+// caller (owner) must own the FQDN; target is classified with x/aez
+// CanonicalEntityID and only a user contract or a native_account is allowed --
+// system/pool/staking entities and dns items are rejected. One domain per
+// wallet: a second attach for the same target is rejected. signer: owner.
+message MsgAttachDomain {
   string owner = 1;
-  string name = 2;
-  string new_owner = 3;
-  uint64 height = 4;
-  IdentityNFTBindingReference new_nft_binding = 5;
-}
-
-message MsgTransferNameResponse {
-  NameRecord record = 1;
-}
-
-message MsgSetResolver {
-  string owner = 1;
-  string name = 2;
-  string resolver_root = 3;
+  string fqdn = 2;
+  string target = 3;
   uint64 height = 4;
 }
 
-message MsgSetResolverResponse {
-  ResolverRecord resolver = 1;
+message MsgAttachDomainResponse {
+  string fqdn = 1;
+  string target = 2;
 }
 
-message MsgSetReverseRecord {
+// MsgDetachDomain (ANS Phase B) clears the attachment for an owned FQDN,
+// freeing the target wallet from the one-domain-per-wallet index. signer: owner.
+message MsgDetachDomain {
   string owner = 1;
-  string address = 2;
-  string name = 3;
-  uint64 height = 4;
+  string fqdn = 2;
+  uint64 height = 3;
 }
 
-message MsgSetReverseRecordResponse {
-  ReverseRecord record = 1;
+message MsgDetachDomainResponse {
+  string fqdn = 1;
 }
 
+// MsgDisownAttachment (ANS Phase B, anti-griefing) lets the TARGET wallet of an
+// attachment clear it without the FQDN owner's cooperation: AttachDomain lets an
+// FQDN owner point a name at any allowed wallet without that wallet's consent,
+// occupying its single one-domain-per-wallet slot, and only the FQDN owner can
+// DetachDomain. No owned-name check -- the target need not own the FQDN.
+// signer: target.
+message MsgDisownAttachment {
+  string target = 1;
+  uint64 height = 2;
+}
+
+message MsgDisownAttachmentResponse {
+  string fqdn = 1;
+  string target = 2;
+}
+
+// MsgCreateSubdomain (ANS Phase B). Carries NO nested NFT-binding message: a
+// subdomain never carries one over the wire (NFT binding is disabled by default
+// and this hand-rolled descriptor only supports flat scalar fields). signer: owner.
 message MsgCreateSubdomain {
   string owner = 1;
   string parent_name = 2;
@@ -70,13 +191,69 @@ message MsgCreateSubdomain {
   uint64 height = 5;
   string resolver_root = 6;
   string subdomain_policy = 7;
-  IdentityNFTBindingReference nft_binding = 8;
 }
 
 message MsgCreateSubdomainResponse {
-  NameRecord record = 1;
+  string name = 1;
+  uint64 expiry_height = 2;
 }
 
+// MsgRenewName (ANS Phase C) extends a domain's expiry inside the renewal
+// window. signer: owner.
+message MsgRenewName {
+  string owner = 1;
+  string name = 2;
+  uint64 height = 3;
+}
+
+message MsgRenewNameResponse {
+  string name = 1;
+  uint64 expiry_height = 2;
+}
+
+// MsgTransferName (ANS Phase C) reassigns ownership of an owned name. signer:
+// owner (the CURRENT owner giving the domain away, not new_owner).
+message MsgTransferName {
+  string owner = 1;
+  string name = 2;
+  string new_owner = 3;
+  uint64 height = 4;
+}
+
+message MsgTransferNameResponse {
+  string name = 1;
+  string owner = 2;
+}
+
+// MsgSetResolver (ANS Phase C) points a name at a new resolver root. signer: owner.
+message MsgSetResolver {
+  string owner = 1;
+  string name = 2;
+  string resolver_root = 3;
+  uint64 height = 4;
+}
+
+message MsgSetResolverResponse {
+  string name = 1;
+  string resolver_root = 2;
+}
+
+// MsgSetReverseRecord (ANS Phase C) sets the reverse record for address to
+// name. signer: owner (the name's owner, not necessarily address).
+message MsgSetReverseRecord {
+  string owner = 1;
+  string address = 2;
+  string name = 3;
+  uint64 height = 4;
+}
+
+message MsgSetReverseRecordResponse {
+  string address = 1;
+  string name = 2;
+}
+
+// MsgReserveName (ANS Phase C) is governance-gated: the keeper enforces
+// authority == the module's configured governance authority. signer: authority.
 message MsgReserveName {
   string authority = 1;
   string name = 2;
@@ -84,23 +261,37 @@ message MsgReserveName {
 }
 
 message MsgReserveNameResponse {
-  ReservedName name = 1;
+  string name = 1;
+  string authority = 2;
 }
 
+// MsgReleaseReservedName (ANS Phase C) is governance-gated exactly like
+// MsgReserveName. signer: authority.
 message MsgReleaseReservedName {
   string authority = 1;
   string name = 2;
 }
 
-message MsgReleaseReservedNameResponse {}
+message MsgReleaseReservedNameResponse {
+  string name = 1;
+}
 
 service Msg {
-  rpc RegisterName(MsgRegisterName) returns (MsgRegisterNameResponse);
+  rpc SendToNameCollection(MsgSendToNameCollection) returns (MsgSendToNameCollectionResponse);
+  rpc PlaceBid(MsgPlaceBid) returns (MsgPlaceBidResponse);
+  rpc StartAuction(MsgStartAuction) returns (MsgStartAuctionResponse);
+  rpc UpdatePriceTable(MsgUpdatePriceTable) returns (MsgUpdatePriceTableResponse);
+  rpc ListForSale(MsgListForSale) returns (MsgListForSaleResponse);
+  rpc DelistName(MsgDelistName) returns (MsgDelistNameResponse);
+  rpc BuyListedName(MsgBuyListedName) returns (MsgBuyListedNameResponse);
+  rpc AttachDomain(MsgAttachDomain) returns (MsgAttachDomainResponse);
+  rpc DetachDomain(MsgDetachDomain) returns (MsgDetachDomainResponse);
+  rpc DisownAttachment(MsgDisownAttachment) returns (MsgDisownAttachmentResponse);
+  rpc CreateSubdomain(MsgCreateSubdomain) returns (MsgCreateSubdomainResponse);
   rpc RenewName(MsgRenewName) returns (MsgRenewNameResponse);
   rpc TransferName(MsgTransferName) returns (MsgTransferNameResponse);
   rpc SetResolver(MsgSetResolver) returns (MsgSetResolverResponse);
   rpc SetReverseRecord(MsgSetReverseRecord) returns (MsgSetReverseRecordResponse);
-  rpc CreateSubdomain(MsgCreateSubdomain) returns (MsgCreateSubdomainResponse);
   rpc ReserveName(MsgReserveName) returns (MsgReserveNameResponse);
   rpc ReleaseReservedName(MsgReleaseReservedName) returns (MsgReleaseReservedNameResponse);
 }

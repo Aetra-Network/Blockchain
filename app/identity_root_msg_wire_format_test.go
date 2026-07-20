@@ -349,3 +349,68 @@ func TestIdentityRootPhaseCGovernanceMsgsDecodeAndResolveSigner(t *testing.T) {
 		})
 	}
 }
+
+// TestIdentityRootListingMsgsDecodeAndResolveSigner is the wire-format guard
+// for the owner fixed-price sale messages (MsgListForSale, MsgDelistName,
+// MsgBuyListedName). Their CustomGetSigners entries were implemented in
+// x/identity-root/types/signing.go but never registered in
+// app/keeperconfig/tx.go, the exact defect class this whole file exists to
+// catch for every other identity-root message -- a keeper test cannot see
+// it, since it calls the handler directly and never resolves a signer
+// through the real tx-decode path. List/delist resolve to "owner"; buy
+// resolves to "buyer".
+func TestIdentityRootListingMsgsDecodeAndResolveSigner(t *testing.T) {
+	testApp := app.Setup(t, false)
+	txConfig := testApp.TxConfig()
+
+	ownerAE, err := addressing.FormatUserFriendly(bytes.Repeat([]byte{0x81}, 20))
+	require.NoError(t, err)
+	buyerAE, err := addressing.FormatUserFriendly(bytes.Repeat([]byte{0x82}, 20))
+	require.NoError(t, err)
+
+	cases := []struct {
+		name           string
+		msg            sdk.Msg
+		expectedSigner string
+	}{
+		{
+			name:           "MsgListForSale",
+			msg:            &identityroottypes.MsgListForSale{Owner: ownerAE, Name: "alice.aet", PriceNaet: 5000, Height: 1},
+			expectedSigner: ownerAE,
+		},
+		{
+			name:           "MsgDelistName",
+			msg:            &identityroottypes.MsgDelistName{Owner: ownerAE, Name: "alice.aet", Height: 1},
+			expectedSigner: ownerAE,
+		},
+		{
+			name:           "MsgBuyListedName",
+			msg:            &identityroottypes.MsgBuyListedName{Buyer: buyerAE, Name: "alice.aet", Height: 1},
+			expectedSigner: buyerAE,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			builder := txConfig.NewTxBuilder()
+			require.NoError(t, builder.SetMsgs(tc.msg))
+
+			txBytes, err := txConfig.TxEncoder()(builder.GetTx())
+			require.NoError(t, err)
+			require.NotEmpty(t, txBytes, "%s encoded to empty bytes; struct tags/descriptor missing", tc.name)
+
+			decodedTx, err := txConfig.TxDecoder()(txBytes)
+			require.NoError(t, err, "%s must decode over the wire; a missing Descriptor() rejects it here", tc.name)
+
+			msgs := decodedTx.GetMsgs()
+			require.Len(t, msgs, 1)
+
+			signers, _, err := testApp.AppCodec().GetMsgV1Signers(msgs[0])
+			require.NoError(t, err, "%s signer must resolve for a routable tx -- this is exactly the CustomGetSigners registration this test guards", tc.name)
+			require.Len(t, signers, 1)
+			expected, err := addressing.Parse(tc.expectedSigner)
+			require.NoError(t, err)
+			require.Equal(t, expected, signers[0], "%s signer mismatch", tc.name)
+		})
+	}
+}

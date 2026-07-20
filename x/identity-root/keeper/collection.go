@@ -137,6 +137,27 @@ func (k *Keeper) registerViaCollectionLocked(msg types.MsgSendToNameCollection, 
 	if _, _, found := auctionIndex(k.genesis.State.Auctions, fqdn); found {
 		return k.rejectWithFeeLocked(msg.Sender, incoming, fee, "auction_already_open", fqdn)
 	}
+	// Reject at the SOURCE, not post-hoc in the EndBlocker: every issuance
+	// auction opens unconditionally self-bid (HighBidder is set immediately
+	// above/below and Auction.HasBid() is just HighBidder != ""), so it is
+	// guaranteed to grant a NEW NameRecord at its deadline. Records +
+	// open-issuance-auctions is therefore exactly the count that must never
+	// exceed MaxRecords -- checking it here, before a new auction opens, means
+	// two ordinary REGISTERs that land in the same block (and so share a
+	// deadline, since msg.Height is block-height-driven, not attacker-chosen --
+	// see grpc_server.go's blockHeight) can never BOTH grant past MaxRecords in
+	// the same EndBlocker batch (the DoS-critical finding this guards against:
+	// a batch grant that pushes len(Records) > MaxRecords hard-fails the WHOLE
+	// EndBlocker via validateGlobal, which is a deterministic full-network
+	// chain halt, not a rejected tx). The general Auctions-count cap
+	// (MaxAuctions) below is the second, independent invariant this same class
+	// of overflow could hit even when Records itself has headroom.
+	if uint32(len(k.genesis.State.Records))+openIssuanceAuctionCount(k.genesis.State.Auctions)+1 > params.MaxRecords {
+		return k.rejectWithFeeLocked(msg.Sender, incoming, fee, "rejected_capacity", fqdn)
+	}
+	if uint32(len(k.genesis.State.Auctions)) >= params.MaxAuctions {
+		return k.rejectWithFeeLocked(msg.Sender, incoming, fee, "rejected_capacity", fqdn)
+	}
 
 	deadline, err := addHeight(msg.Height, params.IssuanceAuctionDurationBlocks)
 	if err != nil {
@@ -301,6 +322,28 @@ func (k *Keeper) StartAuction(msg types.MsgStartAuction) (StartAuctionOutcome, e
 	if _, _, found := auctionIndex(k.genesis.State.Auctions, record.Name); found {
 		return StartAuctionOutcome{}, errors.New("identity an auction is already open for this name")
 	}
+	// A fixed-price Listing (MsgListForSale) and an auction are mutually
+	// exclusive "for sale" states: allowing both at once would let a buy-now
+	// purchase and a winning bid race for the same NameRecord.
+	if _, _, found := listingIndex(k.genesis.State.Listings, record.Name); found {
+		return StartAuctionOutcome{}, errors.New("identity name is already listed for a fixed-price sale")
+	}
+	// Same Auctions-count cap as registerViaCollectionLocked's early-reject:
+	// an owner-listed auction does not grow Records (grantAuctionName only
+	// re-owns an EXISTING record here), but it does grow Auctions, which
+	// validateGlobal / IdentityRootState.Validate cap independently.
+	if uint32(len(k.genesis.State.Auctions)) >= params.MaxAuctions {
+		return StartAuctionOutcome{}, errors.New("identity auction capacity limit reached")
+	}
+	// Guard the multiplication itself, not just the addHeight sum it feeds:
+	// days is bounded to [7,365] above, but params.BlocksPerDay is a genesis
+	// param with no upper bound (validateCollectionParams only requires it be
+	// nonzero), so days*params.BlocksPerDay can overflow uint64 before
+	// addHeight ever sees it. Mirrors DomainStorageRentDelta's identical
+	// pre-multiplication guard (types/state.go).
+	if params.BlocksPerDay != 0 && days > ^uint64(0)/params.BlocksPerDay {
+		return StartAuctionOutcome{}, errors.New("identity owner auction duration overflow")
+	}
 	deadline, err := addHeight(msg.Height, days*params.BlocksPerDay)
 	if err != nil {
 		return StartAuctionOutcome{}, err
@@ -366,6 +409,25 @@ func (k *Keeper) EndBlocker(ctx context.Context) error {
 	return k.runEndBlockLocked(height)
 }
 
+// runEndBlockLocked closes every due auction in one all-or-nothing batch,
+// then validates the whole result once (validateGlobal + validateGrantedName
+// per grant). registerViaCollectionLocked's and StartAuction's open-time
+// capacity guards (len(Records)+openIssuanceAuctionCount, len(Auctions) vs
+// MaxAuctions) are what keep that batch from ever being able to overflow
+// MaxRecords/MaxAuctions in the first place, since every auction admitted here
+// was already capacity-checked before it was allowed to open.
+//
+// DEFERRED (documented, not implemented): a second, independent layer of
+// defense-in-depth would make this loop itself fail-safe -- skip (not
+// remove) a due auction that would push the batch over capacity, retrying it
+// next block, instead of relying entirely on the open-time guards holding for
+// every future code path that can open an auction. Not implemented here
+// because it changes this EndBlocker's current all-or-nothing-per-block
+// atomicity into a partial-skip model, which is a real behavioral change
+// (auction settlement timing) deserving its own review rather than being
+// folded into this fix. Flagged for deliberate future work if a second
+// auction-opening code path is ever added that does not go through the two
+// guards above.
 func (k *Keeper) runEndBlockLocked(height uint64) error {
 	if err := k.genesis.Params.RequireEnabled(); err != nil {
 		// A disabled collection is inert -- nothing to close or sweep.
@@ -457,6 +519,12 @@ func grantAuctionName(next *GenesisState, auction types.Auction, height uint64) 
 	// was swept but its attachment lingered. Audit: reputation is gated on LIVE
 	// ownership and never carried across an ownership change.
 	next.State.Attachments = removeAttachmentByName(next.State.Attachments, auction.Name)
+	// Same reasoning as the attachment clear above, for a fixed-price Listing: a
+	// grant re-owns the record, so any listing left over from the prior owner
+	// (StartAuction already refuses to open while one is live, but the record
+	// could have carried one from before an issuance auction re-opened on an
+	// EXPIRED name) must not survive with a now-stale Seller.
+	next.State.Listings = removeListingByName(next.State.Listings, auction.Name)
 	if idx, record, found := recordIndex(next.State.Records, auction.Name); found {
 		record.Owner = auction.HighBidder
 		record.ExpiryHeight = expiry
@@ -568,6 +636,21 @@ func uintFromInt(value sdkmath.Int) uint64 {
 }
 
 // --- auction slice helpers ---
+
+// openIssuanceAuctionCount counts open AuctionKindIssuance auctions -- every
+// one of which is unconditionally self-bid at open (see
+// registerViaCollectionLocked) and so is guaranteed to grant a NEW NameRecord
+// at its deadline. Used by registerViaCollectionLocked's capacity guard to
+// keep len(Records) + open-issuance-auctions from ever exceeding MaxRecords.
+func openIssuanceAuctionCount(auctions []types.Auction) uint32 {
+	var n uint32
+	for _, auction := range auctions {
+		if auction.Kind == types.AuctionKindIssuance {
+			n++
+		}
+	}
+	return n
+}
 
 func auctionIndex(auctions []types.Auction, name string) (int, types.Auction, bool) {
 	for i, auction := range auctions {

@@ -29,6 +29,16 @@ type IdentityRootParams struct {
 	MaxNameBytes			uint32
 	MaxRecords			uint32
 	MaxReservedNames		uint32
+	// MaxAuctions caps the number of simultaneously open auctions (issuance +
+	// owner-listed). Without this cap, nothing bounds Auctions independent of
+	// MaxRecords -- and every open ISSUANCE auction is unconditionally self-bid
+	// (see keeper.registerViaCollectionLocked), so a batch of auctions closing
+	// in the same EndBlocker could otherwise push len(Records) past MaxRecords
+	// in one atomic, whole-EndBlocker-failing step (a deterministic chain
+	// halt). Enforced at both the two open-auction call sites (early reject,
+	// keeper/collection.go) and here as the O(1) global backstop
+	// (validateGlobal / IdentityRootState.Validate).
+	MaxAuctions			uint32
 	DomainRentRatePerByteBlock	uint64
 	DefaultDomainRentPayerPolicy	string
 	NFTBindingEnabled		bool
@@ -95,6 +105,12 @@ type IdentityRootState struct {
 	// wallet (one domain per wallet). Stored per-record under AttachKeyPrefix,
 	// keyed by the target wallet's v2 identity.
 	Attachments	[]Attachment
+	// Listings are ANS Phase B owner fixed-price sales (docs/architecture/ans.md
+	// "Owner fixed-price sale"). One record per name, stored per-record under
+	// ListingKeyPrefix, keyed by the normalized FQDN. TransferName, an auction
+	// grant, and MsgDelistName all clear the entry for a name they touch, so a
+	// live Listing's Seller always matches its NameRecord's current Owner.
+	Listings	[]Listing
 	// SweepState carries the last treasury-sweep height so the daily sweep is
 	// gated on block height alone (residual blob, not a per-record key).
 	SweepState	SweepState
@@ -265,6 +281,7 @@ func DefaultIdentityRootParams() IdentityRootParams {
 		MaxNameBytes:			253,
 		MaxRecords:			100_000,
 		MaxReservedNames:		10_000,
+		MaxAuctions:			50_000,
 		DomainRentRatePerByteBlock:	1,
 		DefaultDomainRentPayerPolicy:	DomainRentPayerOwner,
 		PriceTable:			DefaultPriceTable(),
@@ -292,6 +309,7 @@ func EmptyIdentityRootState() IdentityRootState {
 		ReservedNames:		[]ReservedName{},
 		Auctions:		[]Auction{},
 		Attachments:		[]Attachment{},
+		Listings:		[]Listing{},
 	}
 }
 
@@ -306,7 +324,7 @@ func (p IdentityRootParams) Validate() error {
 	if p.RegistrationPeriod == 0 || p.RenewalPeriod == 0 {
 		return errors.New("identity root registration and renewal periods must be positive")
 	}
-	if p.MaxNameBytes == 0 || p.MaxRecords == 0 || p.MaxReservedNames == 0 {
+	if p.MaxNameBytes == 0 || p.MaxRecords == 0 || p.MaxReservedNames == 0 || p.MaxAuctions == 0 {
 		return errors.New("identity root limits must be positive")
 	}
 	if p.DomainRentRatePerByteBlock == 0 {
@@ -331,6 +349,7 @@ func (s IdentityRootState) Export() IdentityRootState {
 		ReservedNames:		cloneReserved(s.ReservedNames),
 		Auctions:		cloneAuctions(s.Auctions),
 		Attachments:		cloneAttachments(s.Attachments),
+		Listings:		cloneListings(s.Listings),
 		SweepState:		s.SweepState,
 	}
 	SortRecords(out.Records)
@@ -341,22 +360,23 @@ func (s IdentityRootState) Export() IdentityRootState {
 	SortReserved(out.ReservedNames)
 	SortAuctions(out.Auctions)
 	SortAttachments(out.Attachments)
+	SortListings(out.Listings)
 	return out
 }
 
 // ExportUnsortedHot is Export's cheap variant (FD-02 perf follow-up), meant
 // for a mutation handler's entry-point clone rather than a genesis/import
-// boundary. It deep-clones all 8 collections exactly like Export -- so the
+// boundary. It deep-clones all 9 collections exactly like Export -- so the
 // discard-the-clone-on-error rollback pattern every keeper handler relies on
-// still works -- but skips sort.SliceStable on the five HOT collections
-// (Records, Resolvers, ReverseRecords, Auctions, Attachments).
+// still works -- but skips sort.SliceStable on the six HOT collections
+// (Records, Resolvers, ReverseRecords, Auctions, Attachments, Listings).
 //
 // Their in-memory order is not wire-significant: x/identity-root/keeper's
-// persistence.go stores each of the five as its own per-name/per-address KV
+// persistence.go stores each of the six as its own per-name/per-address KV
 // key (keyed by content, never by slice position) via writeDiff's OWN
 // cloneGenesis(next).Export() call, which re-sorts independently of whatever
 // order the handler produced -- so the committed bytes are identical either
-// way. Every handler that appends to one of the five without its own re-sort
+// way. Every handler that appends to one of the six without its own re-sort
 // only ever reads it back through a linear-scan-by-name/address lookup
 // (recordIndex and friends), never through an assumption of sorted order.
 //
@@ -374,6 +394,7 @@ func (s IdentityRootState) ExportUnsortedHot() IdentityRootState {
 		ReservedNames:		cloneReserved(s.ReservedNames),
 		Auctions:		cloneAuctions(s.Auctions),
 		Attachments:		cloneAttachments(s.Attachments),
+		Listings:		cloneListings(s.Listings),
 		SweepState:		s.SweepState,
 	}
 	SortBindings(out.NFTBindings)
@@ -392,6 +413,9 @@ func (s IdentityRootState) Validate(params IdentityRootParams) error {
 	}
 	if uint32(len(s.ReservedNames)) > params.MaxReservedNames {
 		return errors.New("identity root reserved name count exceeds limit")
+	}
+	if uint32(len(s.Auctions)) > params.MaxAuctions {
+		return errors.New("identity root auction count exceeds limit")
 	}
 	records := map[string]NameRecord{}
 	for _, record := range s.Records {
@@ -478,6 +502,28 @@ func (s IdentityRootState) Validate(params IdentityRootParams) error {
 		}
 		if params.NFTBindingEnabled && binding.Owner != record.Owner {
 			return fmt.Errorf("identity NFT binding owner must match name owner for %q", binding.Name)
+		}
+	}
+	listings := map[string]struct{}{}
+	for _, listing := range s.Listings {
+		if err := listing.Validate(params); err != nil {
+			return err
+		}
+		listing = listing.Normalize(params)
+		if _, found := listings[listing.Name]; found {
+			return fmt.Errorf("duplicate identity listing %q", listing.Name)
+		}
+		listings[listing.Name] = struct{}{}
+		// A live listing's seller must match its name's CURRENT owner: every
+		// ownership-changing path (TransferName, an auction grant,
+		// MsgBuyListedName's own settlement) clears the listing it touches, so this
+		// can only fail if that clearing invariant is ever broken.
+		record, found := records[listing.Name]
+		if !found {
+			return fmt.Errorf("identity listing references unknown name %q", listing.Name)
+		}
+		if listing.Seller != record.Owner {
+			return fmt.Errorf("identity listing seller must match name owner for %q", listing.Name)
 		}
 	}
 	auctions := map[string]struct{}{}

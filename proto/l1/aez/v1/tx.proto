@@ -1,0 +1,51 @@
+syntax = "proto3";
+package l1.aez.v1;
+
+option go_package = "github.com/sovereign-l1/l1/x/aez/types";
+
+// x/aez's Msg service, describing the ACTUAL hand-rolled Go surface implemented
+// in x/aez/types/tx.go.
+//
+// This tree has NO protoc/buf toolchain wired to these files: the Go types
+// carry hand-written gogoproto descriptors (see tx.go's buildAEZTxFileDescriptor)
+// rather than being generated from this file. This .proto is documentation
+// only -- keep it byte-for-byte accurate to the Go structs' `protobuf:"...,
+// name=...,proto3"` tags (field NUMBERS and NAMES) rather than to any
+// aspirational shape.
+//
+// x/aez has exactly ONE Msg -- MsgUpdateRoutingTable -- and it is the module's
+// entire consensus-reachable write surface. It STAGES a new routing table for a
+// future routing-epoch boundary; it does NOT apply it. The swap happens in the
+// BeginBlocker at activation_height (x/aez/keeper/abci.go), never inside the
+// Msg handler, so that every transaction inside one block resolves against
+// exactly one table.
+
+// MsgUpdateRoutingTable stages a new routing table. signer: authority (must
+// equal Params.Prototype.Authority -- the gov module account on a real
+// network).
+message MsgUpdateRoutingTable {
+  string authority = 1;
+  // version must strictly exceed the current table version.
+  uint64 version = 2;
+  // epoch is the routing epoch this table belongs to.
+  uint64 epoch = 3;
+  // activation_height must be an exact routing-epoch boundary, strictly in
+  // the future.
+  int64 activation_height = 4;
+  // buckets is the FULL bucket->zone map and must carry exactly BucketCount
+  // (256) entries, index-ordered. The whole map travels, never a delta.
+  repeated uint32 buckets = 5;
+}
+
+// MsgUpdateRoutingTableResponse reports the staged table. table_hash is
+// DERIVED from the message's own buckets, never supplied by the caller.
+message MsgUpdateRoutingTableResponse {
+  uint64 version = 1;
+  uint64 epoch = 2;
+  int64 activation_height = 3;
+  string table_hash = 4;
+}
+
+service Msg {
+  rpc UpdateRoutingTable(MsgUpdateRoutingTable) returns (MsgUpdateRoutingTableResponse);
+}
