@@ -37,6 +37,7 @@ staticcheck.out
 # (each was verified to contain real tracked-worthy content, not secrets).
 !examples/avm/token/token_wallet.atlx
 !x/contracts/keeper/stake_wallet_e2e_test.go
+!x/contracts/keeper/wallet_payout_test.go
 !docs/wallet-compatibility.md
 !docs/wallet_compatibility_test.go
 !scripts/demo/wallet.ps1
