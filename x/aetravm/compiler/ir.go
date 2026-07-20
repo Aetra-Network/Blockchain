@@ -286,6 +286,22 @@ const (
 	// order); the number of Args IS the OpMakeTuple Arg (element count),
 	// so no separate count field is carried on the IR node itself.
 	IRExprMakeTuple IRExprKind = "make_tuple"
+
+	// IRExprExternalGet (call mechanism v5 design doc §6, §6.8): a read-only
+	// synchronous call into another contract's @get function, source syntax
+	// `externalGet(target, method, expectedType, args...)`. Args[0] is the
+	// target address expression; Args[1:] are the call's own argument
+	// expressions (evaluated left-to-right, bundled into one OpMakeTuple by
+	// emitIRExpr before the target address is pushed). Text carries the
+	// compile-time-constant getter method name (hashed via
+	// avm.GetterNameSelector at emission time, never a runtime value).
+	// TypeHint carries the compile-time-constant expected-return-type name
+	// (resolved via avm.ExternalGetExpectedTag at emission time into the
+	// ValueTag packed into OpCallExternalGet's Arg, and used by
+	// inferExprType to stamp this expression's own static TypeRef) --
+	// reusing the field IRExprStateRead's Map hint already established,
+	// generalized here to any scalar type name rather than just "map".
+	IRExprExternalGet IRExprKind = "external_get"
 )
 
 type IRStructField struct {
@@ -306,11 +322,15 @@ type IRExpr struct {
 	Args   []*IRExpr       `json:"args,omitempty"`
 	Fields []IRStructField `json:"fields,omitempty"`
 	Pos    Position        `json:"pos"`
-	// TypeHint carries a compiler-known declared-type hint for IRExprStateRead
-	// nodes only (e.g. "map" for a Map<K,V> @storage field), so emitIRExpr can
-	// tag the emitted OpReadStorage instruction's Arg with avm.StateReadHintMap
-	// and the runtime can default a truly-absent key to an empty map instead
-	// of the generic uint64(0) fallback. Empty for every other expression kind.
+	// TypeHint carries a compiler-known declared-type hint. For
+	// IRExprStateRead (e.g. "map" for a Map<K,V> @storage field), it lets
+	// emitIRExpr tag the emitted OpReadStorage instruction's Arg with
+	// avm.StateReadHintMap so the runtime can default a truly-absent key to
+	// an empty map instead of the generic uint64(0) fallback. For
+	// IRExprExternalGet (design doc §6.8), it carries the compile-time
+	// expected-return-type name (e.g. "uint64"), resolved via
+	// avm.ExternalGetExpectedTag at emission time. Empty for every other
+	// expression kind.
 	TypeHint string `json:"type_hint,omitempty"`
 }
 

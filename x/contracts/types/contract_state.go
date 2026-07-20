@@ -51,6 +51,11 @@ type CodeRecord struct {
 	CodeBytes uint64 `protobuf:"varint,3,opt,name=code_bytes,json=codeBytes,proto3" json:"code_bytes,omitempty"`
 	Bytecode  []byte `protobuf:"bytes,4,opt,name=bytecode,proto3" json:"bytecode,omitempty"`
 	Owner     string `protobuf:"bytes,5,opt,name=owner,proto3" json:"owner,omitempty"`
+	// ManifestBytes is the OPTIONAL JSON-encoded avm.InterfaceManifest for
+	// this code, copied verbatim from MsgStoreCode.ManifestBytes once
+	// verified (see storeCodeUnchecked / avm.VerifyInterface). Empty means no
+	// manifest was published for this code.
+	ManifestBytes []byte `protobuf:"bytes,6,opt,name=manifest_bytes,json=manifestBytes,proto3" json:"manifest_bytes,omitempty"`
 }
 
 type Contract struct {
@@ -88,6 +93,18 @@ type Contract struct {
 	PendingUpgradeMigrationHandler string `protobuf:"bytes,26,opt,name=pending_upgrade_migration_handler,json=pendingUpgradeMigrationHandler,proto3" json:"pending_upgrade_migration_handler,omitempty"`
 	PendingUpgradeScheduledHeight  uint64 `protobuf:"varint,27,opt,name=pending_upgrade_scheduled_height,json=pendingUpgradeScheduledHeight,proto3" json:"pending_upgrade_scheduled_height,omitempty"`
 	PendingUpgradeEarliestHeight   uint64 `protobuf:"varint,28,opt,name=pending_upgrade_earliest_height,json=pendingUpgradeEarliestHeight,proto3" json:"pending_upgrade_earliest_height,omitempty"`
+	// FreezeHeight and DeletionEligibilityHeight track the archive/delete
+	// storage-rent-cycle lifecycle (contracts-storage-rent-cycle plan, mirroring
+	// x/native-account and x/storage-rent's identical fields). FreezeHeight is
+	// stamped the first time this contract transitions into Frozen/
+	// FrozenLimited (see chargeContractRentAt in x/contracts/keeper/keeper.go);
+	// DeletionEligibilityHeight = FreezeHeight + Params.
+	// StorageRentRetentionBlocks is the earliest height MsgDeleteExpiredContract
+	// may archive it. Both are cleared back to zero on unfreeze (see
+	// unfreezeContract) so a later freeze re-stamps a fresh eligibility window
+	// rather than reusing a stale one.
+	FreezeHeight              uint64 `protobuf:"varint,29,opt,name=freeze_height,json=freezeHeight,proto3" json:"freeze_height,omitempty"`
+	DeletionEligibilityHeight uint64 `protobuf:"varint,30,opt,name=deletion_eligibility_height,json=deletionEligibilityHeight,proto3" json:"deletion_eligibility_height,omitempty"`
 }
 
 // HasPendingUpgrade reports whether the contract has an unapplied scheduled
@@ -160,6 +177,15 @@ type ContractReceipt struct {
 	GasUsed         uint64 `protobuf:"varint,7,opt,name=gas_used,json=gasUsed,proto3" json:"gas_used,omitempty"`
 	LogicalTime     uint64 `protobuf:"varint,8,opt,name=logical_time,json=logicalTime,proto3" json:"logical_time,omitempty"`
 	Height          uint64 `protobuf:"varint,9,opt,name=height,proto3" json:"height,omitempty"`
+	// SweptBalance records real naet moved out of the storage-rent reserve to
+	// the protocol treasury by DeleteExpiredContract when the archived
+	// contract still carried a nonzero Balance (reachable because
+	// TopUpContract accepts top-ups on a Frozen/FrozenLimited contract without
+	// requiring debt payment or unfreezing first). Distinct from Amount --
+	// which on this same operation instead records the written-off
+	// StorageRentDebt bad debt -- so the receipt can audit both numbers
+	// independently. Zero on every other operation.
+	SweptBalance uint64 `protobuf:"varint,10,opt,name=swept_balance,json=sweptBalance,proto3" json:"swept_balance,omitempty"`
 }
 
 type MsgInstantiateContract struct {
@@ -568,6 +594,9 @@ func (c CodeRecord) Validate(params Params) error {
 	if c.CodeBytes == 0 || c.CodeBytes > params.MaxCodeBytes {
 		return errors.New(ErrInvalidBytecode + ": code size out of bounds")
 	}
+	if len(c.ManifestBytes) > MaxContractManifestBytes {
+		return errors.New(ErrInvalidBytecode + ": manifest bytes exceed maximum size")
+	}
 	if len(c.Bytecode) > 0 {
 		if err := ValidateAVMBytecode(params, c.Bytecode); err != nil {
 			return err
@@ -966,7 +995,7 @@ func ComputeInternalMessageID(msg InternalMessage) string {
 
 func ComputeContractReceiptID(receipt ContractReceipt) string {
 	sum := sha256Sum([]byte(fmt.Sprintf(
-		"aetra-contract-receipt-v1/%s/%s/%s/%010d/%020d/%020d/%020d/%020d",
+		"aetra-contract-receipt-v1/%s/%s/%s/%010d/%020d/%020d/%020d/%020d/%020d",
 		receipt.ContractAddress,
 		receipt.Actor,
 		receipt.Operation,
@@ -975,6 +1004,7 @@ func ComputeContractReceiptID(receipt ContractReceipt) string {
 		receipt.GasUsed,
 		receipt.LogicalTime,
 		receipt.Height,
+		receipt.SweptBalance,
 	)))
 	return hex.EncodeToString(sum)
 }
@@ -1025,6 +1055,7 @@ func cloneCodes(values []CodeRecord) []CodeRecord {
 	out := append([]CodeRecord(nil), values...)
 	for i := range out {
 		out[i].Bytecode = append([]byte(nil), out[i].Bytecode...)
+		out[i].ManifestBytes = append([]byte(nil), out[i].ManifestBytes...)
 	}
 	return out
 }

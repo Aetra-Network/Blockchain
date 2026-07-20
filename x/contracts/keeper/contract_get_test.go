@@ -181,3 +181,67 @@ func TestContractGetByExactName(t *testing.T) {
 	})
 	require.ErrorContains(t, err, "exceeds limit")
 }
+
+// TestContractGetGasFloorCheckedBeforeDecode is the regression guard for the
+// confirmed finding that ContractGet's gas-floor check used to run AFTER
+// loadAVMModule/decodeContractSnapshot had already fully decoded the
+// target, so it could never actually prevent the O(bytecode+storage) decode
+// work it exists to guard against. This test proves the check now runs
+// FIRST, not merely that it still rejects: the target's CodeRecord.Bytecode
+// is deliberately garbage (avm.DecodeModule cannot parse it), so if
+// loadAVMModule ran BEFORE the gas floor check (the pre-fix order),
+// ContractGet would fail with types.ErrInvalidBytecode instead -- a
+// different, decode-WAS-attempted error. Getting the gas-floor error
+// specifically proves decode was never attempted at all. Also proves the
+// CODE dimension specifically (types.RequireCloneGasFloor, not the
+// storage-only RequireStorageCloneGasFloor it extends): StorageBytes is
+// deliberately tiny, well under MinStorageBytesForCloneGasFloor, so only a
+// bytecode-size-aware floor can catch this.
+func TestContractGetGasFloorCheckedBeforeDecode(t *testing.T) {
+	owner := aeAddress("41")
+	k := NewKeeper()
+
+	const codeID = "garbage-code"
+	k.genesis.State.Codes = []types.CodeRecord{{
+		CodeID:   codeID,
+		CodeHash: codeID,
+		// Above MinCodeBytesForDecodeGasFloor so the CODE floor engages.
+		// Deliberately does NOT match len(Bytecode): the floor check only
+		// reads this already-tracked metadata field (real deployments keep
+		// it in sync via CodeRecord.Validate at StoreCode time; this
+		// direct-genesis-write test bypasses that validation on purpose to
+		// isolate the ordering question from bytecode validity).
+		CodeBytes: types.MinCodeBytesForDecodeGasFloor + 65536,
+		Bytecode:  []byte("not a real AVM module"),
+		Owner:     owner,
+	}}
+
+	addr := aeAddress("42")
+	k.genesis.State.Contracts = []types.Contract{{
+		AddressUser:          addr,
+		AddressRaw:           addressRawForTest(t, addr),
+		CodeID:               codeID,
+		Creator:              owner,
+		Owner:                owner,
+		Admin:                owner,
+		Status:               types.ContractStatusActive,
+		StorageSchemaVersion: 1,
+		// Deliberately tiny: below MinStorageBytesForCloneGasFloor, so the
+		// storage-only floor never engages here -- this test is
+		// specifically about the CODE dimension.
+		StorageBytes:  16,
+		CreatedHeight: 1,
+		UpdatedHeight: 1,
+		LogicalTime:   1,
+	}}
+
+	_, err := k.ContractGet(types.QueryContractGetRequest{
+		ContractAddress: addr,
+		Method:          "anything",
+		GasLimit:        1,
+	})
+	require.Error(t, err)
+	require.ErrorContains(t, err, "gas limit", "must be rejected by the gas floor, not a decode failure")
+	require.ErrorContains(t, err, "byte-code", "must specifically be the CODE floor (the storage floor never engages at StorageBytes=16)")
+	require.NotContains(t, err.Error(), types.ErrInvalidBytecode, "must reject BEFORE ever attempting to decode the (deliberately garbage) bytecode")
+}

@@ -31,6 +31,16 @@ import (
 
 const storageRentReserveModule = "feecollector_storage_rent_reserve"
 
+// contractTreasuryModule is the destination for DeleteExpiredContract's
+// forced-closure Balance sweep (see sweepDeletedContractBalance). Hardcoded
+// as a raw module-account name rather than importing
+// feecollectortypes.TreasuryModuleName, the same local-string convention
+// storageRentReserveModule above already uses -- it is the identical value
+// ("feecollector_treasury"), the module x/identity-root's own treasury sweep
+// (collection.go sweepLocked) already sends to via the same
+// SendCoinsFromModuleToModule call.
+const contractTreasuryModule = "feecollector_treasury"
+
 // contractGasResultLabel maps an AVM result code to the bounded observability
 // label used for the contract-execution-gas metric. Pure string logic — no
 // float — so it is safe inside the determinism gate's float-free zone.
@@ -46,6 +56,24 @@ var storageRentBaseDenom = "naet"
 // BankKeeper defines the subset of bank functionality needed by the contracts keeper.
 type BankKeeper interface {
 	SendCoinsFromAccountToModule(ctx context.Context, senderAddr sdk.AccAddress, recipientModule string, amt sdk.Coins) error
+	// SendCoinsFromModuleToAccount backs SEND_PAYOUT_TO_WALLET (see
+	// async.SendModeWalletPayout): the ONLY path by which a contract moves
+	// real AET to a plain wallet address rather than another contract's
+	// virtual ledger balance. The real bankkeeper.Keeper already implements
+	// this (it is the standard SDK bank keeper method), so widening this
+	// interface needs no change to how the app wires WithBankKeeper.
+	SendCoinsFromModuleToAccount(ctx context.Context, senderModule string, recipientAddr sdk.AccAddress, amt sdk.Coins) error
+	// SendCoinsFromModuleToModule backs sweepDeletedContractBalance: when
+	// DeleteExpiredContract archive-deletes a frozen contract that still
+	// carries a nonzero Balance, the real naet already sitting in the
+	// storage-rent reserve are swept to the protocol treasury rather than
+	// silently zeroed out of existence. Same widening rationale as
+	// SendCoinsFromModuleToAccount above: the real bankkeeper.Keeper already
+	// implements this standard SDK method, and x/identity-root's own
+	// treasury sweep (collection.go sweepLocked) already relies on it
+	// needing no special module-account permission, so no change to app
+	// wiring is required.
+	SendCoinsFromModuleToModule(ctx context.Context, senderModule, recipientModule string, amt sdk.Coins) error
 }
 
 type Keeper struct {
@@ -235,6 +263,26 @@ func (k *Keeper) Code(req types.QueryCodeRequest) (types.CodeRecord, bool, error
 	return code, found, nil
 }
 
+// ContractManifest serves the OPTIONAL AVM interface manifest published for a
+// stored code (see MsgStoreCode.ManifestBytes / CodeRecord.ManifestBytes).
+// Found=false covers both "code does not exist" and "code exists but was
+// stored without a manifest" -- avm-get-methods-gap's manifest surface is
+// opt-in, so neither case is an error.
+func (k *Keeper) ContractManifest(req types.QueryContractManifestRequest) (types.QueryContractManifestResponse, error) {
+	if strings.TrimSpace(req.CodeID) == "" {
+		return types.QueryContractManifestResponse{}, errors.New("contract code id is required")
+	}
+	gs := k.snapshotGenesis()
+	code, found := findCode(gs.State.Codes, req.CodeID)
+	if !found || len(code.ManifestBytes) == 0 {
+		return types.QueryContractManifestResponse{}, nil
+	}
+	return types.QueryContractManifestResponse{
+		Found:         true,
+		ManifestBytes: append([]byte(nil), code.ManifestBytes...),
+	}, nil
+}
+
 // Codes returns a bounded page of stored code records. See FINDING-010: the
 // previous implementation called State.Normalize(), which deep-clones EVERY
 // stored Bytecode payload for the WHOLE state before truncating to the
@@ -333,27 +381,98 @@ func (k *Keeper) storeCodeUnchecked(msg types.MsgStoreCode) (types.StoreCodeResp
 		}
 		msg.CodeHash = codeHash
 		msg.CodeBytes = uint64(len(msg.Bytecode))
+		// avm-get-methods-gap: an OPTIONAL published manifest is verified
+		// against the JUST-DECODED module before being accepted into state --
+		// re-deriving avm.InterfaceHash(manifest) and checking it against the
+		// module's own MetadataHash (avm.VerifyInterface), which also confirms
+		// every declared method/async-handler/get-method's entrypoint is
+		// actually exported. This rejects a manifest that doesn't describe
+		// the deployed bytecode up front, the same "verify once, at the point
+		// bytecode is accepted" reasoning as the decode+verify block above.
+		if len(msg.ManifestBytes) > 0 {
+			if err := verifyContractManifest(module, msg.ManifestBytes); err != nil {
+				return types.StoreCodeResponse{}, fmt.Errorf("%s: %w", types.ErrInvalidBytecode, err)
+			}
+		}
+	} else if len(msg.ManifestBytes) > 0 {
+		// No bytecode in this call means no freshly-decoded module to verify
+		// the manifest against (this StoreCode shape re-registers an already-
+		// stored code's metadata by hash only) -- rather than silently
+		// accepting an unverified manifest, require the manifest to travel
+		// together with the bytecode it describes.
+		return types.StoreCodeResponse{}, errors.New(types.ErrInvalidBytecode + ": manifest bytes require bytecode to verify against")
 	}
 	if msg.CodeBytes == 0 || msg.CodeBytes > k.genesis.Params.MaxCodeBytes {
 		return types.StoreCodeResponse{}, errors.New(types.ErrInvalidBytecode + ": code size out of bounds")
 	}
+	if len(msg.ManifestBytes) > types.MaxContractManifestBytes {
+		return types.StoreCodeResponse{}, errors.New(types.ErrInvalidBytecode + ": manifest bytes exceed maximum size")
+	}
 	if err := coretypes.ValidateHash("contracts code hash", msg.CodeHash); err != nil {
 		return types.StoreCodeResponse{}, err
 	}
+	record := types.CodeRecord{
+		CodeID:        msg.CodeHash,
+		CodeHash:      msg.CodeHash,
+		CodeBytes:     msg.CodeBytes,
+		Bytecode:      append([]byte(nil), msg.Bytecode...),
+		Owner:         msg.Authority,
+		ManifestBytes: append([]byte(nil), msg.ManifestBytes...),
+	}
+	// FINDING (contracts-storecode-overwrite): a resubmission of an ALREADY
+	// KNOWN CodeHash used to overwrite the existing CodeRecord wholesale --
+	// any active wallet could submit a hash-only MsgStoreCode (no Bytecode, no
+	// ManifestBytes) for a CodeHash someone else already stored real bytecode
+	// and a verified manifest against, silently blanking both fields AND
+	// reassigning Owner to itself, since upsertCode fully replaces the record
+	// by CodeID with no merge or ownership check. Close that by merge-
+	// preserving: an omitted Bytecode/ManifestBytes in THIS call never blanks
+	// out what is already stored, Owner is never reassigned once set, and a
+	// call from a non-owner that would still change stored content (a real
+	// bytecode/manifest change, not merely re-referencing the same hash) is
+	// rejected outright. A genuine no-op re-reference by any wallet (same
+	// content, or no content supplied) keeps succeeding harmlessly, since
+	// nothing about the stored record actually changes.
+	if existing, found := findCodeRecord(k.genesis.State.Codes, msg.CodeHash); found {
+		if len(record.Bytecode) == 0 {
+			record.Bytecode = append([]byte(nil), existing.Bytecode...)
+			record.CodeBytes = existing.CodeBytes
+		}
+		if len(record.ManifestBytes) == 0 {
+			record.ManifestBytes = append([]byte(nil), existing.ManifestBytes...)
+		}
+		contentChanged := !bytes.Equal(record.Bytecode, existing.Bytecode) ||
+			!bytes.Equal(record.ManifestBytes, existing.ManifestBytes)
+		if existing.Owner != "" && msg.Authority != existing.Owner && contentChanged {
+			return types.StoreCodeResponse{}, fmt.Errorf(
+				"%s: code %s is already owned by a different wallet; only the owner may change its bytecode or manifest",
+				types.ErrUnauthorized, msg.CodeHash)
+		}
+		record.Owner = existing.Owner
+	}
 	next := k.genesis
-	next.State.Codes = upsertCode(next.State.Codes, types.CodeRecord{
-		CodeID:    msg.CodeHash,
-		CodeHash:  msg.CodeHash,
-		CodeBytes: msg.CodeBytes,
-		Bytecode:  append([]byte(nil), msg.Bytecode...),
-		Owner:     msg.Authority,
-	})
+	next.State.Codes = upsertCode(next.State.Codes, record)
 	next = types.RefreshStateRoot(next)
 	if err := next.Validate(); err != nil {
 		return types.StoreCodeResponse{}, err
 	}
 	k.assignGenesis(next)
 	return types.StoreCodeResponse{CodeID: msg.CodeHash, StateRoot: next.StateRoot}, nil
+}
+
+// verifyContractManifest JSON-decodes manifestBytes as an avm.InterfaceManifest
+// and confirms it actually describes module -- both that its declared surface
+// hashes to module's own MetadataHash (avm.InterfaceHash) and that every
+// declared method/async-handler/get-method entrypoint is exported (avm.
+// VerifyInterface does both). Kept as a standalone helper (rather than inlined
+// into storeCodeUnchecked) so it can be unit-tested directly against a decoded
+// module without going through the whole StoreCode call.
+func verifyContractManifest(module avm.Module, manifestBytes []byte) error {
+	var manifest avm.InterfaceManifest
+	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
+		return fmt.Errorf("manifest bytes do not decode as a JSON AVM interface manifest: %w", err)
+	}
+	return avm.VerifyInterface(module, manifest)
 }
 
 func (k *Keeper) StoreCodeState(ctx context.Context, msg types.MsgStoreCode) (types.StoreCodeResponse, error) {
@@ -1676,7 +1795,7 @@ func blockBeaconInputs(ctx context.Context) (prevStateRoot, blockEntropy []byte)
 // actual near-zero budget.
 const defaultAVMGasLimit = 100_000
 
-func (k Keeper) buildAVMContext(entry avm.Entrypoint, contract types.Contract, sender string, payload []byte, funds, gasLimit, height, logicalTime uint64, opcode uint32, queryID uint64, bounced bool) (avm.RuntimeContext, error) {
+func (k Keeper) buildAVMContext(entry avm.Entrypoint, contract types.Contract, sender string, payload []byte, funds, gasLimit, height, logicalTime uint64, opcode uint32, queryID uint64, bounced bool, resolver avm.ExternalGetResolver) (avm.RuntimeContext, error) {
 	contractAddress, err := aetraaddress.ParseAccAddress(contract.AddressUser)
 	if err != nil {
 		return avm.RuntimeContext{}, err
@@ -1714,6 +1833,12 @@ func (k Keeper) buildAVMContext(entry avm.Entrypoint, contract types.Contract, s
 		GasLimit:                gasLimit,
 		PrevStateRoot:           prevStateRoot,
 		BlockEntropy:            blockEntropy,
+		// Read-only cross-contract calls (design doc §6, §6.8): the caller
+		// picks which point-in-time contract/code snapshot the resolver
+		// closes over (see newExternalGetResolver's doc comment). nil is
+		// safe -- OpCallExternalGet traps cleanly if a call site is ever
+		// wired without one, it never panics.
+		ExternalGetResolver: resolver,
 	}, nil
 }
 
@@ -1814,7 +1939,12 @@ func (k *Keeper) executeContract(ctx context.Context, msg types.MsgExecuteContra
 		if err != nil {
 			return types.ExecuteContractResponse{}, err
 		}
-		runtimeCtx, err := k.buildAVMContext(avm.EntryReceiveExternal, contract, msg.Sender, msg.Msg, msg.Funds, k.genesis.Params.MaxGasPerExecution, msg.Height, contract.LogicalTime, msg.Opcode, 0, false)
+		// No `next` scratch copy exists yet at this point in executeContract
+		// (built only after Run() returns, below) -- k.genesis is therefore
+		// the correct point-in-time view for a nested externalGet() call,
+		// no other contract has been mutated by this method yet (design doc
+		// §6.8 point 3).
+		runtimeCtx, err := k.buildAVMContext(avm.EntryReceiveExternal, contract, msg.Sender, msg.Msg, msg.Funds, k.genesis.Params.MaxGasPerExecution, msg.Height, contract.LogicalTime, msg.Opcode, 0, false, newExternalGetResolver(k.genesis.State.Contracts, k.genesis.State.Codes))
 		if err != nil {
 			return types.ExecuteContractResponse{}, err
 		}
@@ -2118,6 +2248,12 @@ func (k *Keeper) unfreezeContract(ctx context.Context, msg types.MsgUnfreezeCont
 	}
 	contract.Status = types.ContractStatusActive
 	contract.LastStorageChargeHeight = msg.Height
+	// Clear the archive/delete eligibility window stamped by
+	// chargeContractRentAt on freeze: a later freeze must re-stamp a fresh
+	// window, not reuse (or worse, already satisfy) a stale one from a
+	// previous freeze/unfreeze cycle.
+	contract.FreezeHeight = 0
+	contract.DeletionEligibilityHeight = 0
 	contract.UpdatedHeight = msg.Height
 	next := k.genesis
 	// Clone before index-write; see UpgradeContractCode above (FINDING-008).
@@ -2129,6 +2265,112 @@ func (k *Keeper) unfreezeContract(ctx context.Context, msg types.MsgUnfreezeCont
 	}
 	k.assignGenesis(next)
 	return contract, nil
+}
+
+// DeleteExpiredContract archives a long-frozen contract into a permanent
+// tombstone: see MsgDeleteExpiredContract's doc comment (types.go) for the
+// full eligibility/authorization contract. Authority-gated (mirrors
+// x/storage-rent's MsgDeleteExpiredContract, and GrantNativeStakingCapability
+// immediately below), not actor-gated: pruning module state on behalf of a
+// contract that has stopped paying rent is a governance action.
+func (k *Keeper) DeleteExpiredContract(msg types.MsgDeleteExpiredContract) (types.ContractReceipt, error) {
+	k.txMu.Lock() // design doc §8.3
+	defer k.txMu.Unlock()
+	if !k.genesis.Params.Enabled { // SA2 #8: honor the AVM kill-switch
+		return types.ContractReceipt{}, errors.New(types.ErrExecutionFailed + ": module disabled")
+	}
+	if err := k.genesis.Params.Authorize(msg.Authority); err != nil {
+		return types.ContractReceipt{}, err
+	}
+	if msg.Height == 0 {
+		return types.ContractReceipt{}, errors.New("contract archive-delete height must be positive")
+	}
+	idx, contract, found := findContractWithIndex(k.genesis.State.Contracts, msg.ContractAddress)
+	if !found {
+		return types.ContractReceipt{}, errors.New(types.ErrContractNotFound + ": contract not found")
+	}
+	if err := types.EnsureContractLifecycleAction(contract, types.ContractLifecycleActionArchiveDelete); err != nil {
+		return types.ContractReceipt{}, err
+	}
+	// EnsureContractLifecycleAction above also permits ArchiveDelete from
+	// Active (used by the unrelated SEND_DESTROY_IF_EMPTY self-destruct
+	// path -- see the async.SendModeDestroyIfEmpty handling in
+	// ReceiveInternalMessage) and Archived. This governance route is
+	// narrower: it may ONLY archive a contract that actually went through
+	// the freeze-for-nonpayment path and is still Frozen/FrozenLimited.
+	if contract.Status != types.ContractStatusFrozen && contract.Status != types.ContractStatusFrozenLimited {
+		return types.ContractReceipt{}, fmt.Errorf("%s: only a frozen contract can be archive-deleted for storage rent expiry", types.ErrContractLifecycle)
+	}
+	if contract.DeletionEligibilityHeight == 0 || msg.Height < contract.DeletionEligibilityHeight {
+		return types.ContractReceipt{}, fmt.Errorf("%s: contract is not yet eligible for archival deletion (eligible at height %d)", types.ErrContractLifecycle, contract.DeletionEligibilityHeight)
+	}
+	// Force-write off any remaining debt as documented bad debt -- the
+	// contract has been frozen and unpaid for at least
+	// Params.StorageRentRetentionBlocks blocks, well past any reasonable
+	// grace window -- and zero Balance/Data/StorageBytes/StorageRentDebt so
+	// the resulting record satisfies ValidateDeletedContractTombstone
+	// (lifecycle.go). Balance is not just force-zeroed, though: unlike
+	// StorageRentDebt (which is genuinely uncollectable bad debt),
+	// TopUpContract is reachable from Frozen/FrozenLimited without requiring
+	// debt payment or unfreezing first, so a nonzero Balance here can be
+	// real naet the depositor topped up while the contract sat frozen --
+	// coins already resident in storageRentReserveModule. Capture it as
+	// sweptBalance and move it to the treasury below (after next.Validate()
+	// succeeds) instead of letting it evaporate from the reserve with no
+	// accounting. Contrast the existing SEND_DESTROY_IF_EMPTY self-destruct
+	// path (async.SendModeDestroyIfEmpty handling in ReceiveInternalMessage),
+	// which sidesteps this entirely by REQUIRING Balance == 0 before it will
+	// destroy a contract.
+	writtenOffDebt := contract.StorageRentDebt
+	sweptBalance := contract.Balance
+	contract.Data = nil
+	contract.StorageBytes = 0
+	contract.Balance = 0
+	contract.StorageRentDebt = 0
+	contract.Status = types.ContractStatusDeleted
+	contract.FreezeHeight = 0
+	contract.DeletionEligibilityHeight = 0
+	contract.LogicalTime++
+	contract.UpdatedHeight = msg.Height
+	contract.StateRoot = types.ComputeContractStateRoot(contract)
+	// Actor is left empty rather than msg.Authority: ContractReceipt.Actor,
+	// when non-empty, must be a user-facing "AE..." address
+	// (ValidateUserFacingAEAddress), but the governance authority (Params.
+	// Authority) is a raw bech32 system/placeholder address, not a real
+	// user-facing account -- see the identical empty-Actor-is-valid
+	// allowance in ContractReceipt.Validate.
+	receipt := newContractReceiptWithSweptBalance(contract.AddressUser, "", "delete_expired_contract", types.ExitCodeOK, writtenOffDebt, 0, contract.LogicalTime, msg.Height, sweptBalance)
+	next := k.genesis
+	// Clone before index-write; see UpgradeContractCode above (FINDING-008).
+	next.State.Contracts = append([]types.Contract(nil), next.State.Contracts...)
+	next.State.Contracts[idx] = contract
+	next.State.Receipts = append(next.State.Receipts, receipt)
+	next = types.RefreshStateRoot(next)
+	if err := next.Validate(); err != nil {
+		return types.ContractReceipt{}, err
+	}
+	// The reserve-to-treasury sweep is deferred to here -- after
+	// next.Validate() has confirmed the whole archival (Balance/debt zeroed,
+	// receipt appended, state root refreshed) is about to commit -- mirroring
+	// SEND_PAYOUT_TO_WALLET's identical deferred-bank-call ordering just
+	// above in ReceiveInternalMessage: a bank failure here still returns
+	// before k.assignGenesis, so next (with its ledger-side sweep already
+	// folded in) is discarded rather than partially applied.
+	if sweptBalance > 0 {
+		if err := k.sweepDeletedContractBalance(k.runtimeCtx, sweptBalance); err != nil {
+			return types.ContractReceipt{}, err
+		}
+	}
+	k.assignGenesis(next)
+	return receipt, nil
+}
+
+func (k *Keeper) DeleteExpiredContractState(ctx context.Context, msg types.MsgDeleteExpiredContract) (types.ContractReceipt, error) {
+	receipt, err := k.DeleteExpiredContract(msg)
+	if err != nil {
+		return types.ContractReceipt{}, err
+	}
+	return receipt, k.writeGenesis(ctx)
 }
 
 func (k *Keeper) GrantNativeStakingCapability(msg types.MsgGrantNativeStakingCapability) (types.ContractCapability, error) {
@@ -2332,6 +2574,18 @@ func (k *Keeper) ReceiveInternalMessage(msg types.MsgReceiveInternalMessage) (ty
 	// so a later failure in this same delivery never charges a fee for a deploy that didn't
 	// end up committed.
 	var autoDeployStorageFee uint64
+	// walletPayoutAddr/walletPayoutAmount stage a SEND_PAYOUT_TO_WALLET
+	// transfer (see the async.SendModeWalletPayout branch below) for the
+	// SAME deferred-collection treatment as autoDeployStorageFee just above:
+	// the actual bank call happens only after next.Validate() has confirmed
+	// the whole delivery -- including the ledger debit already folded into
+	// next -- is about to commit, never inside the branch itself. Doing the
+	// real bank transfer inside the branch (before next.Validate() can still
+	// reject the delivery for an unrelated reason) would let real AET leave
+	// the reserve module while the matching contract.Balance debit gets
+	// rolled back, minting value out of thin air.
+	var walletPayoutAddr sdk.AccAddress
+	var walletPayoutAmount uint64
 	if destinationIdx >= 0 {
 		// Conserve funds: debit the verified source, then credit the destination.
 		// Writing the debit first and re-reading the destination makes a self-send
@@ -2397,7 +2651,13 @@ func (k *Keeper) ReceiveInternalMessage(msg types.MsgReceiveInternalMessage) (ty
 			if err != nil {
 				return types.InternalMessage{}, err
 			}
-			runtimeCtx, err := k.buildAVMContext(avm.EntryReceiveInternal, destination, record.SourceContractUser, record.Body, record.Funds, record.GasLimit, record.Height, record.LogicalTime, record.Opcode, record.QueryID, false)
+			// next already has this delivery's earlier mutations (source
+			// debit / destination credit / auto-deploy) folded in -- closing
+			// over next.State, never a fresh k.snapshotGenesis(), is what
+			// keeps a nested externalGet() call consistent with this same
+			// delivery instead of silently reading pre-delivery state
+			// (design doc §6.7(e)/§6.8 point 3).
+			runtimeCtx, err := k.buildAVMContext(avm.EntryReceiveInternal, destination, record.SourceContractUser, record.Body, record.Funds, record.GasLimit, record.Height, record.LogicalTime, record.Opcode, record.QueryID, false, newExternalGetResolver(next.State.Contracts, next.State.Codes))
 			if err != nil {
 				return types.InternalMessage{}, err
 			}
@@ -2529,7 +2789,13 @@ func (k *Keeper) ReceiveInternalMessage(msg types.MsgReceiveInternalMessage) (ty
 			if err != nil {
 				return types.InternalMessage{}, err
 			}
-			runtimeCtx, err := k.buildAVMContext(avm.EntryReceiveInternal, destination, record.SourceContractUser, record.Body, record.Funds, record.GasLimit, record.Height, record.LogicalTime, record.Opcode, record.QueryID, false)
+			// next already has this delivery's earlier mutations (source
+			// debit / destination credit / auto-deploy) folded in -- closing
+			// over next.State, never a fresh k.snapshotGenesis(), is what
+			// keeps a nested externalGet() call consistent with this same
+			// delivery instead of silently reading pre-delivery state
+			// (design doc §6.7(e)/§6.8 point 3).
+			runtimeCtx, err := k.buildAVMContext(avm.EntryReceiveInternal, destination, record.SourceContractUser, record.Body, record.Funds, record.GasLimit, record.Height, record.LogicalTime, record.Opcode, record.QueryID, false, newExternalGetResolver(next.State.Contracts, next.State.Codes))
 			if err != nil {
 				return types.InternalMessage{}, err
 			}
@@ -2573,6 +2839,30 @@ func (k *Keeper) ReceiveInternalMessage(msg types.MsgReceiveInternalMessage) (ty
 			}
 			receiptOp = "internal_message_executed"
 		}
+	} else if async.HasMode(record.Mode, async.SendModeWalletPayout) {
+		// SEND_PAYOUT_TO_WALLET: the destination is not a registered
+		// contract (the destinationIdx>=0 branch above already claimed
+		// every real contract address) and the message carries no
+		// StateInit, so this is a contract deliberately paying a plain
+		// wallet address. Only reached once both higher-precedence branches
+		// have missed, so a StateInit-carrying auto-deploy or an existing
+		// contract destination always wins over this fallback even if the
+		// mode bit is set on it by mistake.
+		destAddr, err := aetraaddress.ParseAccAddress(record.DestinationAccount)
+		if err != nil {
+			return types.InternalMessage{}, errors.New(types.ErrExecutionFailed + ": payout destination is not a valid wallet address")
+		}
+		if record.Funds > 0 {
+			src := next.State.Contracts[idx]
+			if src.Balance < record.Funds {
+				return types.InternalMessage{}, errors.New(types.ErrExecutionFailed + ": source contract has insufficient balance")
+			}
+			src.Balance -= record.Funds
+			next.State.Contracts[idx] = src
+			walletPayoutAddr = destAddr
+			walletPayoutAmount = record.Funds
+		}
+		receiptOp = "internal_message_wallet_payout"
 	} else {
 		return types.InternalMessage{}, errors.New(types.ErrContractNotFound + ": internal message destination not found")
 	}
@@ -2627,6 +2917,22 @@ func (k *Keeper) ReceiveInternalMessage(msg types.MsgReceiveInternalMessage) (ty
 	// above.
 	if autoDeployStorageFee > 0 {
 		if err := k.collectRentPayment(k.runtimeCtx, record.SourceContractUser, autoDeployStorageFee); err != nil {
+			return types.InternalMessage{}, err
+		}
+	}
+	// SEND_PAYOUT_TO_WALLET's actual bank transfer, deferred to here for the
+	// same reason as autoDeployStorageFee immediately above: next.Validate()
+	// has now confirmed the whole delivery -- including the ledger debit
+	// already folded into next by the async.SendModeWalletPayout branch --
+	// is about to commit, so a bank failure here still returns before
+	// k.assignGenesis and next (with its debit) is discarded, never
+	// partially applied.
+	if walletPayoutAmount > 0 {
+		if k.bankKeeper == nil {
+			return types.InternalMessage{}, errors.New(types.ErrExecutionFailed + ": wallet payout requires a configured bank keeper")
+		}
+		coin := sdk.NewCoins(sdk.NewCoin(storageRentBaseDenom, sdkmath.NewIntFromUint64(walletPayoutAmount)))
+		if err := k.bankKeeper.SendCoinsFromModuleToAccount(k.runtimeCtx, storageRentReserveModule, walletPayoutAddr, coin); err != nil {
 			return types.InternalMessage{}, err
 		}
 	}
@@ -2874,6 +3180,29 @@ func newContractReceipt(contractAddress, actor, operation string, exitCode uint3
 	return receipt
 }
 
+// newContractReceiptWithSweptBalance is newContractReceipt plus the
+// SweptBalance stamp -- used only by DeleteExpiredContract, the sole
+// operation that ever moves a contract's remaining Balance to the treasury
+// on forced closure (see sweepDeletedContractBalance's doc comment). A
+// separate helper rather than widening newContractReceipt's signature: every
+// other caller has no swept amount to report and would otherwise have to
+// thread a permanent zero through.
+func newContractReceiptWithSweptBalance(contractAddress, actor, operation string, exitCode uint32, amount, gasUsed, logicalTime, height, sweptBalance uint64) types.ContractReceipt {
+	receipt := types.ContractReceipt{
+		ContractAddress: contractAddress,
+		Actor:           actor,
+		Operation:       operation,
+		ExitCode:        exitCode,
+		Amount:          amount,
+		GasUsed:         gasUsed,
+		LogicalTime:     logicalTime,
+		Height:          height,
+		SweptBalance:    sweptBalance,
+	}
+	receipt.ReceiptID = types.ComputeContractReceiptID(receipt)
+	return receipt
+}
+
 func (k Keeper) AssetOwner(req types.QueryAssetOwnerRequest) (types.QueryAssetOwnerResponse, error) {
 	if req.AssetType == "" {
 		return types.QueryAssetOwnerResponse{}, fmt.Errorf("contract asset type must not be empty")
@@ -2973,6 +3302,21 @@ func (k *Keeper) chargeContractRentAt(ctx context.Context, idx int, contract typ
 	}
 	if contract.StorageRentDebt > 0 {
 		contract.Status = k.storageRentFrozenStatus(contract)
+		// Stamp the archive/delete eligibility window the FIRST time this
+		// contract freezes (FreezeHeight == 0): a contract that was already
+		// frozen (e.g. accruing further debt across blocks while still
+		// unpaid) keeps its original window rather than having it pushed out
+		// indefinitely by every subsequent chargeRent call. unfreezeContract
+		// clears both fields back to zero on successful unfreeze, so a LATER
+		// freeze re-stamps a fresh window instead of reusing a stale one.
+		if contract.FreezeHeight == 0 {
+			contract.FreezeHeight = height
+			eligible, err := checkedAdd(height, k.genesis.Params.StorageRentRetentionBlocks, types.ErrStorageRent+": contract deletion eligibility height overflow")
+			if err != nil {
+				return types.Contract{}, 0, err
+			}
+			contract.DeletionEligibilityHeight = eligible
+		}
 		if err := k.persistContractAt(idx, contract); err != nil {
 			return types.Contract{}, 0, err
 		}
@@ -3074,6 +3418,31 @@ func (k *Keeper) chargeRentToReserve(ctx context.Context, contract types.Contrac
 		return nil
 	}
 	return k.collectRentPayment(ctx, contract.Creator, amount)
+}
+
+// sweepDeletedContractBalance moves a contract's remaining virtual Balance
+// out of the storage-rent reserve module account into the protocol treasury.
+// Called only by DeleteExpiredContract, for the specific fund-safety gap it
+// closes: TopUpContract is reachable from Frozen/FrozenLimited without
+// requiring debt payment or unfreezing first, so a frozen contract can carry
+// a real, banked Balance at archive-delete time. Those naet are already
+// resident in storageRentReserveModule (every TopUpContract routes through
+// collectRentPayment before crediting the ledger, and SEND_PAYOUT_TO_WALLET
+// -- see the walletPayoutAmount handling in ReceiveInternalMessage -- proves
+// that reserve is exactly where a contract's ledger Balance is banked).
+// Force-zeroing Balance with no matching bank movement would strand those
+// coins in the reserve forever with no receipt ever pointing at them again.
+// SendCoinsFromModuleToModule to the treasury mirrors x/identity-root's own
+// "treasury sweep" (collection.go sweepLocked) rather than a burn: neither
+// the reserve nor the treasury module account holds authtypes.Burner, and
+// granting it would be a bigger, unrelated change to module-account
+// permissions for a single write-off path.
+func (k *Keeper) sweepDeletedContractBalance(ctx context.Context, amount uint64) error {
+	if k.bankKeeper == nil || amount == 0 {
+		return nil
+	}
+	coin := sdk.NewCoins(sdk.NewCoin(storageRentBaseDenom, sdkmath.NewIntFromUint64(amount)))
+	return k.bankKeeper.SendCoinsFromModuleToModule(ctx, storageRentReserveModule, contractTreasuryModule, coin)
 }
 
 func (k Keeper) authorizeContractUpgradeActor(contract types.Contract, actor string) error {

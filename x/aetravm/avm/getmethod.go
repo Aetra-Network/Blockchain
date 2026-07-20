@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"lukechampine.com/blake3"
 )
@@ -27,6 +28,60 @@ func ComputeMethodSelector(signature string) [4]byte {
 func GetterNameSelector(name string) uint32 {
 	h := blake3.Sum256([]byte("getter-name:" + name))
 	return binary.BigEndian.Uint32(h[:4])
+}
+
+// externalGetExpectedTags is the closed set of scalar type-name spellings
+// the read-only cross-contract call syntax (`externalGet(target, method,
+// expectedType, args...)`, design doc §6.8 point 4) accepts for its
+// compile-time-constant `expectedType` argument, mapped to the runtime
+// ValueTag the callee's return value must carry. Deliberately scalar-only,
+// matching AVM v1's existing single-return/scalar-focused limits (no maps,
+// tuples, structs, or chunks) -- built once from integerKindTag's existing
+// table for the integer spellings so the two can never drift, plus the
+// non-integer scalar tags callable getters can realistically return.
+var externalGetExpectedTags = buildExternalGetExpectedTags()
+
+func buildExternalGetExpectedTags() map[string]ValueTag {
+	out := make(map[string]ValueTag, len(integerKindTags)+8)
+	for name, entry := range integerKindTags {
+		out[name] = entry.tag
+	}
+	out["bool"] = TagBool
+	out["address"] = TagAddress
+	out["hash"] = TagHash
+	out["hash32"] = TagHash
+	out["bytes"] = TagBytes
+	out["string"] = TagString
+	out["coins"] = TagCoins
+	out["timestamp"] = TagTimestamp
+	return out
+}
+
+// ExternalGetExpectedTag resolves a compile-time expected-return-type name
+// (any spelling externalGetExpectedTags accepts -- short or long integer
+// form, "bool", "address", "hash"/"hash32", "bytes", "string", "coins",
+// "timestamp") to the runtime ValueTag the callee's OpReturn value must
+// carry. Used both by the compiler (to pack OpCallExternalGet's Arg at
+// compile time, design doc §6.8 point 4) and by avm.go's Run() (to verify a
+// callee's actual return value tag against it, and by validateInstructionArg
+// as defense-in-depth against raw adversarial bytecode).
+func ExternalGetExpectedTag(name string) (ValueTag, bool) {
+	tag, ok := externalGetExpectedTags[strings.ToLower(strings.TrimSpace(name))]
+	return tag, ok
+}
+
+// isValidExternalGetExpectedTag is the reverse check ExternalGetExpectedTag
+// implies: is this ValueTag one of the scalar tags the type-name table above
+// can ever produce. Used by validateInstructionArg to reject a
+// hand-crafted OpCallExternalGet instruction whose packed expected-tag byte
+// does not correspond to any legal source-level expectedType spelling.
+func isValidExternalGetExpectedTag(tag ValueTag) bool {
+	for _, candidate := range externalGetExpectedTags {
+		if candidate == tag {
+			return true
+		}
+	}
+	return false
 }
 
 // GetMethodABI defines a get method in the contract ABI.

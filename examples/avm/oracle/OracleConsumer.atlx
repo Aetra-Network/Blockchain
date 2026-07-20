@@ -1,0 +1,91 @@
+// OracleConsumer: reads PriceOracle.atlx's current price across the
+// contract boundary, within the same query, via
+// `externalGet(target, "price", "uint64")` (design doc §6.8's read-only
+// cross-contract call syntax).
+//
+// This is the reference proof that a real Aetralis contract, once deployed
+// on-chain (StoreCode -> InstantiateContract), can synchronously read
+// ANOTHER already-deployed contract's current committed storage mid-query
+// -- no message round-trip, no async bus, no shared source between the two
+// contracts (they are independently compiled modules), and, being a read,
+// no atomicity or rollback problem at all.
+//
+// Three getters exercise three different angles of the same mechanism:
+//   - currentPrice(): the "normal" shape -- a fixed target configured once
+//     at deploy time (storage.oracle), read fresh on every call.
+//   - priceOf(target): the same read, but with the target supplied at query
+//     time, proving the SAME compiled bytecode faithfully returns whichever
+//     real deployed contract's storage it is pointed at (not a cached or
+//     hardcoded value baked in at compile time).
+//   - lastObservedPrice(): returns a price observed via the MUTATING call
+//     site (onExternalMessage's own externalGet(), persisted to storage),
+//     exercising the executeContract path in addition to the ContractGet
+//     query path -- design doc §6.8 point 3's two real keeper call sites.
+
+@storage
+struct ConsumerStorage {
+    oracle: address
+    lastObservedPrice: uint64
+}
+
+@message(0x9303)
+struct Refresh {}
+
+type InternalMsg = Refresh
+type ExternalMsg = Refresh
+
+contract OracleConsumer {
+    author: "Cross-contract read example"
+    description: "Reads PriceOracle.atlx's price() across the contract boundary via externalGet()"
+    version: "1.0.0"
+
+    storage: ConsumerStorage
+    incomingMessages: InternalMsg
+    incomingExternal: ExternalMsg
+
+    @store
+    func ConsumerStorage.load() {
+        return ConsumerStorage.fromChunk(contract.getData())
+    }
+
+    @store
+    func ConsumerStorage.save(self) {
+        contract.setData(self.toChunk())
+    }
+
+    @internal
+    func onInternalMessage(in: InMessage) {
+    }
+
+    @bounced
+    func onBouncedMessage(in: InMessageBounced) {
+    }
+
+    // onExternalMessage performs a read-only externalGet() mid-execution
+    // (the MUTATING call site, executeContract) and persists the result --
+    // proving the read composes with this contract's own write, and never
+    // touches the write path itself.
+    @external
+    func onExternalMessage(inMsg: Segment) {
+        var st = lazy ConsumerStorage.load()
+        st.lastObservedPrice = externalGet(st.oracle, "price", "uint64")
+        st.save()
+    }
+
+    @get
+    func currentPrice(): uint64 {
+        const st = lazy ConsumerStorage.load()
+        return externalGet(st.oracle, "price", "uint64")
+    }
+
+    @get
+    func priceOf(target: address): uint64 {
+        return externalGet(target, "price", "uint64")
+    }
+
+    @get
+    func lastObservedPrice(): uint64 {
+        const st = lazy ConsumerStorage.load()
+        return st.lastObservedPrice
+    }
+}

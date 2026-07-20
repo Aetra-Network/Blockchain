@@ -69,6 +69,44 @@ func TestRequireStorageCloneGasFloor(t *testing.T) {
 	require.NoError(t, RequireStorageCloneGasFloor(oneMiB, 100_000))
 }
 
+// TestRequireCloneGasFloor proves RequireCloneGasFloor closes the gap
+// RequireStorageCloneGasFloor alone leaves open: a contract with tiny
+// storage but large bytecode. It must be rejected by the CODE floor even
+// though its storage never crosses MinStorageBytesForCloneGasFloor, and
+// symmetrically a contract with tiny code but large storage must still be
+// rejected by the (delegated) storage floor -- proving neither dimension
+// can be used to smuggle an unbilled O(size) decode past the other.
+func TestRequireCloneGasFloor(t *testing.T) {
+	// Both dimensions small: no floor applies regardless of gas.
+	require.NoError(t, RequireCloneGasFloor(0, 0, 0))
+	require.NoError(t, RequireCloneGasFloor(MinCodeBytesForDecodeGasFloor, MinStorageBytesForCloneGasFloor, 1))
+
+	// Large bytecode, near-empty storage: RequireStorageCloneGasFloor ALONE
+	// (the pre-fix check) would never engage here since storageBytes never
+	// crosses its threshold -- this is exactly the evasion the confirmed
+	// finding describes, and RequireCloneGasFloor must still reject it.
+	const bigCode = MinCodeBytesForDecodeGasFloor + 4096
+	require.NoError(t, RequireStorageCloneGasFloor(64, 1), "sanity: the storage-only check alone would accept this")
+	err := RequireCloneGasFloor(bigCode, 64, 1)
+	require.ErrorContains(t, err, ErrExecutionFailed)
+	require.ErrorContains(t, err, "gas limit")
+	require.ErrorContains(t, err, "byte-code")
+
+	codeFloor := uint64(bigCode) / CodeDecodeGasFloorDivisor
+	require.Greater(t, codeFloor, uint64(1))
+	require.Error(t, RequireCloneGasFloor(bigCode, 64, codeFloor-1))
+	require.NoError(t, RequireCloneGasFloor(bigCode, 64, codeFloor))
+
+	// Large storage, near-empty code: the storage floor still applies via
+	// delegation to RequireStorageCloneGasFloor, unaffected by this change.
+	const bigStorage = MinStorageBytesForCloneGasFloor + 4096
+	require.ErrorContains(t, RequireCloneGasFloor(64, bigStorage, 1), "byte-storage")
+
+	// Both dimensions large: whichever floor is higher must be met.
+	storageFloor := (uint64(bigStorage) / StorageCloneGasFloorDivisor) * 2
+	require.NoError(t, RequireCloneGasFloor(bigCode, bigStorage, max(codeFloor, storageFloor)))
+}
+
 // TestMaxStateGrowthBytesPerExecutionBelowAVMMemoryCeiling documents (and
 // pins) that the per-execution growth cap is meaningfully smaller than the
 // AVM's own always-binding 1 MiB MaxMemoryBytes ceiling (avm.DefaultParams,

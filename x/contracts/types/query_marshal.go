@@ -200,6 +200,11 @@ func (m *Params) MarshalToSizedBuffer(dAtA []byte) (int, error) {
 	_ = i
 	var l int
 	_ = l
+	if m.StorageRentRetentionBlocks != 0 {
+		i = encodeVarintContractsQuery(dAtA, i, uint64(m.StorageRentRetentionBlocks))
+		i--
+		dAtA[i] = 0x60
+	}
 	if m.MinUpgradeDelay != 0 {
 		i = encodeVarintContractsQuery(dAtA, i, uint64(m.MinUpgradeDelay))
 		i--
@@ -737,6 +742,20 @@ func (m *Contract) MarshalToSizedBuffer(dAtA []byte) (int, error) {
 	_ = i
 	var l int
 	_ = l
+	if m.DeletionEligibilityHeight != 0 {
+		i = encodeVarintContractsQuery(dAtA, i, uint64(m.DeletionEligibilityHeight))
+		i--
+		dAtA[i] = 0x1
+		i--
+		dAtA[i] = 0xf0
+	}
+	if m.FreezeHeight != 0 {
+		i = encodeVarintContractsQuery(dAtA, i, uint64(m.FreezeHeight))
+		i--
+		dAtA[i] = 0x1
+		i--
+		dAtA[i] = 0xe8
+	}
 	if m.PendingUpgradeEarliestHeight != 0 {
 		i = encodeVarintContractsQuery(dAtA, i, uint64(m.PendingUpgradeEarliestHeight))
 		i--
@@ -1302,6 +1321,11 @@ func (m *ContractReceipt) MarshalToSizedBuffer(dAtA []byte) (int, error) {
 	_ = i
 	var l int
 	_ = l
+	if m.SweptBalance != 0 {
+		i = encodeVarintContractsQuery(dAtA, i, uint64(m.SweptBalance))
+		i--
+		dAtA[i] = 0x50
+	}
 	if m.Height != 0 {
 		i = encodeVarintContractsQuery(dAtA, i, uint64(m.Height))
 		i--

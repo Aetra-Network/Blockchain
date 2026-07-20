@@ -34,6 +34,7 @@ const (
 	MsgDisableContractUpgradesTypeURL   = "/l1.contracts.v1.MsgDisableContractUpgrades"
 	MsgScheduleContractUpgradeTypeURL   = "/l1.contracts.v1.MsgScheduleContractUpgrade"
 	MsgApplyScheduledUpgradeTypeURL     = "/l1.contracts.v1.MsgApplyScheduledUpgrade"
+	MsgDeleteExpiredContractTypeURL     = "/l1.contracts.v1.MsgDeleteExpiredContract"
 )
 
 type GRPCMsgServer interface {
@@ -54,6 +55,7 @@ type GRPCMsgServer interface {
 	DisableContractUpgrades(context.Context, *MsgDisableContractUpgrades) (*MsgDisableContractUpgradesResponse, error)
 	ScheduleContractUpgrade(context.Context, *MsgScheduleContractUpgrade) (*MsgScheduleContractUpgradeResponse, error)
 	ApplyScheduledUpgrade(context.Context, *MsgApplyScheduledUpgrade) (*MsgApplyScheduledUpgradeResponse, error)
+	DeleteExpiredContract(context.Context, *MsgDeleteExpiredContract) (*MsgDeleteExpiredContractResponse, error)
 }
 
 type UnimplementedGRPCMsgServer struct{}
@@ -109,6 +111,9 @@ func (UnimplementedGRPCMsgServer) ScheduleContractUpgrade(context.Context, *MsgS
 func (UnimplementedGRPCMsgServer) ApplyScheduledUpgrade(context.Context, *MsgApplyScheduledUpgrade) (*MsgApplyScheduledUpgradeResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ApplyScheduledUpgrade not implemented")
 }
+func (UnimplementedGRPCMsgServer) DeleteExpiredContract(context.Context, *MsgDeleteExpiredContract) (*MsgDeleteExpiredContractResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method DeleteExpiredContract not implemented")
+}
 
 type GRPCQueryServer interface {
 	Params(context.Context, *QueryParamsRequest) (*QueryParamsResponse, error)
@@ -124,6 +129,7 @@ type GRPCQueryServer interface {
 	SecurityAttestations(context.Context, *QuerySecurityAttestationsRequest) (*QuerySecurityAttestationsResponse, error)
 	SecurityBadge(context.Context, *QuerySecurityBadgeRequest) (*QuerySecurityBadgeResponse, error)
 	ContractGet(context.Context, *QueryContractGetRequest) (*QueryContractGetResponse, error)
+	ContractManifest(context.Context, *QueryContractManifestRequest) (*QueryContractManifestResponse, error)
 }
 
 type UnimplementedGRPCQueryServer struct{}
@@ -166,6 +172,9 @@ func (UnimplementedGRPCQueryServer) SecurityBadge(context.Context, *QuerySecurit
 }
 func (UnimplementedGRPCQueryServer) ContractGet(context.Context, *QueryContractGetRequest) (*QueryContractGetResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ContractGet not implemented")
+}
+func (UnimplementedGRPCQueryServer) ContractManifest(context.Context, *QueryContractManifestRequest) (*QueryContractManifestResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ContractManifest not implemented")
 }
 
 func RegisterMsgServer(s grpc.Server, srv GRPCMsgServer) {
@@ -231,6 +240,9 @@ var Msg_serviceDesc = grpcgo.ServiceDesc{
 		{MethodName: "ApplyScheduledUpgrade", Handler: msgHandler(func(s GRPCMsgServer, ctx context.Context, req any) (any, error) {
 			return s.ApplyScheduledUpgrade(ctx, req.(*MsgApplyScheduledUpgrade))
 		}, newMsgApplyScheduledUpgrade)},
+		{MethodName: "DeleteExpiredContract", Handler: msgHandler(func(s GRPCMsgServer, ctx context.Context, req any) (any, error) {
+			return s.DeleteExpiredContract(ctx, req.(*MsgDeleteExpiredContract))
+		}, newMsgDeleteExpiredContract)},
 	},
 	Streams:  []grpcgo.StreamDesc{},
 	Metadata: "l1/contracts/v1/tx.proto",
@@ -279,6 +291,9 @@ var Query_serviceDesc = grpcgo.ServiceDesc{
 		{MethodName: "ContractGet", Handler: queryHandler(func(s GRPCQueryServer, ctx context.Context, req any) (any, error) {
 			return s.ContractGet(ctx, req.(*QueryContractGetRequest))
 		}, newQueryContractGetRequest)},
+		{MethodName: "ContractManifest", Handler: queryHandler(func(s GRPCQueryServer, ctx context.Context, req any) (any, error) {
+			return s.ContractManifest(ctx, req.(*QueryContractManifestRequest))
+		}, newQueryContractManifestRequest)},
 	},
 	Streams:  []grpcgo.StreamDesc{},
 	Metadata: "l1/contracts/v1/query.proto",
@@ -337,6 +352,7 @@ func newMsgSetContractAdmin() any          { return new(MsgSetContractAdmin) }
 func newMsgDisableContractUpgrades() any   { return new(MsgDisableContractUpgrades) }
 func newMsgScheduleContractUpgrade() any   { return new(MsgScheduleContractUpgrade) }
 func newMsgApplyScheduledUpgrade() any     { return new(MsgApplyScheduledUpgrade) }
+func newMsgDeleteExpiredContract() any     { return new(MsgDeleteExpiredContract) }
 func newQueryParamsRequest() any           { return new(QueryParamsRequest) }
 func newQueryCodeRequest() any             { return new(QueryCodeRequest) }
 func newQueryCodesRequest() any            { return new(QueryCodesRequest) }
@@ -352,6 +368,7 @@ func newQueryContractStateRootRequest() any {
 func newQuerySecurityAttestationsRequest() any { return new(QuerySecurityAttestationsRequest) }
 func newQuerySecurityBadgeRequest() any        { return new(QuerySecurityBadgeRequest) }
 func newQueryContractGetRequest() any          { return new(QueryContractGetRequest) }
+func newQueryContractManifestRequest() any     { return new(QueryContractManifestRequest) }
 
 func init() {
 	gogoproto.RegisterType((*MsgStoreCode)(nil), "l1.contracts.v1.MsgStoreCode")
@@ -371,6 +388,8 @@ func init() {
 	gogoproto.RegisterType((*MsgDisableContractUpgrades)(nil), "l1.contracts.v1.MsgDisableContractUpgrades")
 	gogoproto.RegisterType((*MsgScheduleContractUpgrade)(nil), "l1.contracts.v1.MsgScheduleContractUpgrade")
 	gogoproto.RegisterType((*MsgApplyScheduledUpgrade)(nil), "l1.contracts.v1.MsgApplyScheduledUpgrade")
+	gogoproto.RegisterType((*MsgDeleteExpiredContract)(nil), "l1.contracts.v1.MsgDeleteExpiredContract")
+	gogoproto.RegisterType((*MsgDeleteExpiredContractResponse)(nil), "l1.contracts.v1.MsgDeleteExpiredContractResponse")
 	gogoproto.RegisterType((*StoreCodeResponse)(nil), "l1.contracts.v1.MsgStoreCodeResponse")
 	gogoproto.RegisterType((*InstantiateContractResponse)(nil), "l1.contracts.v1.MsgDeployContractResponse")
 	gogoproto.RegisterType((*ExecuteContractResponse)(nil), "l1.contracts.v1.MsgExecuteExternalResponse")
@@ -414,6 +433,8 @@ func init() {
 	gogoproto.RegisterType((*GetMethodArg)(nil), "l1.contracts.v1.GetMethodArg")
 	gogoproto.RegisterType((*QueryContractGetRequest)(nil), "l1.contracts.v1.QueryContractGetRequest")
 	gogoproto.RegisterType((*QueryContractGetResponse)(nil), "l1.contracts.v1.QueryContractGetResponse")
+	gogoproto.RegisterType((*QueryContractManifestRequest)(nil), "l1.contracts.v1.QueryContractManifestRequest")
+	gogoproto.RegisterType((*QueryContractManifestResponse)(nil), "l1.contracts.v1.QueryContractManifestResponse")
 	gogoproto.RegisterFile("l1/contracts/v1/tx.proto", fileDescriptorContractsTx)
 	gogoproto.RegisterFile("l1/contracts/v1/query.proto", fileDescriptorContractsQuery)
 }
@@ -568,6 +589,14 @@ func (*QueryContractGetRequest) ProtoMessage()    {}
 func (m *QueryContractGetResponse) Reset()         { *m = QueryContractGetResponse{} }
 func (m *QueryContractGetResponse) String() string { return gogoproto.CompactTextString(m) }
 func (*QueryContractGetResponse) ProtoMessage()    {}
+
+func (m *QueryContractManifestRequest) Reset()         { *m = QueryContractManifestRequest{} }
+func (m *QueryContractManifestRequest) String() string { return gogoproto.CompactTextString(m) }
+func (*QueryContractManifestRequest) ProtoMessage()    {}
+
+func (m *QueryContractManifestResponse) Reset()         { *m = QueryContractManifestResponse{} }
+func (m *QueryContractManifestResponse) String() string { return gogoproto.CompactTextString(m) }
+func (*QueryContractManifestResponse) ProtoMessage()    {}
 
 func (m *QueryContractsRequest) Reset()         { *m = QueryContractsRequest{} }
 func (m *QueryContractsRequest) String() string { return gogoproto.CompactTextString(m) }
@@ -838,6 +867,23 @@ func (*MsgApplyScheduledUpgradeResponse) XXX_MessageName() string {
 	return "l1.contracts.v1.MsgApplyScheduledUpgradeResponse"
 }
 
+func (m *MsgDeleteExpiredContract) Reset()         { *m = MsgDeleteExpiredContract{} }
+func (m *MsgDeleteExpiredContract) String() string { return gogoproto.CompactTextString(m) }
+func (*MsgDeleteExpiredContract) ProtoMessage()    {}
+func (*MsgDeleteExpiredContract) XXX_MessageName() string {
+	return "l1.contracts.v1.MsgDeleteExpiredContract"
+}
+func (*MsgDeleteExpiredContract) Descriptor() ([]byte, []int) {
+	return fileDescriptorContractsTx, []int{39}
+}
+
+func (m *MsgDeleteExpiredContractResponse) Reset()         { *m = MsgDeleteExpiredContractResponse{} }
+func (m *MsgDeleteExpiredContractResponse) String() string { return gogoproto.CompactTextString(m) }
+func (*MsgDeleteExpiredContractResponse) ProtoMessage()    {}
+func (*MsgDeleteExpiredContractResponse) XXX_MessageName() string {
+	return "l1.contracts.v1.MsgDeleteExpiredContractResponse"
+}
+
 var fileDescriptorContractsTx = buildContractsTxFileDescriptor()
 var fileDescriptorContractsQuery = buildContractsQueryFileDescriptor()
 
@@ -855,6 +901,7 @@ func buildContractsTxFileDescriptor() []byte {
 				bytesField("bytecode", 2),
 				stringField("code_hash", 3),
 				uint64Field("code_bytes", 4),
+				bytesField("manifest_bytes", 5),
 			), "authority"),
 			messageDescriptorFields("MsgStoreCodeResponse",
 				stringField("code_id", 1),
@@ -1118,6 +1165,20 @@ func buildContractsTxFileDescriptor() []byte {
 				uint64Field("height", 3),
 			), "actor"),
 			messageDescriptor("MsgApplyScheduledUpgradeResponse"),
+			// MsgDeleteExpiredContract: contracts-storage-rent-cycle's archive/
+			// delete path (see MsgDeleteExpiredContract's doc comment in
+			// types.go). Signs with "authority", matching Params.Authorize --
+			// this is a governance action, not an actor-gated contract-owner
+			// one, unlike the upgrade-flow messages immediately above.
+			withSigner(messageDescriptorFields("MsgDeleteExpiredContract",
+				stringField("authority", 1),
+				stringField("contract_address", 2),
+				uint64Field("height", 3),
+			), "authority"),
+			// MsgDeleteExpiredContractResponse wraps ContractReceipt (defined in
+			// query.proto); see the comment on MsgTopUpContractResponse above
+			// for why this descriptor entry is registry metadata only.
+			messageDescriptor("MsgDeleteExpiredContractResponse"),
 		},
 		Service: []*descriptorpb.ServiceDescriptorProto{
 			{
@@ -1140,6 +1201,7 @@ func buildContractsTxFileDescriptor() []byte {
 					serviceMethodDescriptor("DisableContractUpgrades", "MsgDisableContractUpgrades", "MsgDisableContractUpgradesResponse"),
 					serviceMethodDescriptor("ScheduleContractUpgrade", "MsgScheduleContractUpgrade", "MsgScheduleContractUpgradeResponse"),
 					serviceMethodDescriptor("ApplyScheduledUpgrade", "MsgApplyScheduledUpgrade", "MsgApplyScheduledUpgradeResponse"),
+					serviceMethodDescriptor("DeleteExpiredContract", "MsgDeleteExpiredContract", "MsgDeleteExpiredContractResponse"),
 				},
 				Options: &descriptorpb.ServiceOptions{
 					UninterpretedOption: []*descriptorpb.UninterpretedOption{{
@@ -1359,6 +1421,18 @@ func buildContractsQueryFileDescriptor() []byte {
 				uint64Field("latest_updated_height", 12),
 				repeatedStringField("attestation_ids", 13),
 			),
+			// QueryContractManifestRequest / Response: avm-get-methods-gap's
+			// on-chain manifest surface (see MsgStoreCode.ManifestBytes /
+			// CodeRecord.ManifestBytes above). Keyed by CodeID like Code/
+			// QueryCodeRequest, since the manifest describes the code's
+			// callable surface, not any one instantiated contract.
+			messageDescriptorFields("QueryContractManifestRequest",
+				stringField("code_id", 1),
+			),
+			messageDescriptorFields("QueryContractManifestResponse",
+				boolField("found", 1),
+				bytesField("manifest_bytes", 2),
+			),
 		},
 		Service: []*descriptorpb.ServiceDescriptorProto{
 			{
@@ -1377,6 +1451,7 @@ func buildContractsQueryFileDescriptor() []byte {
 					serviceMethodDescriptor("SecurityAttestations", "QuerySecurityAttestationsRequest", "QuerySecurityAttestationsResponse"),
 					serviceMethodDescriptor("SecurityBadge", "QuerySecurityBadgeRequest", "QuerySecurityBadgeResponse"),
 					serviceMethodDescriptor("ContractGet", "QueryContractGetRequest", "QueryContractGetResponse"),
+					serviceMethodDescriptor("ContractManifest", "QueryContractManifestRequest", "QueryContractManifestResponse"),
 				},
 			},
 		},

@@ -36,6 +36,7 @@ type QueryClient interface {
 	SecurityAttestations(ctx context.Context, in *QuerySecurityAttestationsRequest, opts ...grpc.CallOption) (*QuerySecurityAttestationsResponse, error)
 	SecurityBadge(ctx context.Context, in *QuerySecurityBadgeRequest, opts ...grpc.CallOption) (*QuerySecurityBadgeResponse, error)
 	ContractGet(ctx context.Context, in *QueryContractGetRequest, opts ...grpc.CallOption) (*QueryContractGetResponse, error)
+	ContractManifest(ctx context.Context, in *QueryContractManifestRequest, opts ...grpc.CallOption) (*QueryContractManifestResponse, error)
 }
 
 type queryClient struct {
@@ -145,6 +146,14 @@ func (c *queryClient) SecurityBadge(ctx context.Context, in *QuerySecurityBadgeR
 func (c *queryClient) ContractGet(ctx context.Context, in *QueryContractGetRequest, opts ...grpc.CallOption) (*QueryContractGetResponse, error) {
 	out := new(QueryContractGetResponse)
 	if err := c.cc.Invoke(ctx, "/l1.contracts.v1.Query/ContractGet", in, out, opts...); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *queryClient) ContractManifest(ctx context.Context, in *QueryContractManifestRequest, opts ...grpc.CallOption) (*QueryContractManifestResponse, error) {
+	out := new(QueryContractManifestResponse)
+	if err := c.cc.Invoke(ctx, "/l1.contracts.v1.Query/ContractManifest", in, out, opts...); err != nil {
 		return nil, err
 	}
 	return out, nil

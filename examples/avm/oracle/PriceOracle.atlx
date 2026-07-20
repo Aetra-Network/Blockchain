@@ -1,0 +1,83 @@
+// PriceOracle: minimal on-chain price-feed reference contract.
+//
+// This is the TARGET side of the read-only cross-contract call mechanism
+// (docs/architecture/avm-call-mechanism-v5-design.md §6, §6.8): any other
+// already-deployed contract can synchronously read this contract's current
+// committed price via `externalGet(oracleAddress, "price", "uint64")` --
+// no message round-trip, no async bus, and (being a read) categorically no
+// atomicity/rollback problem, because a read cannot corrupt anything.
+//
+// Paired with OracleConsumer.atlx, whose @get functions perform the
+// externalGet() call across the contract boundary. See
+// x/contracts/keeper/external_get_examples_test.go for the end-to-end
+// proof: both contracts compiled from these exact files and deployed
+// through the real x/contracts keeper (StoreCode -> InstantiateContract),
+// with the consumer's query genuinely returning whichever oracle's live,
+// currently-committed price it is pointed at -- including after this
+// contract's own price is updated post-deploy via SetPrice.
+//
+// The price-update path (@external SetPrice) is intentionally sender-blind:
+// this language's @external entrypoint receives a bare Segment with no
+// sender accessor at all (see examples/avm/channel/storage.atlx's own note
+// on the identical limitation), so this reference contract does not attempt
+// owner-gating on that path -- a production oracle would restrict who may
+// push a price update through some other means (e.g. a signature embedded
+// in the message body, the pattern examples/avm/channel already uses).
+
+@storage
+struct OracleStorage {
+    price: uint64
+}
+
+@message(0x9301)
+struct Noop {}
+
+@message(0x9302)
+struct SetPrice {
+    price: uint64
+}
+
+type InternalMsg = Noop
+type ExternalMsg = SetPrice
+
+contract PriceOracle {
+    author: "Cross-contract read example"
+    description: "Minimal price feed; read by OracleConsumer.atlx via externalGet()"
+    version: "1.0.0"
+
+    storage: OracleStorage
+    incomingMessages: InternalMsg
+    incomingExternal: ExternalMsg
+
+    @store
+    func OracleStorage.load() {
+        return OracleStorage.fromChunk(contract.getData())
+    }
+
+    @store
+    func OracleStorage.save(self) {
+        contract.setData(self.toChunk())
+    }
+
+    @internal
+    func onInternalMessage(in: InMessage) {
+    }
+
+    @bounced
+    func onBouncedMessage(in: InMessageBounced) {
+    }
+
+    @external
+    func onExternalMessage(inMsg: Segment) {
+        const msg = lazy SetPrice.fromSegment(inMsg)
+        var st = lazy OracleStorage.load()
+        st.price = msg.price
+        st.save()
+    }
+
+    @get
+    func price(): uint64 {
+        const st = lazy OracleStorage.load()
+        return st.price
+    }
+}

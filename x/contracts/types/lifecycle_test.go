@@ -35,13 +35,17 @@ func TestContractLifecycleActionMatrix(t *testing.T) {
 				ContractLifecycleActionUnfreeze,
 				ContractLifecycleActionQuery,
 				ContractLifecycleActionProofQuery,
+				// contracts-storage-rent-cycle: a frozen contract past its
+				// DeletionEligibilityHeight is archivable via
+				// MsgDeleteExpiredContract; see TestDeleteExpiredContract* in
+				// x/contracts/keeper for the height-gated end-to-end coverage.
+				ContractLifecycleActionArchiveDelete,
 			},
 			blocked: []string{
 				ContractLifecycleActionExecuteExternal,
 				ContractLifecycleActionReceiveInternal,
 				ContractLifecycleActionEmitInternalMessage,
 				ContractLifecycleActionUpgradeMigrate,
-				ContractLifecycleActionArchiveDelete,
 			},
 		},
 		{
@@ -52,13 +56,13 @@ func TestContractLifecycleActionMatrix(t *testing.T) {
 				ContractLifecycleActionUnfreeze,
 				ContractLifecycleActionQuery,
 				ContractLifecycleActionProofQuery,
+				ContractLifecycleActionArchiveDelete,
 			},
 			blocked: []string{
 				ContractLifecycleActionExecuteExternal,
 				ContractLifecycleActionReceiveInternal,
 				ContractLifecycleActionEmitInternalMessage,
 				ContractLifecycleActionUpgradeMigrate,
-				ContractLifecycleActionArchiveDelete,
 			},
 		},
 		{

@@ -107,6 +107,7 @@ func fixtureContractReceiptForTest(suffix string) ContractReceipt {
 		GasUsed:         654,
 		LogicalTime:     987,
 		Height:          15,
+		SweptBalance:    159,
 	}
 }
 

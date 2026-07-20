@@ -48,7 +48,13 @@ func ContractLifecycleActionAllowed(status string, action string) bool {
 			ContractLifecycleActionPayRentDebt,
 			ContractLifecycleActionUnfreeze,
 			ContractLifecycleActionQuery,
-			ContractLifecycleActionProofQuery:
+			ContractLifecycleActionProofQuery,
+			// A frozen contract past its DeletionEligibilityHeight may be
+			// archived via MsgDeleteExpiredContract (contracts-storage-rent-
+			// cycle); the height check itself is enforced by the keeper
+			// handler, not this matrix -- this only decides which actions are
+			// even reachable for the status.
+			ContractLifecycleActionArchiveDelete:
 			return true
 		default:
 			return false
@@ -59,7 +65,8 @@ func ContractLifecycleActionAllowed(status string, action string) bool {
 			ContractLifecycleActionPayRentDebt,
 			ContractLifecycleActionUnfreeze,
 			ContractLifecycleActionQuery,
-			ContractLifecycleActionProofQuery:
+			ContractLifecycleActionProofQuery,
+			ContractLifecycleActionArchiveDelete:
 			return true
 		default:
 			return false

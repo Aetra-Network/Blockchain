@@ -327,6 +327,21 @@ func (m grpcMsgServer) ApplyScheduledUpgrade(ctx context.Context, msg *types.Msg
 	return &types.MsgApplyScheduledUpgradeResponse{Receipt: receipt}, nil
 }
 
+func (m grpcMsgServer) DeleteExpiredContract(ctx context.Context, msg *types.MsgDeleteExpiredContract) (*types.MsgDeleteExpiredContractResponse, error) {
+	if msg == nil {
+		return nil, errors.New("empty contracts delete-expired-contract request")
+	}
+	if err := m.keeper.loadForBlock(ctx); err != nil {
+		return nil, err
+	}
+	msg.Height = blockHeight(ctx)
+	receipt, err := m.keeper.DeleteExpiredContractState(ctx, *msg)
+	if err != nil {
+		return nil, err
+	}
+	return &types.MsgDeleteExpiredContractResponse{Receipt: receipt}, nil
+}
+
 func (q grpcQueryServer) Params(context.Context, *types.QueryParamsRequest) (*types.QueryParamsResponse, error) {
 	return &types.QueryParamsResponse{Params: q.keeper.Params()}, nil
 }
@@ -352,6 +367,14 @@ func (q grpcQueryServer) ContractGet(_ context.Context, req *types.QueryContract
 		return nil, errors.New("empty contracts get-method query")
 	}
 	res, err := q.keeper.ContractGet(*req)
+	return &res, err
+}
+
+func (q grpcQueryServer) ContractManifest(_ context.Context, req *types.QueryContractManifestRequest) (*types.QueryContractManifestResponse, error) {
+	if req == nil {
+		return nil, errors.New("empty contracts manifest query")
+	}
+	res, err := q.keeper.ContractManifest(*req)
 	return &res, err
 }
 

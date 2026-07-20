@@ -120,6 +120,13 @@ type Codec struct {
 	Hash       [32]byte
 	// MaxBytes bounds the encoded payload size; zero means unlimited.
 	MaxBytes int
+	// Structs is the compilation's struct-field registry (lowercased struct
+	// name -> its fields), used to encode a struct-typed or Chunk<struct>-typed
+	// message-body value as a self-describing [{name,type,value}] list so it
+	// round-trips through the runtime's field-access decoder. It is not part of
+	// the codec's identity: codecHashBytes deliberately excludes it, so two
+	// codecs with the same fields hash identically regardless of the registry.
+	Structs map[string][]CodecField
 }
 
 type MessageUnion struct {
@@ -2302,6 +2309,21 @@ func (c *Compiler) inferExprType(expr Expr, env map[string]TypeRef, storage *Str
 		if fn, ok := functions[expr.Text]; ok && fn != nil {
 			return fn.ReturnType, nil
 		}
+		// block_height is a bare context identifier (like opcode/query_id),
+		// not a call -- lowerExprToIR's ExprIdent case already recognizes it
+		// and emits OpReadBlock (see IRExprBlockHeight), but this
+		// type-inference pass never had a matching case, so any real use of
+		// it failed to compile with "unknown identifier" before it ever
+		// reached lowering. Never exercised by any example until this one
+		// needed the actual consensus block height (ctx.BlockHeight) for a
+		// dispute challenge window -- logicalTime()/currentBlockLogicalTime()
+		// are NOT a substitute: LogicalTime is a per-contract monotonic call
+		// counter (contract.LogicalTime++ on every execution — see
+		// x/contracts/keeper/keeper.go), not elapsed chain time, so a window
+		// measured against it would count messages, not blocks.
+		if strings.EqualFold(expr.Text, "block_height") {
+			return TypeRef{Name: "uint64"}, nil
+		}
 		return TypeRef{}, fail("E_UNKNOWN_IDENT", expr.Pos, fmt.Sprintf("unknown identifier %q", expr.Text))
 	case ExprPath:
 		if len(expr.Path) == 2 {
@@ -2689,6 +2711,50 @@ func (c *Compiler) inferExprType(expr Expr, env map[string]TypeRef, storage *Str
 			return TypeRef{Name: "uint64"}, nil
 		case "random":
 			return TypeRef{Name: "uint256"}, nil
+		case "externalget":
+			// Read-only synchronous cross-contract call (design doc §6,
+			// §6.8): externalGet(target, method, expectedType, args...). A
+			// deliberately non-dotted (bare free-function) call form -- a
+			// dotted target.method(...) would collide with the existing
+			// closed dotted-call vocabulary (inferBuiltinMethodCallType,
+			// get/set/has/delete/keys/entries/len/...) and, worse, Expr.Text
+			// for a dotted call is bound to the RECEIVER's name, not the
+			// method's (parser.go:1794-1799), so it could never reach a
+			// method-name switch at all. externalGet's own Expr.Text is its
+			// own name (a bare call), sidestepping both problems.
+			if len(expr.Args) < 3 {
+				return TypeRef{}, fail("E_CALL_ARITY", expr.Pos, "externalGet() requires at least three arguments (target address, method name, expected type)")
+			}
+			targetType, err := c.inferExprType(expr.Args[0], env, storage, structs, enums, types, functions, consts, inPure)
+			if err != nil {
+				return TypeRef{}, err
+			}
+			if !strings.EqualFold(targetType.Name, "address") {
+				return TypeRef{}, fail("E_CALL_TYPE", expr.Args[0].Pos, "externalGet() target must be an address")
+			}
+			if expr.Args[1].Kind != ExprString || strings.TrimSpace(expr.Args[1].Text) == "" {
+				return TypeRef{}, fail("E_CALL_TYPE", expr.Args[1].Pos, "externalGet() method name must be a non-empty string literal")
+			}
+			if expr.Args[2].Kind != ExprString {
+				return TypeRef{}, fail("E_CALL_TYPE", expr.Args[2].Pos, "externalGet() expected type must be a string literal")
+			}
+			if _, ok := avm.ExternalGetExpectedTag(expr.Args[2].Text); !ok {
+				return TypeRef{}, fail("E_CALL_TYPE", expr.Args[2].Pos, fmt.Sprintf("externalGet() expected type %q is not a supported scalar type", expr.Args[2].Text))
+			}
+			for _, arg := range expr.Args[3:] {
+				// Each call argument is independently type-checked by the
+				// CALLER's own compiler but not arity/type-checked against
+				// the callee's actual getter parameters -- the callee is a
+				// separately compiled module with no shared interface
+				// declaration in this pass, so that binding is necessarily a
+				// runtime concern (design doc §6.8 point 4), surfacing as
+				// the same dispatch-abort-on-mismatch trap "getter not
+				// found" already produces.
+				if _, err := c.inferExprType(arg, env, storage, structs, enums, types, functions, consts, inPure); err != nil {
+					return TypeRef{}, err
+				}
+			}
+			return TypeRef{Name: strings.TrimSpace(expr.Args[2].Text)}, nil
 		case "ok":
 			if len(expr.Args) != 1 {
 				return TypeRef{}, fail("E_CALL_ARITY", expr.Pos, "ok() requires one argument")
@@ -2908,10 +2974,17 @@ func validateSendModeExpr(expr Expr) error {
 		drain  = 128
 		carry  = 64
 		est    = 1024
+		payout = 256
 		anyVal = drain | carry
 	)
 	if mask&drain != 0 && mask&carry != 0 {
 		return fail("E_SEND_MODE", expr.Pos, "SEND_DRAIN_BALANCE and SEND_CARRY_REMAINDER are mutually exclusive")
+	}
+	if mask&payout != 0 && mask&drain != 0 {
+		return fail("E_SEND_MODE", expr.Pos, "SEND_PAYOUT_TO_WALLET and SEND_DRAIN_BALANCE are mutually exclusive")
+	}
+	if mask&payout != 0 && mask&carry != 0 {
+		return fail("E_SEND_MODE", expr.Pos, "SEND_PAYOUT_TO_WALLET and SEND_CARRY_REMAINDER are mutually exclusive")
 	}
 	if mask&est != 0 && mask&^uint32(est) != 0 {
 		return fail("E_SEND_MODE", expr.Pos, "SEND_ESTIMATE_ONLY cannot be combined with other send modes")
@@ -3163,6 +3236,19 @@ func compatibleTypes(a, b TypeRef) bool {
 	}
 	if strings.EqualFold(a.Name, b.Name) {
 		if isMapFamilyType(a.Name) && (len(a.Args) == 0 || len(b.Args) == 0) {
+			return true
+		}
+		// A bare chunk-like type (Chunk/Code/stateinit, e.g. the result of
+		// `value.toChunk()`, which is inferred as an argument-free Chunk) is
+		// assignable to a parameterized one of the same name (Chunk<T>), and
+		// vice versa: the type argument is a compile-time annotation for the
+		// eventual `.fromChunk(...)` decode, not part of the runtime chunk
+		// value. Without this, the equal-name arity check below rejects it
+		// before the isChunkLikeType fallback further down can allow it — so
+		// that fallback is dead for same-name chunk types and a `Chunk<T>`
+		// storage field could never be written. Mirrors the map-family
+		// exception directly above.
+		if isChunkLikeType(a) && (len(a.Args) == 0 || len(b.Args) == 0) {
 			return true
 		}
 		if len(a.Args) != len(b.Args) {
@@ -3557,6 +3643,29 @@ func (c *Compiler) buildArtifacts(file *SourceFile, contract *ContractDecl) (avm
 	registry.RegistryHash = sha256.Sum256(registryHashBytes(registry))
 	layout.LayoutHash = sha256.Sum256(layoutHashBytes(layout))
 	storageCodec.Hash = sha256.Sum256(codecHashBytes(storageCodec))
+
+	// Struct-field registry: lowercased struct name -> its declared fields, for
+	// EVERY struct in the unit (not just @message ones), so the codec encoder
+	// can serialize a struct-typed or Chunk<struct>-typed message-body value as
+	// a self-describing list. Stamped onto every message/getter codec after
+	// hashing, so it never perturbs a codec's identity hash (see Codec.Structs).
+	structRegistry := make(map[string][]CodecField, len(file.Structs))
+	for _, st := range file.Structs {
+		if st == nil {
+			continue
+		}
+		structRegistry[strings.ToLower(st.Name)] = codecFieldsFromStructFields(st.Fields)
+	}
+	stampStructs := func(codecs map[string]Codec) {
+		for name, codec := range codecs {
+			codec.Structs = structRegistry
+			codecs[name] = codec
+		}
+	}
+	stampStructs(msgCodecs)
+	stampStructs(bodyCodecs)
+	stampStructs(getterCodecs)
+
 	return manifest, registry, layout, storageCodec, msgCodecs, bodyCodecs, bodyOpcodes, unions, getterCodecs, eventCodecs, nil
 }
 
@@ -6121,6 +6230,35 @@ func lowerExprToIR(expr Expr, env loweringEnv, functions map[string]*FunctionDec
 				return nil, fail("E_LOWER_CALL", expr.Pos, "random() takes no arguments")
 			}
 			return &IRExpr{Kind: IRExprRandom, Pos: expr.Pos}, nil
+		case "externalget":
+			// inferExprType has already validated arity, the target's
+			// address type, and that Args[1]/Args[2] are non-empty/valid
+			// string-literal method-name/expected-type constants -- this
+			// pass only needs to lower them into the IR node's fields.
+			if len(expr.Args) < 3 {
+				return nil, fail("E_LOWER_CALL", expr.Pos, "externalGet() requires at least three arguments (target address, method name, expected type)")
+			}
+			if expr.Args[1].Kind != ExprString {
+				return nil, fail("E_LOWER_CALL", expr.Pos, "externalGet() method name must be a string literal")
+			}
+			if expr.Args[2].Kind != ExprString {
+				return nil, fail("E_LOWER_CALL", expr.Pos, "externalGet() expected type must be a string literal")
+			}
+			target, err := lowerExprToIR(expr.Args[0], env, functions, seen)
+			if err != nil {
+				return nil, err
+			}
+			callArgs, err := lowerExprArgs(expr.Args[3:], env, functions, seen)
+			if err != nil {
+				return nil, err
+			}
+			return &IRExpr{
+				Kind:     IRExprExternalGet,
+				Text:     expr.Args[1].Text,
+				TypeHint: expr.Args[2].Text,
+				Args:     append([]*IRExpr{target}, callArgs...),
+				Pos:      expr.Pos,
+			}, nil
 		}
 		value, ok := evalConstExpr(expr, env, functions, seen)
 		if !ok {
@@ -6341,6 +6479,31 @@ func emitIRExpr(expr *IRExpr, code *[]avm.Instruction) error {
 			}
 		}
 		*code = append(*code, avm.Instruction{Op: avm.OpMakeTuple, Arg: uint64(len(expr.Args))})
+	case IRExprExternalGet:
+		// Read-only synchronous cross-contract call (design doc §6, §6.8).
+		// Emission order: call arguments left-to-right, OpMakeTuple(N),
+		// THEN the target address, THEN OpCallExternalGet -- matching the
+		// stack layout Run()'s OpCallExternalGet case pops (address first,
+		// then the tuple).
+		if len(expr.Args) < 1 {
+			return fmt.Errorf("AVM externalGet IR node missing target address argument")
+		}
+		callArgs := expr.Args[1:]
+		for _, arg := range callArgs {
+			if err := emitIRExpr(arg, code); err != nil {
+				return err
+			}
+		}
+		*code = append(*code, avm.Instruction{Op: avm.OpMakeTuple, Arg: uint64(len(callArgs))})
+		if err := emitIRExpr(expr.Args[0], code); err != nil {
+			return err
+		}
+		expectedTag, ok := avm.ExternalGetExpectedTag(expr.TypeHint)
+		if !ok {
+			return fmt.Errorf("AVM externalGet: unsupported expected type %q", expr.TypeHint)
+		}
+		selector := avm.GetterNameSelector(expr.Text)
+		*code = append(*code, avm.Instruction{Op: avm.OpCallExternalGet, Arg: uint64(selector) | uint64(expectedTag)<<32})
 	case IRExprCallUser:
 		// Evaluate each argument left-to-right (push order) -- identical to
 		// how every other multi-operand IR node's Args already emit; the
@@ -6845,6 +7008,8 @@ func builtinSendModeValue(name string) (uint32, bool) {
 		return 16, true
 	case "SEND_DESTROY_IF_EMPTY":
 		return 32, true
+	case "SEND_PAYOUT_TO_WALLET":
+		return 256, true
 	default:
 		return 0, false
 	}

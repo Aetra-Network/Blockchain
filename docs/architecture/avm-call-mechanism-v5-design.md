@@ -4,7 +4,10 @@ Status: **Implemented and verified for §1 (intra-contract CALL/RET), §2 (tuple
 §8 (`x/contracts` locking + state-root fix).** §4 (generics), §5 (traits beyond doc-level scoping), and §6
 (read-only cross-contract calls) were deliberately **not implemented** this pass — designed here, left as
 real follow-up work, not silently dropped (see each section's own scope statement and the "Explicitly
-deferred" section at the end of this document). Supersedes the paused v1–v4 track
+deferred" section at the end of this document). §6 was re-derived against the real, shipped post-call-stack
+`avm.go`/`keeper.go` in a follow-up review pass (§6.6): the mechanism holds, with one real correction
+(§6.5's failure-handling story) fixed by scope reduction, not by blocking implementation — see §6.6 before
+building §6. Supersedes the paused v1–v4 track
 (`docs/architecture/avm-phase-ef-call-design.md`, all four rejected — read in
 full before touching this doc) by **not attempting the thing that killed all
 four rounds**. v1–v4 tried synchronous CROSS-CONTRACT calls with mutation,
@@ -970,6 +973,679 @@ same catch path cleanly to this new one, is a concrete pre-implementation
 verification item — flagged here as an implementation-time check, not a
 design gap: the grammar and the general mechanism already fit.)
 
+### 6.6 Revision note — re-verified against the shipped post-call-stack `avm.go`/`keeper.go` (commit `a03ea721`, branch `remediation/pass2-security`, this session)
+
+§1's OpCall/OpRet/OpMakeTuple (and the §8 `txMu` fix) have now actually
+shipped, which moves several line-number citations above and changes the
+free-opcode range. This section re-derives §6's mechanism against the real,
+current code rather than the pre-call-stack version §6.1–§6.5 were written
+against, per the task that requested this pass. **Bottom line: no blocker.**
+The central claims of §6.1–§6.4 (acyclicity, the four-`if-readOnly`
+exhaustiveness, the shared-counter gas-bridging shape, real-Go-recursion
+depth-capping) all re-verify true against the shipped code. §6.5 does not:
+its "zero new error-handling primitives" claim is false against the real
+`ExprTry`, corrected below by scope reduction, the same technique §2.7/§5.2
+already use elsewhere in this document — not a blocker, a scoping fix.
+
+**1. Opcode and operand format, re-derived concretely.**
+Confirmed: `OpCall = 0x63` (avm.go:346), `OpRet = 0x64` (avm.go:358),
+`OpMakeTuple = 0x65` (avm.go:364) already claimed the low end of the free
+range §6.2's own citation assumed was still open. `OpCallExternalGet` is
+therefore `0x66`, needing the same five registration sites §1.2 already
+established as the pattern (opcode constant; `DefaultParams().GasSchedule`
+entry, alongside `OpCall`/`OpRet`/`OpMakeTuple` at avm.go:702-711; an
+`IsAllowedOpcode` arm, avm.go:4921-5029; the `Run()` case; a
+`validateInstructionArg` bound check, avm.go:5056-5088, mirroring the
+`OpCall` arm at 5076-5081).
+
+Operand format, concretized (the original text — "pops a target `TagAddress`
+value plus its argument values" — left argument arity unspecified):
+**push the target address, then bundle every argument into one `OpMakeTuple`
+call before `OpCallExternalGet`.** §2's tuples are no longer a proposal —
+`OpMakeTuple` is real, verified above, already bounds N to
+`0..MaxTupleElements` (`value.go:1232`, avm.go's `validateInstructionArg`
+`OpMakeTuple` arm at 5082-5085), and an empty tuple is a valid zero-argument
+call. So the compiler emits: evaluate each argument expression
+left-to-right (pushed, exactly as any other multi-arg call already does),
+`OpMakeTuple(N)`, then evaluate/push the target address, then
+`OpCallExternalGet`. `OpCallExternalGet`'s `Arg` carries the compile-time
+getter-name selector only (computed the same way `avm.GetterNameSelector`
+already hashes a callee's own getter name, getmethod.go:88-90) — never a
+runtime string, matching `OpCall`'s "immediate operand, nothing on the stack
+identifies the callee" property for everything except the one thing that
+*must* be runtime-dynamic here (the target address, necessarily a value —
+cross-contract calls cannot be link-time-resolved the way intra-contract
+`OpCall` targets are).
+
+`Run()`'s case, concretely: pop the args tuple (trap
+`ResultExecutionFailed`, not panic, if the popped value's tag isn't
+`TagTuple` — the same "wrong value on stack" trap shape every other typed
+pop in this file already uses, e.g. the `OpWriteStorage`/`OpAdd` stack-
+underflow traps at 1065-1068/1100-1106), pop the target address (same trap
+shape if not `TagAddress`), then build the callee's message body **inside
+avm.go itself**, using the already-existing, already-shipped, unexported
+`runtimeCodecField(value RuntimeValue) ([]byte, string, error)`
+(avm.go:4371-4411) once per tuple element — this is the exact function that
+already turns a `RuntimeValue` into `(json-encoded value bytes, type-tag
+string)`, i.e. exactly the two fields `contract_get.go`'s wire-level
+`fieldEntry{Name, Type, Value}` (types/contract_get.go:106-123) needs, just
+fed from a live stack value instead of a parsed CLI/gRPC request string.
+Building the body this way — entirely inside `avm.go`, before the resolver
+is ever called — is a **correction**, not a restatement, of §6.2's original
+`ExternalGetResolver func(address string, selector uint32, args
+[]RuntimeValue, gasBudget uint64) (...)` signature: passing raw
+`[]RuntimeValue` across the resolver boundary would force the keeper-side
+resolver implementation to either duplicate `runtimeCodecField`'s per-tag
+encoding logic (a second, drift-prone copy) or require a brand-new exported
+`avm` function whose only purpose is letting a different package touch
+`RuntimeValue` internals — a widening of `avm`'s public surface the original
+design didn't call out and doesn't need. Building `body []byte` inside
+`avm.go` (the one place that already owns `runtimeCodecField`) and handing
+the resolver only an opaque, already-encoded `[]byte` — exactly the same
+shape `ctx.Message.Body` already has for every existing entrypoint call —
+keeps 100% of `RuntimeValue`-touching logic inside the `avm` package, which
+is a *tighter* form of the acyclicity property than the original draft, not
+just an equivalent one.
+
+**2. Resolver shape and the acyclicity check, genuinely re-verified.**
+Confirmed by reading the real import block (avm.go:1-36): `avm.go` imports
+`contracttypes "github.com/sovereign-l1/l1/x/contracts/types"` (line 35) and
+nothing from `x/contracts/keeper` — unchanged, still true after the call-
+stack landed. `RuntimeContext` (avm.go:444-463) has no resolver field today,
+confirming §6 is genuinely unimplemented, not partially wired. The
+concrete, re-derived resolver type, reflecting point 1's correction and
+point 5's depth-plumbing (below):
+
+```go
+// avm.go, new RuntimeContext field:
+ExternalGetResolver func(targetAddress string, selector uint32, body []byte,
+    gasBudget uint64, depth uint32) (result RuntimeValue, gasUsed uint64, err error)
+// avm.go, new RuntimeContext field, defaults to 0 for every existing call
+// site (same backward-compatible-zero-value pattern §1.7.1 already uses for
+// `insideCalledFunction bool`):
+ExternalGetDepth uint32
+```
+
+This is a plain Go function value on a struct `avm.go` already owns —
+`avm.go` never imports, references, or type-asserts anything keeper-shaped
+to call it. The acyclicity property holds by the identical mechanism the
+original design asserted, now checked against the actual struct rather than
+assumed: `RuntimeContext` is `avm.go`'s own type, callers (keeper) construct
+it and populate the func field with a closure that captures whatever keeper
+state it needs — `avm.go` supplies only the shape, never the implementation.
+No new import is required in either direction.
+
+**3. Gas metering, re-verified against the current post-call-stack loop, and one real gap closed.**
+The shared-counter shape is unchanged and re-confirmed: `exec.GasUsed` is
+still incremented once per opcode via `safeAddU64` and checked against
+`gasLimit` at the top of the single `for` loop (avm.go:1007-1017, was
+avm.go:873-897-ish pre-call-stack; `OpCall`/`OpRet` becoming real opcodes
+didn't change this loop's shape, they're just two more `case` arms charged
+from the same `GasSchedule` map, avm.go:709-710). `gasBudget := gasLimit -
+exec.GasUsed` at the `OpCallExternalGet` site cannot underflow: the
+loop-top invariant `exec.GasUsed <= gasLimit` (else the loop already
+rolled back at line 1015-1017) holds at every `case` entry, `OpCallExternalGet`
+included. After the resolver returns `(result, gasUsed, err)`, add `gasUsed`
+back with the identical `safeAddU64`-then-bound-check pattern already used
+at 1010-1017 (defense-in-depth: if a resolver bug ever reports
+`gasUsed > gasBudget`, that must trap, not silently corrupt `exec.GasUsed`
+past `gasLimit`).
+
+**The real gap**: §6.3 says the byte-proportional decode charge should be
+"charged before the nested `Run()` executes... mirroring
+`chargeOperandUnits`'s existing pattern... avm.go:952-955" — but
+`chargeOperandUnits` (avm.go:5434-5453) is unexported, package-private to
+`avm`, and the decode/clone work this charge prices (`decodeContractSnapshot`,
+keeper.go:1577-1608, and `loadAVMModule`, keeper.go:1839-1848, whose
+`avm.DecodeModule` call sits at keeper.go:1843 — re-checked directly this
+session against the live file, not carried from an earlier draft of this
+section: `keeper.go` is one of the files actively being edited elsewhere in
+this same working tree by a concurrent session, per this repo's own
+known-working-pattern of multiple agents sharing one physical checkout, so
+these two functions' line numbers had already drifted ~120-380 lines from
+this section's first-draft citations by the time of this re-check, even
+though neither function's *behavior* changed. Anchor by function name, not
+line number, when re-checking this citation again later.) happens
+**before** the resolver ever calls into `avm.go` at all — so
+`avm.go`'s opcode-dispatch loop structurally cannot price it directly, and
+cross-package reuse of an unexported helper isn't available either. Also
+re-derived: `avm.go` cannot know the callee's module/storage byte size
+until *after* the resolver has already done the (potentially expensive)
+lookup — so "charge before running" cannot mean "`avm.go` charges before
+calling the resolver," it has to mean "the **resolver** reserves the decode
+cost out of its own `gasBudget` before calling its own nested `runner.Run()`
+with what's left." Concretely, and with a **better precedent already
+in the codebase** than the one §6.3 cited: `x/contracts/types.
+RequireStorageCloneGasFloor` (`types/api.go:112-123`) is exactly this
+shape — an existing, already-shipped, byte-proportional gas floor for
+"decode/clone cost before running," already invoked by this exact code path
+(`contract_get.go:81-83`, guarding the *same* `Runner.Run` call the resolver
+reuses) — and it's keeper-side, so no cross-package export is needed at
+all. The resolver's correct internal shape: compute a floor/charge from
+`len(code.Bytecode) + contract.StorageBytes` (mirroring
+`RequireStorageCloneGasFloor`'s own formula, not `chargeOperandUnits`'s),
+reject early if `gasBudget` can't cover it, subtract it from `gasBudget` to
+get the nested call's own `GasLimit`, run, then return
+`decodeCost + exec.GasUsed` as the single `gasUsed` the opcode-loop adds
+back. This is a **corrected citation**, not a new requirement — §6.3's
+underlying intent (price the decode work, don't let depth×size buy free
+work) is unchanged and still load-bearing; only the mechanism reference
+was wrong once the actual package boundary is checked.
+
+**4. Read-only enforcement, re-verified exhaustively, not sampled.**
+Grepped `if readOnly {` across the current `avm.go` directly this session:
+**exactly four** matches, same count §6.1 claimed, at new line numbers
+because of the code `OpCall`/`OpRet`/`OpMakeTuple` inserted above them —
+`OpWriteStorage` (1062), `OpDeleteStorage` (1087), `OpEmitInternal` (1376),
+`OpScheduleSelf` (2260). `IsReadOnlyEntrypoint` (avm.go:4895-4897, `return
+entry == EntryQuery`) is unchanged. A nested `Run()` the resolver forces to
+`ctx.Entry = EntryQuery` is exactly as mechanically incapable of writing
+storage, emitting, or self-scheduling as it was in the pre-call-stack
+version §6.1 was originally checked against — §1's new opcodes (`OpCall`,
+`OpRet`, `OpMakeTuple`) touch none of the four gated opcodes and add no
+fifth mutation path; the exhaustiveness claim survives the call-stack
+landing unchanged.
+
+**5. Recursion/reentrancy depth cap, re-verified, `MaxExternalGetDepth = 4`
+still reasonable, plus the depth-plumbing point 1/2 needed made concrete.**
+`Run()` itself is still a single flat `for` loop with no internal Go
+recursion (confirmed by reading its full control structure this session,
+avm.go:1007 through the closing brace) — `OpCall`/`OpRet`'s call stack
+(§1) is a plain `[]uint32` slice manipulated by `pc` reassignment, not Go-
+level recursion, so up to `MaxCallDepth = 32` intra-contract calls inside
+ONE nested `Run()` frame add no native stack depth at all. This means §6.4's
+safety argument is, if anything, *stronger* post-call-stack than pre: the
+one and only source of real Go-native recursion in the whole file remains
+exactly what §6.4 said it would be — the resolver invoking `runner.Run()`
+again from inside `OpCallExternalGet`'s case, nested up to
+`MaxExternalGetDepth` times — and that new mechanism does not compound with
+`MaxCallDepth`'s own bound in any way that grows native stack usage, because
+`MaxCallDepth`'s 32 intra-contract frames are flattened control flow, not Go
+calls, regardless of how many `OpCallExternalGet` levels they're nested
+inside. `MaxExternalGetDepth = 4` re-verified reasonable on the same basis
+§6.4 gave (small fixed native-stack cost per nesting level, bounded worst-
+case metered work `MaxInstructions × depth`), with the concrete enforcement
+point resolved (point 2 above): `avm.go`'s own `OpCallExternalGet` case
+checks `ctx.ExternalGetDepth >= r.params.MaxExternalGetDepth` **before**
+calling the resolver at all (mirroring `MaxCallDepth`'s check-before-push at
+1253, "regardless of provenance"), and passes `ctx.ExternalGetDepth + 1` as
+an explicit parameter to the resolver so *it* stamps the correct depth into
+the nested `RuntimeContext` it constructs — centralizing the safety-
+critical check inside `avm.go` itself rather than trusting the keeper-side
+resolver implementation to remember it, the same posture `MaxCallDepth`
+already takes toward the compiler. `Params.MaxExternalGetDepth` needs the
+identical `Validate()` treatment `MaxCallDepth` already gets at avm.go:768-
+774 (`must be positive`), with default `4` set alongside `MaxCallDepth:
+DefaultMaxCallDepth` in `DefaultParams()` (avm.go:723-724).
+`async.Params.MaxRecursionDepth = 8` (`async/params.go:23`, validated at
+`async/validation.go:92-93` — re-checked, unchanged) remains the correct,
+deliberately separate bound on the unrelated cross-block mailbox-hop
+resource; nothing above changes that separation's justification.
+
+**6. Failure semantics — the one place this review found something
+genuinely wrong in §6, corrected by scope reduction.** §6.5 claims
+`OpCallExternalGet` can be wired as an ordinary `try`-catchable expression
+"with zero new error-handling primitives." Checked directly this session,
+not re-asserted: `ExprTry`'s only real IR lowering
+(`compile.go:6279-6287`) is —
+
+```go
+case ExprTry:
+    value, ok := evalConstExpr(expr, env, functions, seen)
+    if !ok {
+        return nil, fail("E_LOWER_EXPR", expr.Pos, "try expressions must be compile-time constant on AVM v1")
+    }
+    ...
+```
+
+`ir.go` has no `IRExprTry`/runtime-fallible-operand node at all (grepped,
+zero hits). **`try <expr> [else <expr>]` on `AVM v1` today only accepts a
+compile-time-constant operand and lowers to a plain constant push — it is
+not, in the shipped compiler, a runtime catchable-failure operator over any
+fallible operation.** §6.5's own hedge ("confirming exactly which existing
+fallible operations `ExprTry` currently wraps... flagged as an
+implementation-time check, not a design gap") undersold this: the answer
+isn't "a narrower set than expected," it's "none — the mechanism §6.5
+leans on doesn't exist yet." Making `OpCallExternalGet` genuinely
+`try`-catchable (continue execution on failure with a fallback value,
+rather than aborting) would require building real runtime-fallible-operand
+codegen for `ExprTry` for the first time — a jump/label-based shape
+comparable in size to `IRExprTernary`'s (compile.go:6288-6304) but with a
+trap-catching branch instead of a boolean condition, plus a `Run()`-side
+convention for "catchable trap" distinct from every existing `rollback()`
+call (every one of which today aborts the *entire* transaction — checked:
+`rollback` at avm.go:1000-1005 only resets `exec.State`/`exec.Outgoing` and
+returns, it is the single closure every trap in the file already funnels
+through, with no partial/local variant). That is real, additional,
+non-trivial work this document did not previously account for, not a
+one-line fix.
+
+**Resolution, by scope reduction — matching how §2.7 and §5.2 already
+handle a discovered gap in this same document, not a new technique**: this
+pass ships `OpCallExternalGet` with the **same whole-execution-abort
+failure convention every other opcode in the file already uses** — target
+not found, not a contract (lifecycle-gated via the same
+`types.EnsureContractLifecycleAction(contract, types.
+ContractLifecycleActionQuery)` check `contract_get.go:36` already applies,
+so a frozen/upgrading contract is exactly as unqueryable through
+`OpCallExternalGet` as it is through the existing `ContractGet` RPC), code
+record missing, bytecode fails to decode (`loadAVMModule`, keeper.go:1839-
+1848, already converts a `DecodeModule` error into a bare `(Module{}, false,
+nil)` sentinel — no panic, already the established convention; see this
+section's point 3 for why this line range, unlike every `avm.go`/
+`contract_get.go` citation in this section, drifted between this section's
+first draft and its re-check moments later), getter
+selector not found (surfaced today only as a nested-`Run()` trap whose
+error string the existing `ContractGet` heuristically pattern-matches for
+"abort"/"ffff" at `contract_get.go:102-104` — a slightly informal but
+already-shipped convention this resolver reuses verbatim, not a new
+heuristic invented for this design), or gas exhaustion inside the nested
+call — **all** call `rollback(async.ResultExecutionFailed, err)` (or
+`ResultLimitExceeded` for the gas/depth cases) exactly like the four
+`if readOnly` guards and every stack-underflow trap already do. This is
+**more consistent** with "matching this codebase's established convention
+for the rest of the opcode family" (the task's own framing) than the
+original `try`-catchable proposal was, once the establishment is actually
+checked rather than assumed. Genuine catchable, non-aborting
+`OpCallExternalGet` failure is **explicitly deferred**, added to the list
+at the end of this document: it requires first building real
+runtime-fallible-operand semantics for `ExprTry` (a standalone, moderately
+sized compiler feature in its own right, decoupled from cross-contract
+calls specifically), not something this pass can pick up as a side effect
+of adding one opcode.
+
+### 6.7 Adversarial safety re-check (this session) — one required hardening, two required corrections, no change to the core mechanism
+
+Reviewed under a dedicated safety lens against the literal, current source
+§6.6 cites (not against §6.6's own prose): (a) is there any path, however
+indirect, for the resolver/opcode to write the target's storage or touch its
+balance; (b) does `readOnly` compose correctly with `OpCall`/`OpRet`; (c) is
+the recursion/depth cap checked before the nested `Run()` executes, and can
+it be bypassed to blow the real Go call stack; (d) can a chain of nested
+calls run for free or get double-charged; (e) does target resolution depend
+on map-iteration order or a non-canonical lookup. Two of five probes need a
+concrete design change before implementation; none invalidate the mechanism.
+
+**(a) Write/balance path — confirmed categorically safe, no change needed.**
+Independently re-verified, not re-asserted: grepping `avm.go` for
+`.Balance =`, `SendCoins`, `BurnCoins`, `MintCoins`, `bankKeeper` returns
+**zero hits** — the file has no direct balance/bank-keeper touchpoint at
+all; every value movement is exclusively via emitted `Outgoing` messages,
+gated by the same `OpEmitInternal` `if readOnly` guard already counted in
+§6.6 point 4. Stronger still: the resolver's proposed return signature
+`(RuntimeValue, uint64, error)` structurally **cannot** carry the callee's
+`Outgoing`/`State`/`StorageWrites` back across the boundary even if a
+`readOnly` guard had a hole, because those fields of `Execution` are simply
+not part of the return type — this is safety by interface shape, not just
+by runtime check. The one load-bearing invariant the entire guarantee rests
+on: the keeper-side resolver must hardcode `Entry: avm.EntryQuery` for the
+nested `Run()` and never derive it from caller-controlled data (the
+opcode's `Arg`, the stack, or anything else attacker-influenced). Required
+before merge: state this as an explicit MUST-invariant in the resolver's
+doc comment, plus a dedicated adversarial unit test — crafted bytecode that
+attempts to reach `OpWriteStorage`/`OpDeleteStorage`/`OpEmitInternal`/
+`OpScheduleSelf` through `OpCallExternalGet`, asserting a trap in every
+case. Nothing pins this down today outside of prose.
+
+**(b) `readOnly` composition with `OpCall`/`OpRet` — confirmed safe, no
+change needed.** `readOnly` is computed exactly once per `Run()` invocation
+from `ctx.Entry` (avm.go:983) and closed over by the entire opcode-dispatch
+loop; `OpCall`/`OpRet` only move `pc`/`callStack` *within that same
+invocation*, sharing the identical `readOnly` and `state` variables — there
+is no mechanism by which an intra-contract call could change entrypoint (and
+therefore `readOnly`) mid-flight. The cross-contract nested `Run()` is a
+wholly separate invocation with its own fresh `readOnly`/`state`/`stack`/
+`callStack`; nothing links the two beyond the resolver's three-value return.
+No escape either direction, confirmed by reading the full loop structure,
+not sampled.
+
+**(c) Recursion/depth cap — REAL GAP, treated as a blocker until hardened.**
+The check-*before*-call ordering §6.6 point 5 specifies is correct as
+written: `avm.go` checks `ctx.ExternalGetDepth >= MaxExternalGetDepth`
+before invoking the resolver at all. But the cap's *entire* enforcement
+rests on one piece of keeper code that doesn't exist yet faithfully copying
+`ctx.ExternalGetDepth + 1` into the next nested `RuntimeContext` — an
+optional struct field with an implicit zero-value default that `avm.go` has
+no way to verify was actually threaded through, unlike gas (which gets an
+explicit defense-in-depth trap per point 3, "if a resolver bug ever reports
+`gasUsed > gasBudget`, that must trap"). Concretely: `MaxRuntimeGasLimit =
+1_000_000_000` (avm.go:512) and flat per-call opcode costs are small
+(`OpCall`/`OpRet`/`OpMakeTuple` = 1 gas each, avm.go:709-711) — so if a
+resolver implementation ever fails to propagate the depth field (a
+plausible slip: `contract_get.go:89`, the *exact* code this design directs
+implementers to "reuse verbatim," builds a `RuntimeContext` literal with
+**no such field at all today**, so nothing in the pattern being copied
+reminds an implementer to carry it forward), the shared gas counter alone
+permits on the order of 10^5–10^6 nested `runner.Run()` calls before it's
+exhausted — comfortably enough real Go-native call-stack depth to hit a Go
+**fatal, unrecoverable stack-overflow** (not a catchable panic, not
+something `recover()` can stop). A single crafted transaction could crash
+the validator process outright. This is a materially worse failure mode
+than "free execution," and it has no second check today. **Required before
+implementation, not optional hardening**: either (i) make
+`externalGetDepth` a mandatory positional parameter on the resolver
+function signature itself rather than an optional `RuntimeContext` struct
+field (so omitting it is a compile error, not a silent zero-value reset),
+or (ii) add a defense-in-depth assertion inside `avm.go` that does not
+depend on trusting the round-tripped struct field alone — plus, either way,
+a pre-merge adversarial test that constructs a >4-contract external-get
+call cycle (A calls B calls A calls B...) and asserts rejection at the
+documented depth, not merely a unit test of the counter in isolation.
+
+**(d) Gas — one citation correction, the mechanism itself is sound.** The
+final specified shape (compute `decodeCost`, subtract it from `gasBudget`
+for the nested call's own `GasLimit`, run, return `decodeCost +
+exec.GasUsed` as the single value added back) is internally consistent:
+re-derived the arithmetic directly — no double-charge, no underflow (the
+loop-top invariant at avm.go:1015-1017 guarantees `exec.GasUsed <=
+gasLimit` at every `case` entry, confirmed by reading the loop, not
+assumed), and worst-case total consumption across the boundary is capped
+exactly at the outer remaining budget. But point 3's framing of
+`types.RequireStorageCloneGasFloor` (types/api.go:114-131) as "already-
+shipped... exactly this shape... no new requirement" overstates the
+precedent in a way that matters: that function **only rejects** (returns
+error or `nil`) — it is not a gas-deduction mechanism and never produces a
+numeric cost to add anywhere, and its one live caller
+(`contract_get.go:81-83`) uses it purely to refuse execution attempts up
+front, never to increment any `GasUsed` counter. If a future implementer
+takes "reuse this, already-shipped, no export needed" literally and calls
+`RequireStorageCloneGasFloor` as if it *were* the charge, the actual
+byte-proportional deduction (`exec.GasUsed += decodeCost`) would silently
+never happen — reopening precisely the "chain of external-gets buys free
+work" gap this subsection exists to close, i.e. the v1-class finding this
+whole document is built around avoiding. Fix, in this document, now: state
+explicitly that a **new value must be computed and added to `gasUsed`**;
+`RequireStorageCloneGasFloor`'s *formula* (byte-proportional, divisor-based)
+is what's being reused, not the function itself, and the function's
+existing reject-only role at `contract_get.go:81-83` is unrelated to and
+unaffected by this new charge.
+
+**(e) Determinism / lookup — confirmed safe on the narrow question, one
+adjacent gap found.** `findContract`/`findCode` (keeper.go:3550, 3518) are
+linear scans over `[]types.Contract`/`[]types.CodeRecord` — confirmed by
+reading both functions directly, no map-iteration-order dependency
+anywhere in target resolution. But §6.2's claim that the resolver reads
+"the same `next`/`k.genesis` scratch copy the enclosing mutating keeper
+method is already threading through" is not actually achievable by
+literally reusing `contract_get.go`, because `ContractGet` (the cited
+precedent) opens with `gs := k.snapshotGenesis()` (contract_get.go:31) — a
+fresh `RLock`'d read of `k.genesis`, not the caller's in-flight `next`.
+`k.mu` (guarding `k.genesis`, keeper.go:132-134/148-150) is a separate lock
+from `txMu` (keeper.go:112), so this would not deadlock — but it would
+silently read **pre-transaction** state, missing whatever the enclosing
+delivery has already folded into `next` earlier in the same call, directly
+contradicting the design's own consistency claim ("no new consistency
+concern, it's the same snapshot the caller already established"). §6.6
+re-verified five of its six numbered items against the current code but
+never revisited this specific claim from §6.2. Fix: the resolver closure
+must capture a reference to the enclosing method's own `next` (passed in at
+closure-construction time by whichever mutating method builds the
+`RuntimeContext`), never call `snapshotGenesis()` internally.
+
+**Bottom line.** (a) and (b) are genuinely, structurally safe — verified
+independently against the real source, not re-asserted from §6.6's prose.
+(c), (d), and (e)'s adjacent state-source gap are real, concrete,
+fixable-before-implementation issues that §6.6's "no blocker" verdict did
+not surface, because that pass re-verified *citations* rather than
+adversarially attacking the mechanism's trust boundaries. (c) is the one to
+treat as a hard prerequisite, not a nice-to-have: as currently specified,
+the depth cap's sole enforcement point is a value passed across a package
+boundary into keeper code that doesn't exist yet, with no fallback if that
+code has a bug, and the failure mode of that bug is a process-crashing
+fatal error — not a bad transaction, not a wrong query result. **Revised
+verdict: implementable once the three corrections above (depth-cap
+hardening, the gas-charge wording fix, and the `next`-vs-`snapshotGenesis`
+resolver fix) land in this document and are reflected in the actual
+implementation — not safe to implement directly off §6.1–§6.6 as they
+stood before this pass.**
+
+### 6.8 Final resolution (this session) — closes §6.7(c)/(d)/(e) by construction, and closes the independent compiler-grammar blocker §6.1–§6.7 never addressed
+
+Two adversarial reviews ran against §6.1–§6.7 before implementation: a safety
+lens (§6.7, above) and a feasibility lens. The feasibility review found a
+**second, independent real blocker §6.7 never touched**: nothing in §6.1–§6.7
+specifies any source-level syntax for invoking `OpCallExternalGet`. The
+existing dotted-call dispatcher (`inferBuiltinMethodCallType`,
+compile.go:1287-1356) is a closed, fixed vocabulary keyed by receiver type
+(`get`, `set`, `has`, `delete`, `keys`, `entries`, `len`, …) — wiring a
+cross-contract getter call through `target.method(...)` collides with that
+vocabulary (a real getter plausibly named `get`/`keys`/`len` would be
+silently misdispatched) and, worse, `Expr.Text` for a dotted call is bound to
+the *receiver's* name (`path[0]`), not the method's, per the parser
+(parser.go:1794-1799) — so `target.getBalance()` cannot even reach a
+method-name switch today. This is a genuine gap, not a wording nit: without
+an answer, `OpCallExternalGet` is unreachable from any legal Aetralis
+program regardless of how correct the VM/keeper side is.
+
+Rather than patch both gaps separately, this section **replaces §6.2's
+resolver shape and §6.6 points 1-2's operand format** with a tightened
+design that closes §6.7(c) by construction (not by convention) and adds the
+missing grammar, while leaving §6.1, §6.3's gas-conservation principle,
+§6.4's depth-cap rationale, §6.5/§6.6-point-6's failure-semantics scope
+reduction, and §6.7(a)/(b)'s findings unchanged.
+
+**1. Resolver is a pure data lookup, never a `Run()` caller — closes §6.7(c)
+completely, not just mitigates it.** §6.2/§6.6 point 2 had the keeper-side
+resolver look up the target *and* construct a `RuntimeContext` *and* call
+`runner.Run()` itself, receiving `ctx.ExternalGetDepth + 1` as a plain
+parameter it was trusted to copy into the `RuntimeContext` it built. §6.7(c)
+correctly identified that trust boundary as the whole problem: nothing in
+`avm.go` can verify the keeper-side code actually used the depth it was
+handed. The fix is not a defensive assertion bolted onto that shape — it is
+to **remove the keeper's ability to call `Run()` or construct a
+`RuntimeContext` for this path at all**. The resolver's corrected type:
+
+```go
+// avm.go
+// ExternalGetResolver performs ONLY the target lookup (contract lookup,
+// lifecycle gate, code decode, storage decode) for a read-only
+// cross-contract call. It MUST NOT call Runner.Run and MUST NOT construct a
+// RuntimeContext -- avm.go owns 100% of the nested-Run() control flow
+// (depth stamping, Entry forcing, gas budgeting), so the depth cap can never
+// depend on trusting keeper-side code to round-trip a struct field
+// correctly. gasBudget is the caller's remaining gas at the call site, for a
+// cheap pre-decode floor check (mirrors
+// contracttypes.RequireStorageCloneGasFloor's existing pattern) before the
+// resolver pays for a decode.
+type ExternalGetResolver func(targetAddress string, gasBudget uint64) (module Module, storage Storage, found bool, err error)
+```
+
+`avm.go`'s own `OpCallExternalGet` case is the ONLY code that checks
+`ctx.ExternalGetDepth >= r.params.MaxExternalGetDepth`, the ONLY code that
+sets `Entry: EntryQuery` on the nested context, and the ONLY code that calls
+`r.Run(module, storage, nestedCtx)` — via genuine Go recursion (`Run`
+calling itself through the `*Runner` receiver, §6.4's analysis is otherwise
+unchanged). There is no `RuntimeContext` for keeper code to build for this
+path and therefore nothing for it to get wrong; the safety-critical
+invariant is enforced by the type signature, not by a comment telling a
+future implementer to remember something. This also sidesteps §6.6 point 3's
+citation problem outright: `avm.go` now has the callee's `Module`/`Storage`
+directly (the resolver returns them), so it charges the byte-proportional
+decode cost itself via the **existing, already-shipped**
+`chargeOperandUnits` helper (avm.go:5434-5453) — the exact mechanism
+`OpReadStorage`'s whole-snapshot branch already uses (avm.go:1040), not a
+new cross-package function and not a misreading of
+`RequireStorageCloneGasFloor`. §6.7(d)'s citation fix is now moot: there is
+no cross-package gas citation left to get wrong.
+
+**2. `OpCallExternalGet` (`0x66`) semantics, restated against the new
+resolver shape.** Operand format is unchanged from §6.6 point 1: push each
+call argument left-to-right, `OpMakeTuple(N)`, push the target address,
+`OpCallExternalGet`. What changes is that `Arg` now carries **two** packed
+compile-time-constant fields instead of one — low 32 bits the getter-name
+selector (`avm.GetterNameSelector`, unchanged from §6.6 point 1), high 32
+bits an expected-return `ValueTag` (see point 4 below) — packed and read the
+same way `OpEmitInternal` already packs opcode+send-mode into one `Arg`
+(avm.go:5059-5063), not a new packing convention. Runtime behavior:
+
+1. Pop the target address (trap `ResultExecutionFailed` if not `TagAddress`,
+   the same "wrong value on stack" trap shape every other typed pop in this
+   file uses), pop the args tuple (trap if not `TagTuple`).
+2. Trap if `ctx.ExternalGetResolver == nil` (feature not wired at this call
+   site — a configuration gap, not reachable in production once §3 below is
+   wired everywhere, but must not panic if it is ever reached).
+3. Trap `ResultLimitExceeded` if `ctx.ExternalGetDepth >=
+   r.params.MaxExternalGetDepth` (§6.4/§6.6 point 5's `MaxExternalGetDepth =
+   4`, checked before the resolver is ever invoked, unchanged).
+4. Build `body []byte` from the tuple's elements via the existing
+   `runtimeCodecField` (avm.go:4371-4411) into the same `{name,type,value}`
+   JSON array `types/contract_get.go:106-123`'s wire format already uses
+   (§6.6 point 1, unchanged) — entirely inside `avm.go`, before the resolver
+   is ever called.
+5. Call `ctx.ExternalGetResolver(targetAddress, gasLimit-exec.GasUsed)`. Any
+   `err != nil` or `found == false` traps `ResultExecutionFailed` (soft-fail
+   semantics unchanged from §6.6 point 6's whole-execution-abort scope
+   reduction — this covers not-found, not-a-contract, lifecycle-gated, code
+   record missing, undecodable bytecode/storage, and the pre-decode gas
+   floor, uniformly).
+6. Charge `chargeOperandUnits(&exec.GasUsed, gasLimit, r.params.GasPerOperandUnit,
+   len(EncodeModule(module)) + StorageMemoryBytes(storage) + len(storage))`
+   — point 1's closed citation gap. Trap `ResultLimitExceeded` on failure.
+7. Build `nestedCtx` **inside `avm.go`**: `Entry: EntryQuery`, `GasLimit:
+   gasLimit-exec.GasUsed` (the remaining budget after step 6's charge, so the
+   callee cannot spend more than what's left of the caller's own budget —
+   §6.3's "callee runs for free" mitigation, unchanged), `Message:
+   {Opcode: selector, Body: body, GasLimit: same}`, `ContractAddress`: the
+   parsed target address (an improvement over `contract_get.go:89`'s
+   omission of this field — cheap, and lets a callee's own `getAddress()`
+   resolve correctly when invoked this way), and — the safety-critical
+   fields — `ExternalGetResolver: ctx.ExternalGetResolver` (propagated
+   unchanged so the callee can itself call a third contract, up to the
+   depth cap) and `ExternalGetDepth: ctx.ExternalGetDepth + 1`. No keeper
+   code is in this path at all (point 1).
+8. Call `nestedExec, runErr := r.Run(module, storage, nestedCtx)`. Any
+   `runErr != nil` or `nestedExec.ResultCode != async.ResultOK` traps with
+   the callee's own result code (§6.6 point 6, unchanged: whole-execution
+   abort, not a catchable value — genuine `try`-catchable failure remains
+   explicitly deferred, see the deferred-items list).
+9. Add `nestedExec.GasUsed` back into `exec.GasUsed` via the same
+   `safeAddU64`-then-bound-check pattern already used at the loop top
+   (avm.go:1010-1017) — §6.3's gas-bridging, unchanged, still defense-in-depth
+   against a resolver-side bug (moot now since the resolver never touches gas
+   at all under this revision, but kept as belt-and-suspenders since `Run()`
+   itself could in principle be called with an inconsistent budget by a
+   future refactor).
+10. **Verify the return type**: trap `ResultExecutionFailed` if
+    `nestedExec.ReturnValue.Tag` does not equal the `ValueTag` packed into
+    `ins.Arg` (point 4 below) — this is what lets the compiler give the
+    *caller's* use of the result a real, checked static type despite the
+    callee being an independently compiled module with no shared interface
+    declaration (point 4). Otherwise push `nestedExec.ReturnValue.clone()`.
+
+**3. Keeper-side wiring: `ExternalGetResolver` is a pure lookup closure,
+built from whichever contract/code slice the enclosing method is already
+using — closes §6.7(e).** A single keeper-package function,
+
+```go
+// x/contracts/keeper
+func newExternalGetResolver(contracts []types.Contract, codes []types.CodeRecord) avm.ExternalGetResolver
+```
+
+replicates `contract_get.go`'s existing lookup steps (`findContract` →
+`EnsureContractLifecycleAction(..., ContractLifecycleActionQuery)` →
+`RequireStorageCloneGasFloor(contract.StorageBytes, gasBudget)` (the cheap
+pre-decode floor, run here because this is the one place that has
+`contract.StorageBytes` without yet paying for a decode) → `findCode` →
+`loadAVMModule` → `decodeContractSnapshot`) but returns `(Module, Storage,
+bool, error)` instead of calling `Run()`. Because it takes `contracts`/
+`codes` as plain slices rather than calling `k.snapshotGenesis()` internally,
+every call site controls exactly which point-in-time view it closes over:
+
+- `executeContract` (keeper.go, the `EntryReceiveExternal` path): calls
+  `newExternalGetResolver(k.genesis.State.Contracts, k.genesis.State.Codes)`
+  at the point `buildAVMContext` is invoked — correct because no other
+  contract has been mutated yet in this method at that point (`next` is not
+  built until after `Run()` returns), so `k.genesis` and "what a `next` would
+  contain right now" are identical.
+- `ReceiveInternalMessage`'s two `buildAVMContext` call sites (existing
+  destination and the StateInit auto-deploy branch): calls
+  `newExternalGetResolver(next.State.Contracts, next.State.Codes)` — `next`
+  by this point already has the source debit / destination credit / auto-deploy
+  folded in, so this is the fix §6.7(e) required: never
+  `k.snapshotGenesis()` mid-delivery, always the method's own in-flight
+  scratch copy.
+- `ContractGet` (query path): calls `newExternalGetResolver(gs.State.Contracts,
+  gs.State.Codes)` reusing the *same* `gs := k.snapshotGenesis()` already
+  read at the top of the function for the primary target — one consistent
+  snapshot for the whole query including any nested external-gets, not a
+  second, later, potentially-different read.
+
+`buildAVMContext` gains one new trailing parameter, `resolver
+avm.ExternalGetResolver`, set on the returned `RuntimeContext`. All existing
+call sites that build a bare `avm.RuntimeContext{}` literal directly (tests,
+`avm_execution_caps_test.go`, `family_acceptance_test.go`,
+`stake_wallet_e2e_test.go`) are unaffected: the new fields default to their
+Go zero values (`nil`/`0`), which is safe and behavior-preserving — no
+existing bytecode contains `OpCallExternalGet`, so the case is never reached
+for any pre-existing compiled module.
+
+**4. Compiler grammar — the previously-missing piece, closing the
+feasibility blocker.** A new **non-dotted** builtin free-function call,
+`externalGet(target, method, expectedType, args...)`, sidesteps the
+receiver-dispatch collision entirely: `Expr.Text` for a bare call is the
+function's own name (not a receiver's), so this reaches
+`inferExprType`/`lowerExprToIR`'s existing `switch
+strings.ToLower(expr.Text)` builtin-dispatch exactly like `isqrt`/`hash`/
+`muldiv` already do (compile.go:2393 / compile.go's `lowerExprToIR` ExprCall
+case) — **no parser.go change is needed**, this is the same generic
+call-expression grammar every other builtin free function already uses.
+
+- `target`: any `address`-typed expression (runtime-dynamic, matching
+  §6.2's original intent — cross-contract calls cannot be link-time-resolved
+  the way intra-contract `OpCall` targets are).
+- `method`: a compile-time string literal (`ExprString`), non-empty. Hashed
+  at compile time via the existing `avm.GetterNameSelector` (getmethod.go:88-90,
+  unchanged) — never a runtime value, matching `OpCall`'s "immediate operand"
+  property for everything except the target address (§6.6 point 1).
+- `expectedType`: a compile-time string literal naming one of the language's
+  existing scalar type spellings (`bool`, `u2`..`u256`/`uint2`..`uint256`,
+  `i2`..`i256`/`int2`..`int256`, `address`, `hash32`, `bytes`, `string`,
+  `coins`, `timestamp` — the same vocabulary `validateType`'s scalar branch,
+  compile.go:1234, already accepts, and no others: compound types (maps,
+  tuples, structs, chunks) are out of scope for this pass, matching AVM v1's
+  existing single-return/scalar-focused limits). A new exported
+  `avm.ExternalGetExpectedTag(name string) (ValueTag, bool)` (getmethod.go)
+  resolves it to a `ValueTag` at compile time (packed into `Arg`, point 2)
+  and is reused by `validateInstructionArg`'s new `OpCallExternalGet` case to
+  reject an out-of-range tag in raw adversarial bytecode. This solves the
+  "callee's real return type is unknowable at the caller's compile time"
+  problem without generics (out of scope, on hold) and without a decode step
+  at runtime: `Execution.ReturnValue` is already a tagged `RuntimeValue`
+  (`exec.ReturnValue = stack[len(stack)-1].clone()` on `OpReturn`, unchanged)
+  — point 2 step 10's tag-equality trap is a **check**, not a **decode**,
+  so the caller-declared expected type is enforced, never silently
+  reinterpreted.
+- `args...`: zero or more additional expressions, independently type-checked
+  by the caller's own compiler but **not** arity/type-checked against the
+  callee's actual getter parameters — that binding is necessarily a runtime
+  concern (the callee is a separately compiled module with no shared
+  interface declaration in this pass), surfacing as the same
+  dispatch-abort-on-mismatch trap that "getter not found" already produces
+  (§6.6 point 6), not a new failure mode.
+
+The call's own static type is `TypeRef{Name: expectedType}` (the literal
+text, unchanged), letting ordinary assignment/arithmetic type-checking treat
+`let balance: uint64 = externalGet(other, "getBalance", "uint64");` exactly
+like any other typed expression.
+
+**5. `Params.MaxExternalGetDepth`.** Unchanged from §6.4/§6.6 point 5:
+default `4`, `Params.Validate()` requires it positive (mirroring
+`MaxCallDepth`'s existing check, avm.go:768-774), and `OpCallExternalGet`
+joins the `GasSchedule`-presence loop and `IsAllowedOpcode` the same way
+`OpCall`/`OpRet`/`OpMakeTuple` did when they shipped.
+
+**Net effect on the open items.** §6.7(c) is closed by construction (point
+1: there is no round-tripped struct field left to trust). §6.7(d)'s citation
+concern is moot (point 1: no cross-package gas function is referenced at
+all). §6.7(e) is closed (point 3: every call site closes over its own
+already-correct scratch copy, never a fresh `snapshotGenesis()` mid-delivery).
+§6.7(a)/(b) required no change and remain valid as verified. The
+feasibility-lens compiler-grammar blocker is closed (point 4). This
+supersedes §6.2's resolver signature and §6.6 points 1-2's `Arg`-packing and
+resolver-type code block; §6.1, §6.3's conservation principle, §6.4's
+depth-cap rationale, and §6.5/§6.6 point 6's failure-semantics scope
+reduction stand as written. **Implementation-ready.**
+
 ---
 
 ## 7. Why cross-contract mutation stays async-only — this design's own position
@@ -1373,11 +2049,19 @@ production today, re-verified exhaustively (not sampled) this session.
 
 ## Summary of concrete artifacts this design specifies
 
-- `avm.go`: `OpCall`, `OpRet`, `OpMakeTuple`, `OpCallExternalGet` (4 new
-  opcodes, each needing its 5 registration sites); `Params.MaxCallDepth`
-  and a separate `MaxExternalGetDepth` threading; a new
-  `RuntimeContext.ExternalGetResolver` field; extend `runtimeFieldValue`'s
-  `TagTuple` branch for arbitrary numeric index.
+- `avm.go`: `OpCall` (0x63), `OpRet` (0x64), `OpMakeTuple` (0x65) — all
+  three **shipped** — plus `OpCallExternalGet` (0x66, still to build, per
+  §6.6's revised free-opcode citation); `Params.MaxCallDepth` — shipped —
+  and a separate `MaxExternalGetDepth` threading, validated the same way
+  (§6.6 point 5); a new `RuntimeContext.ExternalGetResolver
+  func(targetAddress string, selector uint32, body []byte, gasBudget
+  uint64, depth uint32) (RuntimeValue, uint64, error)` field plus a
+  `RuntimeContext.ExternalGetDepth uint32` field (§6.6 points 1-2,
+  corrected from the original `args []RuntimeValue` signature — the body
+  is built inside `avm.go` via the already-shipped `runtimeCodecField`
+  before the resolver is ever called, keeping all `RuntimeValue`-touching
+  logic package-private to `avm`); extend `runtimeFieldValue`'s `TagTuple`
+  branch for arbitrary numeric index (shipped as part of §2).
 - `compile.go`: module-wide local-slot allocator (replacing per-entry
   reset); real per-function codegen reusing the entrypoint-lowering
   pipeline; two-pass call-target linking extending `relocateJumpTargets`/
@@ -1441,3 +2125,13 @@ production today, re-verified exhaustively (not sampled) this session.
 - Real concurrent zone execution (§8.5) — needs a `PrepareProposal`/
   custom-executor architecture change with nothing analogous in this
   codebase today; explicitly not implied as unlocked by §8's fixes.
+- Catchable, non-aborting `OpCallExternalGet` failure via `try <expr> [else
+  <expr>]` (§6.5, corrected by §6.6 point 6) — the shipped `ExprTry` only
+  lowers a compile-time-constant operand (`compile.go:6279-6287`) and has no
+  `IRExprTry`/runtime-fallible-operand codegen at all today; making it a
+  genuine runtime catchable-failure operator is a standalone, moderately
+  sized compiler feature (comparable to `IRExprTernary`'s jump/label
+  codegen, plus a `Run()`-side "local trap" convention distinct from every
+  existing whole-transaction `rollback()` call) that this pass does not
+  build. `OpCallExternalGet` ships this pass with the same
+  whole-execution-abort failure convention every other opcode already uses.

@@ -2098,40 +2098,6 @@ func parseUintLiteral(text string) (uint64, error) {
 	}
 }
 
-func (p *parser) expectBool() (bool, error) {
-	if p.cur.kind != tokenIdent || (p.cur.text != "true" && p.cur.text != "false") {
-		return false, fmt.Errorf("expected bool at %s, got %q", p.cur.pos, p.cur.text)
-	}
-	value := p.cur.text == "true"
-	return value, p.read()
-}
-
-func (p *parser) expectStringList() ([]string, error) {
-	if err := p.expect(tokenLBracket); err != nil {
-		return nil, err
-	}
-	var out []string
-	if p.cur.kind != tokenRBracket {
-		for {
-			value, err := p.expectString()
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, value)
-			if p.cur.kind != tokenComma {
-				break
-			}
-			if err := p.read(); err != nil {
-				return nil, err
-			}
-		}
-	}
-	if err := p.expect(tokenRBracket); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 func (p *parser) read() error {
 	if p.err != nil {
 		return p.err

@@ -11,6 +11,14 @@ const (
 	MaxContractPayloadBytes  = 64 * 1024
 	MaxContractQueryLimit    = 100
 
+	// MaxContractManifestBytes bounds the OPTIONAL JSON-encoded
+	// avm.InterfaceManifest a StoreCode call may publish (MsgStoreCode.
+	// ManifestBytes / CodeRecord.ManifestBytes). Generous enough for any real
+	// contract's full callable surface (methods, events, async handlers,
+	// get-methods, CLI/SDK/wallet bindings) while keeping the stored blob
+	// bounded, matching the shape of every other size ceiling in this file.
+	MaxContractManifestBytes = 64 * 1024
+
 	// MaxCommentBytes bounds the textComment memo carried on internal
 	// messages. Matches async.MaxCommentBytes (kept in sync here to avoid a
 	// contracts->async import cycle). Comment bytes are charged through the
@@ -101,6 +109,24 @@ const (
 	// budget. See RequireStorageCloneGasFloor.
 	MinStorageBytesForCloneGasFloor = 8192
 	StorageCloneGasFloorDivisor     = 128
+
+	// MinCodeBytesForDecodeGasFloor / CodeDecodeGasFloorDivisor close the
+	// companion gap RequireStorageCloneGasFloor leaves open: that check is
+	// keyed ONLY on storage size, so a contract with near-empty storage but
+	// bytecode near Params.MaxCodeBytes (default 4 MiB) sails through it
+	// with zero floor no matter how small gasLimit is, even though
+	// loadAVMModule's avm.DecodeModule call is a full O(code-size) parse
+	// that -- exactly like the storage clone -- runs before any gas is
+	// charged. Below MinCodeBytesForDecodeGasFloor bytes the decode is cheap
+	// enough that a floor would only add friction; above it,
+	// RequireCloneGasFloor requires a coarse, code-size-proportional gas
+	// budget too, using CodeRecord.CodeBytes (already-tracked metadata, no
+	// decode needed for the check itself). The divisor matches
+	// StorageCloneGasFloorDivisor's rate for consistency; no "2" multiplier
+	// here because loadAVMModule performs ONE decode pass, not
+	// Runner.Run's two CloneStorage calls.
+	MinCodeBytesForDecodeGasFloor = 8192
+	CodeDecodeGasFloorDivisor     = 128
 )
 
 // RequireStorageCloneGasFloor rejects an AVM execution attempt against a
@@ -118,6 +144,32 @@ func RequireStorageCloneGasFloor(storageBytes, gasLimit uint64) error {
 	floor := (storageBytes / StorageCloneGasFloorDivisor) * 2
 	if gasLimit < floor {
 		return fmt.Errorf("%s: gas limit %d is below the minimum %d required to execute against a %d-byte-storage contract", ErrExecutionFailed, gasLimit, floor, storageBytes)
+	}
+	return nil
+}
+
+// RequireCloneGasFloor extends RequireStorageCloneGasFloor with a matching
+// floor on codeBytes, so a near-zero gasLimit is rejected against a large
+// contract whether the size lives in its STORAGE or its BYTECODE. This
+// closes a gap the storage-only check leaves open: an attacker can deploy a
+// contract with near-empty storage (well under
+// MinStorageBytesForCloneGasFloor, so the storage floor never engages) but
+// bytecode near Params.MaxCodeBytes, and loadAVMModule's O(code-size)
+// DecodeModule call still runs unbilled for that contract no matter how low
+// gasLimit is. Callers MUST call this (not loadAVMModule/
+// decodeContractSnapshot) FIRST, using only already-tracked metadata
+// (CodeRecord.CodeBytes, Contract.StorageBytes) -- see
+// MinCodeBytesForDecodeGasFloor's doc comment for the code-side rationale.
+func RequireCloneGasFloor(codeBytes, storageBytes, gasLimit uint64) error {
+	if err := RequireStorageCloneGasFloor(storageBytes, gasLimit); err != nil {
+		return err
+	}
+	if codeBytes <= MinCodeBytesForDecodeGasFloor {
+		return nil
+	}
+	floor := codeBytes / CodeDecodeGasFloorDivisor
+	if gasLimit < floor {
+		return fmt.Errorf("%s: gas limit %d is below the minimum %d required to execute against a %d-byte-code contract", ErrExecutionFailed, gasLimit, floor, codeBytes)
 	}
 	return nil
 }

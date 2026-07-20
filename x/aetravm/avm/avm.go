@@ -363,6 +363,23 @@ const (
 	// pushes one ValueTuple(...) built from them.
 	OpMakeTuple Opcode = 0x65
 
+	// OpCallExternalGet (design doc §6, §6.8): a read-only synchronous call
+	// into ANOTHER already-deployed contract's @get function, reading its
+	// current committed storage. Categorically different from OpCall: this
+	// crosses a contract boundary via a resolver callback
+	// (RuntimeContext.ExternalGetResolver), never a direct import of
+	// x/contracts/keeper (avm.go's acyclicity is preserved by construction --
+	// the resolver is a plain Go func value on a struct avm.go already owns).
+	// Arg packs two compile-time-constant fields the same way OpEmitInternal
+	// already packs opcode+send-mode into one Arg: low 32 bits = the
+	// target getter's name-selector (avm.GetterNameSelector), high 32 bits =
+	// the caller-declared expected return ValueTag. Operand stack, top to
+	// bottom: target address (TagAddress), then the call-argument tuple
+	// (TagTuple, built by a preceding OpMakeTuple) -- pop order is address
+	// first. See the Run() case for full semantics (resolver lookup, depth
+	// cap, gas charge/bridge, nested Run(), return-type check).
+	OpCallExternalGet Opcode = 0x66
+
 	OpWallClock Opcode = 0xf0
 	OpRandom    Opcode = 0xf1
 	OpFileRead  Opcode = 0xf2
@@ -412,7 +429,34 @@ type Params struct {
 	// resource (cross-block/cross-message mailbox amplification), not this
 	// same-transaction, same-Run()-call, native-stack-adjacent depth.
 	MaxCallDepth uint32
+	// MaxExternalGetDepth bounds the read-only cross-contract call chain
+	// (design doc §6.4, §6.8): a SEPARATE, deliberately much smaller budget
+	// than MaxCallDepth, because OpCallExternalGet's resolver invokes
+	// Runner.Run() again via genuine Go-level recursion (a real nested Go
+	// function call), unlike MaxCallDepth's intra-contract call stack, which
+	// is a flat []uint32 slice inside a single Run() invocation and consumes
+	// no native stack per call. Checked BEFORE the resolver is ever invoked,
+	// entirely inside avm.go (never delegated to keeper-side code), so the
+	// depth cap cannot be bypassed by a resolver implementation bug -- see
+	// the design doc's §6.7(c)/§6.8 point 1 adversarial finding this closes.
+	MaxExternalGetDepth uint32
 }
+
+// ExternalGetResolver performs ONLY the target-contract lookup (find the
+// contract by address, gate its lifecycle, decode its code and storage) for
+// a read-only cross-contract call (design doc §6, §6.8). It MUST NOT call
+// Runner.Run and MUST NOT construct a RuntimeContext -- avm.go owns 100% of
+// the nested-Run() control flow (depth stamping, Entry forcing, gas
+// budgeting) so the recursion-depth cap can never depend on trusting
+// keeper-side code to round-trip a struct field correctly. gasBudget is the
+// caller's remaining gas at the call site, for a cheap pre-decode gas floor
+// check (mirroring contracttypes.RequireStorageCloneGasFloor's existing
+// pattern) before the resolver pays for a potentially expensive decode.
+// found=false (with err=nil) means "not found, not executable, or its
+// storage isn't AVM-snapshot-compatible" -- a soft sentinel, not a Go error,
+// matching loadAVMModule's own existing convention. A non-nil err means a
+// harder failure (e.g. the contract's lifecycle status forbids querying it).
+type ExternalGetResolver func(targetAddress string, gasBudget uint64) (module Module, storage Storage, found bool, err error)
 
 type Module struct {
 	Version      uint16
@@ -460,6 +504,18 @@ type RuntimeContext struct {
 	// stay deterministic (lower entropy) for unit tests and off-chain tooling.
 	PrevStateRoot []byte
 	BlockEntropy  []byte
+	// ExternalGetResolver and ExternalGetDepth support read-only
+	// cross-contract calls (design doc §6, §6.8). Both default to their zero
+	// value (nil / 0) for every existing call site, which is safe and
+	// behavior-preserving: no pre-existing compiled module contains
+	// OpCallExternalGet, so the nil-resolver trap in Run()'s case is never
+	// reached for existing bytecode. ExternalGetResolver is supplied by the
+	// keeper; avm.go never constructs one itself. ExternalGetDepth is
+	// avm.go-internal bookkeeping -- only Run()'s own OpCallExternalGet case
+	// ever sets it to a nonzero value (via the nested RuntimeContext it
+	// builds), never keeper code.
+	ExternalGetResolver ExternalGetResolver
+	ExternalGetDepth    uint32
 }
 
 type Execution struct {
@@ -516,6 +572,13 @@ const MaxRuntimeGasLimit = 1_000_000_000
 // design round's carry-forward proposal, deliberately separate from
 // async.Params.MaxRecursionDepth (a different resource entirely).
 const DefaultMaxCallDepth = 32
+
+// DefaultMaxExternalGetDepth is the canonical read-only cross-contract call
+// chain limit (design doc §6.4, §6.8): deliberately far smaller than
+// DefaultMaxCallDepth because this mechanism, unlike intra-contract
+// OpCall/OpRet, uses genuine Go-level recursion (Runner.Run calling itself),
+// so its depth directly consumes native Go stack.
+const DefaultMaxExternalGetDepth = 4
 
 func DefaultParams() Params {
 	return Params{
@@ -709,6 +772,13 @@ func DefaultParams() Params {
 			OpCall:      1,
 			OpRet:       1,
 			OpMakeTuple: 1,
+			// OpCallExternalGet (design doc §6, §6.8): flat dispatch cost
+			// only, like OpCall/OpMakeTuple -- the genuinely
+			// size-proportional cost (decoding the callee's module +
+			// storage) is charged separately via chargeOperandUnits inside
+			// the Run() case itself, the same pattern OpReadStorage's
+			// whole-snapshot branch already uses.
+			OpCallExternalGet: 1,
 		},
 
 		// See the GasPerOperandUnit doc comment: 1 extra gas per map entry /
@@ -722,6 +792,9 @@ func DefaultParams() Params {
 
 		// See the MaxCallDepth doc comment on the Params field itself.
 		MaxCallDepth: DefaultMaxCallDepth,
+
+		// See the MaxExternalGetDepth doc comment on the Params field itself.
+		MaxExternalGetDepth: DefaultMaxExternalGetDepth,
 	}
 }
 
@@ -771,6 +844,14 @@ func (p Params) Validate() error {
 	// does not apply to hand-crafted modules). See the field's doc comment.
 	if p.MaxCallDepth == 0 {
 		return errors.New("max call depth must be positive")
+	}
+	// MaxExternalGetDepth must be positive: it is the ONLY runtime
+	// enforcement of the read-only cross-contract call chain's depth
+	// (design doc §6.4, §6.7(c), §6.8) -- checked entirely inside avm.go,
+	// before the resolver is ever invoked, specifically so it cannot depend
+	// on trusting keeper-side code. See the field's doc comment.
+	if p.MaxExternalGetDepth == 0 {
+		return errors.New("max external get depth must be positive")
 	}
 	for _, op := range []Opcode{
 		OpNop,
@@ -875,6 +956,7 @@ func (p Params) Validate() error {
 		OpCall,
 		OpRet,
 		OpMakeTuple,
+		OpCallExternalGet,
 	} {
 		if p.GasSchedule[op] == 0 {
 			return fmt.Errorf("gas schedule missing opcode 0x%02x", byte(op))
@@ -1301,6 +1383,169 @@ func (r *Runner) Run(module Module, storage Storage, ctx RuntimeContext) (Execut
 				return rollback(async.ResultLimitExceeded, nil)
 			}
 			stack = append(stack, ValueTuple(elements))
+		case OpCallExternalGet:
+			// Read-only synchronous cross-contract call (design doc §6,
+			// §6.8). Operand stack, top to bottom: target address, then the
+			// call-argument tuple (built by a preceding OpMakeTuple) -- pop
+			// order is address first.
+			addrValue, ok := pop(&stack)
+			if !ok {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on external get target"))
+			}
+			if addrValue.Tag != TagAddress {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM external get target must be an address"))
+			}
+			argsValue, ok := pop(&stack)
+			if !ok {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM stack underflow on external get arguments"))
+			}
+			if argsValue.Tag != TagTuple {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM external get arguments must be a tuple"))
+			}
+			if ctx.ExternalGetResolver == nil {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM external get resolver not configured"))
+			}
+			// Depth cap checked BEFORE the resolver is ever invoked, entirely
+			// inside avm.go (design doc §6.7(c)/§6.8 point 1) -- this is the
+			// one and only enforcement point, deliberately not delegated to
+			// keeper-side code.
+			if ctx.ExternalGetDepth >= r.params.MaxExternalGetDepth {
+				return rollback(async.ResultLimitExceeded, errors.New("AVM external get recursion depth exceeded"))
+			}
+			selector := uint32(ins.Arg & 0xFFFFFFFF)
+			expectedTag := ValueTag(ins.Arg >> 32)
+			elements, err := argsValue.AsTuple()
+			if err != nil {
+				return rollback(async.ResultExecutionFailed, err)
+			}
+			var body []byte
+			if len(elements) > 0 {
+				type externalGetField struct {
+					Name  string          `json:"name"`
+					Type  string          `json:"type"`
+					Value json.RawMessage `json:"value"`
+				}
+				fields := make([]externalGetField, len(elements))
+				for i, el := range elements {
+					bz, typ, err := runtimeCodecField(el)
+					if err != nil {
+						return rollback(async.ResultExecutionFailed, err)
+					}
+					fields[i] = externalGetField{Name: fmt.Sprintf("arg%d", i), Type: typ, Value: bz}
+				}
+				body, err = json.Marshal(fields)
+				if err != nil {
+					return rollback(async.ResultExecutionFailed, err)
+				}
+			}
+			targetAddr, err := addrValue.AsAddress()
+			if err != nil {
+				return rollback(async.ResultExecutionFailed, err)
+			}
+			// Loop-top invariant (exec.GasUsed <= gasLimit, avm.go's own gas
+			// check just above this switch) guarantees this cannot underflow.
+			budget := gasLimit - exec.GasUsed
+			calleeModule, calleeStorage, found, resolveErr := ctx.ExternalGetResolver(targetAddr, budget)
+			if resolveErr != nil {
+				return rollback(async.ResultExecutionFailed, fmt.Errorf("AVM external get resolve failed: %w", resolveErr))
+			}
+			if !found {
+				return rollback(async.ResultExecutionFailed, errors.New("AVM external get target contract not found or not queryable"))
+			}
+			// Byte-proportional decode charge (design doc §6.3/§6.7(d)/§6.8
+			// point 1): the exact chargeOperandUnits mechanism
+			// OpReadStorage's whole-snapshot branch already uses, priced
+			// against the callee's actual module+storage size, charged
+			// before the nested Run() executes so a chain of external-gets
+			// through large contracts cannot buy O(depth x size) real work
+			// for O(depth) charged gas.
+			calleeBytes, err := EncodeModule(calleeModule)
+			if err != nil {
+				return rollback(async.ResultExecutionFailed, err)
+			}
+			decodeUnits := uint64(len(calleeBytes)) + StorageMemoryBytes(calleeStorage) + uint64(len(calleeStorage))
+			if !chargeOperandUnits(&exec.GasUsed, gasLimit, r.params.GasPerOperandUnit, decodeUnits) {
+				return rollback(async.ResultLimitExceeded, nil)
+			}
+			remaining := gasLimit - exec.GasUsed
+			if remaining == 0 {
+				return rollback(async.ResultLimitExceeded, errors.New("AVM external get: no gas remaining after decode charge"))
+			}
+			nestedCtx := RuntimeContext{
+				Entry: EntryQuery,
+				Message: async.MessageEnvelope{
+					Opcode:   selector,
+					Body:     body,
+					GasLimit: remaining,
+				},
+				GasLimit:                remaining,
+				BlockHeight:             ctx.BlockHeight,
+				BlockTimestamp:          ctx.BlockTimestamp,
+				LogicalTime:             ctx.LogicalTime,
+				CurrentBlockLogicalTime: ctx.CurrentBlockLogicalTime,
+				PrevStateRoot:           ctx.PrevStateRoot,
+				BlockEntropy:            ctx.BlockEntropy,
+				// Propagated unchanged so the callee can itself call a third
+				// contract, up to the depth cap -- and stamped here, inside
+				// avm.go, never by keeper code (closes design doc §6.7(c)).
+				ExternalGetResolver: ctx.ExternalGetResolver,
+				ExternalGetDepth:    ctx.ExternalGetDepth + 1,
+			}
+			if targetAcc, addrErr := addressing.ParseAccAddress(targetAddr); addrErr == nil {
+				nestedCtx.ContractAddress = targetAcc
+			}
+			nestedExec, runErr := r.Run(calleeModule, calleeStorage, nestedCtx)
+			if runErr != nil {
+				// Propagate the callee's OWN result code (e.g. a specific
+				// OpAbort exit code, or ResultLimitExceeded from a deeper
+				// recursion-depth/gas trap unwinding through this level) --
+				// not a blanket ResultExecutionFailed -- so a multi-hop
+				// external-get chain's failure reason survives back to the
+				// outermost caller. Every rollback() call in this file
+				// always stamps exec.ResultCode alongside any error, so the
+				// zero-value fallback below is defensive, not the common
+				// case (it only fires if Run() failed before its own
+				// rollback closure was ever reached, e.g. NewVerifier/
+				// Verify/ValidateRuntimeContext rejecting the callee module
+				// outright).
+				code := nestedExec.ResultCode
+				if code == async.ResultOK {
+					code = async.ResultExecutionFailed
+				}
+				return rollback(code, fmt.Errorf("AVM external get callee failed: %w", runErr))
+			}
+			if nestedExec.ResultCode != async.ResultOK {
+				return rollback(nestedExec.ResultCode, fmt.Errorf("AVM external get callee exited with code %d", nestedExec.ResultCode))
+			}
+			// Gas is shared across the boundary: the callee's actual work is
+			// added back to the caller's own counter (design doc §6.3),
+			// bound-checked with the same defense-in-depth pattern used at
+			// the loop top.
+			addedGas, overflow := safeAddU64(exec.GasUsed, nestedExec.GasUsed)
+			if overflow || addedGas > gasLimit {
+				return rollback(async.ResultLimitExceeded, nil)
+			}
+			exec.GasUsed = addedGas
+			if nestedExec.ReturnValue.Tag != expectedTag {
+				return rollback(async.ResultExecutionFailed, fmt.Errorf("AVM external get return type mismatch: expected tag %d, got %d", expectedTag, nestedExec.ReturnValue.Tag))
+			}
+			if len(stack) >= int(r.params.MaxStackDepth) {
+				return rollback(async.ResultLimitExceeded, nil)
+			}
+			// The clone() below is the same O(N) amplification as OpDup/
+			// OpLoadLocal/OpReturn's own clone (see FINDING-001): the callee's
+			// OpReturn already paid to clone this value into
+			// nestedExec.ReturnValue (out of the callee's own gas budget,
+			// refunded into exec.GasUsed just above), but pushing that SAME
+			// value onto the CALLER's stack is a second, independent O(N)
+			// copy -- the decodeUnits charge above is priced off
+			// calleeModule+calleeStorage size, not the return value's size,
+			// so it does not cover this. Must be charged here, exactly like
+			// every other clone site in this interpreter.
+			if !chargeOperandGas(&exec.GasUsed, gasLimit, r.params.GasPerOperandUnit, nestedExec.ReturnValue) {
+				return rollback(async.ResultLimitExceeded, nil)
+			}
+			stack = append(stack, nestedExec.ReturnValue.clone())
 		case OpAbort:
 			return rollback(uint32(ins.Arg), fmt.Errorf("AVM abort with exit code %d", ins.Arg))
 		case OpDup:
@@ -5021,7 +5266,8 @@ func IsAllowedOpcode(op Opcode) bool {
 		OpPoseidon2Bn254,
 		OpCall,
 		OpRet,
-		OpMakeTuple:
+		OpMakeTuple,
+		OpCallExternalGet:
 		return true
 	default:
 		return false
@@ -5082,6 +5328,19 @@ func validateInstructionArg(ins Instruction) error {
 	case OpMakeTuple:
 		if ins.Arg > uint64(MaxTupleElements) {
 			return fmt.Errorf("AVM tuple element count %d exceeds limit %d", ins.Arg, MaxTupleElements)
+		}
+	case OpCallExternalGet:
+		// Arg packs the getter-name selector (low 32 bits, any uint32 value
+		// is legal -- it is an opaque hash) and the expected-return ValueTag
+		// (high 32 bits) the same way OpEmitInternal packs opcode+send-mode.
+		// Defense-in-depth against raw adversarial bytecode (design doc
+		// §6.8 point 4): the expected tag must be one of the scalar tags
+		// ExternalGetExpectedTag can actually produce, not an arbitrary
+		// byte -- compiler-emitted code always satisfies this by
+		// construction.
+		expectedTag := ValueTag(ins.Arg >> 32)
+		if !isValidExternalGetExpectedTag(expectedTag) {
+			return fmt.Errorf("AVM external get expected type tag %d is not a supported scalar type", expectedTag)
 		}
 	}
 	return nil

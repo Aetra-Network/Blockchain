@@ -62,7 +62,29 @@ type Params struct {
 	// This has no effect on the pre-existing immediate UpgradeContractCode
 	// Msg route, which is unchanged and does not go through a timelock.
 	MinUpgradeDelay uint64 `protobuf:"varint,11,opt,name=min_upgrade_delay,json=minUpgradeDelay,proto3" json:"min_upgrade_delay,omitempty"`
+	// StorageRentRetentionBlocks is the minimum number of blocks a contract
+	// must remain frozen (Contract.Status Frozen/FrozenLimited) before it
+	// becomes eligible for archival deletion via MsgDeleteExpiredContract.
+	// Stamped onto Contract.DeletionEligibilityHeight the first time a
+	// contract transitions into a frozen status (see chargeContractRentAt /
+	// storageRentFrozenStatus in x/contracts/keeper/keeper.go), mirroring
+	// x/storage-rent's RentParams.RetentionBlocks precedent. Zero would make
+	// a contract deletable in the very same block it freezes, giving the
+	// owner no real window to pay off the debt and unfreeze -- so
+	// DefaultParams sets a positive default, matching MinUpgradeDelay's own
+	// reasoning above.
+	StorageRentRetentionBlocks uint64 `protobuf:"varint,12,opt,name=storage_rent_retention_blocks,json=storageRentRetentionBlocks,proto3" json:"storage_rent_retention_blocks,omitempty"`
 }
+
+// MaxStorageRentRetentionBlocks caps the governance-settable retention
+// window, for the same reason MaxStorageRentPerByteBlock caps the rent rate
+// above: DeletionEligibilityHeight is computed as
+// height + StorageRentRetentionBlocks with an overflow-checked add (see
+// chargeContractRentAt), and an astronomically large but still-bounded cap
+// keeps governance parameters far from the uint64 overflow boundary while
+// leaving room for any realistic retention policy (even 1<<40 blocks is
+// centuries at any plausible block time).
+const MaxStorageRentRetentionBlocks uint64 = 1 << 40
 
 type GenesisState struct {
 	Params    Params
@@ -75,6 +97,17 @@ type MsgStoreCode struct {
 	Bytecode  []byte `protobuf:"bytes,2,opt,name=bytecode,proto3" json:"bytecode,omitempty"`
 	CodeHash  string `protobuf:"bytes,3,opt,name=code_hash,json=codeHash,proto3" json:"code_hash,omitempty"`
 	CodeBytes uint64 `protobuf:"varint,4,opt,name=code_bytes,json=codeBytes,proto3" json:"code_bytes,omitempty"`
+	// ManifestBytes is an OPTIONAL JSON-encoded avm.InterfaceManifest
+	// describing the deployed module's callable surface (methods, async
+	// handlers, get-methods, CLI/SDK/wallet bindings). When present, StoreCode
+	// re-derives avm.InterfaceHash(manifest) and verifies it against the
+	// decoded module's own MetadataHash (avm.VerifyInterface) before
+	// accepting the code record -- rejecting a manifest that doesn't actually
+	// describe the deployed bytecode. Empty means no manifest is published for
+	// this code (ContractManifest query then reports not-found), which keeps
+	// every StoreCode call built before this field existed behaving exactly
+	// as before.
+	ManifestBytes []byte `protobuf:"bytes,5,opt,name=manifest_bytes,json=manifestBytes,proto3" json:"manifest_bytes,omitempty"`
 }
 
 type StoreCodeResponse struct {
@@ -105,6 +138,25 @@ type QueryContractResponse struct {
 	Status string `protobuf:"bytes,6,opt,name=status,proto3" json:"status,omitempty"`
 }
 
+// QueryContractManifestRequest looks up the OPTIONAL AVM interface manifest
+// published for a stored code (see MsgStoreCode.ManifestBytes / CodeRecord.
+// ManifestBytes). Keyed by CodeID rather than a live contract address since
+// the manifest describes the CODE's callable surface, shared by every
+// contract instantiated from it.
+type QueryContractManifestRequest struct {
+	CodeID string `protobuf:"bytes,1,opt,name=code_id,json=codeId,proto3" json:"code_id,omitempty"`
+}
+
+// QueryContractManifestResponse carries the raw JSON-encoded
+// avm.InterfaceManifest bytes exactly as stored (already verified against
+// the code's MetadataHash at StoreCode time -- see avm.VerifyInterface), or
+// Found=false if the code exists but was stored without a manifest, or does
+// not exist at all.
+type QueryContractManifestResponse struct {
+	Found         bool   `protobuf:"varint,1,opt,name=found,proto3" json:"found,omitempty"`
+	ManifestBytes []byte `protobuf:"bytes,2,opt,name=manifest_bytes,json=manifestBytes,proto3" json:"manifest_bytes,omitempty"`
+}
+
 type MsgServer interface {
 	StoreCode(MsgStoreCode) (StoreCodeResponse, error)
 	DeployContract(MsgDeployContract) (InstantiateContractResponse, error)
@@ -120,12 +172,50 @@ type MsgServer interface {
 	UpdateContractParams(MsgUpdateContractParams) error
 	SubmitSecurityAttestation(MsgSubmitSecurityAttestation) (MsgSubmitSecurityAttestationResponse, error)
 	RevokeSecurityAttestation(MsgRevokeSecurityAttestation) (MsgRevokeSecurityAttestationResponse, error)
+	DeleteExpiredContract(MsgDeleteExpiredContract) (ContractReceipt, error)
+}
+
+// MsgDeleteExpiredContract archives a long-frozen contract into a permanent
+// tombstone (Contract.Status Deleted), force-writing off any remaining
+// StorageRentDebt as documented bad debt and zeroing Balance/Data/
+// StorageBytes -- satisfying ValidateDeletedContractTombstone. Only callable
+// on a contract already Frozen/FrozenLimited (see
+// ContractLifecycleActionArchiveDelete in lifecycle.go) whose
+// DeletionEligibilityHeight (stamped at freeze time, Params.
+// StorageRentRetentionBlocks after the freeze height) has passed. Mirrors
+// x/storage-rent's MsgDeleteExpiredContract precedent: authority-gated
+// (Params.Authorize), not permissionless -- pruning module state is a
+// governance action, not something any address can trigger unilaterally.
+//
+// A frozen contract can still carry a nonzero Balance at deletion time --
+// TopUpContract is reachable from Frozen/FrozenLimited without requiring debt
+// payment or unfreezing first -- and those naet are real coins already
+// resident in the storage-rent reserve module account (TopUpContract routes
+// every top-up through collectRentPayment before crediting the ledger). The
+// keeper does not silently zero a nonzero Balance: it sweeps it out of the
+// reserve to the protocol treasury (the same SendCoinsFromModuleToModule
+// convention x/identity-root's treasury sweep already established) and
+// stamps the swept amount on the returned receipt's SweptBalance field, so
+// the write-off has a real, auditable bank-side trail rather than an
+// unexplained shortfall in the reserve account.
+type MsgDeleteExpiredContract struct {
+	Authority       string `protobuf:"bytes,1,opt,name=authority,proto3" json:"authority,omitempty"`
+	ContractAddress string `protobuf:"bytes,2,opt,name=contract_address,json=contractAddress,proto3" json:"contract_address,omitempty"`
+	Height          uint64 `protobuf:"varint,3,opt,name=height,proto3" json:"height,omitempty"`
+}
+
+// MsgDeleteExpiredContractResponse: see MsgUpgradeContractCodeResponse's doc
+// comment (contract_state.go) for why this wraps ContractReceipt (defined in
+// query.proto) as registry metadata only.
+type MsgDeleteExpiredContractResponse struct {
+	Receipt ContractReceipt `protobuf:"bytes,1,opt,name=receipt,proto3" json:"receipt"`
 }
 
 type QueryServer interface {
 	Params() Params
 	Code(QueryCodeRequest) (CodeRecord, bool, error)
 	Codes(QueryCodesRequest) ([]CodeRecord, error)
+	ContractManifest(QueryContractManifestRequest) (QueryContractManifestResponse, error)
 	Contract(QueryContractRequest) (QueryContractResponse, error)
 	ContractGet(QueryContractGetRequest) (QueryContractGetResponse, error)
 	Contracts(QueryContractsRequest) ([]Contract, error)
@@ -157,6 +247,10 @@ func DefaultParams() Params {
 		// 100 blocks gives affected parties (users, integrators) a real window
 		// to observe a scheduled upgrade and react before it can take effect.
 		MinUpgradeDelay: 100,
+		// 10,000 blocks gives a frozen contract's owner a real window to pay
+		// off storage rent debt and unfreeze before archival deletion becomes
+		// possible, mirroring MinUpgradeDelay's reasoning above.
+		StorageRentRetentionBlocks: 10_000,
 	}
 }
 
@@ -179,6 +273,9 @@ func (p Params) Validate() error {
 	}
 	if p.StorageRentPerByteBlock > MaxStorageRentPerByteBlock {
 		return errors.New(ErrInvalidParams + ": storage rent per byte block exceeds maximum")
+	}
+	if p.StorageRentRetentionBlocks > MaxStorageRentRetentionBlocks {
+		return errors.New(ErrInvalidParams + ": storage rent retention blocks exceeds maximum")
 	}
 	if p.MaxGasPerExecution == 0 {
 		return errors.New(ErrInvalidParams + ": max gas per execution must be positive")
@@ -252,7 +349,7 @@ func computeContractsStateRootNormalized(gs GenesisState) string {
 		panic(err)
 	}
 	return coretypes.DeterministicEmptyRootCommitment(coretypes.RootType(ModuleName), fmt.Sprintf(
-		"authority=%s/enabled=%t/code=%020d/storage=%020d/gas=%020d/rent=%020d/init=%020d/salt=%020d/deps=%010d/upgradedelay=%020d/state=%s",
+		"authority=%s/enabled=%t/code=%020d/storage=%020d/gas=%020d/rent=%020d/init=%020d/salt=%020d/deps=%010d/upgradedelay=%020d/retention=%020d/state=%s",
 		gs.Params.Authority,
 		gs.Params.Enabled,
 		gs.Params.MaxCodeBytes,
@@ -263,6 +360,7 @@ func computeContractsStateRootNormalized(gs GenesisState) string {
 		gs.Params.MaxStateInitSaltBytes,
 		gs.Params.MaxStateInitDependencies,
 		gs.Params.MinUpgradeDelay,
+		gs.Params.StorageRentRetentionBlocks,
 		string(stateJSON),
 	))
 }

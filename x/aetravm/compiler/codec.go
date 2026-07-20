@@ -59,7 +59,7 @@ func (c Codec) Encode(value any) ([]byte, error) {
 		if !ok {
 			return nil, fmt.Errorf("missing field %q", field.Name)
 		}
-		encoded, err := canonicalCodecValue(field.Type, v)
+		encoded, err := canonicalCodecValue(field.Type, v, c.Structs)
 		if err != nil {
 			return nil, fmt.Errorf("encode field %q: %w", field.Name, err)
 		}
@@ -379,7 +379,7 @@ func chunkLikeExprBytes(expr Expr) ([]byte, bool, error) {
 	return nil, false, nil
 }
 
-func canonicalCodecValue(typ TypeRef, value reflect.Value) (any, error) {
+func canonicalCodecValue(typ TypeRef, value reflect.Value, structs map[string][]CodecField) (any, error) {
 	if !value.IsValid() {
 		return zeroValueForType(typ), nil
 	}
@@ -399,8 +399,19 @@ func canonicalCodecValue(typ TypeRef, value reflect.Value) (any, error) {
 	if spec, ok := financialStructFieldSpecs[canonical]; ok {
 		return canonicalFinancialStructValue(typ.Name, spec, value)
 	}
+	// A struct-typed or Chunk<struct>-typed field encodes as a self-describing
+	// [{name,type,value}] list — the same shape as a top-level message body —
+	// so nested-struct field access round-trips through the runtime's
+	// runtimeMessageFieldValue decoder with no decode-side changes. Chunk<T>
+	// is transparent here because .toChunk()/.fromChunk() are compile-time
+	// reinterprets, so a Chunk<Struct> value carries the struct's fields
+	// directly. Requires the struct registry (message-body codecs only); when
+	// absent, a struct falls through to the generic structToMap default below.
+	if fields, ok := resolveStructForCodec(typ, structs); ok {
+		return canonicalStructSelfDescribing(fields, value, structs)
+	}
 	if canonical == "map" && len(typ.Args) == 2 {
-		return canonicalMapCodecValue(typ, value)
+		return canonicalMapCodecValue(typ, value, structs)
 	}
 	switch canonical {
 	case "bool":
@@ -434,7 +445,7 @@ func canonicalCodecValue(typ TypeRef, value reflect.Value) (any, error) {
 		if value.Kind() == reflect.Slice || value.Kind() == reflect.Array {
 			out := make([]any, 0, value.Len())
 			for i := 0; i < value.Len(); i++ {
-				item, err := canonicalCodecValue(TypeRef{Name: "bytes"}, value.Index(i))
+				item, err := canonicalCodecValue(TypeRef{Name: "bytes"}, value.Index(i), structs)
 				if err != nil {
 					return nil, err
 				}
@@ -446,6 +457,56 @@ func canonicalCodecValue(typ TypeRef, value reflect.Value) (any, error) {
 	}
 }
 
+// resolveStructForCodec reports whether typ refers to a registered struct —
+// either directly (a struct name) or transparently through a Chunk<Struct>
+// wrapper — and returns that struct's declared fields. A Chunk of a non-struct
+// (e.g. Chunk<bytes>) does not resolve, keeping the raw chunk-snapshot encoding.
+func resolveStructForCodec(typ TypeRef, structs map[string][]CodecField) ([]CodecField, bool) {
+	if structs == nil {
+		return nil, false
+	}
+	if isChunkLikeType(typ) && len(typ.Args) == 1 {
+		if fields, ok := structs[strings.ToLower(strings.TrimSpace(typ.Args[0].Name))]; ok {
+			return fields, true
+		}
+		return nil, false
+	}
+	if len(typ.Args) != 0 {
+		return nil, false
+	}
+	if fields, ok := structs[strings.ToLower(strings.TrimSpace(typ.Name))]; ok {
+		return fields, true
+	}
+	return nil, false
+}
+
+// canonicalStructSelfDescribing encodes a struct value as a [{name,type,value}]
+// list in the struct's DECLARED field order (never Go map order, so the
+// encoding is deterministic), each field encoded per its own declared type.
+// This is the same wire shape a top-level message body uses, which is exactly
+// what runtimeMessageFieldValue re-parses on field access — so nested structs,
+// Chunk<struct> fields, and struct-valued maps all round-trip with no
+// decode-side change.
+func canonicalStructSelfDescribing(fields []CodecField, value reflect.Value, structs map[string][]CodecField) (any, error) {
+	out := make([]codecFieldValue, 0, len(fields))
+	for _, f := range fields {
+		fv, ok := extractFieldValue(value, f.Name)
+		if !ok {
+			return nil, fmt.Errorf("encode struct value: missing field %q", f.Name)
+		}
+		enc, err := canonicalCodecValue(f.Type, fv, structs)
+		if err != nil {
+			return nil, fmt.Errorf("encode struct field %q: %w", f.Name, err)
+		}
+		raw, err := json.Marshal(enc)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, codecFieldValue{Name: f.Name, Type: f.Type.String(), Value: raw})
+	}
+	return out, nil
+}
+
 // canonicalMapCodecValue encodes a Map<K,V> field as a JSON object whose keys
 // are the canonical text of the declared key type and whose values are
 // encoded per the declared value type. The generic mapToCanonical fallback
@@ -453,7 +514,7 @@ func canonicalCodecValue(typ TypeRef, value reflect.Value) (any, error) {
 // opaque bytes, which the runtime's message-body decoder (see
 // runtimeMapFromJSONField in x/aetravm/avm/avm.go) cannot reconstruct into a
 // typed map.
-func canonicalMapCodecValue(typ TypeRef, value reflect.Value) (any, error) {
+func canonicalMapCodecValue(typ TypeRef, value reflect.Value, structs map[string][]CodecField) (any, error) {
 	if value.Kind() != reflect.Map {
 		return nil, fmt.Errorf("encode %s: expected a map value, got %s", typ.String(), value.Kind())
 	}
@@ -461,7 +522,7 @@ func canonicalMapCodecValue(typ TypeRef, value reflect.Value) (any, error) {
 	out := make(map[string]any, value.Len())
 	iter := value.MapRange()
 	for iter.Next() {
-		encodedKey, err := canonicalCodecValue(keyType, iter.Key())
+		encodedKey, err := canonicalCodecValue(keyType, iter.Key(), structs)
 		if err != nil {
 			return nil, fmt.Errorf("encode %s key: %w", typ.String(), err)
 		}
@@ -471,7 +532,7 @@ func canonicalMapCodecValue(typ TypeRef, value reflect.Value) (any, error) {
 		if _, dup := out[keyText]; dup {
 			return nil, fmt.Errorf("encode %s: duplicate key %q", typ.String(), keyText)
 		}
-		encodedValue, err := canonicalCodecValue(valueType, iter.Value())
+		encodedValue, err := canonicalCodecValue(valueType, iter.Value(), structs)
 		if err != nil {
 			return nil, fmt.Errorf("encode %s value for key %q: %w", typ.String(), keyText, err)
 		}
@@ -495,7 +556,7 @@ func canonicalFinancialStructValue(typeName string, spec []financialFieldSpec, v
 		if !ok {
 			return nil, fmt.Errorf("encode %s: missing field %q", typeName, field.Name)
 		}
-		encoded, err := canonicalCodecValue(field.Type, fv)
+		encoded, err := canonicalCodecValue(field.Type, fv, nil)
 		if err != nil {
 			return nil, fmt.Errorf("encode %s.%s: %w", typeName, field.Name, err)
 		}
@@ -770,7 +831,7 @@ func structToMap(value reflect.Value) (map[string]any, error) {
 		if !field.IsExported() {
 			continue
 		}
-		encoded, err := canonicalCodecValue(TypeRef{Name: "bytes"}, value.Field(i))
+		encoded, err := canonicalCodecValue(TypeRef{Name: "bytes"}, value.Field(i), nil)
 		if err != nil {
 			return nil, err
 		}
@@ -784,7 +845,7 @@ func mapToCanonical(value reflect.Value) (map[string]any, error) {
 	iter := value.MapRange()
 	for iter.Next() {
 		key := fmt.Sprintf("%v", iter.Key().Interface())
-		encoded, err := canonicalCodecValue(TypeRef{Name: "bytes"}, iter.Value())
+		encoded, err := canonicalCodecValue(TypeRef{Name: "bytes"}, iter.Value(), nil)
 		if err != nil {
 			return nil, err
 		}

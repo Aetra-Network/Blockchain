@@ -68,6 +68,9 @@ func (m *Params) Size() (n int) {
 	if m.MinUpgradeDelay != 0 {
 		n += 1 + sovContractsQuery(uint64(m.MinUpgradeDelay))
 	}
+	if m.StorageRentRetentionBlocks != 0 {
+		n += 1 + sovContractsQuery(uint64(m.StorageRentRetentionBlocks))
+	}
 	return n
 }
 
@@ -368,6 +371,12 @@ func (m *Contract) Size() (n int) {
 	if m.PendingUpgradeEarliestHeight != 0 {
 		n += 2 + sovContractsQuery(uint64(m.PendingUpgradeEarliestHeight))
 	}
+	if m.FreezeHeight != 0 {
+		n += 2 + sovContractsQuery(uint64(m.FreezeHeight))
+	}
+	if m.DeletionEligibilityHeight != 0 {
+		n += 2 + sovContractsQuery(uint64(m.DeletionEligibilityHeight))
+	}
 	return n
 }
 
@@ -532,6 +541,9 @@ func (m *ContractReceipt) Size() (n int) {
 	}
 	if m.Height != 0 {
 		n += 1 + sovContractsQuery(uint64(m.Height))
+	}
+	if m.SweptBalance != 0 {
+		n += 1 + sovContractsQuery(uint64(m.SweptBalance))
 	}
 	return n
 }
