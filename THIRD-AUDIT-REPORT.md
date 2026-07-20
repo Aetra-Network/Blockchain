@@ -94,7 +94,7 @@ real keepers, zero mocks; only the multi-day wall-clock wait is synthetic.
   this — confirmed the app does not currently use `SetBlockSTMTxRunner`, so enabling it is a new
   capability, not a bug fix, and carries AppHash-determinism risk that needs its own dedicated
   verification pass.
-- **Zones/sharding, mesh cryptographic proofs, TON-style multi-shard block production.**
+- **Zones/sharding, mesh cryptographic proofs, multi-shard block production.**
   Multi-quarter scope, unchanged from the prior audit's assessment — see §4 above.
 - **F-09/F-10/F-12/F-13/F-19/F-20/F-21/F-22/F-24 and the rest of §8.** Lower severity, not
   reached this session; still open, see §9 remediation plan above for each.
@@ -439,7 +439,7 @@ The chain is **more permissionless than advertised** and **far more concentrated
 | `x/routing` | 833 | yes | **none** | `Enabled=false` | **DORMANT** |
 | `x/mesh` | 1,539 | yes | **none** | `Enabled=false` | **DORMANT** |
 | `x/sharding-coordinator` | 1,354 | yes | **none** | `Enabled=false` | **DORMANT** |
-| `x/networking` | 24,383 | yes | **none** | `Enabled=false` | **DORMANT** |
+| `x/networking` | 31,507 | — | — | — | **DELETED** (removed post-audit: `Enabled=false`, zero live Msg/Query/EndBlock surface, no functional caller outside its own package and app wiring) |
 | `x/aetracore` | 30,702 | yes | **none** — keeper never called outside tests | `Enabled=false` | **DORMANT** |
 | `x/load` | 650 | yes | no surface; keeper called from `x/fees` EndBlocker | `Enabled=false` → silent no-op | **GATED, write-only** |
 | `x/avm-scheduler` | 1,425 | yes | **none** | `Enabled=false` | **DORMANT** |
@@ -474,7 +474,7 @@ the congestion surcharge are **both dead**, because both read the disabled block
 
 ### The honest path to real load distribution
 
-A full TON-style multi-shard runtime is a multi-quarter effort and is not reachable now. But the SDK
+A full multi-shard runtime is a multi-quarter effort and is not reachable now. But the SDK
 already ships the thing that actually buys throughput:
 
 > **SDK v0.54.3 includes a Block-STM parallel tx runner** (`baseapp/txnrunner/blockstm.go`,
@@ -672,7 +672,7 @@ locks every token on the chain.
 | **F-09/F-10/F-18/F-19/F-20/F-21/F-22/F-24** | see §5, §7, §8 | various | S–M |
 | **F-23** | Delete or honestly label the 34 orphaned RPCs and the dead policy surface | various | M |
 
-**Not attempted:** full TON-style multi-shard block production (F-25 / SA2-F05) — genuinely
+**Not attempted:** full multi-shard block production (F-25 / SA2-F05) — genuinely
 multi-quarter. The honest framing is that `x/zones`/`x/routing`/`x/mesh`/`x/aetracore` are a ~66K-LOC
 executable **specification** with sound deterministic algorithms and one substantive gap before they
 could ever be load-bearing: **mesh "proofs" verify nothing** and must become real inclusion proofs

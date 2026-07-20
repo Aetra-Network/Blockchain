@@ -52,8 +52,9 @@ const (
 	// liveMeasuredFeeNaet is the fee actually charged for a transfer on the live
 	// 10-validator net: 0.498 AET. It is 1.3x the ~0.378 AET spam floor (the fee
 	// at which sustaining a 100%-capacity attack for a day costs $10k at
-	// $0.01/AET) and TON-tier in USD terms (~$0.005), so it satisfies the
-	// owner's "fees must not be absurdly cheap" constraint.
+	// $0.01/AET) and in the same low-fee tier as other high-throughput L1s in
+	// USD terms (~$0.005), so it satisfies the owner's "fees must not be
+	// absurdly cheap" constraint.
 	liveMeasuredFeeNaet = int64(498_000_000)
 
 	// congestedFeeNaet is the dynamic fee at 100% block utilization: 5 AET.
@@ -316,8 +317,8 @@ func TestEmissionRateWalksToFloorUnderHeavyStaking(t *testing.T) {
 // APR = (v*i + validatorFeeShare*phi) / sigma, ignoring the 2% community tax
 // (which only makes the true figure marginally lower). At the target supply and
 // throughput with sigma = 65% bonded this is ~6.4%, comfortably above Ethereum
-// (3-4%) and TON (4%), around Solana (7%), and below Cosmos Hub (15-20%, which
-// pays 10-15% inflation for it).
+// (3-4%), around Solana (7%), and below Cosmos Hub (15-20%, which pays
+// 10-15% inflation for it).
 func TestValidatorsEarnARealReturn(t *testing.T) {
 	const bondedRatioBps = int64(6_500)
 
@@ -405,7 +406,7 @@ func TestTargetSupplyIsRepresentableOnTheEmissionPath(t *testing.T) {
 // the calibration calls for a 16B genesis supply rather than 80.62M.
 //
 // phi is annual fee revenue as a fraction of supply. Peers: Cosmos Hub ~0.08%,
-// TON ~0.3%, Ethereum ~0.75%, Solana ~0.85%. The live Aetra net ran phi = 148.6%
+// Ethereum ~0.75%, Solana ~0.85%. The live Aetra net ran phi = 148.6%
 // -- the fee bill was 1.5x the entire money supply per year, which users cannot
 // physically pay because the coins do not exist. The burn cap keeps NET in band
 // even then (see TestNetAnnualSupplyGrowthStaysInOwnerBand, which passes at the

@@ -24,7 +24,7 @@ For this Cosmos L1 project, the expected local skill set includes:
 
 - `software-crypto-web3`: broad blockchain/Web3 architecture and security guidance.
 - `cosmos-vulnerability-scanner`: Cosmos SDK and CosmWasm vulnerability review patterns.
-- Existing Cosmos/TON development skills already present in the Codex profile remain available but must not override Cosmos L1 requirements unless directly relevant.
+- Existing Cosmos development skills already present in the Codex profile remain available but must not override Cosmos L1 requirements unless directly relevant.
 
 If these skills are missing in a fresh environment, install them with the user's approval:
 
