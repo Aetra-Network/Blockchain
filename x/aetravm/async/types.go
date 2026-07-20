@@ -195,6 +195,17 @@ const (
 	SendModeCarryRemainder uint32 = 64
 	SendModeDrainBalance   uint32 = 128
 	SendModeEstimateOnly   uint32 = 1024
+	// SendModeWalletPayout routes an internal message to a plain wallet
+	// address instead of a registered contract: ReceiveInternalMessage's
+	// destination-not-found fallback moves record.Funds out of the
+	// contracts module's storage-rent reserve into the destination wallet's
+	// real bank balance via BankKeeper.SendCoinsFromModuleToAccount, rather
+	// than failing with ErrContractNotFound. This is the only supported way
+	// for a contract to pay real AET to a human wallet (see
+	// x/contracts/keeper/keeper.go's ReceiveInternalMessage and the
+	// SEND_PAYOUT_TO_WALLET compiler constant in
+	// x/aetravm/compiler/compile.go's builtinSendModeValue).
+	SendModeWalletPayout uint32 = 256
 )
 
 // MaxCommentBytes bounds the textComment memo. Comments are charged per byte
